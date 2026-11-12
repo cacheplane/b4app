@@ -1068,6 +1068,18 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
+  /// Re-announce owned rows only while the original linked snapshot and reference both match.
+  @discardableResult
+  package func claimOwnedRows(
+    expectedProtocolSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String
+  ) throws -> Int {
+    try writeProtocolSyncEffect(
+      expectedSnapshot: expectedProtocolSnapshot, expectedTokenRef: expectedTokenRef
+    ) { c in
+      try claimOwnedRows(c)
+    }
+  }
+
   /// Transaction borrower only; both wrappers preserve the original local reannouncement body.
   private func claimOwnedRows(_ c: PostgresConnection) throws -> Int {
     guard
@@ -1119,6 +1131,47 @@ public final class WorkspaceDatabase: Sendable {
     error: String?, expectedProtocolSnapshot: ProtocolVerificationSnapshot
   ) throws {
     try writeProtocolSyncEffect(expectedSnapshot: expectedProtocolSnapshot) { c -> Void in
+      if let error {
+        guard !error.utf8.contains(0) else { throw ProtocolActivationControl.failure }
+        try c.execute(
+          #"UPDATE "hubLink" SET "lastError" = $1 WHERE "id" = 1"#, ["Pull: " + error])
+      } else {
+        try c.execute(
+          """
+          UPDATE "hubLink" SET "lastError" = NULL
+          WHERE "id" = 1 AND left("lastError", 6) COLLATE "C" = 'Pull: '
+          """)
+      }
+    }
+  }
+
+  /// Record push status only while the original linked snapshot and reference both match.
+  package func recordHubPushResult(
+    error: String?, pushedAt: String?, expectedProtocolSnapshot: ProtocolVerificationSnapshot,
+    expectedTokenRef: String
+  ) throws {
+    try writeProtocolSyncEffect(
+      expectedSnapshot: expectedProtocolSnapshot, expectedTokenRef: expectedTokenRef
+    ) { c -> Void in
+      if error?.utf8.contains(0) == true || pushedAt?.utf8.contains(0) == true {
+        throw ProtocolActivationControl.failure
+      }
+      try c.execute(
+        """
+        UPDATE "hubLink"
+        SET "lastError" = $1, "lastPushAt" = COALESCE($2::text, "lastPushAt")
+        WHERE "id" = 1
+        """, [error, pushedAt])
+    }
+  }
+
+  /// Record or clear pull status only while the original linked snapshot and reference both match.
+  package func recordHubPullResult(
+    error: String?, expectedProtocolSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String
+  ) throws {
+    try writeProtocolSyncEffect(
+      expectedSnapshot: expectedProtocolSnapshot, expectedTokenRef: expectedTokenRef
+    ) { c -> Void in
       if let error {
         guard !error.utf8.contains(0) else { throw ProtocolActivationControl.failure }
         try c.execute(

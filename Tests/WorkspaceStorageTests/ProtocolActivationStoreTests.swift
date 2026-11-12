@@ -4694,3 +4694,1385 @@ extension ProtocolActivationStoreTests {
     }
   }
 }
+
+// Required-original-reference guarded effects. Test-first declarations only: managed execution
+// must qualify this addition together with the unchanged prefix on the eventual combined tree.
+// No runtime owner, secret availability, ABA prevention, wire admission, or unknown-COMMIT claim.
+extension ProtocolActivationStoreTests {
+  private static let effectReferenceA = "secret:ACTIVATION_REFERENCE_EFFECT_A"
+  private static let effectReferenceB = "secret:ACTIVATION_REFERENCE_EFFECT_B"
+  private enum RefEffect: Int, CaseIterable, Sendable {
+    case mark, apply, claimAppend, claimZero, push, pull, pullClear
+    var claim: Bool { self == .claimAppend || self == .claimZero }
+    var triggerTable: String { self == .mark ? "changes" : "hubLink" }
+    var triggerColumns: String {
+      switch self {
+      case .mark: return "synced"
+      case .apply: return "cursor"
+      case .claimAppend, .claimZero: return "\"ownedAs\""
+      case .push: return "\"lastError\",\"lastPushAt\""
+      case .pull, .pullClear: return "\"lastError\""
+      }
+    }
+  }
+  private struct RefEffectInput: Sendable {
+    let route: RefEffect
+    let through: Int
+    let ownedCount: Int
+    func batch(ownDeviceId: String) throws -> [RemoteChange] {
+      let title = ProtocolActivationStoreTests.guardApplyChange(
+        "threads", "guard-thread", "title", .string(ProtocolActivationStoreTests.applyTitle))
+      let echo = ProtocolActivationStoreTests.guardApplyChange(
+        "threads", "guard-thread", "title", "Filtered own echo",
+        at: "000000000101-0000-guard-phone", device: ownDeviceId)
+      // The actual own-device field must be the only filter discriminator. A newer valid
+      // remote-device stamp rules out equal/stale-clock skips and the stamp-device filter.
+      guard ProtocolActivationStoreTests.equalBytes(echo.deviceId, ownDeviceId),
+        let titleClock = HLC(rawValue: title.hlc), let echoClock = HLC(rawValue: echo.hlc),
+        echoClock > titleClock,
+        !ProtocolActivationStoreTests.equalBytes(echoClock.deviceId, ownDeviceId)
+      else { throw ProtocolActivationStoreTests.FixtureFailure.nativeShape }
+      return [
+        title,
+        // A genuine ordinary 22P02 must skip its row; the later valid row and cursor still finish.
+        ProtocolActivationStoreTests.guardApplyChange("threads", "guard-thread", "archived", "not-a-boolean"),
+        ProtocolActivationStoreTests.guardApplyChange(
+          "environments", "guard-environment", "name", "After environment"),
+        echo,
+      ]
+    }
+    var applied: RemoteApplied {
+      RemoteApplied(
+        touchedThreadIds: ["guard-thread"], touchedEnvironmentIds: ["guard-environment"],
+        applied: 2, skipped: 2)
+    }
+  }
+  private enum RefEffectResult: Equatable, Sendable {
+    case void, apply(RemoteApplied), claim(Int)
+  }
+  private static func prepareRefEffect(
+    _ f: Fixture, route: RefEffect, modern: Bool = false
+  ) throws -> (RefEffectInput, ProtocolVerificationSnapshot) {
+    try seedFinalEffectOwnedRows(f)
+    try seedFinalEffectLinkSentinels(f)
+    try setNativeReference(f, effectReferenceA)
+    var through = 0
+    if route == .mark {
+      through = try insertLogWitness(f, table: "threads", op: "update", column: "title", value: #""prefix""#)
+      _ = try insertLogWitness(f, table: "threads", op: "update", column: "title", value: #""later""#)
+    } else if route == .claimAppend {
+      _ = try insertLogWitness(
+        f, table: "threads", op: "update", column: "title", value: #""synced-before""#, synced: true)
+    }
+    if route == .claimZero {
+      let noneSynced =
+        try f.raw.execute("SELECT count(*) AS n FROM public.changes WHERE synced").rows.first?.int("n") == 0
+      try #require(noneSynced)
+    }
+    if route == .pullClear {
+      try f.raw.execute("UPDATE public.\"hubLink\" SET \"lastError\"='Pull: before clear' WHERE id=1")
+    }
+    if modern { try seedReadOnlyModernProfile(f) }
+    let snapshot = try (modern ? healthyGuardMarkSnapshot(f) : capture(f))
+    try expectRequirement(f, modern ? .protocolTwo : .legacyOnly)
+    let count = try finalEffectOwnedRows(state(f)).count
+    return (RefEffectInput(route: route, through: through, ownedCount: count), snapshot)
+  }
+  /// The five real overloads are selected here with the mandatory original String. No production
+  /// callback, current-reference recapture, or snapshot-only forwarding supplies the test body.
+  private static func performRefEffect(
+    _ f: Fixture, input: RefEffectInput, snapshot: ProtocolVerificationSnapshot,
+    reference: String, database: WorkspaceDatabase? = nil
+  ) throws -> RefEffectResult {
+    let target = database ?? f.database
+    switch input.route {
+    case .mark:
+      try target.markSynced(
+        through: input.through, expectedProtocolSnapshot: snapshot, expectedTokenRef: reference)
+      return .void
+    case .apply:
+      return .apply(
+        try target.applyRemote(
+          input.batch(ownDeviceId: f.link.deviceId), ownDeviceId: f.link.deviceId,
+          macDeviceIds: ["guard-other-mac"], cursor: 811,
+          expectedProtocolSnapshot: snapshot, expectedTokenRef: reference))
+    case .claimAppend, .claimZero:
+      return .claim(
+        try target.claimOwnedRows(
+          expectedProtocolSnapshot: snapshot, expectedTokenRef: reference))
+    case .push:
+      try target.recordHubPushResult(
+        error: "ACTIVATION_REFERENCE_PUSH", pushedAt: "2026-11-12T07:08:09.010Z",
+        expectedProtocolSnapshot: snapshot, expectedTokenRef: reference)
+      return .void
+    case .pull, .pullClear:
+      try target.recordHubPullResult(
+        error: input.route == .pull ? "ACTIVATION_REFERENCE_PULL" : nil,
+        expectedProtocolSnapshot: snapshot, expectedTokenRef: reference)
+      return .void
+    }
+  }
+  private static func expectedRefEffect(
+    _ f: Fixture, input: RefEffectInput, before: NativeState
+  ) throws -> NativeState {
+    switch input.route {
+    case .mark: return try expectedGuardMark(f, through: input.through)
+    case .apply:
+      return try expectedGuardApply(
+        f, before: before, cursor: 811,
+        edits: [
+          ("threads", "id", "guard-thread", ["title": applyTitle]),
+          ("environments", "id", "guard-environment", ["name": "After environment"]),
+        ],
+        clocks: [
+          ("threads", "guard-thread", "title", applyStamp),
+          ("environments", "guard-environment", "name", applyStamp),
+        ])
+    case .claimAppend, .claimZero:
+      return NativeState(
+        rows: try finalEffectExpectedRows(f, before: before, link: ["ownedAs": f.link.deviceId]),
+        sequence: before.sequence)
+    case .push:
+      return NativeState(
+        rows: try finalEffectExpectedRows(
+          f, before: before,
+          link: ["lastError": "ACTIVATION_REFERENCE_PUSH", "lastPushAt": "2026-11-12T07:08:09.010Z"]),
+        sequence: before.sequence)
+    case .pull, .pullClear:
+      return NativeState(
+        rows: try finalEffectExpectedRows(
+          f, before: before,
+          link: ["lastError": input.route == .pull ? "Pull: ACTIVATION_REFERENCE_PULL" as Any : NSNull()]),
+        sequence: before.sequence)
+    }
+  }
+  private static func expectRefEffectPositive(
+    _ f: Fixture, input: RefEffectInput, snapshot: ProtocolVerificationSnapshot,
+    reference: String = effectReferenceA, probes: [(name: String, count: Int)] = []
+  ) throws {
+    if input.route == .claimAppend {
+      try expectRefEffectClaim(
+        f, snapshot: snapshot, reference: reference, count: input.ownedCount,
+        updatesOwnedAs: true, probes: probes)
+      return
+    }
+    let before = try state(f), expected = try expectedRefEffect(f, input: input, before: before)
+    let probeBefore = try probes.map { try finalEffectProbe(f, $0.name) }
+    let result = Result { try performRefEffect(f, input: input, snapshot: snapshot, reference: reference) }
+    let after = try state(f)
+    let exact = after == expected
+    #expect(exact)
+    for (index, probe) in probes.enumerated() {
+      try expectFinalEffectAllocation(
+        f, name: probe.name, before: probeBefore[index], after: finalEffectProbe(f, probe.name),
+        count: probe.count)
+    }
+    let actual = try result.get()
+    let exactResult =
+      actual == (input.route == .apply ? .apply(input.applied) : input.claim ? .claim(0) : .void)
+    #expect(exactResult)
+  }
+  private static func expectRefEffectNoOpRefusal(
+    _ f: Fixture, route: RefEffect, snapshot: ProtocolVerificationSnapshot, reference: String
+  ) throws {
+    try expectRefEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+      switch route {
+      case .mark:
+        try f.database.markSynced(
+          through: -1, expectedProtocolSnapshot: snapshot, expectedTokenRef: reference)
+      case .apply:
+        let actual = try f.database.applyRemote(
+          [], ownDeviceId: f.link.deviceId, macDeviceIds: [], cursor: 701,
+          expectedProtocolSnapshot: snapshot, expectedTokenRef: reference)
+        _ = actual
+      case .claimAppend, .claimZero:
+        _ = try f.database.claimOwnedRows(expectedProtocolSnapshot: snapshot, expectedTokenRef: reference)
+      case .push:
+        try f.database.recordHubPushResult(
+          error: nil, pushedAt: nil, expectedProtocolSnapshot: snapshot, expectedTokenRef: reference)
+      case .pull, .pullClear:
+        try f.database.recordHubPullResult(
+          error: nil, expectedProtocolSnapshot: snapshot, expectedTokenRef: reference)
+      }
+    }
+  }
+
+  @Test func requiredReferenceAllFiveCommitExactBodiesAcrossLegacyAndHealthyModern() async throws {
+    for route in RefEffect.allCases {
+      try await Self.withFixture { f in
+        let (input, snapshot) = try Self.prepareRefEffect(
+          f, route: route, modern: route == .apply || route == .push)
+        try Self.expectRefEffectPositive(f, input: input, snapshot: snapshot)
+      }
+    }
+    try await Self.withFixture { f in
+      try Self.seedReadOnlyModernProfile(f)
+      let inactive = try Self.capture(f)
+      try Self.installFinalEffectRowProbe(f)
+      try Self.expectRefEffectNoOpRefusal(
+        f, route: .mark, snapshot: inactive, reference: f.link.tokenRef)
+    }
+  }
+
+  @Test func requiredReferenceOrdinaryRefreshPreservesFactsAndAllFiveRefuseOriginalEvenAtNoOp() async throws {
+    try await Self.withFixture { f in
+      let (_, snapshot) = try Self.prepareRefEffect(f, route: .claimZero, modern: true)
+      try f.raw.execute("UPDATE public.\"hubLink\" SET \"ownedAs\"=\"deviceId\" WHERE id=1")
+      let beforeRefresh = try Self.state(f)
+      var refreshed = try Self.referenceFixtureValue(f.database.hubLink())
+      refreshed.tokenRef = Self.effectReferenceB
+      try f.database.saveHubLink(refreshed)
+      let expectedRows = try Self.finalEffectExpectedRows(
+        f, before: beforeRefresh,
+        link: ["tokenRef": Self.effectReferenceB])
+      // Ordinary same-membership refresh changes ONLY the explicitly supplied reference.
+      let refreshedState = try Self.state(f)
+      let exactRefresh = refreshedState == NativeState(rows: expectedRows, sequence: beforeRefresh.sequence)
+      try #require(exactRefresh)
+      let controlExact = refreshedState.rows["settings"] == beforeRefresh.rows["settings"]
+      try #require(controlExact)
+      try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+      try f.database.markSynced(through: -1, expectedProtocolSnapshot: snapshot)
+      try Self.installFinalEffectRowProbe(f)
+      for route in [RefEffect.mark, .apply, .claimZero, .push, .pull] {
+        try Self.expectRefEffectNoOpRefusal(
+          f, route: route, snapshot: snapshot, reference: Self.effectReferenceA)
+      }
+      // B is explicit independent test input. No production operation re-captures it.
+      try Self.expectFinalEffectPositive(
+        f, link: ["lastError": "ACTIVATION_REFERENCE_B_POSITIVE"], probes: [("guard_effect_probe.updates", 1)]
+      ) {
+        try f.database.recordHubPushResult(
+          error: "ACTIVATION_REFERENCE_B_POSITIVE", pushedAt: nil,
+          expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceB)
+      }
+    }
+  }
+
+  @Test func requiredReferencePreRefusalDoesNotObserveReceivedHlcOrAllocateClaimLog() async throws {
+    try await Self.withFixture { original in
+      let controlled = try WorkspaceDatabase(
+        endpoint: original.endpoint, binDir: original.endpoint.binDir!, createIfMissing: false,
+        backupDirectory: original.root + "/backups", wall: { 42 })
+      defer { try? controlled.close() }
+      let f = Fixture(
+        database: controlled, raw: original.raw, endpoint: original.endpoint, root: original.root,
+        link: original.link, binding: original.binding)
+      let (_, snapshot) = try Self.prepareRefEffect(f, route: .claimAppend)
+      var refreshed = f.link; refreshed.tokenRef = Self.effectReferenceB
+      try controlled.saveHubLink(refreshed)
+      let received = HLC(millis: epochMillis() + 120_000, counter: 19, deviceId: "guard-phone")
+      let lower = controlled.clock.next()
+      try Self.expectRefEffectRefusal(f) {
+        _ = try controlled.applyRemote(
+          [Self.guardApplyChange("threads", "guard-thread", "title", "refused", at: received.rawValue)],
+          ownDeviceId: f.link.deviceId, macDeviceIds: [], cursor: 899,
+          expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+      }
+      let upper = controlled.clock.next()
+      let notObserved = epochMillis() < received.millis && upper.millis < received.millis && upper > lower
+      #expect(notObserved)
+      try Self.expectRefEffectRefusal(f) {
+        _ = try controlled.claimOwnedRows(
+          expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+      }
+    }
+  }
+
+  @Test func requiredReferenceParserPreflightCorpusAndAllFiveSelectRequiredHelper() async throws {
+    try await Self.withFixture { f in
+      let snapshot = try Self.capture(f)
+      try Self.installFinalEffectRowProbe(f)
+      for valid in ["secret:not-a-uuid", "secret:suffix ", "secret:雪"] {
+        try Self.setNativeReference(f, valid)
+        try Self.expectFinalEffectPositive(
+          f, link: ["lastError": NSNull()], probes: [("guard_effect_probe.updates", 1)]
+        ) {
+          try f.database.recordHubPushResult(
+            error: nil, pushedAt: nil, expectedProtocolSnapshot: snapshot, expectedTokenRef: valid)
+        }
+      }
+      let combining = "secret:\u{301}"
+      let exactBoundary = combining.count == 7 && combining.utf8.count > 7
+      try #require(exactBoundary)
+      for invalid in [
+        "", "secret:", "Secret:x", " secret:x", combining,
+        "secret:ACTIVATION_NUL\0inside", "secret:ACTIVATION_TRAILING\0",
+      ] {
+        try Self.expectRefEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+          try f.database.recordHubPushResult(
+            error: nil, pushedAt: nil, expectedProtocolSnapshot: snapshot, expectedTokenRef: invalid)
+        }
+      }
+      for route in [RefEffect.mark, .apply, .claimZero, .pull] {
+        try Self.expectRefEffectNoOpRefusal(f, route: route, snapshot: snapshot, reference: "secret:")
+      }
+      // Malformed expected/NUL never goes to a native parameter. No-change alone is NOT a
+      // no-SELECT oracle: helper preflight before write/SQL remains an explicit source obligation.
+    }
+  }
+
+  @Test func requiredReferenceValidExpectedRefusesMalformedCurrentAndUnicodeBytesDifferBothWays() async throws
+  {
+    try await Self.withFixture { f in
+      let snapshot = try Self.capture(f)
+      try Self.installFinalEffectRowProbe(f)
+      for malformed in ["Secret:x", "secret:"] {
+        try Self.setNativeReference(f, malformed)
+        try Self.expectRefEffectNoOpRefusal(
+          f, route: .push, snapshot: snapshot, reference: Self.effectReferenceA)
+      }
+      for (current, other) in [("secret:é", "secret:e\u{301}"), ("secret:e\u{301}", "secret:é")] {
+        try Self.setNativeReference(f, current)
+        try Self.expectRefEffectNoOpRefusal(f, route: .push, snapshot: snapshot, reference: other)
+        try Self.expectFinalEffectPositive(
+          f, link: ["lastError": NSNull()], probes: [("guard_effect_probe.updates", 1)]
+        ) {
+          try f.database.recordHubPushResult(
+            error: nil, pushedAt: nil, expectedProtocolSnapshot: snapshot, expectedTokenRef: current)
+        }
+      }
+      let schemaSQL = """
+        SELECT jsonb_build_object('type',a.atttypid,'typmod',a.atttypmod,'notnull',a.attnotnull,
+          'collation',a.attcollation,'identity',a.attidentity,'generated',a.attgenerated,
+          'default',pg_get_expr(d.adbin,d.adrelid),
+          'constraints',(SELECT jsonb_agg(jsonb_build_object(
+            'name',c.conname,'type',c.contype,'definition',pg_get_constraintdef(c.oid,true),
+            'deferrable',c.condeferrable,'deferred',c.condeferred,'validated',c.convalidated)
+            ORDER BY c.conname,c.contype) FROM pg_constraint c WHERE c.conrelid=a.attrelid))::text AS value,
+          a.attnotnull::text AS required
+        FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+        WHERE a.attrelid='public."hubLink"'::regclass AND a.attname='tokenRef'
+        """
+      let schema = try Self.referenceFixtureValue(f.raw.execute(schemaSQL).rows.first)
+      let catalog = try Self.referenceFixtureValue(schema.text("value"))
+      let required = schema.text("required") == "true"
+      var restored = false
+      defer {
+        if !restored {
+          try? Self.setNativeReference(f, Self.effectReferenceA)
+          if required {
+            try? f.raw.execute("ALTER TABLE public.\"hubLink\" ALTER COLUMN \"tokenRef\" SET NOT NULL")
+          }
+        }
+      }
+      if required {
+        try f.raw.execute("ALTER TABLE public.\"hubLink\" ALTER COLUMN \"tokenRef\" DROP NOT NULL")
+      }
+      try Self.setNativeReference(f, nil)
+      let actualNull =
+        try f.raw.execute(
+          "SELECT (\"tokenRef\" IS NULL)::text AS missing FROM public.\"hubLink\" WHERE id=1"
+        ).rows.first?.text("missing") == "true"
+      try #require(actualNull)
+      try Self.expectRefEffectNoOpRefusal(
+        f, route: .push, snapshot: snapshot, reference: Self.effectReferenceA)
+      try Self.setNativeReference(f, Self.effectReferenceA)
+      if required {
+        try f.raw.execute("ALTER TABLE public.\"hubLink\" ALTER COLUMN \"tokenRef\" SET NOT NULL")
+      }
+      let recovered = try Self.referenceFixtureValue(f.raw.execute(schemaSQL).rows.first?.text("value"))
+      let exactCatalog = Self.equalBytes(catalog, recovered)
+      try #require(exactCatalog); restored = true
+      try Self.expectFinalEffectPositive(
+        f, link: ["lastError": NSNull()], probes: [("guard_effect_probe.updates", 1)]
+      ) {
+        try f.database.recordHubPushResult(
+          error: nil, pushedAt: nil, expectedProtocolSnapshot: snapshot,
+          expectedTokenRef: Self.effectReferenceA)
+      }
+    }
+  }
+
+  @Test func requiredReferenceRetainsActualObjectCapturedContextFullRecordTupleAndClosedRules() async throws {
+    try await Self.withFixture { f in
+      let (_, snapshot) = try Self.prepareRefEffect(f, route: .push, modern: true)
+      let input = RefEffectInput(route: .push, through: 0, ownedCount: 0)
+      func refuse(_ candidate: ProtocolVerificationSnapshot, on target: WorkspaceDatabase? = nil) throws {
+        try Self.expectRefEffectRefusal(f) {
+          _ = try Self.performRefEffect(
+            f, input: input, snapshot: candidate, reference: Self.effectReferenceA, database: target)
+        }
+      }
+      let direct = try Self.referenceFixtureValue(f.database.readProtocolFact(expectedBinding: f.binding))
+      try refuse(direct)
+      let other = try f.reopen()
+      defer { try? other.close() }
+      try refuse(snapshot, on: other)
+      let known = try Self.nativeRecord(f)
+      var stale = known
+      var observed = try Self.referenceFixtureValue(known["observation"] as? [String: Any])
+      observed["reportedVersion"] = 3; stale["observation"] = observed
+      try Self.putRecord(f, stale)
+      let current = try Self.capture(f)
+      try Self.expectReadOnlyValidation(f, snapshot: current, sync: true)
+      try refuse(snapshot)  // The negative still compares the ORIGINAL full record.
+      try Self.putRecord(f, known)
+      try f.raw.execute("UPDATE public.\"hubLink\" SET \"deviceId\"='ACTIVATION_CHANGED_TUPLE' WHERE id=1")
+      try refuse(snapshot)
+      try f.raw.execute("UPDATE public.\"hubLink\" SET \"deviceId\"=$1 WHERE id=1", [f.link.deviceId])
+      // The ORIGINAL snapshot and A compare immediately after exact tuple restoration, before close.
+      // No replacement capture can turn the following refusal into a different stale test.
+      try Self.expectReferenceComparison(
+        f, snapshot: snapshot, reference: Self.effectReferenceA, method: .sync)
+      try f.database.close()
+      try refuse(snapshot)
+    }
+    // A bound modern record cannot legitimately capture a deleted native membership. Follow
+    // the qualified absent-record fixture pattern independently of the closed-object sequence.
+    try await Self.withFixture { f in
+      let noInitialRecord = try Self.recordText(f) == nil
+      try #require(noInitialRecord)
+      try Self.setNativeReference(f, Self.effectReferenceA)
+      try Self.installFinalEffectRowProbe(f)
+      try f.raw.execute("DELETE FROM public.\"hubLink\" WHERE id=1")
+      let absent = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      let originalControl = Data(try Self.referenceFixtureValue(Self.recordText(f)).utf8)
+      let input = RefEffectInput(route: .push, through: 0, ownedCount: 0)
+      try Self.expectRefEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+        _ = try Self.performRefEffect(
+          f, input: input, snapshot: absent, reference: Self.effectReferenceA)
+      }
+      try Self.insertReadOnlyFixtureLink(f)
+      try Self.setNativeReference(f, Self.effectReferenceA)
+      let restoredReference = try f.raw.execute(
+        "SELECT \"tokenRef\" FROM public.\"hubLink\" WHERE id=1"
+      ).rows.first?.text("tokenRef")
+      let referenceExact = restoredReference.map { Self.equalBytes($0, Self.effectReferenceA) } ?? false
+      try #require(referenceExact)
+      let controlUnrotated = try Self.recordText(f).map { Data($0.utf8) } == originalControl
+      try #require(controlUnrotated)
+      try Self.expectRefEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+        _ = try Self.performRefEffect(
+          f, input: input, snapshot: absent, reference: Self.effectReferenceA)
+      }
+    }
+  }
+
+  @Test func requiredReferenceHealthyMaximumRevisionCommitsWithoutChronologyMutation() async throws {
+    try await Self.withFixture { f in
+      _ = try Self.prepareRefEffect(f, route: .push, modern: true)
+      var record = try Self.nativeRecord(f); record["revision"] = String(Int64.max)
+      try Self.putRecord(f, record)
+      let snapshot = try Self.capture(f)
+      let input = RefEffectInput(route: .push, through: 0, ownedCount: 0)
+      try Self.expectRefEffectPositive(f, input: input, snapshot: snapshot)
+    }
+  }
+
+  /// Freeze an independent intended public image in a PRIVATE schema. The trigger checks every
+  /// table, including empty tables and all classifier inputs, full control and native tuple.
+  /// Only claim append's independently checked dynamic seq/wall fields need a separate oracle.
+  private static func installRefEffectStageImage(_ f: Fixture, input: RefEffectInput) throws {
+    let before = try state(f), expected = try expectedRefEffect(f, input: input, before: before)
+    try f.raw.execute(
+      """
+      CREATE SCHEMA ref_effect_stage;
+      CREATE TABLE ref_effect_stage.tables(name text PRIMARY KEY);
+      CREATE TABLE ref_effect_stage.expected(name text NOT NULL,value jsonb NOT NULL);
+      CREATE TABLE ref_effect_stage.mode(reference text NOT NULL);
+      INSERT INTO ref_effect_stage.mode VALUES('secret:ACTIVATION_REFERENCE_EFFECT_B');
+      CREATE SEQUENCE ref_effect_stage.probe;
+      CREATE TABLE ref_effect_stage.prior_log AS SELECT seq,to_jsonb(c) AS value FROM public.changes c;
+      CREATE TABLE ref_effect_stage.owned AS
+        SELECT 'connections'::text AS name,t.id AS id,to_jsonb(t) AS value FROM public.connections t
+        UNION ALL SELECT 'environments',t.id,to_jsonb(t) FROM public.environments t
+        UNION ALL SELECT 'threads',t.id,to_jsonb(t) FROM public.threads t;
+      CREATE TABLE ref_effect_stage.time AS SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS lower_wall;
+      """)
+    for (table, rows) in expected.rows {
+      try f.raw.execute("INSERT INTO ref_effect_stage.tables VALUES($1)", [table])
+      for row in rows {
+        try f.raw.execute(
+          "INSERT INTO ref_effect_stage.expected VALUES($1,$2::jsonb)",
+          [table, String(decoding: row, as: UTF8.self)])
+      }
+    }
+    let columns = "ARRAY[" + protocolColumns.map { "'" + $0 + "'" }.joined(separator: ",") + "]::text[]"
+    let tables = "ARRAY[" + privateProtocolTables.map { "'" + $0 + "'" }.joined(separator: ",") + "]::text[]"
+    let live = protocolColumns.map { "c." + Rows.quote($0) + " IS NOT NULL" }.joined(separator: " OR ")
+    let retained = privateProtocolTables.map { "EXISTS(SELECT 1 FROM public." + Rows.quote($0) + ")" }.joined(
+      separator: " OR ")
+    let classifier = """
+      EXISTS(SELECT 1 FROM public.connections c WHERE c.kind='agentProtocol' OR \(live))
+      OR \(retained)
+      OR EXISTS(SELECT 1 FROM public.changes ch WHERE ch."table"=ANY(\(tables))
+        OR (ch."table"='connections' AND (
+          (ch.op='insert' AND jsonb_typeof(ch.value)='object' AND (
+            ch.value->'kind'='"agentProtocol"'::jsonb OR EXISTS(
+              SELECT 1 FROM unnest(\(columns)) AS k(name) WHERE ch.value ? k.name
+                AND (ch.value->k.name) IS NOT NULL AND ch.value->k.name<>'null'::jsonb)))
+          OR (ch.op='update' AND (ch."column"=ANY(\(columns))
+            OR (ch."column"='kind' AND ch.value='"agentProtocol"'::jsonb))))))
+      OR EXISTS(SELECT 1 FROM public."columnClocks" cl WHERE cl."table"='connections'
+        AND cl."column"=ANY(\(columns)))
+      """
+    let append = input.route == .claimAppend
+    try f.raw.execute(
+      """
+      CREATE FUNCTION ref_effect_stage.assert_complete(required_reference text) RETURNS void
+        LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+      DECLARE t text; mismatch boolean; projection text; n bigint; first_seq bigint; last_seq bigint;
+      BEGIN
+        IF (\(classifier)) THEN RAISE EXCEPTION 'ACTIVATION_REFERENCE_CLASSIFIER_STAGE_NOT_REACHED'; END IF;
+        IF (SELECT convert_to("tokenRef",'UTF8') FROM public."hubLink" WHERE id=1)
+          IS DISTINCT FROM convert_to(required_reference,'UTF8')
+        THEN RAISE EXCEPTION 'ACTIVATION_REFERENCE_ACTUAL_STORED_STAGE_NOT_REACHED'; END IF;
+        IF EXISTS((SELECT tablename::text FROM pg_tables WHERE schemaname='public')
+            EXCEPT SELECT name FROM ref_effect_stage.tables)
+          OR EXISTS((SELECT name FROM ref_effect_stage.tables)
+            EXCEPT SELECT tablename::text FROM pg_tables WHERE schemaname='public')
+        THEN RAISE EXCEPTION 'ACTIVATION_REFERENCE_CATALOG_STAGE_NOT_REACHED'; END IF;
+        FOR t IN SELECT name FROM ref_effect_stage.tables LOOP
+          IF t='changes' AND \(append ? "true" : "false") THEN CONTINUE; END IF;
+          projection := CASE WHEN t='hubLink'
+            THEN 'to_jsonb(p)||jsonb_build_object(''tokenRef'',''secret:ACTIVATION_REFERENCE_EFFECT_A'')'
+            ELSE 'to_jsonb(p)' END;
+          EXECUTE format('SELECT EXISTS((SELECT %s FROM public.%I p) EXCEPT ALL '
+              '(SELECT value FROM ref_effect_stage.expected WHERE name=$1)) '
+            'OR EXISTS((SELECT value FROM ref_effect_stage.expected WHERE name=$1) '
+              'EXCEPT ALL (SELECT %s FROM public.%I p))',projection,t,projection,t)
+            INTO mismatch USING t;
+          IF mismatch THEN RAISE EXCEPTION 'ACTIVATION_REFERENCE_COMPLETE_STAGE_NOT_REACHED'; END IF;
+        END LOOP;
+        IF \(append ? "true" : "false") THEN
+          SELECT count(*),min(c.seq),max(c.seq) INTO n,first_seq,last_seq FROM public.changes c
+            WHERE NOT EXISTS(SELECT 1 FROM ref_effect_stage.prior_log e WHERE e.seq=c.seq);
+          IF n<>\(input.ownedCount) OR last_seq-first_seq+1<>n
+            OR first_seq<=(SELECT max(seq) FROM ref_effect_stage.prior_log)
+            OR (SELECT count(*) FROM public.changes)<>(SELECT count(*) FROM ref_effect_stage.prior_log)+n
+            OR EXISTS(SELECT 1 FROM ref_effect_stage.prior_log e LEFT JOIN public.changes c ON e.seq=c.seq
+              WHERE c.seq IS NULL OR to_jsonb(c) IS DISTINCT FROM e.value)
+            OR EXISTS(SELECT 1 FROM public.changes c WHERE NOT EXISTS(
+                SELECT 1 FROM ref_effect_stage.prior_log e WHERE e.seq=c.seq)
+              AND (c."deviceId" IS DISTINCT FROM 'ACTIVATION_DEVICE_SENTINEL' OR c.op IS DISTINCT FROM 'insert'
+                OR c."column" IS NOT NULL OR c.synced IS DISTINCT FROM false
+                OR c.hlc IS DISTINCT FROM '000000000000-0000-ACTIVATION_DEVICE_SENTINEL'
+                OR c.wall<(SELECT lower_wall FROM ref_effect_stage.time)
+                OR c.wall>floor(extract(epoch FROM clock_timestamp())*1000)::bigint))
+            OR (SELECT count(DISTINCT c.wall) FROM public.changes c WHERE NOT EXISTS(
+                SELECT 1 FROM ref_effect_stage.prior_log e WHERE e.seq=c.seq))<>1
+            OR EXISTS((SELECT c."table",c."rowId",c.value FROM public.changes c WHERE NOT EXISTS(
+                SELECT 1 FROM ref_effect_stage.prior_log e WHERE e.seq=c.seq))
+              EXCEPT ALL SELECT name,id,value FROM ref_effect_stage.owned)
+            OR EXISTS((SELECT name,id,value FROM ref_effect_stage.owned) EXCEPT ALL
+              SELECT c."table",c."rowId",c.value FROM public.changes c WHERE NOT EXISTS(
+                SELECT 1 FROM ref_effect_stage.prior_log e WHERE e.seq=c.seq))
+          THEN RAISE EXCEPTION 'ACTIVATION_REFERENCE_APPEND_STAGE_NOT_REACHED'; END IF;
+        END IF;
+      END $$;
+      """)
+  }
+  private static func installRefEffectPostTrigger(_ f: Fixture, input: RefEffectInput) throws {
+    try installRefEffectStageImage(f, input: input)
+    let when =
+      input.route == .mark
+      ? "NOT OLD.synced AND NEW.synced AND NEW.seq=\(input.through)" : "NEW.id=1"
+    try f.raw.execute(
+      """
+      CREATE FUNCTION ref_effect_stage.replace_reference() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+      DECLARE replacement text;
+      BEGIN
+        SELECT reference INTO STRICT replacement FROM ref_effect_stage.mode;
+        UPDATE public."hubLink" SET "tokenRef"=replacement WHERE id=1;
+        -- Read ACTUAL stored row after nested UPDATE. NEW can still contain A in an AFTER trigger.
+        -- Complete-image equality below also proves control/tuple/classifier inputs stayed exact.
+        PERFORM ref_effect_stage.assert_complete(replacement);
+        PERFORM nextval('ref_effect_stage.probe');
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER ref_effect_reference AFTER UPDATE OF \(input.route.triggerColumns)
+        ON public.\(Rows.quote(input.route.triggerTable)) FOR EACH ROW WHEN(\(when))
+        EXECUTE FUNCTION ref_effect_stage.replace_reference();
+      """)
+  }
+
+  @Test func requiredReferenceSevenNaturalPostBodiesRollbackAndSameEnabledAtoAControlsCommit() async throws {
+    for route in RefEffect.allCases {
+      try await Self.withFixture { f in
+        let (input, snapshot) = try Self.prepareRefEffect(f, route: route)
+        try Self.installRefEffectPostTrigger(f, input: input)
+        try Self.expectRefEffectRefusal(
+          f, allocations: route == .claimAppend ? input.ownedCount : 0,
+          probes: [("ref_effect_stage.probe", 1)]
+        ) {
+          _ = try Self.performRefEffect(f, input: input, snapshot: snapshot, reference: Self.effectReferenceA)
+        }
+        // Public rollback and all native sequence/probe observations have already happened.
+        // SAME installed enabled trigger, SAME original snapshot/ref/input. Only private requested
+        // replacement mode changes B -> A; no recapture, public repair, or sequence reset.
+        try f.raw.execute("UPDATE ref_effect_stage.mode SET reference=$1", [Self.effectReferenceA])
+        try Self.expectRefEffectPositive(
+          f, input: input, snapshot: snapshot, probes: [("ref_effect_stage.probe", 1)])
+        let total = try Self.finalEffectSequence(Self.finalEffectProbe(f, "ref_effect_stage.probe"))
+        let bothSuccessfulStages = total.last == 2 && total.called
+        #expect(bothSuccessfulStages)
+        // For apply, complete image at the later cursor UPDATE includes BOTH successful rows,
+        // their durable clocks, the unchanged invalid-boolean row, filtered echo, and exact cursor.
+        // True no-write returns have no natural trigger and remain common-POST source obligations.
+      }
+    }
+  }
+
+  private static func installRefEffectCommitFault(_ f: Fixture, input: RefEffectInput) throws {
+    try installRefEffectStageImage(f, input: input)
+    let when =
+      input.route == .mark
+      ? "NOT OLD.synced AND NEW.synced AND NEW.seq=\(input.through)" : "NEW.id=1"
+    try f.raw.execute(
+      """
+      CREATE FUNCTION ref_effect_stage.refuse_commit() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+      BEGIN
+        PERFORM ref_effect_stage.assert_complete('secret:ACTIVATION_REFERENCE_EFFECT_A');
+        PERFORM nextval('ref_effect_stage.probe');
+        RAISE EXCEPTION 'ACTIVATION_REFERENCE_COMMIT_PRIVATE_CANARY'
+          USING ERRCODE='23514',DETAIL='ACTIVATION_REFERENCE_COMMIT_PRIVATE_DETAIL';
+      END $$;
+      CREATE CONSTRAINT TRIGGER ref_effect_commit AFTER UPDATE OF \(input.route.triggerColumns)
+        ON public.\(Rows.quote(input.route.triggerTable)) DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW WHEN(\(when)) EXECUTE FUNCTION ref_effect_stage.refuse_commit();
+      """)
+  }
+  /// Independent explicit SQL, rather than an old or new effect API, establishes fault timing.
+  /// The body returns normally; only the caller's actual COMMIT may raise the known 23514.
+  private static func rawRefEffectBody(_ f: Fixture, input: RefEffectInput) throws {
+    switch input.route {
+    case .mark:
+      try f.raw.execute(
+        "UPDATE public.changes SET synced=true WHERE seq <= $1::bigint AND NOT synced",
+        [String(input.through)])
+    case .apply:
+      // Check the same pure input discriminator, then independently model its filtered echo
+      // by omitting that fourth write. No effect API supplies this raw-body expectation.
+      _ = try input.batch(ownDeviceId: f.link.deviceId)
+      try f.raw.execute("SET LOCAL b4app.replaying='on'")
+      try f.raw.execute("UPDATE public.threads SET title=$1 WHERE id='guard-thread'", [applyTitle])
+      try f.raw.execute("SAVEPOINT ordinary_skip")
+      var dataError = false
+      do {
+        try f.raw.execute(
+          "UPDATE public.threads SET archived=$1::boolean WHERE id='guard-thread'", ["not-a-boolean"])
+      } catch {
+        dataError = (error as? PostgresError)?.sqlState == "22P02"
+        try f.raw.execute("ROLLBACK TO SAVEPOINT ordinary_skip")
+      }
+      try f.raw.execute("RELEASE SAVEPOINT ordinary_skip")
+      guard dataError else { throw FixtureFailure.nativeShape }
+      try f.raw.execute(
+        "UPDATE public.environments SET name='After environment' WHERE id='guard-environment'")
+      try f.raw.execute(
+        """
+        UPDATE public."columnClocks" SET hlc=$1 WHERE
+          ("table"='threads' AND "rowId"='guard-thread' AND "column"='title') OR
+          ("table"='environments' AND "rowId"='guard-environment' AND "column"='name')
+        """, [applyStamp])
+      try f.raw.execute("UPDATE public.\"hubLink\" SET cursor=811 WHERE id=1")
+    case .claimAppend:
+      try f.raw.execute(
+        """
+        INSERT INTO public.changes("deviceId",wall,"table","rowId",op,"column",value,synced,hlc)
+          SELECT 'ACTIVATION_DEVICE_SENTINEL',floor(extract(epoch FROM statement_timestamp())*1000)::bigint,
+            name,id,'insert',NULL,value,false,'000000000000-0000-ACTIVATION_DEVICE_SENTINEL'
+          FROM ref_effect_stage.owned;
+        UPDATE public."hubLink" SET "ownedAs"='ACTIVATION_DEVICE_SENTINEL' WHERE id=1;
+        """)
+    case .claimZero:
+      try f.raw.execute("UPDATE public.\"hubLink\" SET \"ownedAs\"='ACTIVATION_DEVICE_SENTINEL' WHERE id=1")
+    case .push:
+      try f.raw.execute(
+        "UPDATE public.\"hubLink\" SET \"lastError\"='ACTIVATION_REFERENCE_PUSH',\"lastPushAt\"='2026-11-12T07:08:09.010Z' WHERE id=1"
+      )
+    case .pull:
+      try f.raw.execute(
+        "UPDATE public.\"hubLink\" SET \"lastError\"='Pull: ACTIVATION_REFERENCE_PULL' WHERE id=1")
+    case .pullClear:
+      try f.raw.execute(
+        "UPDATE public.\"hubLink\" SET \"lastError\"=NULL WHERE id=1 AND left(\"lastError\",6) COLLATE \"C\"='Pull: '"
+      )
+    }
+  }
+
+  @Test func requiredReferenceAllFiveCoverKnownActualDeferredCommit23514AndSameInputRecovery() async throws {
+    for route in [RefEffect.mark, .apply, .claimAppend, .push, .pull] {
+      try await Self.withFixture { f in
+        let (input, snapshot) = try Self.prepareRefEffect(f, route: route)
+        try Self.installRefEffectCommitFault(f, input: input)
+        let before = try Self.state(f), probeBefore = try Self.finalEffectProbe(f, "ref_effect_stage.probe")
+        var bodyReturned = false, commitAttempted = false, knownFault = false
+        do {
+          try f.raw.execute("BEGIN")
+          try Self.rawRefEffectBody(f, input: input)
+          bodyReturned = true; commitAttempted = true
+          try f.raw.execute("COMMIT")
+        } catch {
+          if let pg = error as? PostgresError {
+            knownFault =
+              pg.sqlState == "23514"
+              && pg.message.contains("ACTIVATION_REFERENCE_COMMIT_PRIVATE_CANARY")
+              && pg.message.contains("ACTIVATION_REFERENCE_COMMIT_PRIVATE_DETAIL")
+          }
+          _ = try? f.raw.execute("ROLLBACK")
+        }
+        let after = try Self.state(f)
+        let samePublicRows = after.rows == before.rows
+        #expect(samePublicRows)
+        try Self.expectFinalEffectAllocation(
+          f, name: "public.changes_seq_seq", before: before.sequence, after: after.sequence,
+          count: route == .claimAppend ? input.ownedCount : 0)
+        try Self.expectFinalEffectAllocation(
+          f, name: "ref_effect_stage.probe", before: probeBefore,
+          after: Self.finalEffectProbe(f, "ref_effect_stage.probe"), count: 1)
+        let actualCommitStage = bodyReturned && commitAttempted && knownFault
+        try #require(actualCommitStage)
+        // SAME still-enabled deferred fault validates original A/full control/tuple/complete body.
+        // Reference PRE and POST succeed; the outer actual COMMIT alone refuses, with no result.
+        try Self.expectRefEffectRefusal(
+          f, allocations: route == .claimAppend ? input.ownedCount : 0,
+          probes: [("ref_effect_stage.probe", 1)]
+        ) {
+          _ = try Self.performRefEffect(f, input: input, snapshot: snapshot, reference: Self.effectReferenceA)
+        }
+        try f.raw.execute("DROP TRIGGER ref_effect_commit ON public.\(Rows.quote(route.triggerTable))")
+        try Self.expectRefEffectPositive(
+          f, input: input, snapshot: snapshot, probes: [("ref_effect_stage.probe", 0)])
+        // Only a known independently reached 23514 supports the observed rollback. Successful
+        // deferred mutations after POST and unknown COMMIT outcomes are outside this contract.
+      }
+    }
+  }
+
+  @Test func requiredReferenceStatusesPreserveNilEmptyExactPrefixesAndSameEnabledUpdateProbe() async throws {
+    try await Self.withFixture { f in
+      let (_, snapshot) = try Self.prepareRefEffect(f, route: .push)
+      try Self.installFinalEffectRowProbe(f)
+      try Self.expectFinalEffectPositive(
+        f, link: ["lastError": NSNull()], probes: [("guard_effect_probe.updates", 1)]
+      ) {
+        try f.database.recordHubPushResult(
+          error: nil, pushedAt: nil, expectedProtocolSnapshot: snapshot,
+          expectedTokenRef: Self.effectReferenceA)
+      }
+      try Self.expectFinalEffectPositive(
+        f, link: ["lastError": "", "lastPushAt": ""], probes: [("guard_effect_probe.updates", 1)]
+      ) {
+        try f.database.recordHubPushResult(
+          error: "", pushedAt: "", expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA
+        )
+      }
+      for nonmatch in [nil, "", "pull: x", "Pull:x", "XPull: x", "Pull:"] as [String?] {
+        try f.raw.execute("UPDATE public.\"hubLink\" SET \"lastError\"=$1 WHERE id=1", [nonmatch])
+        try Self.expectFinalEffectPositive(f, link: [:], probes: [("guard_effect_probe.updates", 0)]) {
+          try f.database.recordHubPullResult(
+            error: nil, expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+        }
+      }
+      for error in ["", "Pull: nested", "repeat", "repeat"] {
+        try Self.expectFinalEffectPositive(
+          f, link: ["lastError": "Pull: " + error], probes: [("guard_effect_probe.updates", 1)]
+        ) {
+          try f.database.recordHubPullResult(
+            error: error, expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+        }
+      }
+      try Self.expectFinalEffectPositive(
+        f, link: ["lastError": NSNull()], probes: [("guard_effect_probe.updates", 1)]
+      ) {
+        try f.database.recordHubPullResult(
+          error: nil, expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+      }
+      try Self.expectRefEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+        try f.database.recordHubPushResult(
+          error: "ACTIVATION_STATUS\0TAIL", pushedAt: "valid",
+          expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+      }
+      try Self.expectRefEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+        try f.database.recordHubPushResult(
+          error: "valid", pushedAt: "ACTIVATION_TIME\0TAIL",
+          expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+      }
+      try Self.expectRefEffectRefusal(f, probes: [("guard_effect_probe.updates", 0)]) {
+        try f.database.recordHubPullResult(
+          error: "ACTIVATION_PULL\0TAIL", expectedProtocolSnapshot: snapshot,
+          expectedTokenRef: Self.effectReferenceA)
+      }
+      // Valid original A/snapshot plus the same enabled probe. NUL never crosses native parameters.
+      try Self.expectFinalEffectPositive(
+        f, link: ["lastError": "", "lastPushAt": ""], probes: [("guard_effect_probe.updates", 1)]
+      ) {
+        try f.database.recordHubPushResult(
+          error: "", pushedAt: "", expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA
+        )
+      }
+      try Self.expectFinalEffectPositive(
+        f, link: ["lastError": "Pull: "], probes: [("guard_effect_probe.updates", 1)]
+      ) {
+        try f.database.recordHubPullResult(
+          error: "", expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+      }
+      try Self.expectFinalEffectPositive(
+        f, link: ["lastError": NSNull()], probes: [("guard_effect_probe.updates", 1)]
+      ) {
+        try f.database.recordHubPullResult(
+          error: nil, expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+      }
+    }
+  }
+
+  @Test func requiredReferenceNoWriteOwnedClaimExhaustedMarkEmptyAndSkippedApplyStillUseGuard() async throws {
+    try await Self.withFixture { f in
+      let (input, snapshot) = try Self.prepareRefEffect(f, route: .claimAppend)
+      try Self.installFinalEffectRowProbe(f)
+      try Self.expectRefEffectPositive(
+        f, input: input, snapshot: snapshot, probes: [("guard_effect_probe.updates", 1)])
+      try Self.expectFinalEffectPositive(f, link: [:], probes: [("guard_effect_probe.updates", 0)]) {
+        let value = try f.database.claimOwnedRows(
+          expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+        let exactZero = value == 0
+        #expect(exactZero)
+      }
+      let expected = try Self.expectedGuardMark(f, through: Int.max)
+      try f.database.markSynced(
+        through: Int.max, expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+      let exact = try Self.state(f) == expected
+      #expect(exact)
+      try Self.expectFinalEffectPositive(f, link: [:], probes: [("guard_effect_probe.updates", 0)]) {
+        try f.database.markSynced(
+          through: Int.max, expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+      }
+      for changes in [[], [Self.guardApplyChange("threads", "guard-thread", "archived", "not-a-boolean")]] {
+        try Self.expectFinalEffectPositive(
+          f, link: ["cursor": 823], probes: [("guard_effect_probe.updates", 1)]
+        ) {
+          let result = try f.database.applyRemote(
+            changes, ownDeviceId: f.link.deviceId, macDeviceIds: [], cursor: 823,
+            expectedProtocolSnapshot: snapshot, expectedTokenRef: Self.effectReferenceA)
+          let exactResult = result == RemoteApplied(skipped: changes.count)
+          #expect(exactResult)
+        }
+      }
+      var refreshed = try Self.referenceFixtureValue(f.database.hubLink());
+      refreshed.tokenRef = Self.effectReferenceB
+      try f.database.saveHubLink(refreshed)
+      try Self.expectRefEffectNoOpRefusal(
+        f, route: .mark, snapshot: snapshot, reference: Self.effectReferenceA)
+      // Native PRE refusal is proved for true no-write paths. Common POST routing for those
+      // paths is a source-review requirement; no product callback/fake UPDATE canary is invented.
+    }
+  }
+
+  private static func expectRefEffectClaim(
+    _ f: Fixture, snapshot: ProtocolVerificationSnapshot, reference: String, count: Int, updatesOwnedAs: Bool,
+    markers: [String] = [], probes: [(name: String, count: Int)] = []
+  ) throws {
+    let before = try state(f)
+    let owned = try finalEffectOwnedRows(before)
+    let probeBefore = try probes.map { try finalEffectProbe(f, $0.name) }
+    var expectedRows = try finalEffectExpectedRows(
+      f, before: before, link: updatesOwnedAs ? ["ownedAs": f.link.deviceId] : [:], markers: markers)
+    let lowerWall = Int64(Date().timeIntervalSince1970 * 1000)
+    let outcome = Result {
+      try f.database.claimOwnedRows(expectedProtocolSnapshot: snapshot, expectedTokenRef: reference)
+    }
+    let upperWall = Int64(Date().timeIntervalSince1970 * 1000)
+    let after = try state(f)
+    if count == 0 {
+      let exact = after == NativeState(rows: expectedRows, sequence: before.sequence)
+      #expect(exact)
+    } else {
+      let nativeBefore = try finalEffectSequence(before.sequence)
+      // The positive append fixtures all first insert an independently synced witness.
+      let knownAppendFixture = nativeBefore.called && count == owned.count
+      try #require(knownAppendFixture)
+      let first = nativeBefore.last + 1
+      let expectedSequences = Set((0..<count).map { first + Int64($0) })
+      var additions: [(row: [String: Any], identity: String, seq: Int64, wall: Int64)] = []
+      var retained: [Data] = []
+      for bytes in after.rows["changes"] ?? [] {
+        let row = try object(String(decoding: bytes, as: UTF8.self))
+        guard let seq = integer(row["seq"]) else { throw FixtureFailure.nativeShape }
+        if seq <= nativeBefore.last { retained.append(bytes); continue }
+        guard let table = row["table"] as? String, let id = row["rowId"] as? String,
+          let wall = integer(row["wall"])
+        else { throw FixtureFailure.nativeShape }
+        additions.append((row, table + "\0" + id, seq, wall))
+      }
+      let originalLogExact =
+        retained.sorted { $0.lexicographicallyPrecedes($1) } == (before.rows["changes"] ?? [])
+      #expect(originalLogExact)
+      let identityExact =
+        additions.count == count
+        && Set(additions.map(\.identity)) == Set(owned.keys)
+        && Set(additions.map(\.seq)) == expectedSequences
+      let boundedSingleWall =
+        Set(additions.map(\.wall)).count == 1
+        && additions.allSatisfy { $0.wall >= lowerWall && $0.wall <= upperWall }
+      let independentlyValidAppend = identityExact && boundedSingleWall
+      try #require(independentlyValidAppend)
+      try expectFinalEffectAllocation(
+        f, name: "public.changes_seq_seq", before: before.sequence, after: after.sequence, count: count)
+      // Only after the independent count/identity/range/wall/native-sequence checks may the
+      // observed dynamic seq/wall enter an exact JSON projection. They cannot hide a failure.
+      for addition in additions {
+        guard let nativeValue = owned[addition.identity],
+          let table = addition.row["table"] as? String, let id = addition.row["rowId"] as? String
+        else { throw FixtureFailure.nativeShape }
+        let fullValue = try object(String(decoding: nativeValue, as: UTF8.self))
+        let expected: [String: Any] = [
+          "seq": addition.seq, "deviceId": f.link.deviceId, "wall": addition.wall,
+          "table": table, "rowId": id, "op": "insert", "column": NSNull(), "value": fullValue,
+          "synced": false, "hlc": "000000000000-0000-" + f.link.deviceId,
+        ]
+        expectedRows["changes", default: []].append(try guardApplyJSON(f, expected))
+      }
+      expectedRows["changes"]?.sort { $0.lexicographicallyPrecedes($1) }
+      let exact = after == NativeState(rows: expectedRows, sequence: after.sequence)
+      #expect(exact)
+    }
+    for (index, probe) in probes.enumerated() {
+      try expectFinalEffectAllocation(
+        f, name: probe.name, before: probeBefore[index], after: finalEffectProbe(f, probe.name),
+        count: probe.count)
+    }
+    let actual = try outcome.get()
+    let exactReturn = actual == count
+    #expect(exactReturn)
+  }
+
+  private struct RefEffectWriterFacts: Sendable {
+    let ready: Bool, exclusiveBlocked: Bool, released: Bool, writerJoined: Bool, markJoined: Bool
+    let expectedRows: [String: [Data]]?, expectedSequence: Data?
+    let controller: Result<Void, any Error>, writer: Result<Void, any Error>, mark: Result<Void, any Error>
+  }
+  private static func refEffectPrecedingWriterRace(
+    _ f: Fixture, through: Int, snapshot: ProtocolVerificationSnapshot
+  ) async -> RefEffectWriterFacts {
+    let controllerThread = Mutex<Thread?>(nil)
+    let facts: RefEffectWriterFacts = await withCheckedContinuation { continuation in
+      controllerThread.withLock { retained in
+        retained = Thread {
+          let writerThread = Mutex<Thread?>(nil), markThread = Mutex<Thread?>(nil)
+          let writerResult = Mutex<Result<Void, any Error>?>(nil),
+            markResult = Mutex<Result<Void, any Error>?>(nil)
+          let writerPID = Mutex<Int?>(nil)
+          let expectedRows = Mutex<[String: [Data]]?>(nil), expectedSequence = Mutex<Data?>(nil)
+          let release = DispatchSemaphore(value: 0), writerDone = DispatchSemaphore(value: 0),
+            markDone = DispatchSemaphore(value: 0)
+          var ready = false, exclusiveBlocked = false, markStarted = false
+          var failure: (any Error)?
+          writerThread.withLock { thread in
+            thread = Thread {
+              let outcome = Result<Void, any Error> {
+                // REAL participating shared writer changes ONLY reference A -> B before exclusive acquisition.
+                try f.database.write { c in
+                  guard let pid = try c.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid"),
+                    pid > 0
+                  else { throw FixtureFailure.nativeShape }
+                  writerPID.withLock { $0 = pid }
+                  try c.execute(
+                    "UPDATE public.\"hubLink\" SET \"tokenRef\"=$1 WHERE id=1", [effectReferenceB]
+                  )
+                  let own = Fixture(
+                    database: f.database, raw: c, endpoint: f.endpoint, root: f.root, link: f.link,
+                    binding: f.binding)
+                  // Own transaction sees its exact reference-only committed intent BEFORE candidate can act.
+                  let expected = try Self.state(own)
+                  expectedRows.withLock { $0 = expected.rows }
+                  expectedSequence.withLock { $0 = expected.sequence }
+                  guard release.wait(timeout: .now() + .seconds(8)) == .success else {
+                    throw FixtureFailure.barrierTimeout
+                  }
+                }
+              }
+              writerResult.withLock { $0 = outcome }; writerDone.signal()
+            }
+            thread?.start()
+          }
+          do {
+            let c = try Self.membershipConnection(f.endpoint)
+            let readyDeadline = ContinuousClock.now + .seconds(3)
+            while ContinuousClock.now < readyDeadline {
+              if expectedRows.withLock({ $0 != nil }) { ready = ContinuousClock.now <= readyDeadline; break }
+              if writerResult.withLock({ $0 != nil }) { break }
+              Thread.sleep(forTimeInterval: 0.005)
+            }
+            guard ready, let pid = writerPID.withLock({ $0 }) else { throw FixtureFailure.barrierTimeout }
+            markThread.withLock { thread in
+              thread = Thread {
+                let outcome = Result<Void, any Error> {
+                  try f.database.markSynced(
+                    through: through, expectedProtocolSnapshot: snapshot, expectedTokenRef: effectReferenceA)
+                }
+                markResult.withLock { $0 = outcome }; markDone.signal()
+              }
+              thread?.start()
+            }
+            markStarted = true
+            let waitDeadline = ContinuousClock.now + .seconds(3)
+            while ContinuousClock.now < waitDeadline {
+              let rows = try c.execute(
+                """
+                SELECT a.pid FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+                WHERE a.datname=$1 AND a.application_name='b4app' AND l.locktype='advisory'
+                  AND l.mode='ExclusiveLock' AND NOT l.granted AND l.classid=0::oid
+                  AND l.objid=$3::oid AND l.objsubid=1 AND $2::int=ANY(pg_blocking_pids(a.pid))
+                """, [f.endpoint.database, String(pid), String(0x6234_6170)]
+              ).rows
+              let completed = ContinuousClock.now
+              if completed <= waitDeadline, rows.count == 1 { exclusiveBlocked = true; break }
+              guard completed < waitDeadline, !markResult.withLock({ $0 != nil }) else { break }
+              Thread.sleep(forTimeInterval: 0.005)
+            }
+          } catch { failure = error }
+          // Observer/controller handles close lexically before releases/joins. Always release writer,
+          // then join BOTH actual operations even if stage observation failed; no Thread exit claim.
+          release.signal()
+          writerDone.wait()
+          if markStarted { markDone.wait() }
+          writerThread.withLock { $0 = nil }; markThread.withLock { $0 = nil }
+          continuation.resume(
+            returning: RefEffectWriterFacts(
+              ready: ready, exclusiveBlocked: exclusiveBlocked, released: true, writerJoined: true,
+              markJoined: markStarted,
+              expectedRows: expectedRows.withLock { $0 }, expectedSequence: expectedSequence.withLock { $0 },
+              controller: failure.map { .failure($0) } ?? .success(()),
+              writer: writerResult.withLock { $0 } ?? .failure(FixtureFailure.nativeShape),
+              mark: markResult.withLock { $0 } ?? .failure(FixtureFailure.nativeShape)))
+        }
+        retained?.start()
+      }
+    }
+    controllerThread.withLock { $0 = nil }
+    return facts
+  }
+
+  @Test func requiredReferenceFreshHelperOverridesRepeatableReadAndSeesPrecedingReferenceWriter() async throws
+  {
+    try await Self.withFixture { original in
+      let (input, _) = try Self.prepareRefEffect(original, route: .mark)
+      try original.raw.execute(
+        """
+        CREATE SCHEMA ref_effect_isolation;
+        CREATE TABLE ref_effect_isolation.observed(value text NOT NULL);
+        CREATE FUNCTION ref_effect_isolation.observe() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          INSERT INTO ref_effect_isolation.observed VALUES(current_setting('transaction_isolation'));
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER ref_effect_isolation AFTER UPDATE OF synced ON public.changes FOR EACH ROW
+          WHEN(NOT OLD.synced AND NEW.synced) EXECUTE FUNCTION ref_effect_isolation.observe();
+        """)
+      try await Self.withGuardMarkRepeatableRead(original) { f in
+        let snapshot = try Self.capture(f)  // The actual FRESH object, not the closed original.
+        // Independently prove the inherited pool/session default before the requiredref helper.
+        let inherited = try f.database.read {
+          try $0.execute("SHOW default_transaction_isolation").rows.first?.text(
+            "default_transaction_isolation")
+        }
+        let inheritedRR = inherited == "repeatable read"
+        try #require(inheritedRR)
+        try Self.expectRefEffectPositive(f, input: input, snapshot: snapshot)
+        let observed = try f.raw.execute(
+          "SELECT count(*) AS n,bool_and(value='read committed')::text AS correct FROM ref_effect_isolation.observed"
+        ).rows.first
+        let actualRC = observed?.int("n") == 1 && observed?.text("correct") == "true"
+        try #require(actualRC)
+        let before = try Self.state(f)
+        let expected = NativeState(
+          rows: try Self.finalEffectExpectedRows(
+            f, before: before, link: ["tokenRef": Self.effectReferenceB]),
+          sequence: before.sequence)
+        let facts = await Self.refEffectPrecedingWriterRace(f, through: Int.max, snapshot: snapshot)
+        let stages =
+          facts.ready && facts.exclusiveBlocked && facts.released && facts.writerJoined && facts.markJoined
+        #expect(stages)
+        // Immediate complete native state after joined refusal. The only committed change is B;
+        // the later unsynced witness stays unsynced. Original snapshot-only rules still compare.
+        let after = try Self.state(f)
+        let exact = after == expected
+        #expect(exact)
+        let writerImageExact =
+          facts.expectedRows == expected.rows && facts.expectedSequence == expected.sequence
+        #expect(writerImageExact)
+        try facts.controller.get(); try facts.writer.get()
+        Self.expectRefEffectSafe { try facts.mark.get() }
+        try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: true)
+      }
+    }
+  }
+
+  private static let refEffectCommitGate: Int64 = 0x6234_7265_6663_6d74
+  private struct RefEffectRetentionFacts: Sendable {
+    let pausedAtCommit: Bool, writerBlocked: Bool, exclusiveRetained: Bool
+    let released: Bool, effectJoined: Bool, writerJoined: Bool
+    let beforeWriterRows: [String: [Data]]?, beforeWriterSequence: Data?
+    let controller: Result<Void, any Error>, effect: Result<Void, any Error>, writer: Result<Void, any Error>
+  }
+  /// No product hook: an actual INITIALLY DEFERRED constraint runs at real COMMIT, after POST.
+  /// Both actual operations are joined after every cleanup path, even when a stage check fails.
+  private static func refEffectRetentionController(
+    _ f: Fixture, snapshot: ProtocolVerificationSnapshot
+  ) async -> RefEffectRetentionFacts {
+    await onThread {
+      let effectResult = Mutex<Result<Void, any Error>?>(nil),
+        writerResult = Mutex<Result<Void, any Error>?>(nil)
+      let writerPID = Mutex<Int?>(nil)
+      let beforeWriter = Mutex<([String: [Data]], Data)?>(nil)
+      let effectDone = DispatchSemaphore(value: 0), writerDone = DispatchSemaphore(value: 0)
+      var effectThread: Thread?, writerThread: Thread?, controller: PostgresConnection?
+      var ownsGate = false, paused = false, blocked = false, retained = false, released = false
+      var failure: (any Error)?
+      do {
+        let c = try membershipConnection(f.endpoint); controller = c
+        guard let controlPID = try c.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid"),
+          controlPID > 0
+        else { throw FixtureFailure.nativeShape }
+        try c.execute("SELECT pg_advisory_lock($1::bigint)", [String(refEffectCommitGate)]); ownsGate = true
+        effectThread = Thread {
+          let outcome = Result<Void, any Error> {
+            try f.database.recordHubPushResult(
+              error: "ACTIVATION_REFERENCE_PUSH", pushedAt: "2026-11-12T07:08:09.010Z",
+              expectedProtocolSnapshot: snapshot, expectedTokenRef: effectReferenceA)
+          }
+          effectResult.withLock { $0 = outcome }; effectDone.signal()
+        }
+        effectThread?.start()
+        var effectPID: Int?
+        let pauseDeadline = ContinuousClock.now + .seconds(4)
+        while ContinuousClock.now < pauseDeadline {
+          let rows = try c.execute(
+            """
+            SELECT a.pid FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+            WHERE a.datname=$1 AND a.application_name='b4app' AND l.locktype='advisory'
+              AND NOT l.granted AND $2::int=ANY(pg_blocking_pids(a.pid))
+            """, [f.endpoint.database, String(controlPID)]
+          ).rows
+          let completed = ContinuousClock.now
+          if completed <= pauseDeadline, rows.count == 1, let pid = rows.first?.int("pid"), pid > 0 {
+            effectPID = pid; paused = true; break
+          }
+          guard completed < pauseDeadline, !effectResult.withLock({ $0 != nil }) else { break }
+          Thread.sleep(forTimeInterval: 0.005)
+        }
+        guard let effectPID, paused else { throw FixtureFailure.barrierTimeout }
+        // A waiting deferred function has already checked full intended body/A/control/tuple and
+        // incremented its private probe. The transaction still owns the exclusive advisory lock.
+        retained =
+          try c.execute(
+            """
+            SELECT 1 FROM pg_locks WHERE pid=$1::int AND locktype='advisory' AND granted
+              AND mode='ExclusiveLock' AND classid=0::oid AND objid=$2::oid AND objsubid=1
+            """, [String(effectPID), String(0x6234_6170)]
+          ).rows.count == 1
+        guard retained else { throw FixtureFailure.nativeShape }
+        writerThread = Thread {
+          let outcome = Result<Void, any Error> {
+            let raw = try membershipConnection(f.endpoint)
+            guard let pid = try raw.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid"), pid > 0
+            else { throw FixtureFailure.nativeShape }
+            writerPID.withLock { $0 = pid }
+            try raw.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+            do {
+              try raw.execute("SET LOCAL lock_timeout='6s'")
+              // Same permitted advisory-first convention, followed by link and control row locks.
+              try raw.execute("SELECT pg_advisory_xact_lock_shared($1::bigint)", [String(0x6234_6170)])
+              try raw.execute("SELECT id FROM public.\"hubLink\" WHERE id=1 FOR UPDATE")
+              try raw.execute("SELECT key FROM public.settings WHERE key=$1 FOR UPDATE", [key])
+              let own = Fixture(
+                database: f.database, raw: raw, endpoint: f.endpoint, root: f.root, link: f.link,
+                binding: f.binding)
+              let visible = try state(own)
+              beforeWriter.withLock { $0 = (visible.rows, visible.sequence) }
+              try raw.execute("UPDATE public.\"hubLink\" SET \"tokenRef\"=$1 WHERE id=1", [effectReferenceB])
+              try raw.execute("COMMIT")
+            } catch { _ = try? raw.execute("ROLLBACK"); throw error }
+          }
+          writerResult.withLock { $0 = outcome }; writerDone.signal()
+        }
+        writerThread?.start()
+        let blockDeadline = ContinuousClock.now + .seconds(3)
+        while ContinuousClock.now < blockDeadline {
+          if let pid = writerPID.withLock({ $0 }) {
+            let rows = try c.execute(
+              """
+              SELECT 1 FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+              WHERE a.datname=$1 AND a.pid=$2::int AND l.locktype='advisory' AND NOT l.granted
+                AND l.mode='ShareLock' AND l.classid=0::oid AND l.objid=$4::oid AND l.objsubid=1
+                AND $3::int=ANY(pg_blocking_pids(a.pid))
+              """, [f.endpoint.database, String(pid), String(effectPID), String(0x6234_6170)]
+            ).rows
+            let completed = ContinuousClock.now
+            if completed <= blockDeadline, rows.count == 1 { blocked = true; break }
+            guard completed < blockDeadline else { break }
+          }
+          if writerResult.withLock({ $0 != nil }) { break }
+          Thread.sleep(forTimeInterval: 0.005)
+        }
+        guard blocked else { throw FixtureFailure.barrierTimeout }
+      } catch { failure = error }
+      if ownsGate {
+        do {
+          guard let c = controller,
+            try c.execute(
+              "SELECT pg_advisory_unlock($1::bigint)::text AS released", [String(refEffectCommitGate)]
+            )
+            .rows.first?.text("released") == "true"
+          else { throw FixtureFailure.nativeShape }
+          released = true
+        } catch { if failure == nil { failure = error } }
+      }
+      controller = nil  // Sole retained native owner closes before joins if unlock failed.
+      var effectJoined = false, writerJoined = false
+      withExtendedLifetime((effectThread, writerThread)) {
+        if effectThread != nil { effectDone.wait(); effectJoined = true }
+        if writerThread != nil { writerDone.wait(); writerJoined = true }
+      }
+      return RefEffectRetentionFacts(
+        pausedAtCommit: paused, writerBlocked: blocked, exclusiveRetained: retained,
+        released: released, effectJoined: effectJoined, writerJoined: writerJoined,
+        beforeWriterRows: beforeWriter.withLock { $0?.0 },
+        beforeWriterSequence: beforeWriter.withLock { $0?.1 },
+        controller: failure.map { .failure($0) } ?? .success(()),
+        effect: effectResult.withLock { $0 } ?? .failure(FixtureFailure.nativeShape),
+        writer: writerResult.withLock { $0 } ?? .failure(FixtureFailure.nativeShape))
+    }
+  }
+
+  @Test func requiredReferenceLocksRetainCompetingReferenceWriterUntilActualCommitOrRollback() async throws {
+    for rollback in [false, true] {
+      try await Self.withFixture { f in
+        let (input, snapshot) = try Self.prepareRefEffect(f, route: .push)
+        let before = try Self.state(f)
+        let intended = try Self.expectedRefEffect(f, input: input, before: before)
+        try Self.installRefEffectStageImage(f, input: input)
+        try f.raw.execute(
+          """
+          CREATE FUNCTION ref_effect_stage.pause_commit() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+          BEGIN
+            PERFORM ref_effect_stage.assert_complete('secret:ACTIVATION_REFERENCE_EFFECT_A');
+            PERFORM nextval('ref_effect_stage.probe');
+            PERFORM set_config('lock_timeout','12s',true);
+            PERFORM pg_advisory_xact_lock(\(Self.refEffectCommitGate)::bigint);
+            IF \(rollback ? "true" : "false") THEN
+              RAISE EXCEPTION 'ACTIVATION_REFERENCE_RETENTION_COMMIT_CANARY'
+                USING ERRCODE='23514',DETAIL='ACTIVATION_REFERENCE_RETENTION_COMMIT_DETAIL';
+            END IF;
+            RETURN NEW;
+          END $$;
+          CREATE CONSTRAINT TRIGGER ref_effect_retention AFTER UPDATE OF "lastError","lastPushAt"
+            ON public."hubLink" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN(NEW.id=1)
+            EXECUTE FUNCTION ref_effect_stage.pause_commit();
+          """)
+        let probeBefore = try Self.finalEffectProbe(f, "ref_effect_stage.probe")
+        let facts = await Self.refEffectRetentionController(f, snapshot: snapshot)
+        // Observe whole native state and all sequence fields immediately after both actual joins.
+        let after = try Self.state(f)
+        let visibleAfterRelease = rollback ? before : intended
+        let expectedAfter = NativeState(
+          rows: try Self.finalEffectExpectedRows(
+            f, before: visibleAfterRelease, link: ["tokenRef": Self.effectReferenceB]),
+          sequence: before.sequence)
+        let exactRows = after == expectedAfter
+        #expect(exactRows)
+        try Self.expectFinalEffectAllocation(
+          f, name: "ref_effect_stage.probe", before: probeBefore,
+          after: Self.finalEffectProbe(f, "ref_effect_stage.probe"), count: 1)
+        let stages =
+          facts.pausedAtCommit && facts.writerBlocked && facts.exclusiveRetained
+          && facts.released && facts.effectJoined && facts.writerJoined
+        #expect(stages)
+        let writerSawOnlyReleasedState =
+          facts.beforeWriterRows == visibleAfterRelease.rows
+          && facts.beforeWriterSequence == visibleAfterRelease.sequence
+        #expect(writerSawOnlyReleasedState)
+        try facts.controller.get(); try facts.writer.get()
+        if rollback { Self.expectRefEffectSafe { try facts.effect.get() } } else { try facts.effect.get() }
+      }
+    }
+  }
+
+  private static func expectRefEffectSafe(_ body: () throws -> Void) {
+    let result = Result<Void, any Error> { try body() }
+    guard case .failure(let error) = result else {
+      Issue.record("Expected the fixed original-reference storage refusal."); return
+    }
+    let fixed =
+      (error as? WorkspaceError).map {
+        $0.code == .internalError && $0.message == message && $0.details == nil
+      } ?? false
+    let noCause = (error as NSError).userInfo[NSUnderlyingErrorKey] == nil
+    var dumped = ""; dump(error, to: &dumped)
+    let text = String(describing: error) + String(reflecting: error) + dumped
+    let forbidden = ["ACTIVATION_", "secret:", "23514", "22P02", "22000", "SQLSTATE", "DETAIL:"]
+    let redacted = forbidden.allSatisfy { !text.contains($0) }
+    #expect(fixed); #expect(noCause); #expect(redacted)
+    // Only booleans enter assertions; no raw reference/status/SQL error is interpolated there.
+  }
+  private static func expectRefEffectRefusal(
+    _ f: Fixture, allocations: Int = 0, probes: [(name: String, count: Int)] = [], body: () throws -> Void
+  ) throws {
+    let before = try state(f), probeBefore = try probes.map { try finalEffectProbe(f, $0.name) }
+    expectRefEffectSafe(body)
+    let after = try state(f)
+    if allocations == 0 {
+      let exact = after == before
+      #expect(exact)
+    } else {
+      let exactRows = after.rows == before.rows
+      #expect(exactRows)
+      try expectFinalEffectAllocation(
+        f, name: "public.changes_seq_seq", before: before.sequence, after: after.sequence, count: allocations)
+    }
+    for (index, probe) in probes.enumerated() {
+      try expectFinalEffectAllocation(
+        f, name: probe.name, before: probeBefore[index], after: finalEffectProbe(f, probe.name),
+        count: probe.count)
+    }
+  }
+
+  @Test func requiredReferenceValidExpectedActualSqlFaultIsFixedRedactedAndRollsBack() async throws {
+    try await Self.withFixture { f in
+      let (input, snapshot) = try Self.prepareRefEffect(f, route: .push)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA ref_effect_sql;
+        CREATE SEQUENCE ref_effect_sql.probe;
+        CREATE FUNCTION ref_effect_sql.reject_status() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          IF NEW."lastError" IS DISTINCT FROM 'ACTIVATION_REFERENCE_PUSH'
+            OR (SELECT "tokenRef" FROM public."hubLink" WHERE id=1) IS DISTINCT FROM 'secret:ACTIVATION_REFERENCE_EFFECT_A'
+          THEN RAISE EXCEPTION 'ACTIVATION_REFERENCE_SQL_STAGE_NOT_REACHED'; END IF;
+          PERFORM nextval('ref_effect_sql.probe');
+          RAISE EXCEPTION 'ACTIVATION_REFERENCE_SQL_PRIVATE_CANARY'
+            USING ERRCODE='22000',DETAIL='ACTIVATION_REFERENCE_SQL_PRIVATE_DETAIL';
+        END $$;
+        CREATE TRIGGER ref_effect_sql BEFORE UPDATE OF "lastError","lastPushAt" ON public."hubLink"
+          FOR EACH ROW WHEN(NEW.id=1) EXECUTE FUNCTION ref_effect_sql.reject_status();
+        """)
+      let before = try Self.state(f), probeBefore = try Self.finalEffectProbe(f, "ref_effect_sql.probe")
+      var nativeFault = false
+      do {
+        try f.raw.execute("BEGIN")
+        try Self.rawRefEffectBody(f, input: input)
+      } catch {
+        if let pg = error as? PostgresError {
+          nativeFault =
+            pg.sqlState == "22000" && pg.message.contains("ACTIVATION_REFERENCE_SQL_PRIVATE_CANARY")
+            && pg.message.contains("ACTIVATION_REFERENCE_SQL_PRIVATE_DETAIL")
+        }
+      }
+      _ = try? f.raw.execute("ROLLBACK")
+      try Self.expectUnchanged(f, before)
+      try Self.expectFinalEffectAllocation(
+        f, name: "ref_effect_sql.probe", before: probeBefore,
+        after: Self.finalEffectProbe(f, "ref_effect_sql.probe"), count: 1)
+      try #require(nativeFault)
+      try Self.expectRefEffectRefusal(f, probes: [("ref_effect_sql.probe", 1)]) {
+        _ = try Self.performRefEffect(f, input: input, snapshot: snapshot, reference: Self.effectReferenceA)
+      }
+      try f.raw.execute("DROP TRIGGER ref_effect_sql ON public.\"hubLink\"")
+      try Self.expectRefEffectPositive(
+        f, input: input, snapshot: snapshot, probes: [("ref_effect_sql.probe", 0)])
+    }
+  }
+}

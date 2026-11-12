@@ -432,6 +432,35 @@ extension WorkspaceDatabase {
       }
     } catch { throw ProtocolActivationControl.failure }
   }
+
+  /// Compare the original linked snapshot and explicit opaque reference around one synchronous
+  /// effect. Locks cover the actual COMMIT; the reference grants no credential or runtime authority.
+  func writeProtocolSyncEffect<T>(
+    expectedSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String,
+    body: (PostgresConnection) throws -> T
+  ) throws -> T {
+    do {
+      guard expectedSnapshot.database === self,
+        let context = expectedSnapshot.capturedContext, context.membership != nil,
+        let expectedReference = ProtocolCredentialReference(expectedTokenRef)
+      else { throw ProtocolActivationControl.failure }
+      return try write(exclusive: true, readCommitted: true) { c in
+        _ = try ProtocolActivationControl.state(c, locking: true)
+        let before = try ProtocolActivationControl.syncState(c)
+        try ProtocolActivationControl.requireSyncEligibility(
+          self, current: before, snapshot: expectedSnapshot)
+        guard let currentReference = before.state.credentialReference, currentReference == expectedReference
+        else { throw ProtocolActivationControl.failure }
+        let value = try body(c)
+        let after = try ProtocolActivationControl.syncState(c)
+        try ProtocolActivationControl.requireSyncEligibility(
+          self, current: after, snapshot: expectedSnapshot)
+        guard let currentReference = after.state.credentialReference, currentReference == expectedReference
+        else { throw ProtocolActivationControl.failure }
+        return value
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
 }
 
 /// Internal transaction-borrowing seams. No helper begins/commits a transaction, awaits work,

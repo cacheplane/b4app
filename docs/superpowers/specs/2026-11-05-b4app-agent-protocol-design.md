@@ -308,10 +308,12 @@ data methods compareOriginalLinkedCredentialReference for strict linked disposal
 compareOriginalLinkedSyncCredentialReference for ordinary sync. Each requires the
 original snapshot and raw reference, compares their current native view together,
 and returns only success or the fixed redacted failure. Existing validators retain
-their current semantics. These planned methods are unimplemented.
+their current semantics. These two DATA methods are implemented but remain dormant;
+their managed qualification is recorded separately from runtime admission.
 
-Preserve the actual SecretRef parser's secret: prefix and nonempty suffix, without
-UUID-only narrowing, and add explicit NUL rejection. Compare original UTF-8 bytes;
+Preserve the actual SecretRef parser's case-sensitive secret: prefix and
+String.count > 7 requirement, without UUID-only narrowing, and add explicit NUL
+rejection. Compare original UTF-8 bytes;
 do not trim, normalize or recapture them. Newly reference-bearing state and carriers
 need explicit redacted CustomReflectable behavior, fixed descriptions where relevant
 and no encoding; private fields alone do not hide reflection. Same-membership token
@@ -324,6 +326,33 @@ Every later reference-aware effect must receive that exact original reference an
 compare it before and after its body inside the actual transaction, under the
 existing lock order and through actual COMMIT. A prior read-only check cannot fence
 later SQL. The current snapshot-only guarded effects are not reference-checked.
+The selected next DATA surface adds five package overloads, each requiring
+expectedTokenRef: String alongside expectedProtocolSnapshot: markSynced,
+applyRemote, claimOwnedRows, recordHubPushResult and recordHubPullResult. The
+reference has no optional/default/current-value fallback. Keep the existing APIs
+and snapshot-only write helper unchanged; use a separate required-reference
+writeProtocolSyncEffect overload for the new calls.
+
+That helper validates actual object identity, linked captured context and expected
+reference syntax before SQL, then uses one exclusive explicit READ COMMITTED write
+with the existing advisory, link and control lock order. Each PRE/POST syncState
+statement supplies the full eligibility facts and current reference together;
+compare both against the original inputs on that same value. The borrower executes
+once on that connection, and every successful return, including a no-row result,
+passes POST. An outer fixed-error catch encloses the actual write return and
+COMMIT. Expected reference text is never a native SQL parameter. No additional
+reference SELECT or recapture supplies either check.
+
+The new mark method repeats the existing short prefix UPDATE; apply and claim use
+their existing private borrowers. New status bodies preserve the existing NUL,
+COALESCE and exact pull-prefix/no-row behavior. These overloads and their new helper
+are implemented and dormant; fresh managed qualification remains required. Successful
+reference-only body mutations must reach POST normally, with same-enabled A-to-A
+positive controls; a trigger error is not postcheck evidence. Known deferred
+COMMIT-fault controls remain a separate obligation. Neither establishes detection
+of successful deferred mutations after POST or rollback of nontransactional clock
+and sequence effects.
+
 Construction/install/start ordering, SQL wait budgets, native qualification and
 owner/transport wiring remain separate open requirements.
 

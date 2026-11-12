@@ -117,6 +117,20 @@ extension WorkspaceDatabase {
     }
   }
 
+  /// Merge only while the original linked snapshot and explicit opaque reference both match.
+  @discardableResult
+  package func applyRemote(
+    _ changes: [RemoteChange], ownDeviceId: String, macDeviceIds: Set<String>, cursor: Int,
+    expectedProtocolSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String
+  ) throws -> RemoteApplied {
+    try writeProtocolSyncEffect(
+      expectedSnapshot: expectedProtocolSnapshot, expectedTokenRef: expectedTokenRef
+    ) { c in
+      try applyRemoteBatch(
+        c, changes, ownDeviceId: ownDeviceId, macDeviceIds: macDeviceIds, cursor: cursor)
+    }
+  }
+
   private func applyRemoteBatch(
     _ c: PostgresConnection, _ changes: [RemoteChange], ownDeviceId: String,
     macDeviceIds: Set<String>, cursor: Int
