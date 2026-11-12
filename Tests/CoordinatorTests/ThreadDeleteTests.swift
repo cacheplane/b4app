@@ -160,7 +160,9 @@ private func markDeletedAndCaptureCursor(
 @Suite(.serialized) struct ThreadDeleteTests {
   @Test func deletingAThreadHidesItAndDeletesItInCodex() async throws {
     let calls = RuntimeCalls()
-    let h = try await Harness.start(adapterFactory: recording(calls))
+    let h = try await Harness.start(
+      adapterFactory: recording(calls),
+      inspectionObservation: InspectionRequestObservation(caseID: .deleteCodex))
     let codex = try await h.addCodex()
     let thread = try await h.newThread(codex)
     let kept = try await h.newThread(codex)

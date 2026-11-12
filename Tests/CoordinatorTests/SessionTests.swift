@@ -84,11 +84,13 @@ struct Harness {
   let client: WorkspaceClient
   let workDir: String
   let events: EventCollector
+  let inspectionObservation: InspectionRequestObservation?
 
   static func start(
     paths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:],
     secretStore: any SecretStore = MemorySecretStore(), checkRetryDelays: [Duration] = [.zero, .zero],
-    adapterFactory: SessionService.AdapterFactory? = nil, threadDeleteSweep: Duration = .zero
+    adapterFactory: SessionService.AdapterFactory? = nil, threadDeleteSweep: Duration = .zero,
+    inspectionObservation: InspectionRequestObservation? = nil
   ) async throws -> Harness {
     let paths = try paths ?? temporaryPaths()
     // The fixture is a Python script, so the child needs the real PATH; Node lookups stay isolated.
@@ -98,10 +100,17 @@ struct Harness {
       (paths.dataDir as NSString).deletingLastPathComponent + "/claude-environments"
     env["ANTHROPIC_API_KEY"] = nil
     for (key, value) in extraEnvironment { env[key] = value }
+    let selectedFactory: SessionService.AdapterFactory?
+    if let inspectionObservation {
+      selectedFactory = inspectionObservation.collector.makeObservedFactory(
+        base: adapterFactory ?? SessionService.defaultAdapterFactory)
+    } else {
+      selectedFactory = adapterFactory
+    }
     // A check retries without waiting here, so a failing check costs nothing in other tests.
     let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(
-        paths: paths, environment: env, secretStore: secretStore, adapterFactory: adapterFactory,
+        paths: paths, environment: env, secretStore: secretStore, adapterFactory: selectedFactory,
         checkRetryDelays: checkRetryDelays, threadDeleteSweep: threadDeleteSweep))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
@@ -111,10 +120,23 @@ struct Harness {
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     let events = EventCollector(await client.events())
     let workDir = (paths.runtimeDir as NSString).deletingLastPathComponent + "/work"
-    return Harness(coordinator: coordinator, client: client, workDir: workDir, events: events)
+    return Harness(
+      coordinator: coordinator, client: client, workDir: workDir, events: events,
+      inspectionObservation: inspectionObservation)
   }
 
   func addCodex() async throws -> Connection {
+    if let inspectionObservation {
+      let result = try await inspectionObservation.perform(
+        kind: .codex,
+        operation: {
+          try await client.request(
+            ConnectionAdd.self,
+            ConnectionAdd.Params(kind: .codex, label: "Fake Codex", executablePath: fakeCodex),
+            options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+        })
+      return result.connection
+    }
     let result = try await client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .codex, label: "Fake Codex", executablePath: fakeCodex),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
@@ -122,6 +144,17 @@ struct Harness {
   }
 
   func addClaude() async throws -> Connection {
+    if let inspectionObservation {
+      let result = try await inspectionObservation.perform(
+        kind: .claude,
+        operation: {
+          try await client.request(
+            ConnectionAdd.self,
+            ConnectionAdd.Params(kind: .claude, label: "Fake Claude", executablePath: fakeClaude),
+            options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+        })
+      return result.connection
+    }
     let result = try await client.request(
       ConnectionAdd.self,
       ConnectionAdd.Params(kind: .claude, label: "Fake Claude", executablePath: fakeClaude),
@@ -265,7 +298,8 @@ actor EventCollector {
 
 @Suite(.serialized) struct SessionServiceTests {
   @Test func runsAWholeConversationOverTheSocket() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .socketConversation))
     let connection = try await h.addCodex()
     #expect(connection.status == .ready)
     #expect(connection.authStatus == .authenticated)
@@ -512,7 +546,8 @@ actor EventCollector {
 
 @Suite(.serialized) struct ClaudeSessionServiceTests {
   @Test func inspectionModelsReachTheConnection() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .claudeModels))
     let claude = try await h.addClaude()
     let inspected = try await h.client.request(
       ConnectionInspect.self, ConnectionInspect.Params(connectionId: claude.id),
@@ -609,11 +644,12 @@ actor EventCollector {
     let log: String
     let folderB: String
 
-    static func start() async throws -> Rig {
+    static func start(inspectionObservation: InspectionRequestObservation? = nil) async throws -> Rig {
       let base = AgentProtocolResourceFixture.temporaryDirectory + "b4t-\(UUID().uuidString.prefix(8))"
       try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
       let log = base + "/fake-claude.log"
-      let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])
+      let h = try await Harness.start(
+        extraEnvironment: ["FAKE_CLAUDE_LOG": log], inspectionObservation: inspectionObservation)
       let claude = try await h.addClaude()
       let thread = try await h.newThread(claude)
       let rig = Rig(h: h, claude: claude, thread: thread, log: log, folderB: try folder(base, "b"))
@@ -658,7 +694,8 @@ actor EventCollector {
   }
 
   @Test func turnsAttachTheEnvironmentsOtherFolders() async throws {
-    let rig = try await Rig.start()
+    let rig = try await Rig.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .claudeFolders))
     try await rig.finishedTurn("hello")
     let launches = try rig.launches()
     let argv = try #require(launches.last)
@@ -732,7 +769,9 @@ actor EventCollector {
     let base = AgentProtocolResourceFixture.temporaryDirectory + "b4t-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
     let log = base + "/fake-claude.log"
-    let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])
+    let h = try await Harness.start(
+      extraEnvironment: ["FAKE_CLAUDE_LOG": log],
+      inspectionObservation: InspectionRequestObservation(caseID: .claudeLocalStart))
     let claude = try await h.addClaude()
     let environment = try await h.client.request(
       EnvironmentCreate.self, EnvironmentCreate.Params(name: "App", folders: [h.workDir]),
@@ -924,7 +963,12 @@ actor EventCollector {
 
   @Test(arguments: Runtime.allCases)
   func aStartWithNoFolderMakesOneAndHasNoEnvironment(_ runtime: Runtime) async throws {
-    let h = try await Harness.start()
+    let inspectionObservation: InspectionRequestObservation? =
+      switch runtime {
+      case .codex: InspectionRequestObservation(caseID: .noFolderCodex)
+      case .claude: nil
+      }
+    let h = try await Harness.start(inspectionObservation: inspectionObservation)
     let connection = try await runtime.add(h)
     let before = Date()
     let started = try await start(
@@ -1134,7 +1178,8 @@ actor EventCollector {
 @Suite(.serialized) struct B4SessionServiceTests {
   @Test func runsAB4ConversationBesideCodex() async throws {
     let server = try await FakeB4.start()
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .b4BesideCodex))
     let codex = try await h.addCodex()
     let added = try await h.addB4(server)
     let b4 = added.connection
@@ -1364,7 +1409,8 @@ actor EventCollector {
 @Suite(.serialized) struct ThreadOrganizationTests {
   /// Spec A05: rename, pin, archive/unarchive, title search, and draft state survive a restart.
   @Test func organizationAndDraftsSurviveACoordinatorRestart() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .organizationRestart))
     let connection = try await h.addCodex()
     let first = try await h.newThread(connection)
     let second = try await h.newThread(connection)
@@ -1467,7 +1513,8 @@ actor EventCollector {
   /// A13 and A11: after a restart with the display cache gone, reconciliation rebuilds history from
   /// the runtime; with a partial cache it merges without duplicating the live rows.
   @Test func reconcileMergesNativeHistoryWithoutDuplicates() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .continuityRestart))
     let connection = try await h.addCodex()
     let thread = try await h.newThread(connection)
     let turn = try await h.send(thread, "hello there")
@@ -1672,7 +1719,8 @@ actor EventCollector {
   /// The per-directory lock (D-033, spec 10.1.5) is gone: a turn running in a folder does not keep
   /// another thread there from starting one. Only a thread's own active turn blocks it.
   @Test func twoThreadsMayRunInOneFolder() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .claudeRecovery))
     let claude = try await h.addClaude()
     let first = try await h.newThread(claude)
     let second = try await h.newThread(claude)
@@ -1750,7 +1798,8 @@ actor EventCollector {
   /// A15: an expired login during a turn is actionable: the turn fails with `auth_required`, the
   /// connection reports `required`, viewers get `connection.changed`, and nothing is re-sent.
   @Test func expiredLoginFlipsTheConnectionToAuthRequired() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .expiredLogin))
     let connection = try await h.addCodex()
     #expect(connection.authStatus == .authenticated)
     let thread = try await h.newThread(connection)
@@ -1800,7 +1849,8 @@ actor EventCollector {
   /// never cancelled by the app.
   @Test func activeWorkNamesLocalAndRemoteTurnsAndStopLocalWorkDetachesRemote() async throws {
     let server = try await FakeB4.start()
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .lifecycle))
     let codex = try await h.addCodex()
     let b4 = try await h.addB4(server).connection
     let codexThread = try await h.newThread(codex)
@@ -1870,7 +1920,8 @@ actor EventCollector {
   /// A16 and spec 12: runtime error text with credential shapes is masked before it reaches an event,
   /// a thread read, or `doctor`.
   @Test func runtimeErrorsAreRedactedBeforeTheyLeaveTheCoordinator() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .redaction))
     let connection = try await h.addCodex()
     let thread = try await h.newThread(connection)
     let turn = try await h.send(thread, "leak the secrets")

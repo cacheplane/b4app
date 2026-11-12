@@ -18,9 +18,12 @@ private struct EnvironmentHarness {
   let client: WorkspaceClient
   let events: EventCollector
   let base: String
+  let inspectionObservation: InspectionRequestObservation?
   var db: WorkspaceDatabase { coordinator.database }
 
-  static func start(paths existing: PlatformPaths? = nil) async throws -> EnvironmentHarness {
+  static func start(
+    paths existing: PlatformPaths? = nil, inspectionObservation: InspectionRequestObservation? = nil
+  ) async throws -> EnvironmentHarness {
     let base: String
     let paths: PlatformPaths
     if let existing {
@@ -34,8 +37,16 @@ private struct EnvironmentHarness {
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     env["ANTHROPIC_API_KEY"] = nil
+    let selectedFactory: SessionService.AdapterFactory?
+    if let inspectionObservation {
+      selectedFactory = inspectionObservation.collector.makeObservedFactory(
+        base: SessionService.defaultAdapterFactory)
+    } else {
+      selectedFactory = nil
+    }
     let outcome = try await Coordinator.startSignedIn(
-      options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
+      options: CoordinatorOptions(
+        paths: paths, environment: env, secretStore: MemorySecretStore(), adapterFactory: selectedFactory))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }
@@ -43,7 +54,8 @@ private struct EnvironmentHarness {
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     return EnvironmentHarness(
-      coordinator: coordinator, client: client, events: EventCollector(await client.events()), base: base)
+      coordinator: coordinator, client: client, events: EventCollector(await client.events()), base: base,
+      inspectionObservation: inspectionObservation)
   }
 
   func mutation() -> RequestOptions { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
@@ -56,7 +68,18 @@ private struct EnvironmentHarness {
   }
 
   func addCodex() async throws -> Connection {
-    try await client.request(
+    if let inspectionObservation {
+      return try await inspectionObservation.perform(
+        kind: .codex,
+        operation: {
+          try await client.request(
+            ConnectionAdd.self,
+            ConnectionAdd.Params(kind: .codex, label: "Fake Codex", executablePath: fakeCodex),
+            options: mutation()
+          ).connection
+        })
+    }
+    return try await client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .codex, label: "Fake Codex", executablePath: fakeCodex),
       options: mutation()
     ).connection
@@ -133,7 +156,8 @@ private struct EnvironmentHarness {
 
 @Suite(.serialized) struct EnvironmentServiceTests {
   @Test func newThreadsShareAEnvironmentAcrossSpellings() async throws {
-    let h = try await EnvironmentHarness.start()
+    let h = try await EnvironmentHarness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .environmentSpellings))
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")

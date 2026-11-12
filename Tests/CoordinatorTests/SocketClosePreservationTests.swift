@@ -11,11 +11,15 @@ import WorkspaceProtocol
   @Test(arguments: ["peer-before-ack", "local-before-ack", "peer-after-ack"])
   func acceptedTurnSurvivesViewerDisconnectBeforeAcknowledgement(_ ordering: String) async throws {
     let control = AcknowledgementControl()
-    let h = try await Harness.start(adapterFactory: { connection, environment, version, secrets in
-      GatedAcknowledgementAdapter(
-        inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
-        connectionID: connection.id, control: control)
-    })
+    let inspectionObservation: InspectionRequestObservation? =
+      ordering == "peer-before-ack"
+      ? InspectionRequestObservation(caseID: .historicalSocketPeerBeforeAck) : nil
+    let h = try await Harness.start(
+      adapterFactory: { connection, environment, version, secrets in
+        GatedAcknowledgementAdapter(
+          inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
+          connectionID: connection.id, control: control)
+      }, inspectionObservation: inspectionObservation)
     var server: SocketServer?
     var viewer: WorkspaceClient?
     var request: Task<TurnSend.Result, any Error>?
