@@ -95,7 +95,7 @@ private struct HistoryControl: Sendable {
         SELECT jsonb_agg(jsonb_build_array(p.oid,p.proname,p.prosrc) ORDER BY p.oid) INTO value
           FROM pg_catalog.pg_proc p WHERE p.pronamespace='public'::regnamespace;
         result := result || jsonb_build_object('functions',value);
-        EXECUTE format('SELECT to_jsonb(s) FROM %s s',pg_get_serial_sequence('public.changes','seq')) INTO value;
+        EXECUTE format('SELECT jsonb_build_object(''last_value'',s.last_value,''log_cnt'',s.log_cnt,''is_called'',s.is_called) FROM %s s',pg_get_serial_sequence('public.changes','seq')) INTO value;
         RETURN result || jsonb_build_object('business_sequence',value);
       END $$;
       RESET b4app.replaying;
@@ -458,7 +458,7 @@ struct EnvironmentHistoryGuardTests {
         'ledger11',(SELECT to_jsonb(m) FROM public."schemaMigrations" m WHERE name='0011_environments'),
         'feed',(SELECT jsonb_agg(to_jsonb(c) ORDER BY seq) FROM public.changes c),
         'clocks',(SELECT jsonb_agg(to_jsonb(c) ORDER BY to_jsonb(c)::text) FROM public."columnClocks" c),
-        'sequence',(SELECT to_jsonb(s) FROM public.changes_seq_seq s))::text AS value
+        'sequence',(SELECT jsonb_build_object('last_value',s.last_value,'log_cnt',s.log_cnt,'is_called',s.is_called) FROM public.changes_seq_seq s))::text AS value
       """
     let committedEleven = try #require(try raw.execute(committedElevenSQL).rows.first?.text("value"))
     let elevenStamp = try #require(
