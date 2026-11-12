@@ -316,7 +316,10 @@ struct PaletteLead: View {
           }
           Spacer(minLength: LLA.Space.s)
           if let trailing = item.trailing {
-            Text(trailing).llaCaption().lineLimit(1).fixedSize()
+            // A value or a state is short and shown whole; a runtime's argument hint can be a
+            // line long, and is cut before it pushes the row wider than the card.
+            Text(trailing).llaCaption().lineLimit(1).truncationMode(.tail)
+              .frame(maxWidth: 220, alignment: .trailing).fixedSize(horizontal: true, vertical: false)
           }
           if item.isCurrent {
             Text("Current").llaCaption().fixedSize()

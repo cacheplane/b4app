@@ -66,6 +66,9 @@ private func connected(
   return (model, transport)
 }
 
+/// One turn of the run loop, for a view drawn in a test's own window.
+@MainActor private func pumpRunLoop() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+
 @Suite struct FuzzyMatchTests {
   private func score(_ query: String, _ title: String, also: [String] = []) -> Int? {
     FuzzyMatch.match(
@@ -544,4 +547,56 @@ private func connected(
     #expect(again.items.first?.isAvailable == false)
     await model.disconnect()
   }
+
+  #if os(macOS)
+    /// A runtime's argument hint can be a line long (Claude Code's `/code-review` names six levels and
+    /// three flags). The row cuts it; it never makes the list wider than the card, which showed as rows
+    /// running off both edges.
+    @Test func aLongArgumentHintIsCutInsideTheCard() async throws {
+      let hint =
+        "[low|medium|high|xhigh|max|ultra] [--fix] [--comment] [<pr#>|<branch>|<path>] [--max-findings <n>]"
+      let commands = [
+        RuntimeCommand(
+          name: "code-review", description: String(repeating: "Review the current diff for bugs. ", count: 4),
+          argumentHint: hint)
+      ]
+      let (model, _) = try await connected(claudeCommands: commands)
+      await model.openThread(id: "quiet")
+      let palette = PaletteModel(workspace: model, purpose: .commands)
+      palette.setQuery("code-review")
+      #expect(palette.items.first?.trailing == hint)
+      let size = CGSize(width: MacPalette.width, height: 200)
+      let window = SnapshotWindow(
+        rootView: PaletteView(model: model, palette: palette, floating: true)
+          .frame(width: size.width, height: size.height, alignment: .top)
+          .environment(\.isInFloatingPanel, true),
+        untitled: true, size: size)
+      defer { window.close() }
+      window.appearance = NSAppearance(named: .aqua)
+      for _ in 0..<10 { pumpRunLoop() }
+      window.host.layoutSubtreeIfNeeded()
+      let rep = try #require(window.host.bitmapImageRepForCachingDisplay(in: window.host.bounds))
+      window.host.cacheDisplay(in: window.host.bounds, to: rep)
+      let scale = CGFloat(rep.pixelsWide) / size.width
+      // The row is the band under the 36 pt field and its rule. Inside the card's 8 pt list inset and
+      // the row's own padding there is nothing but the card's fill: text that reached those margins
+      // would be a row wider than the card.
+      func ink(x: ClosedRange<CGFloat>, y: ClosedRange<CGFloat>) -> Int {
+        var count = 0
+        for px in Int(x.lowerBound * scale)...Int(x.upperBound * scale) {
+          for py in Int(y.lowerBound * scale)...Int(y.upperBound * scale) {
+            guard let color = rep.colorAt(x: px, y: py)?.usingColorSpace(.deviceRGB) else { continue }
+            if color.brightnessComponent < 0.6 { count += 1 }
+          }
+        }
+        return count
+      }
+      let band: ClosedRange<CGFloat> = 50...66
+      #expect(ink(x: 3...12, y: band) == 0, "the row runs off the card's leading edge")
+      #expect(ink(x: 588...597, y: band) == 0, "the row runs off the card's trailing edge")
+      // And the row is there: its title, in ink, where a row's title starts.
+      #expect(ink(x: 40...140, y: band) > 20)
+      await model.disconnect()
+    }
+  #endif
 }

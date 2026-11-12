@@ -98,6 +98,9 @@
     }
     private var press: Press?
 
+    /// The owner is moving the panel now: its place is theirs until the pointer comes up.
+    var isBeingDragged: Bool { press?.moving == true }
+
     override func sendEvent(_ event: NSEvent) {
       guard isDraggable else { return super.sendEvent(event) }
       switch event.type {
@@ -107,11 +110,13 @@
           resetRequested()
           return
         }
-        press = Press(down: event, pointer: NSEvent.mouseLocation, origin: frame.origin, onField: onField)
+        press = Press(
+          down: event, pointer: convertPoint(toScreen: event.locationInWindow), origin: frame.origin,
+          onField: onField)
         return
       case .leftMouseDragged:
         guard var current = press else { break }
-        let pointer = NSEvent.mouseLocation
+        let pointer = convertPoint(toScreen: event.locationInWindow)
         let travel = CGSize(width: pointer.x - current.pointer.x, height: pointer.y - current.pointer.y)
         if !current.moving, hypot(travel.width, travel.height) > FloatingPanelGeometry.dragThreshold {
           current.moving = true
@@ -387,6 +392,9 @@
       guard let panel, let home else { return }
       let panelSize = CGSize(width: size.width, height: height)
       var topLeft = CGPoint(x: home.x + (offset?.width ?? 0), y: home.y + (offset?.height ?? 0))
+      // While it is dragged it is where the pointer has it, not where it was before the drag: only
+      // its height may change under the owner's hand, with its top held.
+      if panel.isBeingDragged { topLeft = CGPoint(x: panel.frame.minX, y: panel.frame.maxY) }
       if let visible { topLeft = FloatingPanelGeometry.clamped(topLeft, size: panelSize, visible: visible) }
       let frame = FloatingPanelGeometry.frame(topLeft: topLeft, size: panelSize)
       guard frame != panel.frame else { return }
@@ -404,7 +412,12 @@
       }
     }
 
-    private func reposition() { place(height: panel?.frame.height ?? size.height, animated: false) }
+    /// The window resized, or its title bar laid out again: the panel goes to its place there. Not
+    /// while it is being dragged, when every layout would pull it out of the owner's hand.
+    private func reposition() {
+      guard let panel, !panel.isBeingDragged else { return }
+      place(height: panel.frame.height, animated: false)
+    }
 
     /// The shadow is the shape of what was last drawn: ask for it again once the new size has been.
     private func refreshShadow() {

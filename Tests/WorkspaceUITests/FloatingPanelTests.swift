@@ -18,7 +18,7 @@
   /// The panel's content, a view of its own so it follows the state as a palette follows its model.
   private struct PanelBody: View {
     let state: PanelState
-    var body: some View { Color.white.frame(height: state.height) }
+    var body: some View { WindowDragArea().frame(height: state.height).background(Color.white) }
   }
 
   private struct PanelHost: View {
@@ -238,6 +238,57 @@
       try await settle()
       #expect(abs(panel.frame.origin.x - home.x) < 0.5)
       #expect(abs(panel.frame.origin.y - home.y) < 0.5)
+      state.shown = false
+      try await settle()
+    }
+
+    /// A press, a drag, and a release, as the window server sends them, with the pointer at `screen`.
+    private func send(_ type: NSEvent.EventType, at screen: CGPoint, to panel: PalettePanel) throws {
+      let inWindow = CGPoint(x: screen.x - panel.frame.minX, y: screen.y - panel.frame.minY)
+      let event = try #require(
+        NSEvent.mouseEvent(
+          with: type, location: inWindow, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+          windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+      panel.sendEvent(event)
+    }
+
+    /// The panel goes where the pointer takes it on every step of a drag, however often its window
+    /// lays out in between. (It used to be put back where it opens by each layout, and the pointer and
+    /// the layout fought over it: the drag the owner called jittery.)
+    @Test func aDragIsNeverFoughtByTheWindowsLayout() async throws {
+      let state = PanelState()
+      let host = try shortWindow(state)
+      defer { host.window.close() }
+      state.shown = true
+      try await settle()
+      let panel = try #require(host.window.childWindows?.first as? PalettePanel)
+      let home = panel.frame.origin
+      let grip = CGPoint(x: panel.frame.minX + 60, y: panel.frame.maxY - 20)
+      try send(.leftMouseDown, at: grip, to: panel)
+      var path: [CGPoint] = []
+      for step in 1...40 {
+        // Away from every line: 5 pt right and 1 pt down each step.
+        let pointer = CGPoint(x: grip.x + CGFloat(step) * 5, y: grip.y - CGFloat(step))
+        try send(.leftMouseDragged, at: pointer, to: panel)
+        // What AppKit does between events in a running app: the window updates, and lays out.
+        NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: host.window)
+        NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: host.window)
+        pump()
+        path.append(panel.frame.origin)
+      }
+      try send(.leftMouseUp, at: CGPoint(x: grip.x + 200, y: grip.y - 40), to: panel)
+      try await settle()
+      // Every step moved it on, never back; out of reach of the lines it is exactly under the pointer.
+      for (before, after) in zip(path, path.dropFirst()) {
+        #expect(after.x > before.x, "went back across: \(before) then \(after)")
+        #expect(after.y < before.y + 0.01, "went back up: \(before) then \(after)")
+      }
+      #expect(abs(path[39].x - home.x - 200) < 0.5)
+      #expect(abs(path[39].y - home.y + 40) < 0.5)
+      #expect(abs(path[19].x - home.x - 100) < 0.5)
+      // Released, it is still where it was left.
+      #expect(abs(panel.frame.origin.x - home.x - 200) < 0.5)
+      #expect(abs(panel.frame.origin.y - home.y + 40) < 0.5)
       state.shown = false
       try await settle()
     }
