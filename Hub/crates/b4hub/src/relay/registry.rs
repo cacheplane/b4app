@@ -1597,6 +1597,31 @@ impl Relay {
     }
 }
 
+pub(super) struct Reserved {
+    pub handle: LinkHandle,
+    relay: Relay,
+    permit: mpsc::OwnedPermit<Outbound>,
+    until: Instant,
+}
+impl Reserved {
+    pub fn send(
+        self,
+        message: RelayMessage,
+        proof: &super::admission::Proof<'_>,
+    ) -> Result<(), SendError> {
+        if Instant::now() >= self.until {
+            return Err(SendError::Full);
+        }
+        if !self.relay.current(&self.handle) {
+            return Err(SendError::Offline);
+        }
+        let stamp = proof.stamp_for(&self.handle).ok_or(SendError::Offline)?;
+        self.permit
+            .send(Outbound::Protected(Envelope::message(message, stamp)));
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2055,30 +2080,5 @@ mod tests {
             .await
             .expect("drained resolves once the link is dropped")
             .unwrap();
-    }
-}
-
-pub(super) struct Reserved {
-    pub handle: LinkHandle,
-    relay: Relay,
-    permit: mpsc::OwnedPermit<Outbound>,
-    until: Instant,
-}
-impl Reserved {
-    pub fn send(
-        self,
-        message: RelayMessage,
-        proof: &super::admission::Proof<'_>,
-    ) -> Result<(), SendError> {
-        if Instant::now() >= self.until {
-            return Err(SendError::Full);
-        }
-        if !self.relay.current(&self.handle) {
-            return Err(SendError::Offline);
-        }
-        let stamp = proof.stamp_for(&self.handle).ok_or(SendError::Offline)?;
-        self.permit
-            .send(Outbound::Protected(Envelope::message(message, stamp)));
-        Ok(())
     }
 }

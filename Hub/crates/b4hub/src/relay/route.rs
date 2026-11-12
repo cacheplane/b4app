@@ -708,7 +708,7 @@ async fn deliver(
         hold(relay, &owner).await?;
         claim.unmark_held();
     }
-    forward(relay, db, caller, claim, id, method, params, &owner).await
+    forward(relay, db, caller, claim, (id, method, params), &owner).await
 }
 
 struct Target {
@@ -939,11 +939,10 @@ async fn forward(
     db: &Db,
     caller: &LinkHandle,
     claim: &Claim<'_>,
-    id: &str,
-    method: RelayMethod,
-    params: Value,
+    command: (&str, RelayMethod, Value),
     owner: &Owner,
 ) -> Result<Answer, WireError> {
+    let (id, method, params) = command;
     let started_thread = match method {
         RelayMethod::ThreadStart => params
             .get("threadId")
