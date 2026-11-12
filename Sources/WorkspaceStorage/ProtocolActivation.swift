@@ -68,6 +68,24 @@ public struct ProtocolNativeMembership: Sendable, Equatable, CustomStringConvert
   public var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
 }
 
+/// Opaque metadata comparison only. This value neither loads nor authenticates a credential.
+struct ProtocolCredentialReference: Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible, CustomReflectable
+{
+  fileprivate let rawValue: String
+
+  init?(_ rawValue: String) {
+    guard rawValue.hasPrefix("secret:"), rawValue.count > 7, !rawValue.utf8.contains(0) else { return nil }
+    self.rawValue = rawValue
+  }
+  static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.rawValue.utf8.elementsEqual(rhs.rawValue.utf8)
+  }
+  var description: String { "ProtocolCredentialReference(redacted)" }
+  var debugDescription: String { description }
+  var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+}
+
 /// A whole-store compatibility comparison, never an upload filter or runtime authorization.
 public enum ProtocolSyncRequirement: Sendable, Equatable { case legacyOnly, protocolTwo }
 
@@ -352,6 +370,49 @@ extension WorkspaceDatabase {
     } catch { throw ProtocolActivationControl.failure }
   }
 
+  /// Compare the original linked DATA snapshot and current opaque reference in one native view.
+  /// Success grants no credential-presence proof, owner admission, or authority for a later effect.
+  package func compareOriginalLinkedCredentialReference(
+    expectedSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String
+  ) throws {
+    do {
+      guard expectedSnapshot.database === self,
+        let context = expectedSnapshot.capturedContext, context.membership != nil,
+        let expectedReference = ProtocolCredentialReference(expectedTokenRef)
+      else { throw ProtocolActivationControl.failure }
+      try read { c -> Void in
+        let current = try ProtocolActivationControl.state(c, locking: false)
+        _ = try ProtocolActivationControl.capturedRecord(
+          self, state: current, snapshot: expectedSnapshot, allowingLaterRevision: false)
+        guard let currentReference = current.credentialReference, currentReference == expectedReference else {
+          throw ProtocolActivationControl.failure
+        }
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
+  /// Add unchanged whole-store sync eligibility to the same original-record/reference DATA view.
+  /// This does not check a credential store or make a later effect reference-aware.
+  package func compareOriginalLinkedSyncCredentialReference(
+    expectedSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String
+  ) throws {
+    do {
+      guard expectedSnapshot.database === self,
+        let context = expectedSnapshot.capturedContext, context.membership != nil,
+        let expectedReference = ProtocolCredentialReference(expectedTokenRef)
+      else { throw ProtocolActivationControl.failure }
+      try read { c -> Void in
+        let current = try ProtocolActivationControl.syncState(c)
+        try ProtocolActivationControl.requireSyncEligibility(
+          self, current: current, snapshot: expectedSnapshot)
+        guard let currentReference = current.state.credentialReference, currentReference == expectedReference
+        else {
+          throw ProtocolActivationControl.failure
+        }
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
   /// One synchronous effect, checked against the original snapshot before and after its body.
   /// The exclusive advisory lock and link/control row locks remain held through the actual COMMIT.
   func writeProtocolSyncEffect<T>(
@@ -617,13 +678,23 @@ enum ProtocolActivationControl {
         && a.revision == b.revision && a.binding == b.binding && a.observation == b.observation
     }
   }
-  fileprivate struct State {
+  fileprivate struct State: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     let database: String
     let control: String?
     let linkPresent: Bool
     let url: String?
     let device: String?
     let joined: String?
+    let credentialReference: ProtocolCredentialReference?
+    var description: String { "ProtocolActivationControl.State(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+  }
+  private static func decodeState(_ row: Row, database: String) -> State {
+    State(
+      database: database, control: row.text("control"), linkPresent: row.text("native_link_id") == "1",
+      url: row.text("url"), device: row.text("device"), joined: row.text("joined"),
+      credentialReference: row.text("native_token_ref").flatMap(ProtocolCredentialReference.init))
   }
   fileprivate static func state(_ c: PostgresConnection, locking: Bool) throws -> State {
     // Writes first lock the actual link tuple, so even a native writer outside the advisory
@@ -638,15 +709,13 @@ enum ProtocolActivationControl {
       """
       SELECT current_database() AS database,
         (SELECT value::text FROM public.settings WHERE key=$1\(lock)) AS control,
-        l.id AS native_link_id, l.url, l."deviceId" AS device, l."joinedAt" AS joined
+        l.id AS native_link_id, l.url, l."deviceId" AS device, l."joinedAt" AS joined,
+        l."tokenRef" AS native_token_ref
       FROM (SELECT 1) singleton LEFT JOIN public."hubLink" l ON l.id=1
       """, [key]
     ).rows
     guard rows.count == 1, let row = rows.first, let database = row.text("database") else { throw failure }
-    return State(
-      database: database, control: row.text("control"), linkPresent: row.text("native_link_id") == "1",
-      url: row.text("url"),
-      device: row.text("device"), joined: row.text("joined"))
+    return decodeState(row, database: database)
   }
   /// The scalar classifier is the unchanged literal R6 query, evaluated in the SAME statement
   /// snapshot as the record and actual optional link. No lock, write or second state read occurs.
@@ -658,6 +727,7 @@ enum ProtocolActivationControl {
       SELECT current_database() AS database,
         (SELECT value::text FROM public.settings WHERE key=$1) AS control,
         l.id AS native_link_id, l.url, l."deviceId" AS device, l."joinedAt" AS joined,
+        l."tokenRef" AS native_token_ref,
         (\(syncRequirementSQL)) AS requires_two
       FROM (SELECT 1) singleton LEFT JOIN public."hubLink" l ON l.id=1
       """, [key]
@@ -672,9 +742,7 @@ enum ProtocolActivationControl {
     default: throw failure
     }
     return (
-      State(
-        database: database, control: row.text("control"), linkPresent: row.text("native_link_id") == "1",
-        url: row.text("url"), device: row.text("device"), joined: row.text("joined")),
+      decodeState(row, database: database),
       requirement
     )
   }

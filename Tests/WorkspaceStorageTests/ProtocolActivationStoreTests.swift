@@ -4062,3 +4062,635 @@ extension ProtocolActivationStoreTests {
     }
   }
 }
+
+// Original linked credential DATA comparisons only. These tests grant no runtime admission,
+// credential presence/authentication claim, or reference-aware effect/transaction guarantee.
+extension ProtocolActivationStoreTests {
+  private enum ReferenceComparison: Sendable { case strict, sync }
+  private static func referenceFixtureValue<T>(_ value: T?) throws -> T {
+    guard let value else { throw FixtureFailure.nativeShape }
+    return value
+  }
+  private static func compareReference(
+    _ database: WorkspaceDatabase, snapshot: ProtocolVerificationSnapshot, reference: String,
+    method: ReferenceComparison
+  ) throws {
+    switch method {
+    case .strict:
+      try database.compareOriginalLinkedCredentialReference(
+        expectedSnapshot: snapshot, expectedTokenRef: reference)
+    case .sync:
+      try database.compareOriginalLinkedSyncCredentialReference(
+        expectedSnapshot: snapshot, expectedTokenRef: reference)
+    }
+  }
+  private static func expectReferenceComparison(
+    _ f: Fixture, snapshot: ProtocolVerificationSnapshot, reference: String,
+    method: ReferenceComparison, refuses: Bool = false, database: WorkspaceDatabase? = nil
+  ) throws {
+    let before = try state(f)
+    let operation = {
+      try compareReference(
+        database ?? f.database, snapshot: snapshot, reference: reference, method: method)
+    }
+    if refuses {
+      expectSafe(operation)
+      try expectUnchanged(f, before)
+    } else {
+      let outcome = Result { try operation() }
+      // Independently read native rows AND sequence even when an expected positive throws.
+      try expectUnchanged(f, before)
+      try outcome.get()
+    }
+  }
+  private static func expectBothReferences(
+    _ f: Fixture, snapshot: ProtocolVerificationSnapshot, reference: String,
+    refuses: Bool = false, database: WorkspaceDatabase? = nil
+  ) throws {
+    for method in [ReferenceComparison.strict, .sync] {
+      try expectReferenceComparison(
+        f, snapshot: snapshot, reference: reference, method: method, refuses: refuses, database: database)
+    }
+  }
+  private static func setNativeReference(_ f: Fixture, _ reference: String?) throws {
+    try f.raw.execute("UPDATE public.\"hubLink\" SET \"tokenRef\"=$1 WHERE id=1", [reference])
+  }
+  private static func healthyReferenceSnapshot(_ f: Fixture) throws -> ProtocolVerificationSnapshot {
+    try f.database.commitObservedProtocolFact(
+      expectedSnapshot: capturedBinding(f), observation: observation(f.binding))
+  }
+
+  @Test func linkedReferenceRequiresCapturedPresentMembership() async throws {
+    try await Self.withFixture { f in
+      let initiallyMissing = try Self.recordText(f) == nil
+      try #require(initiallyMissing)
+      let linked = try Self.capture(f)
+      _ = try Self.expectRecord(f, revision: "0", binding: nil)
+      try Self.expectBothReferences(f, snapshot: linked, reference: f.link.tokenRef)
+      try f.raw.execute("DELETE FROM public.settings WHERE key=$1", [Self.key])
+      try Self.expectBothReferences(f, snapshot: linked, reference: f.link.tokenRef, refuses: true)
+      let stillMissing = try Self.recordText(f) == nil
+      #expect(stillMissing)
+    }
+    try await Self.withFixture { f in
+      try f.raw.execute("DELETE FROM public.\"hubLink\" WHERE id=1")
+      let absent = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      let original = try Self.recordText(f).map { Data($0.utf8) }
+      try Self.expectBothReferences(f, snapshot: absent, reference: f.link.tokenRef, refuses: true)
+      try Self.insertReadOnlyFixtureLink(f)
+      let controlUnrotated = try Self.recordText(f).map { Data($0.utf8) } == original
+      try #require(controlUnrotated)
+      try Self.expectBothReferences(f, snapshot: absent, reference: f.link.tokenRef, refuses: true)
+      let direct = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
+      let committed = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: direct, observation: Self.observation(f.binding))
+      guard let read = try f.database.readProtocolFact(expectedBinding: f.binding) else {
+        throw FixtureFailure.nativeShape
+      }
+      for snapshot in [direct, committed, read] {
+        try Self.expectBothReferences(f, snapshot: snapshot, reference: f.link.tokenRef, refuses: true)
+      }
+      try Self.expectBothReferences(f, snapshot: Self.capture(f), reference: f.link.tokenRef)
+    }
+  }
+
+  @Test func tokenRefreshPreservesFactsButOnlyCurrentAnchorCompares() async throws {
+    try await Self.withFixture { f in
+      let original = try Self.healthyReferenceSnapshot(f)
+      try Self.seedReadOnlyModernProfile(f)
+      let originalText = try Self.recordText(f).map { Data($0.utf8) }
+      let originalRecord = try Self.nativeRecord(f)
+      try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef)
+      var refreshed = f.link
+      refreshed.tokenRef = "secret:ACTIVATION_REFERENCE_B"
+      try f.database.saveHubLink(refreshed)
+      let exactRecord = try Self.recordText(f).map { Data($0.utf8) } == originalText
+      let preserved = try Self.nativeRecord(f)
+      let exactRevision =
+        (preserved["revision"] as? String).map {
+          Self.equalBytes($0, originalRecord["revision"] as? String ?? "")
+        } ?? false
+      let exactIncarnations = ["storeIncarnation", "membershipIncarnation"].allSatisfy {
+        Self.incarnationBytesMatch(originalRecord, preserved, field: $0)
+      }
+      try #require(exactRecord && exactRevision && exactIncarnations)
+      for sync in [false, true] { try Self.expectReadOnlyValidation(f, snapshot: original, sync: sync) }
+      try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef, refuses: true)
+      // A separately obtained current DATA snapshot is not a new runtime owner or lease.
+      let current = try Self.capture(f)
+      try Self.expectBothReferences(f, snapshot: current, reference: refreshed.tokenRef)
+      try Self.setNativeReference(f, f.link.tokenRef)
+      let restoredTupleAndControl = try Self.state(f)
+      try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef)
+      try Self.expectUnchanged(f, restoredTupleAndControl)
+      // Explicit ABA limit: restoring the same reference bytes and unchanged facts may compare.
+      try f.raw.execute(
+        "UPDATE public.\"hubLink\" SET \"deviceName\"='changed label',username='changed label',\"lastError\"='status',cursor=41 WHERE id=1"
+      )
+      try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef)
+      var metadata = f.link
+      metadata.deviceName = "ordinary metadata refresh"; metadata.cursor = 999
+      try f.database.saveHubLink(metadata)
+      let keptNativeCursor =
+        try f.raw.execute(
+          "SELECT cursor::text AS cursor FROM public.\"hubLink\" WHERE id=1"
+        ).rows.first?.text("cursor") == "41"
+      #expect(keptNativeCursor)
+      let metadataKeptFacts = try Self.recordText(f).map { Data($0.utf8) } == originalText
+      #expect(metadataKeptFacts)
+      try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef)
+    }
+  }
+
+  @Test func referenceSyntaxAndOpaqueUtf8AreExact() async throws {
+    // Audit the ACTUAL SecretRef parser: Swift String.count is the boundary, not byte/scalar count.
+    let accepted = [
+      "secret:x", "secret:not-a-uuid", "secret:suffix ", "secret:雪", "secret:é", "secret:e\u{301}",
+    ]
+    let rejected = ["", "secret:", "Secret:x", "other:x", " secret:x", "secret:\u{301}"]
+    for reference in accepted {
+      let parserAccepts = SecretRef(rawValue: reference) != nil
+      let wrapperAccepts = ProtocolCredentialReference(reference) != nil
+      #expect(parserAccepts && wrapperAccepts)
+    }
+    for reference in rejected {
+      let parserRejects = SecretRef(rawValue: reference) == nil
+      let wrapperRejects = ProtocolCredentialReference(reference) == nil
+      #expect(parserRejects && wrapperRejects)
+    }
+    let combiningBoundary = "secret:\u{301}"
+    let combiningHasSevenCharacters = combiningBoundary.count == 7 && combiningBoundary.utf8.count > 7
+    #expect(combiningHasSevenCharacters)
+    // SecretRef itself accepts NUL; the new comparison wrapper independently refuses it.
+    for reference in ["secret:ACTIVATION_NUL\0inside", "secret:ACTIVATION_TRAILING\0"] {
+      let oldParserAccepts = SecretRef(rawValue: reference) != nil
+      let newWrapperRejects = ProtocolCredentialReference(reference) == nil
+      #expect(oldParserAccepts && newWrapperRejects)
+    }
+    try await Self.withFixture { f in
+      let snapshot = try Self.capture(f)
+      for reference in accepted {
+        try Self.setNativeReference(f, reference)
+        try Self.expectBothReferences(f, snapshot: snapshot, reference: reference)
+      }
+      for reference in rejected {
+        try Self.setNativeReference(f, reference)
+        // Valid expected input exercises the native current-reference path before refusal.
+        try Self.expectBothReferences(f, snapshot: snapshot, reference: f.link.tokenRef, refuses: true)
+        try Self.expectBothReferences(f, snapshot: snapshot, reference: reference, refuses: true)
+        for sync in [false, true] { try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: sync) }
+      }
+      let composed = "secret:é", decomposed = "secret:e\u{301}"
+      let unequalUTF8 = !composed.utf8.elementsEqual(decomposed.utf8)
+      try #require(unequalUTF8)
+      for (current, other) in [(composed, decomposed), (decomposed, composed)] {
+        try Self.setNativeReference(f, current)
+        try Self.expectBothReferences(f, snapshot: snapshot, reference: current)
+        try Self.expectBothReferences(f, snapshot: snapshot, reference: other, refuses: true)
+      }
+      try Self.setNativeReference(f, f.link.tokenRef)
+      for invalid in rejected + ["secret:ACTIVATION_NUL\0inside", "secret:ACTIVATION_TRAILING\0"] {
+        try Self.expectBothReferences(f, snapshot: snapshot, reference: invalid, refuses: true)
+      }
+      // PostgreSQL text cannot represent NUL. Nil/invalid current references are decoded without
+      // poisoning the old validators. The temporary nullable fixture is fully restored below.
+      let schemaSQL = """
+        SELECT jsonb_build_object('type',a.atttypid,'typmod',a.atttypmod,'notnull',a.attnotnull,
+          'collation',a.attcollation,'identity',a.attidentity,'generated',a.attgenerated,
+          'default',pg_get_expr(d.adbin,d.adrelid),
+          'constraints',(SELECT jsonb_agg(jsonb_build_object(
+            'name',c.conname,'type',c.contype,'definition',pg_get_constraintdef(c.oid,true),
+            'deferrable',c.condeferrable,'deferred',c.condeferred,'validated',c.convalidated)
+            ORDER BY c.conname,c.contype) FROM pg_constraint c WHERE c.conrelid=a.attrelid))::text AS value,
+          a.attnotnull::text AS required
+        FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+        WHERE a.attrelid='public."hubLink"'::regclass AND a.attname='tokenRef'
+        """
+      let schema = try Self.referenceFixtureValue(f.raw.execute(schemaSQL).rows.first)
+      let schemaBefore = try Self.referenceFixtureValue(schema.text("value"))
+      let wasRequired = schema.text("required") == "true"
+      var recovered = false
+      defer {
+        if !recovered {
+          try? Self.setNativeReference(f, f.link.tokenRef)
+          if wasRequired {
+            try? f.raw.execute("ALTER TABLE public.\"hubLink\" ALTER COLUMN \"tokenRef\" SET NOT NULL")
+          }
+        }
+      }
+      if wasRequired {
+        try f.raw.execute("ALTER TABLE public.\"hubLink\" ALTER COLUMN \"tokenRef\" DROP NOT NULL")
+      }
+      try Self.setNativeReference(f, nil)
+      let nativeNull =
+        try f.raw.execute(
+          "SELECT (\"tokenRef\" IS NULL)::text AS missing FROM public.\"hubLink\" WHERE id=1"
+        ).rows.first?.text("missing") == "true"
+      try #require(nativeNull)
+      try Self.expectBothReferences(f, snapshot: snapshot, reference: f.link.tokenRef, refuses: true)
+      for sync in [false, true] { try Self.expectReadOnlyValidation(f, snapshot: snapshot, sync: sync) }
+      try Self.setNativeReference(f, f.link.tokenRef)
+      if wasRequired {
+        try f.raw.execute("ALTER TABLE public.\"hubLink\" ALTER COLUMN \"tokenRef\" SET NOT NULL")
+      }
+      let schemaAfter = try Self.referenceFixtureValue(f.raw.execute(schemaSQL).rows.first?.text("value"))
+      let exactSchemaRecovered = Self.equalBytes(schemaBefore, schemaAfter)
+      try #require(exactSchemaRecovered)
+      recovered = true
+      try Self.expectBothReferences(f, snapshot: snapshot, reference: f.link.tokenRef)
+    }
+  }
+
+  @Test func strictOriginalDatabaseRecordAndTupleRemainRequired() async throws {
+    try await Self.withFixture { f in
+      let original = try Self.healthyReferenceSnapshot(f)
+      let valid = try Self.nativeRecord(f)
+      let other = try f.reopen()
+      defer { try? other.close() }
+      try Self.expectBothReferences(
+        f, snapshot: original, reference: f.link.tokenRef, refuses: true, database: other)
+      let otherCapture = try other.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: Self.nativeMembership(f.link))
+      try Self.expectBothReferences(f, snapshot: otherCapture, reference: f.link.tokenRef, database: other)
+      // Independently valid closed records at the SAME revision isolate each full-record field.
+      var changes: [[String: Any]] = []
+      var changed = valid; changed["revision"] = "3"; changes.append(changed)
+      for field in ["storeIncarnation", "membershipIncarnation"] {
+        changed = valid; changed[field] = UUID().uuidString; changes.append(changed)
+      }
+      changed = valid
+      var observed = try Self.referenceFixtureValue(valid["observation"] as? [String: Any])
+      observed["reportedVersion"] = 3; changed["observation"] = observed; changes.append(changed)
+      changed = valid
+      var principal = try Self.referenceFixtureValue(valid["binding"] as? [String: Any])
+      principal["hubUserID"] = "ACTIVATION_OTHER_VALID_USER"
+      principal["hubOrgID"] = "ACTIVATION_OTHER_VALID_ORG"
+      observed = try Self.referenceFixtureValue(valid["observation"] as? [String: Any])
+      observed["binding"] = principal
+      changed["binding"] = principal; changed["observation"] = observed; changes.append(changed)
+      for record in changes {
+        try Self.putRecord(f, record)
+        let independentCurrent = try Self.capture(f)
+        try Self.expectBothReferences(f, snapshot: independentCurrent, reference: f.link.tokenRef)
+        try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef, refuses: true)
+        try Self.putRecord(f, valid)
+        try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef)
+      }
+      for (column, replacement, restored) in [
+        ("url", "https://example.invalid/Other", f.link.url),
+        ("deviceId", "ACTIVATION_OTHER_DEVICE", f.link.deviceId),
+        ("joinedAt", "ACTIVATION_OTHER_JOIN", f.link.joinedAt),
+      ] {
+        try f.raw.execute("UPDATE public.\"hubLink\" SET \(Rows.quote(column))=$1 WHERE id=1", [replacement])
+        try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef, refuses: true)
+        try f.raw.execute("UPDATE public.\"hubLink\" SET \(Rows.quote(column))=$1 WHERE id=1", [restored])
+        try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef)
+      }
+      try f.raw.execute("DELETE FROM public.\"hubLink\" WHERE id=1")
+      try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef, refuses: true)
+      try Self.insertReadOnlyFixtureLink(f)
+      try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef)
+      var malformed = valid; malformed["unknown"] = "ACTIVATION_DECODER_PRIVATE"
+      for record in [malformed, ["version": "ACTIVATION_MALFORMED"]] {
+        try Self.putRecord(f, record)
+        try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef, refuses: true)
+      }
+      try f.raw.execute("DELETE FROM public.settings WHERE key=$1", [Self.key])
+      try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef, refuses: true)
+      try Self.putRecord(f, valid)
+      try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef)
+      // Closing the actual original object leaves the separate native fixture connection usable.
+      try f.database.close()
+      try Self.expectBothReferences(f, snapshot: original, reference: f.link.tokenRef, refuses: true)
+    }
+  }
+
+  @Test func syncPurposeUsesWholeStoreEligibilityWhileStrictDoesNot() async throws {
+    try await Self.withFixture { f in
+      let inactive = try Self.capture(f)
+      let originalText = try Self.recordText(f).map { Data($0.utf8) }
+      try Self.expectBothReferences(f, snapshot: inactive, reference: f.link.tokenRef)
+      let retained = try Self.insertLogWitness(
+        f, table: "protocolHistoryAnchors", op: "delete", synced: true)
+      let sameControl = try Self.recordText(f).map { Data($0.utf8) } == originalText
+      try #require(sameControl)
+      try Self.expectReferenceComparison(f, snapshot: inactive, reference: f.link.tokenRef, method: .strict)
+      try Self.expectReferenceComparison(
+        f, snapshot: inactive, reference: f.link.tokenRef, method: .sync, refuses: true)
+      try Self.removeLogWitness(f, seq: retained)
+      try Self.expectBothReferences(f, snapshot: inactive, reference: f.link.tokenRef)
+      // A separate retained HISTORY marker, with no live profile or new classifier rules.
+      let history = try Self.insertLogWitness(
+        f, table: "connections", op: "update", column: "authMode", value: #""none""#, synced: true)
+      try Self.expectReferenceComparison(f, snapshot: inactive, reference: f.link.tokenRef, method: .strict)
+      try Self.expectReferenceComparison(
+        f, snapshot: inactive, reference: f.link.tokenRef, method: .sync, refuses: true)
+      try Self.removeLogWitness(f, seq: history)
+      try Self.seedReadOnlyModernProfile(f)
+      try Self.expectReferenceComparison(
+        f, snapshot: inactive, reference: f.link.tokenRef, method: .sync, refuses: true)
+      let healthy = try Self.healthyReferenceSnapshot(f)
+      try Self.expectBothReferences(f, snapshot: healthy, reference: f.link.tokenRef)
+      let freshHealthy = try Self.capture(f)
+      try Self.expectBothReferences(f, snapshot: freshHealthy, reference: f.link.tokenRef)
+      let later = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: healthy, observation: Self.observation(f.binding, version: 3))
+      try Self.expectBothReferences(f, snapshot: healthy, reference: f.link.tokenRef, refuses: true)
+      try Self.expectBothReferences(f, snapshot: later, reference: f.link.tokenRef)
+      try f.database.fenceProtocolVerification(expectedSnapshot: later)
+      try Self.expectBothReferences(f, snapshot: later, reference: f.link.tokenRef, refuses: true)
+      let withdrawn = try Self.capture(f)
+      try Self.expectReferenceComparison(f, snapshot: withdrawn, reference: f.link.tokenRef, method: .strict)
+      try Self.expectReferenceComparison(
+        f, snapshot: withdrawn, reference: f.link.tokenRef, method: .sync, refuses: true)
+    }
+  }
+
+  @Test func referenceComparisonNeverRequiresSecretPresence() async throws {
+    try await Self.withFixture { f in
+      let synthetic = "secret:ACTIVATION_UNSTORED_\(UUID().uuidString)"
+      let parserValid = SecretRef(rawValue: synthetic) != nil
+      try #require(parserValid)
+      // Only native metadata is written. No secret store fixture, value, lookup or mutation exists.
+      try Self.setNativeReference(f, synthetic)
+      let legacy = try Self.capture(f)
+      try Self.expectBothReferences(f, snapshot: legacy, reference: synthetic)
+      try Self.seedReadOnlyModernProfile(f)
+      let modern = try Self.healthyReferenceSnapshot(f)
+      try Self.expectBothReferences(f, snapshot: modern, reference: synthetic)
+      // Reference equality cannot establish authentication/presence or detect secret-value changes.
+    }
+  }
+
+  @Test func newReferenceValuesAndErrorsStayRedacted() async throws {
+    let sentinelA = "secret:ACTIVATION_REFERENCE_PRIVATE_A"
+    let sentinelB = "secret:ACTIVATION_REFERENCE_PRIVATE_B"
+    let first = try Self.referenceFixtureValue(ProtocolCredentialReference(sentinelA))
+    let second = try Self.referenceFixtureValue(ProtocolCredentialReference(sentinelB))
+    let different = first != second
+    let mirrorEmpty = Mirror(reflecting: first).children.isEmpty
+    let fixedDescription = String(describing: first) == "ProtocolCredentialReference(redacted)"
+    let fixedDebug = String(reflecting: first) == "ProtocolCredentialReference(redacted)"
+    let notEncodable = !(first as Any is any Encodable)
+    #expect(different && mirrorEmpty && fixedDescription && fixedDebug && notEncodable)
+    let nested: [String: Any] = ["references": [first, second], "optional": Optional(first) as Any]
+    var dumped = ""; dump(nested, to: &dumped)
+    let rendered = String(describing: nested) + String(reflecting: nested) + dumped
+    let recursivelyRedacted = !rendered.contains(sentinelA) && !rendered.contains(sentinelB)
+    #expect(recursivelyRedacted)
+    try await Self.withFixture { f in
+      let snapshot = try Self.capture(f)
+      try Self.setNativeReference(f, sentinelA)
+      try Self.expectBothReferences(f, snapshot: snapshot, reference: sentinelB, refuses: true)
+      try Self.expectBothReferences(f, snapshot: snapshot, reference: sentinelA + "\0", refuses: true)
+      var corrupt = try Self.nativeRecord(f); corrupt["unknown"] = sentinelA
+      try Self.putRecord(f, corrupt)
+      try Self.expectBothReferences(f, snapshot: snapshot, reference: sentinelA, refuses: true)
+    }
+    // Private State's explicit redaction is checked by source review; it stays private.
+    // Existing SecretRef and HubToken renderings are intentionally outside this new wrapper proof.
+  }
+
+  private struct ReferenceViewFacts: Sendable {
+    let observedOuterA: Bool, actualWaiter: Bool, committedB: Bool, released: Bool, readerJoined: Bool
+    let expectedRows: [String: [Data]]?, expectedSequence: Data?
+    let controller: Result<Void, any Error>, reader: Result<Void, any Error>
+  }
+  private static func referenceViewRace(
+    _ f: Fixture, snapshot: ProtocolVerificationSnapshot, method: ReferenceComparison,
+    changedControl: String, changedReference: String
+  ) async -> ReferenceViewFacts {
+    // The function receives the OUTER row's tokenRef. It never re-queries the backing relation.
+    // Statement snapshot A therefore supplies BOTH the argument and all control/classifier reads.
+    let gate: Int64 = 0x6234_7266
+    return await onThread {
+      let result = Mutex<Result<Void, any Error>?>(nil)
+      let completed = DispatchSemaphore(value: 0)
+      var readerThread: Thread?
+      var controller: PostgresConnection?
+      var gateOwned = false
+      var started = false, outerA = false, waiter = false, committed = false, released = false
+      var expected: NativeState?
+      var failure: (any Error)?
+      do {
+        // The sole stored controller owner below survives this setup scope for explicit cleanup.
+        let writerPID = try referenceFixtureValue(
+          f.raw.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid"))
+        let c = try membershipConnection(f.endpoint)
+        controller = c
+        try c.execute("SELECT pg_advisory_lock($1::bigint)", [String(gate)])
+        gateOwned = true
+        readerThread = Thread {
+          let outcome = Result<Void, any Error> {
+            try compareReference(f.database, snapshot: snapshot, reference: f.link.tokenRef, method: method)
+          }
+          result.withLock { $0 = outcome }; completed.signal()
+        }
+        readerThread?.start(); started = true
+        let expectedApplication =
+          "ref-view:" + f.link.tokenRef.utf8.map { String(format: "%02x", $0) }.joined()
+        let deadline = ContinuousClock.now + .seconds(4)
+        while ContinuousClock.now < deadline {
+          let rows = try c.execute(
+            """
+            SELECT a.pid,a.application_name,pg_backend_pid() AS controller_pid FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+            WHERE a.datname=$1 AND a.application_name=$2 AND l.locktype='advisory'
+              AND NOT l.granted AND l.classid=0::oid AND l.objid=$3::oid AND l.objsubid=1
+              AND pg_backend_pid()=ANY(pg_blocking_pids(a.pid))
+            """, [f.endpoint.database, expectedApplication, String(gate)]
+          ).rows
+          if rows.count == 1, let row = rows.first, let pid = row.int("pid"), pid > 0,
+            let controllerPID = row.int("controller_pid"), controllerPID > 0
+          {
+            outerA = row.text("application_name").map { equalBytes($0, expectedApplication) } ?? false
+            waiter = writerPID > 0 && pid != writerPID && pid != controllerPID && writerPID != controllerPID
+            break
+          }
+          if result.withLock({ $0 != nil }) { break }
+        }
+        guard outerA, waiter else { throw FixtureFailure.barrierTimeout }
+        // Native writer uses a SECOND connection, not the production advisory-lock convention.
+        // AccessShare from the paused SELECT is compatible with these RowExclusive DML locks.
+        try f.raw.execute("BEGIN")
+        do {
+          try f.raw.execute("SET LOCAL lock_timeout='3s'")
+          try f.raw.execute(
+            "UPDATE public.\"referenceViewBacking\" SET \"tokenRef\"=$1 WHERE id=1", [changedReference])
+          try f.raw.execute("UPDATE public.settings SET value=$2::jsonb WHERE key=$1", [key, changedControl])
+          try f.raw.execute(
+            """
+            INSERT INTO public."columnClocks"("table","rowId","column",hlc)
+              VALUES('connections','reference-view-retained','authMode','000000000000-0000-local')
+            """)
+          try f.raw.execute("COMMIT"); committed = true
+        } catch {
+          _ = try? f.raw.execute("ROLLBACK"); throw error
+        }
+        // Independently captured committed B, while the A reader is still an observed waiter.
+        expected = try state(f)
+        let stillWaiting =
+          try c.execute(
+            """
+            SELECT a.pid FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+            WHERE a.datname=$1 AND a.application_name=$2 AND l.locktype='advisory'
+              AND NOT l.granted AND l.classid=0::oid AND l.objid=$3::oid AND l.objsubid=1
+              AND pg_backend_pid()=ANY(pg_blocking_pids(a.pid))
+            """, [f.endpoint.database, expectedApplication, String(gate)]
+          ).rows.count == 1
+        guard stillWaiting else { throw FixtureFailure.barrierTimeout }
+      } catch { failure = error }
+      // Explicit unlock is attempted on ALL paths. Its failure remains a controller failure;
+      // clearing the SOLE retained session owner is the fallback release, before waiting.
+      if gateOwned {
+        do {
+          guard let c = controller,
+            try c.execute("SELECT pg_advisory_unlock($1::bigint)::text AS released", [String(gate)])
+              .rows.first?.text("released") == "true"
+          else { throw FixtureFailure.nativeShape }
+          released = true
+        } catch { if failure == nil { failure = error } }
+      }
+      controller = nil  // PostgresConnection.deinit calls lib.finish; no reader retains this session.
+      // This waits for actual synchronous native-operation completion, not OS Thread exit or a
+      // universal four-second bound. No fixture restoration can run before this completion signal.
+      if started { completed.wait() }
+      readerThread = nil
+      return ReferenceViewFacts(
+        observedOuterA: outerA, actualWaiter: waiter, committedB: committed,
+        released: released, readerJoined: started,
+        expectedRows: expected?.rows, expectedSequence: expected?.sequence,
+        controller: failure.map { .failure($0) } ?? .success(()),
+        reader: result.withLock { $0 } ?? .failure(FixtureFailure.nativeShape))
+    }
+  }
+
+  @Test func oneNativeStatementViewCannotAssembleMixedReferenceState() async throws {
+    for method in [ReferenceComparison.strict, .sync] {
+      try await Self.withFixture { f in
+        let snapshot = try Self.capture(f)
+        let original = try Self.nativeRecord(f)
+        var changed = original; changed["revision"] = "1"
+        let changedControl = String(
+          decoding: try JSONSerialization.data(withJSONObject: changed, options: [.sortedKeys]), as: UTF8.self
+        )
+        let changedReference = "secret:ACTIVATION_REFERENCE_VIEW_B"
+        let originalText = try Self.recordText(f).map { Data($0.utf8) }
+        try f.raw.execute(
+          """
+          CREATE SCHEMA reference_view;
+          CREATE FUNCTION reference_view.pause_outer_ref(p_ref text) RETURNS text
+            LANGUAGE plpgsql VOLATILE SET search_path=pg_catalog AS $$
+          BEGIN
+            PERFORM set_config('application_name','ref-view:'||encode(convert_to(p_ref,'UTF8'),'hex'),false);
+            PERFORM pg_advisory_xact_lock(1647604326::bigint);
+            RETURN p_ref;
+          END $$;
+          ALTER TABLE public."hubLink" RENAME TO "referenceViewBacking";
+          CREATE VIEW public."hubLink" WITH (security_barrier=true) AS
+            SELECT b.id,b.url,b."deviceId",b."joinedAt",
+              reference_view.pause_outer_ref(b."tokenRef") AS "tokenRef"
+            FROM public."referenceViewBacking" b;
+          """)
+        var restored = false
+        defer {
+          if !restored {
+            // referenceViewRace ALWAYS joins the reader before returning, even on failure.
+            try? f.raw.execute(
+              "DROP VIEW IF EXISTS public.\"hubLink\"; ALTER TABLE public.\"referenceViewBacking\" RENAME TO \"hubLink\"; DROP SCHEMA IF EXISTS reference_view CASCADE;"
+            )
+          }
+        }
+        let nativeOuterA = try f.raw.execute(
+          "SELECT \"tokenRef\" FROM public.\"referenceViewBacking\" WHERE id=1"
+        ).rows.first?.text("tokenRef")
+        let actualA = nativeOuterA.map { Self.equalBytes($0, f.link.tokenRef) } ?? false
+        let sameOriginalText = try Self.recordText(f).map { Data($0.utf8) } == originalText
+        try #require(actualA && sameOriginalText)
+        // Independent full rows/sequence BEFORE the actual reader starts. The writer's B snapshot
+        // below is the expected AFTER image, since this case deliberately includes concurrent DML.
+        _ = try Self.state(f)
+        let facts = await Self.referenceViewRace(
+          f, snapshot: snapshot, method: method, changedControl: changedControl,
+          changedReference: changedReference)
+        let joinedObservedStages =
+          facts.observedOuterA && facts.actualWaiter && facts.committedB && facts.released
+          && facts.readerJoined
+        #expect(joinedObservedStages)
+        // Inspect B BEFORE fixture restoration, even when the reader unexpectedly throws.
+        if let rows = facts.expectedRows, let sequence = facts.expectedSequence {
+          try Self.expectUnchanged(f, NativeState(rows: rows, sequence: sequence))
+        } else {
+          Issue.record("The independent committed native B snapshot was not captured.")
+        }
+        try facts.controller.get()
+        try facts.reader.get()  // Established statement A must compare successfully in BOTH purposes.
+        // Fresh statement sees atomic B and refuses original A, without writing any public row.
+        try Self.expectReferenceComparison(
+          f, snapshot: snapshot, reference: f.link.tokenRef, method: method, refuses: true)
+        try f.raw.execute(
+          "DROP VIEW public.\"hubLink\"; ALTER TABLE public.\"referenceViewBacking\" RENAME TO \"hubLink\"; DROP SCHEMA reference_view CASCADE;"
+        )
+        restored = true
+      }
+    }
+    // Native planner/view/barrier engineering is intentionally unqualified until managed execution.
+  }
+
+  @Test func nativeSqlFailureIsFixedAndComparisonDoesNotWrite() async throws {
+    try await Self.withFixture { f in
+      let snapshot = try Self.capture(f)
+      try f.raw.execute("ALTER TABLE public.settings RENAME TO reference_missing_settings")
+      var restored = false
+      defer {
+        if !restored {
+          try? f.raw.execute("ALTER TABLE public.reference_missing_settings RENAME TO settings")
+        }
+      }
+      // A valid expected reference reaches a REAL SELECT failure, not an early syntax rejection.
+      try Self.expectBothReferences(f, snapshot: snapshot, reference: f.link.tokenRef, refuses: true)
+      try f.raw.execute("ALTER TABLE public.reference_missing_settings RENAME TO settings")
+      restored = true
+      try Self.expectBothReferences(f, snapshot: snapshot, reference: f.link.tokenRef)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA reference_no_dml;
+        CREATE SEQUENCE reference_no_dml.probe;
+        CREATE FUNCTION reference_no_dml.refuse_dml() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          PERFORM nextval('reference_no_dml.probe');
+          RAISE EXCEPTION 'ACTIVATION_REFERENCE_SQL_PRIVATE' USING ERRCODE='23514',DETAIL='ACTIVATION_REFERENCE_SQL_SECRET';
+        END $$;
+        CREATE TRIGGER reference_no_dml BEFORE INSERT OR UPDATE OR DELETE ON public.settings
+          FOR EACH STATEMENT EXECUTE FUNCTION reference_no_dml.refuse_dml();
+        CREATE TRIGGER reference_no_dml BEFORE INSERT OR UPDATE OR DELETE ON public."hubLink"
+          FOR EACH STATEMENT EXECUTE FUNCTION reference_no_dml.refuse_dml();
+        """)
+      defer {
+        try? f.raw.execute(
+          "DROP TRIGGER IF EXISTS reference_no_dml ON public.settings; DROP TRIGGER IF EXISTS reference_no_dml ON public.\"hubLink\"; DROP SCHEMA IF EXISTS reference_no_dml CASCADE;"
+        )
+      }
+      // Independently prove BOTH enabled denial triggers; nextval survives statement rollback.
+      for statement in [
+        "UPDATE public.settings SET value=value WHERE key='__b4app_agent_protocol_activation_v1'",
+        "UPDATE public.\"hubLink\" SET \"tokenRef\"=\"tokenRef\" WHERE id=1",
+      ] {
+        let nativeBefore = try Self.state(f)
+        var known = false
+        do { try f.raw.execute(statement) } catch { known = (error as? PostgresError)?.sqlState == "23514" }
+        try #require(known)
+        try Self.expectUnchanged(f, nativeBefore)
+      }
+      let probeBefore = try Self.finalEffectProbe(f, "reference_no_dml.probe")
+      let independentlyReachedBoth = try Self.finalEffectSequence(probeBefore).last == 2
+      try #require(independentlyReachedBoth)
+      try Self.expectBothReferences(f, snapshot: snapshot, reference: f.link.tokenRef)
+      let probeAfter = try Self.finalEffectProbe(f, "reference_no_dml.probe")
+      let attemptedNoGuardedDML = probeBefore == probeAfter
+      #expect(attemptedNoGuardedDML)
+      // This canary covers attempted DML on settings/hubLink, including rolled-back attempts.
+      // It is not a universal no-write proof; absence of other production writes needs source review.
+    }
+  }
+}
