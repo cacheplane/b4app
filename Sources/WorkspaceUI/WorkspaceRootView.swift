@@ -152,7 +152,8 @@ struct WorkspaceShell: View {
         FloatingPanel(
           isPresented: model.showSearch,
           size: CGSize(width: MacPalette.width, height: MacPalette.fullHeight),
-          placement: .top(MacPalette.topOffset), draggable: true,
+          placement: .top(MacPalette.topOffset), cornerRadius: MacPalette.radius, continuousCorners: false,
+          draggable: true,
           // Over the title bar's button, the palette's field where the button was.
           over: { [commandCenter] in commandCenter.frameOnScreen }, overInset: MacPalette.fieldHeight / 2,
           dismiss: { model.dismissPalette() }

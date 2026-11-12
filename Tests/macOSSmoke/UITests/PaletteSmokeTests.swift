@@ -299,8 +299,8 @@ final class PaletteSmokeTests: XCTestCase {
     try await wait("the palette to sit on the centre line") { abs(palette.frame.midX - main.midX) < 1.5 }
     XCTAssertEqual(palette.frame.minY, home.minY + 130, accuracy: 3)
     // Slid along the line to the middle of the window, it is drawn onto the line across too: in the
-    // middle of the window, where the palette at its tallest (482 pt) would be centred.
-    let middle = main.midY - 241
+    // middle of the window, where the palette at its tallest (470 pt) would be centred.
+    let middle = main.midY - 235
     let slide = footerGrip()
     slide.press(
       forDuration: 0.15, thenDragTo: slide.withOffset(CGVector(dx: 0, dy: middle - palette.frame.minY + 2)))
@@ -391,7 +391,7 @@ final class PaletteSmokeTests: XCTestCase {
     snap(app, atRest, "center-rest")
     // The palette's own top row: its width (the window has the room) and its field row's height.
     XCTAssertEqual(button.frame.width, 600, accuracy: 1)
-    XCTAssertEqual(button.frame.height, 48, accuracy: 1)
+    XCTAssertEqual(button.frame.height, 36, accuracy: 1)
     // In the middle of the window, sidebar open.
     XCTAssertEqual(
       button.frame.midX, window.frame.midX, accuracy: 2,
@@ -421,8 +421,8 @@ final class PaletteSmokeTests: XCTestCase {
     // edges), the screen at rest and the screen with the palette open agree, but for the cursor and
     // the key named at the trailing end.
     var differing: [CGPoint] = []
-    for y in [rest.minY + 14, rest.midY, rest.maxY - 14] {
-      for x in stride(from: rest.minX + 6, through: rest.maxX - 70, by: 3) {
+    for y in [rest.minY + 9, rest.midY, rest.maxY - 9] {
+      for x in stride(from: rest.minX + 12, through: rest.maxX - 70, by: 3) {
         let point = CGPoint(x: x, y: y)
         if abs(try luminance(atRest, at: point) - luminance(opened, at: point)) > 0.03 {
           differing.append(point)
@@ -431,9 +431,9 @@ final class PaletteSmokeTests: XCTestCase {
     }
     XCTAssertLessThanOrEqual(
       differing.count, 4, "the resting control and the open palette differ at \(differing.prefix(12))")
-    // Over the button: the same centre line, and the field's 48 pt row centred on the button.
+    // Over the button: the same centre line, and the field's 36 pt row centred on the button.
     XCTAssertEqual(home.midX, rest.midX, accuracy: 1.5)
-    XCTAssertEqual(home.minY + 24, rest.midY, accuracy: 1.5)
+    XCTAssertEqual(home.minY + 18, rest.midY, accuracy: 1.5)
     // The click put the cursor in the palette.
     app.typeText("arch")
     try await wait("typing to reach the palette") { field.value as? String == "arch" }
@@ -448,7 +448,7 @@ final class PaletteSmokeTests: XCTestCase {
     let back = field.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
     back.press(forDuration: 0.15, thenDragTo: back.withOffset(CGVector(dx: -159, dy: -139)))
     try await wait("the palette to snap onto the button") {
-      abs(palette.frame.midX - rest.midX) < 1.5 && abs(palette.frame.minY + 24 - rest.midY) < 1.5
+      abs(palette.frame.midX - rest.midX) < 1.5 && abs(palette.frame.minY + 18 - rest.midY) < 1.5
     }
 
     // The window is resized with the palette up: it stays over the button.
@@ -470,7 +470,7 @@ final class PaletteSmokeTests: XCTestCase {
     try requireElement(field, in: app)
     try await Task.sleep(for: .milliseconds(400))
     XCTAssertEqual(palette.frame.midX, button.frame.midX, accuracy: 1.5)
-    XCTAssertEqual(palette.frame.minY + 24, button.frame.midY, accuracy: 1.5)
+    XCTAssertEqual(palette.frame.minY + 18, button.frame.midY, accuracy: 1.5)
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
   }
 

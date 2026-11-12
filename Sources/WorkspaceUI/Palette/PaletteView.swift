@@ -110,9 +110,14 @@ struct PaletteLead: View {
     static let listMaxHeight: CGFloat = 344
     /// The card at its tallest (the field, the list, the footer, and a notice's line), which is the
     /// room its panel gives it.
-    static let fullHeight: CGFloat = 48 + 1 + listMaxHeight + 1 + LLA.Space.xxl + 48
+    static let fullHeight: CGFloat = fieldHeight + 1 + listMaxHeight + 1 + LLA.Space.xxl + 48
     /// The field's row, which sits over the title bar's button when the palette opens there.
-    static let fieldHeight: CGFloat = 48
+    static let fieldHeight: CGFloat = 36
+    /// The card's corners: half the field row, so the row alone (the title bar's resting control) is
+    /// a capsule, the shape of the button groups beside it, and the card keeps those corners as it
+    /// opens. Circular, as a capsule's ends are.
+    static let radius: CGFloat = fieldHeight / 2
+    static var shape: RoundedRectangle { RoundedRectangle(cornerRadius: radius, style: .circular) }
     /// Where the card's top sits under the window's top.
     static let topOffset: CGFloat = 96
 
@@ -154,11 +159,11 @@ struct PaletteLead: View {
         Hairline()
         footer
       }
-      .background(LLA.Color.bg, in: RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous))
+      .background(LLA.Color.bg, in: Self.shape)
       .overlay(
-        RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous).strokeBorder(LLA.Color.rule)
+        Self.shape.strokeBorder(LLA.Color.rule)
       )
-      .clipShape(RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous))
+      .clipShape(Self.shape)
       // In a panel the window draws the shadow, and the panel takes each new height at once: an
       // animated height would leave the window, and its shadow, a step behind the card.
       .shadow(
@@ -236,7 +241,7 @@ struct PaletteLead: View {
         Text("esc").font(LLAFont.codeSmall).foregroundStyle(LLA.Color.muted).accessibilityHidden(true)
       }
       .padding(.horizontal, LLA.Space.l)
-      .frame(minHeight: 48)
+      .frame(minHeight: Self.fieldHeight)
       .background { if floating { WindowDragArea() } }
     }
 

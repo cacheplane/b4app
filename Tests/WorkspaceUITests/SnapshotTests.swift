@@ -95,6 +95,16 @@ private let fakeClaude =
         try await card.capture(to: "\(dir)/palette-panel-\(suffix).png")
         card.close()
       }
+      // The title bar's resting control: the card's top row, drawn flat, on the window's colour.
+      do {
+        let rest = SnapshotWindow(
+          rootView: CommandCenterButton(model: model)
+            .frame(width: MacPalette.width).padding(8).background(LLA.Color.bg),
+          untitled: true, size: CGSize(width: MacPalette.width + 16, height: MacPalette.fieldHeight + 16))
+        rest.appearance = window.appearance
+        try await rest.capture(to: "\(dir)/command-centre-rest-\(suffix).png")
+        rest.close()
+      }
       // The palette's pages, each put in its state before it is drawn.
       func palette(
         _ name: String, _ purpose: PalettePurpose, _ prepare: (PaletteModel) async -> Void

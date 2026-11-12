@@ -52,11 +52,11 @@
         .padding(.horizontal, LLA.Space.l)
         .frame(maxWidth: .infinity)
         .frame(height: Self.height)
-        .background(LLA.Color.bg, in: RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous))
+        .background(LLA.Color.bg, in: MacPalette.shape)
         .overlay(
-          RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous).strokeBorder(LLA.Color.rule)
+          MacPalette.shape.strokeBorder(LLA.Color.rule)
         )
-        .contentShape(RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous))
+        .contentShape(MacPalette.shape)
       }
       .buttonStyle(.plain)
       .help("Search threads, or type > for commands")

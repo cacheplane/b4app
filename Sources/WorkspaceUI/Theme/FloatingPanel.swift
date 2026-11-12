@@ -186,6 +186,8 @@
     var size: CGSize
     var placement: FloatingPanelPlacement
     var cornerRadius: CGFloat = LLA.Radius.card
+    /// Continuous corners, as the app's cards have; false for a capsule's circular ones.
+    var continuousCorners = true
     var draggable = false
     /// A rectangle on screen to open over instead (a button in the title bar): the panel is centred on
     /// it, with its middle `overInset` under the panel's top, so the panel's first row covers it.
@@ -214,7 +216,8 @@
             guard build.isPresented else { return }
             coordinator.present(
               AnyView(build.content()), size: build.size, placement: build.placement,
-              cornerRadius: build.cornerRadius, draggable: build.draggable, target: build.over,
+              cornerRadius: build.cornerRadius, continuousCorners: build.continuousCorners,
+              draggable: build.draggable, target: build.over,
               targetInset: build.overInset, over: anchor)
           }
         } else if wasHolding, dismissesOnResign {
@@ -250,6 +253,7 @@
 
     func present(
       _ content: AnyView, size: CGSize, placement: FloatingPanelPlacement, cornerRadius: CGFloat,
+      continuousCorners: Bool = true,
       draggable: Bool, target: (@MainActor () -> CGRect?)? = nil, targetInset: CGFloat = 0,
       over anchor: NSView
     ) {
@@ -297,7 +301,7 @@
       host.sizingOptions = []
       host.wantsLayer = true
       host.layer?.cornerRadius = cornerRadius
-      host.layer?.cornerCurve = .continuous
+      host.layer?.cornerCurve = continuousCorners ? .continuous : .circular
       host.layer?.masksToBounds = true
       panel.contentView = host
 
