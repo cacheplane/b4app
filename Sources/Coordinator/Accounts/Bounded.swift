@@ -9,13 +9,14 @@ import Synchronization
 enum Bounded {
   /// The work's result, or nil when `timeout` passed first.
   static func run<T: Sendable>(
-    within timeout: Duration, _ work: @escaping @Sendable () async throws -> T
+    within timeout: Duration, executorPreference: (any TaskExecutor)? = nil,
+    _ work: @escaping @Sendable () async throws -> T
   ) async -> Result<T, any Error>? {
     let once = Once<Result<T, any Error>?>()
-    let task = Task {
+    let task = Task(executorPreference: executorPreference) {
       do { once.resolve(.success(try await work())) } catch { once.resolve(.failure(error)) }
     }
-    let timer = Task {
+    let timer = Task(executorPreference: executorPreference) {
       try? await Task.sleep(for: timeout)
       once.resolve(nil)
     }
@@ -27,8 +28,11 @@ enum Bounded {
 
   /// `run(within:)` for work with nothing to answer: whether it finished in time.
   @discardableResult
-  static func run(within timeout: Duration, _ work: @escaping @Sendable () async -> Void) async -> Bool {
-    await run(within: timeout) { () async throws -> Bool in
+  static func run(
+    within timeout: Duration, executorPreference: (any TaskExecutor)? = nil,
+    _ work: @escaping @Sendable () async -> Void
+  ) async -> Bool {
+    await run(within: timeout, executorPreference: executorPreference) { () async throws -> Bool in
       await work()
       return true
     } != nil

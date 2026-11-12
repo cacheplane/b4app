@@ -996,23 +996,44 @@ public final class WorkspaceDatabase: Sendable {
         let previous = try one(c, HubLink.self, "SELECT * FROM \"hubLink\" WHERE \"id\" = 1 FOR UPDATE")
         try ProtocolActivationControl.mutateMembership(
           c, oldLink: previous, newLink: link, change: membershipChange)
-        try c.execute(
-          """
-          INSERT INTO "hubLink" ("id", "url", "deviceId", "deviceName", "tokenRef", "orgSlug", "username",
-            "cursor", "lastPushAt", "lastError", "joinedAt")
-          VALUES (1, $1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)
-          ON CONFLICT ("id") DO UPDATE SET "url" = EXCLUDED."url", "deviceId" = EXCLUDED."deviceId",
-            "deviceName" = EXCLUDED."deviceName", "tokenRef" = EXCLUDED."tokenRef",
-            "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username",
-            "lastPushAt" = EXCLUDED."lastPushAt", "lastError" = EXCLUDED."lastError",
-            "joinedAt" = EXCLUDED."joinedAt"
-          """,
-          [
-            link.url, link.deviceId, link.deviceName, link.tokenRef, link.orgSlug, link.username,
-            String(link.cursor), link.lastPushAt, link.lastError, link.joinedAt,
-          ])
+        try persistHubLink(c, link: link, insertingOnly: false)
       }
     } catch { throw ProtocolActivationControl.failure }
+  }
+
+  /// Transaction borrower only. The owner already locked hubLink→control and owns rollback/COMMIT.
+  /// Ordinary wrappers retain the exact original UPSERT; checked captured absence uses INSERT-only.
+  @discardableResult
+  func persistHubLink(_ c: PostgresConnection, link: HubLink, insertingOnly: Bool) throws -> Int {
+    if insertingOnly {
+      return try c.execute(
+        """
+        INSERT INTO "hubLink" ("id", "url", "deviceId", "deviceName", "tokenRef", "orgSlug", "username",
+          "cursor", "lastPushAt", "lastError", "joinedAt")
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)
+        """,
+        [
+          link.url, link.deviceId, link.deviceName, link.tokenRef, link.orgSlug, link.username,
+          String(link.cursor), link.lastPushAt, link.lastError, link.joinedAt,
+        ]
+      ).affected
+    }
+    return try c.execute(
+      """
+      INSERT INTO "hubLink" ("id", "url", "deviceId", "deviceName", "tokenRef", "orgSlug", "username",
+        "cursor", "lastPushAt", "lastError", "joinedAt")
+      VALUES (1, $1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)
+      ON CONFLICT ("id") DO UPDATE SET "url" = EXCLUDED."url", "deviceId" = EXCLUDED."deviceId",
+        "deviceName" = EXCLUDED."deviceName", "tokenRef" = EXCLUDED."tokenRef",
+        "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username",
+        "lastPushAt" = EXCLUDED."lastPushAt", "lastError" = EXCLUDED."lastError",
+        "joinedAt" = EXCLUDED."joinedAt"
+      """,
+      [
+        link.url, link.deviceId, link.deviceName, link.tokenRef, link.orgSlug, link.username,
+        String(link.cursor), link.lastPushAt, link.lastError, link.joinedAt,
+      ]
+    ).affected
   }
 
   /// The tables whose rows carry an owner: the device of a row's latest insert, on the hub

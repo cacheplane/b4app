@@ -42,6 +42,35 @@ public struct ProtocolMembershipBinding: Sendable, Equatable, CustomStringConver
   public var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
 }
 
+/// Org-free local membership comparison. It neither invents an authenticated principal nor
+/// grants a lease; the configured deployment and both opaque native identities retain their bytes.
+public struct ProtocolNativeMembership: Sendable, Equatable, CustomStringConvertible,
+  CustomDebugStringConvertible, CustomReflectable
+{
+  public let canonicalHubBase: String
+  public let deviceID: String
+  public let linkJoinedAt: String
+
+  public init(canonicalHubBase: String, deviceID: String, linkJoinedAt: String) throws {
+    try ProtocolActivationControl.requireIdentity(deviceID)
+    try ProtocolActivationControl.requireIdentity(linkJoinedAt)
+    self.canonicalHubBase = try ProtocolActivationControl.canonicalBase(canonicalHubBase)
+    self.deviceID = deviceID
+    self.linkJoinedAt = linkJoinedAt
+  }
+  public static func == (a: Self, b: Self) -> Bool {
+    ProtocolActivationControl.bytesEqual(a.canonicalHubBase, b.canonicalHubBase)
+      && ProtocolActivationControl.bytesEqual(a.deviceID, b.deviceID)
+      && ProtocolActivationControl.bytesEqual(a.linkJoinedAt, b.linkJoinedAt)
+  }
+  public var description: String { "ProtocolNativeMembership(redacted)" }
+  public var debugDescription: String { description }
+  public var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+}
+
+/// A whole-store compatibility comparison, never an upload filter or runtime authorization.
+public enum ProtocolSyncRequirement: Sendable, Equatable { case legacyOnly, protocolTwo }
+
 /// Caller-supplied comparison data, never proof of an authenticated HTTP response or admission.
 public struct ProtocolVerificationObservation: Sendable, Equatable, CustomStringConvertible,
   CustomDebugStringConvertible, CustomReflectable
@@ -72,10 +101,15 @@ public struct ProtocolVerificationSnapshot: Sendable, CustomStringConvertible,
 {
   fileprivate let database: WorkspaceDatabase
   fileprivate let record: ProtocolActivationControl.Record
+  fileprivate let capturedContext: ProtocolActivationControl.CapturedContext?
   public var observation: ProtocolVerificationObservation? { record.observation }
-  fileprivate init(database: WorkspaceDatabase, record: ProtocolActivationControl.Record) {
+  fileprivate init(
+    database: WorkspaceDatabase, record: ProtocolActivationControl.Record,
+    capturedContext: ProtocolActivationControl.CapturedContext? = nil
+  ) {
     self.database = database
     self.record = record
+    self.capturedContext = capturedContext
   }
   public var description: String { "ProtocolVerificationSnapshot(redacted)" }
   public var debugDescription: String { description }
@@ -145,7 +179,143 @@ extension WorkspaceDatabase {
         record.revision = try ProtocolActivationControl.next(record.revision)
         record.observation = observation
         try ProtocolActivationControl.store(c, record)
-        return ProtocolVerificationSnapshot(database: self, record: record)
+        return ProtocolVerificationSnapshot(
+          database: self, record: record, capturedContext: expectedSnapshot.capturedContext)
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+}
+
+extension WorkspaceDatabase {
+  /// Capture a real inactive epoch before the caller's first verification suspension. Nil means
+  /// the actual singleton link must be absent, not that any current membership is acceptable.
+  public func captureProtocolVerification(
+    accountID: String, expectedMembership: ProtocolNativeMembership?
+  ) throws -> ProtocolVerificationSnapshot {
+    do {
+      try ProtocolActivationControl.requireIdentity(accountID)
+      return try write(exclusive: true) { c in
+        let state = try ProtocolActivationControl.state(c, locking: true)
+        guard ProtocolActivationControl.bytesEqual(state.database, endpoint.database),
+          try ProtocolActivationControl.nativeMembership(state) == expectedMembership
+        else { throw ProtocolActivationControl.failure }
+        let record: ProtocolActivationControl.Record
+        if let text = state.control {
+          record = try ProtocolActivationControl.decode(text)
+          try ProtocolActivationControl.requireKnownBinding(
+            record, accountID: accountID, state: state, endpoint: endpoint.database)
+        } else {
+          record = ProtocolActivationControl.Record.fresh(revision: 0)
+          try ProtocolActivationControl.store(c, record, insertingOnly: true)
+        }
+        let context = ProtocolActivationControl.CapturedContext(
+          accountID: accountID, membership: expectedMembership)
+        return ProtocolVerificationSnapshot(database: self, record: record, capturedContext: context)
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
+  /// Bind only the captured physical/native state. This never adopts a newer restore/replacement.
+  public func prepareProtocolVerification(
+    expectedSnapshot: ProtocolVerificationSnapshot, expectedBinding: ProtocolMembershipBinding
+  ) throws -> ProtocolVerificationSnapshot {
+    do {
+      guard expectedSnapshot.database === self, let context = expectedSnapshot.capturedContext,
+        ProtocolActivationControl.bytesEqual(context.accountID, expectedBinding.accountID)
+      else { throw ProtocolActivationControl.failure }
+      return try write(exclusive: true) { c in
+        let state = try ProtocolActivationControl.state(c, locking: true)
+        var record = try ProtocolActivationControl.capturedRecord(
+          self, state: state, snapshot: expectedSnapshot, allowingLaterRevision: false)
+        try ProtocolActivationControl.requireMembership(
+          state, binding: expectedBinding, endpoint: endpoint.database)
+        if let binding = record.binding {
+          guard binding == expectedBinding else { throw ProtocolActivationControl.failure }
+        } else {
+          record.revision = try ProtocolActivationControl.next(record.revision)
+          record.binding = expectedBinding
+          try ProtocolActivationControl.store(c, record)
+        }
+        return ProtocolVerificationSnapshot(database: self, record: record, capturedContext: context)
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
+  /// Denial only. Clear the latest observation in this exact captured member epoch, even when a
+  /// positive advanced its revision. A successful actual COMMIT is the only durable-fence receipt.
+  public func fenceProtocolVerification(expectedSnapshot: ProtocolVerificationSnapshot) throws {
+    do {
+      guard expectedSnapshot.database === self, expectedSnapshot.capturedContext != nil else {
+        throw ProtocolActivationControl.failure
+      }
+      try write(exclusive: true) { c -> Void in
+        let state = try ProtocolActivationControl.state(c, locking: true)
+        var record = try ProtocolActivationControl.capturedRecord(
+          self, state: state, snapshot: expectedSnapshot, allowingLaterRevision: true)
+        record.revision = try ProtocolActivationControl.next(record.revision)
+        record.observation = nil
+        try ProtocolActivationControl.store(c, record)
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
+  /// A checked, explicit link write can advance only its own captured context. Existing ordinary
+  /// save wrappers keep their behavior; this overload never recaptures an unrelated newer epoch.
+  public func saveHubLink(
+    _ link: HubLink, membershipChange: ProtocolMembershipChange,
+    expectedProtocolSnapshot: ProtocolVerificationSnapshot
+  ) throws -> ProtocolVerificationSnapshot {
+    do {
+      guard expectedProtocolSnapshot.database === self,
+        let context = expectedProtocolSnapshot.capturedContext
+      else { throw ProtocolActivationControl.failure }
+      let nextMembership = try ProtocolNativeMembership(
+        canonicalHubBase: link.url, deviceID: link.deviceId, linkJoinedAt: link.joinedAt)
+      return try write(exclusive: true) { c in
+        let state = try ProtocolActivationControl.state(c, locking: true)
+        let record = try ProtocolActivationControl.capturedRecord(
+          self, state: state, snapshot: expectedProtocolSnapshot, allowingLaterRevision: false)
+        // The link is already row-locked before the control row; keep full metadata only within
+        // this synchronous transaction for the original cursor/ownedAs preservation witness.
+        let previousRow = try c.execute("SELECT * FROM public.\"hubLink\" WHERE id=1").rows.first
+        let previous = try previousRow.map { try Rows.decode(HubLink.self, from: $0) }
+        let changed = try ProtocolActivationControl.changedMembership(
+          record, oldLink: previous, newLink: link, change: membershipChange)
+        let writtenRecord = changed ?? record
+        if let changed { try ProtocolActivationControl.store(c, changed) }
+        // SELECT FOR UPDATE cannot lock absence. A real competing native INSERT must conflict,
+        // never be overwritten after the absent-state check, even outside the advisory convention.
+        guard try persistHubLink(c, link: link, insertingOnly: context.membership == nil) == 1 else {
+          throw ProtocolActivationControl.failure
+        }
+        try ProtocolActivationControl.requireSavedLink(c, link: link, previous: previousRow)
+        let written = try ProtocolActivationControl.state(c, locking: false)
+        guard ProtocolActivationControl.bytesEqual(written.database, endpoint.database),
+          try ProtocolActivationControl.nativeMembership(written) == nextMembership,
+          let text = written.control, try ProtocolActivationControl.decode(text) == writtenRecord
+        else { throw ProtocolActivationControl.failure }
+        let writtenContext = ProtocolActivationControl.CapturedContext(
+          accountID: context.accountID, membership: nextMembership)
+        return ProtocolVerificationSnapshot(
+          database: self, record: writtenRecord, capturedContext: writtenContext)
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
+  /// Literal positive witnesses only. This data does not validate an owner graph, consume a
+  /// change-log prefix, authenticate an account, or permit protocol activity.
+  public func protocolSyncRequirement() throws -> ProtocolSyncRequirement {
+    do {
+      return try read { c in
+        let rows = try c.execute(ProtocolActivationControl.syncRequirementSQL).rows
+        guard rows.count == 1, let value = rows.first?.text("requires_two") else {
+          throw ProtocolActivationControl.failure
+        }
+        switch value {
+        case "true": return .protocolTwo
+        case "false": return .legacyOnly
+        default: throw ProtocolActivationControl.failure
+        }
       }
     } catch { throw ProtocolActivationControl.failure }
   }
@@ -196,20 +366,31 @@ enum ProtocolActivationControl {
           "SELECT value::text AS control FROM public.settings WHERE key=$1 FOR UPDATE", [key]
         ).rows.first?.text("control")
       else { return }
-      var record = try decode(text)
-      // Nil newLink denotes every clear, including an already-empty one. Labels/token/cursor
-      // are deliberately excluded; a routine unchanged refresh never rewrites the JSONB row.
-      if change == .preserveIfUnchanged, let oldLink, let newLink,
-        try sameMembership(oldLink, newLink)
-      {
-        return
+      let record = try decode(text)
+      if let changed = try changedMembership(record, oldLink: oldLink, newLink: newLink, change: change) {
+        try store(c, changed)
       }
-      record.revision = try next(record.revision)
-      record.membershipIncarnation = UUID().uuidString
-      record.binding = nil
-      record.observation = nil
-      try store(c, record)
     } catch { throw failure }
+  }
+
+  /// Nil means the unchanged tuple requires NO record rewrite, preserving its native bytes.
+  fileprivate static func changedMembership(
+    _ original: Record, oldLink: WorkspaceDatabase.HubLink?, newLink: WorkspaceDatabase.HubLink?,
+    change: ProtocolMembershipChange
+  ) throws -> Record? {
+    // Nil newLink denotes every clear, including an already-empty one. Labels/token/cursor
+    // are deliberately excluded, exactly as for the original ordinary save/clear paths.
+    if change == .preserveIfUnchanged, let oldLink, let newLink,
+      try sameMembership(oldLink, newLink)
+    {
+      return nil
+    }
+    var record = original
+    record.revision = try next(record.revision)
+    record.membershipIncarnation = UUID().uuidString
+    record.binding = nil
+    record.observation = nil
+    return record
   }
 
   fileprivate static func requireIdentity(_ value: String) throws {
@@ -247,6 +428,107 @@ enum ProtocolActivationControl {
       && bytesEqual(a.deviceId, b.deviceId) && bytesEqual(a.joinedAt, b.joinedAt)
   }
 
+  fileprivate struct CapturedContext: Sendable {
+    let accountID: String
+    let membership: ProtocolNativeMembership?
+  }
+
+  fileprivate static func nativeMembership(_ state: State) throws -> ProtocolNativeMembership? {
+    if !state.linkPresent {
+      guard state.url == nil, state.device == nil, state.joined == nil else { throw failure }
+      return nil
+    }
+    guard let url = state.url, let device = state.device, let joined = state.joined else { throw failure }
+    return try ProtocolNativeMembership(canonicalHubBase: url, deviceID: device, linkJoinedAt: joined)
+  }
+
+  fileprivate static func requireKnownBinding(
+    _ record: Record, accountID: String, state: State, endpoint: String
+  ) throws {
+    if let binding = record.binding {
+      guard bytesEqual(binding.accountID, accountID) else { throw failure }
+      try requireMembership(state, binding: binding, endpoint: endpoint)
+    }
+  }
+
+  fileprivate static func capturedRecord(
+    _ database: WorkspaceDatabase, state: State, snapshot: ProtocolVerificationSnapshot,
+    allowingLaterRevision: Bool
+  ) throws -> Record {
+    guard snapshot.database === database, let context = snapshot.capturedContext,
+      bytesEqual(state.database, database.endpoint.database),
+      try nativeMembership(state) == context.membership, let text = state.control
+    else { throw failure }
+    let record = try decode(text)
+    try requireKnownBinding(
+      record, accountID: context.accountID, state: state, endpoint: database.endpoint.database)
+    if allowingLaterRevision {
+      guard bytesEqual(record.storeIncarnation, snapshot.record.storeIncarnation),
+        bytesEqual(record.membershipIncarnation, snapshot.record.membershipIncarnation),
+        record.revision >= snapshot.record.revision
+      else { throw failure }
+    } else {
+      guard record == snapshot.record else { throw failure }
+    }
+    return record
+  }
+
+  fileprivate static func requireSavedLink(
+    _ c: PostgresConnection, link: WorkspaceDatabase.HubLink, previous: Row?
+  ) throws {
+    let rows = try c.execute("SELECT * FROM public.\"hubLink\" WHERE id=1").rows
+    guard rows.count == 1, let row = rows.first else { throw failure }
+    // All columns written by the original statement plus the cursor/owned metadata it preserves.
+    let expected: [(String, String?)] = [
+      ("id", "1"), ("url", link.url), ("deviceId", link.deviceId), ("deviceName", link.deviceName),
+      ("tokenRef", link.tokenRef), ("orgSlug", link.orgSlug), ("username", link.username),
+      ("cursor", previous?.text("cursor") ?? String(link.cursor)), ("lastPushAt", link.lastPushAt),
+      ("lastError", link.lastError), ("joinedAt", link.joinedAt), ("ownedAs", previous?.text("ownedAs")),
+    ]
+    for (column, wanted) in expected {
+      switch (row.text(column), wanted) {
+      case (nil, nil): break
+      case (.some(let actual), .some(let desired)):
+        guard bytesEqual(actual, desired) else { throw failure }
+      default: throw failure
+      }
+    }
+  }
+
+  private static let distinguishingColumns = [
+    "peerProfile", "agentId", "authMode", "authHeaderName", "protocolRetiredAt", "protocolRetiredReason",
+  ]
+  private static let privateTables = [
+    "protocolSubscriptions", "protocolRunSegments", "protocolOperations", "protocolGrantSecrets",
+    "protocolGrants", "protocolPromptAnswers", "protocolHistoryAnchors",
+  ]
+  fileprivate static let syncRequirementSQL: String = {
+    // These strings are literal internal schema identifiers, never caller-supplied SQL/values.
+    let columns = "ARRAY[" + distinguishingColumns.map { "'" + $0 + "'" }.joined(separator: ",") + "]::text[]"
+    let tables = "ARRAY[" + privateTables.map { "'" + $0 + "'" }.joined(separator: ",") + "]::text[]"
+    let live = distinguishingColumns.map { "c." + Rows.quote($0) + " IS NOT NULL" }.joined(separator: " OR ")
+    let retained = privateTables.map { "EXISTS(SELECT 1 FROM public." + Rows.quote($0) + ")" }.joined(
+      separator: " OR ")
+    return """
+      SELECT (
+        EXISTS(SELECT 1 FROM public.connections c WHERE c.kind='agentProtocol' OR \(live))
+        OR \(retained)
+        OR EXISTS(
+          SELECT 1 FROM public.changes ch WHERE ch."table"=ANY(\(tables))
+            OR (ch."table"='connections' AND (
+              (ch.op='insert' AND jsonb_typeof(ch.value)='object' AND (
+                ch.value->'kind'='"agentProtocol"'::jsonb OR EXISTS(
+                  SELECT 1 FROM unnest(\(columns)) AS k(name)
+                  WHERE ch.value ? k.name AND (ch.value->k.name) IS NOT NULL
+                    AND ch.value->k.name <> 'null'::jsonb)))
+              OR (ch.op='update' AND (ch."column"=ANY(\(columns))
+                OR (ch."column"='kind' AND ch.value='"agentProtocol"'::jsonb))))))
+        OR EXISTS(SELECT 1 FROM public."columnClocks" cl
+          WHERE cl."table"='connections' AND cl."column"=ANY(\(columns)))
+      )::text AS requires_two
+      """
+  }()
+
   fileprivate struct Record: Sendable, Equatable {
     var storeIncarnation: String
     var membershipIncarnation: String
@@ -267,6 +549,7 @@ enum ProtocolActivationControl {
   fileprivate struct State {
     let database: String
     let control: String?
+    let linkPresent: Bool
     let url: String?
     let device: String?
     let joined: String?
@@ -284,13 +567,14 @@ enum ProtocolActivationControl {
       """
       SELECT current_database() AS database,
         (SELECT value::text FROM public.settings WHERE key=$1\(lock)) AS control,
-        l.url, l."deviceId" AS device, l."joinedAt" AS joined
+        l.id AS native_link_id, l.url, l."deviceId" AS device, l."joinedAt" AS joined
       FROM (SELECT 1) singleton LEFT JOIN public."hubLink" l ON l.id=1
       """, [key]
     ).rows
     guard rows.count == 1, let row = rows.first, let database = row.text("database") else { throw failure }
     return State(
-      database: database, control: row.text("control"), url: row.text("url"),
+      database: database, control: row.text("control"), linkPresent: row.text("native_link_id") == "1",
+      url: row.text("url"),
       device: row.text("device"), joined: row.text("joined"))
   }
   fileprivate static func requireDatabase(

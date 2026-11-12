@@ -163,6 +163,80 @@ A new profile can serve the same upgraded managed project with fresh native IDs;
 old rows retain their original associations. A user can copy a draft deliberately;
 no transcript importer, automatic initial send or old-protocol adapter is added.
 
+### Local verification records and comparison snapshots
+
+Keep the device-local control row at the exact reserved settings key
+`__b4app_agent_protocol_activation_v1`. Its closed version1 object contains
+`version`, independent uppercase `UUID.uuidString` encodings for
+`storeIncarnation` and `membershipIncarnation`, and a canonical nonnegative Int64 `revision` encoded as
+decimal text. Optional `binding` and `observation` are omitted when absent;
+explicit null, unknown keys and malformed values refuse. Generic settings reads
+and writes cannot access that exact key; NUL keys refuse before native binding
+or value encoding. Opaque identities compare UTF8 bytes.
+
+A binding contains `accountID`, `canonicalHubBase`, stable `hubUserID` and
+`hubOrgID`, native `deviceID`, `databaseName` and `linkJoinedAt`. An observation
+repeats that complete binding and records `healthy=true`, `reportedMinimum=2`
+and `reportedVersion>=2`. These are caller-supplied comparison data. They never
+prove authenticated HTTP, current account ownership, a physical lease or agent
+execution authority. Snapshot values strongly retain their actual database
+object and expose neither a raw record nor a public constructor/Codable form;
+automatic descriptions and reflection redact identities.
+
+Capture the actual database and exact optional native membership before the
+first verification credential/HTTP await. Capture creates an inactive epoch
+with INSERT-only semantics if none exists, without inventing user/org identity.
+Nil membership means verified native absence. Later binding compares the exact
+captured record, object, account and native tuple; it cannot adopt state written
+by a restore or replacement during the await. Captured binding and positive
+commit preserve that private context. Snapshots created by direct prepare/read, and commits derived from those
+snapshots, have no capture context and cannot acquire it by inference.
+Authenticated current-owner proof remains the Coordinator's separate duty.
+
+Routine token/name/status refresh for the same canonical native tuple preserves
+control bytes. When control exists, explicit replacement (including an
+identical-looking tuple) and every clear rotate membership/revision and remove
+binding/observation. Ordinary save/clear never creates absent control. A checked
+link write consumes an exact captured state and returns only the epoch it
+actually wrote. Expected native absence uses plain INSERT, so a concurrent
+native insert causes refusal rather than being overwritten by an upsert.
+Every successful restore replays all source rows normally and then creates fresh inactive
+store/member identities with destination chronology in the same transaction.
+Source control rows never supply destination authority or revision history.
+
+A matching authoritative negative first fences older owner attempts, then clears
+the latest observation only within the same captured store/member/account/native
+epoch, with a checked revision increment. Preserve the binding and old org;
+conflicting evidence cannot silently rebind a principal. Actual successful
+COMMIT establishes durable withdrawal. Failure leaves current protocol-dependent
+admission denied/error and supplies no durable-success receipt; an unknown
+COMMIT outcome remains unknown. A negative that did not persist cannot be
+reconstructed from an older positive after process loss. Preserve the existing
+ordinary outage/cold-reopen policy instead of adding a hidden marker or an
+always-online startup requirement. Errors expose no underlying SQL/private data.
+
+Classify the whole store using literal positive protocol markers: the current
+AP kind or any nonnull value among the six AP connection columns, any retained
+row in the seven private
+protocol tables, retained connection insert/update markers (including explicit
+column clears), private-table change metadata, and AP connection column clocks.
+Include synced history because a later join resets the whole log. Null defaults,
+opaque payloads, ordinary legacy tombstones/partial history, installed schema
+and the control setting alone are not markers. Use one native snapshot; this
+comparison neither filters/consumes changes nor adds an ownership/replay validator.
+
+These storage primitives remain dormant until the owner handles admission.
+Cold reuse must match the closed binding to independently known account/stable
+nonplaceholder user identity and actual native membership. New positive evidence
+requires confined actual HTTP200 `/v1/me` and `/readyz` replies. Recheck current
+ownership after credential and network awaits.
+Network producers and completions require current ownership; native comparison
+and apply/cursor, accepted-prefix and owned-row effects must share their actual
+transaction. Install the exact scope before proof-dependent network handoff,
+while preserving normal local services and unrelated work. Atomic retirement
+publication, public allowlists, phone support and execution/private-auth admission
+remain required parts of A4–A10.
+
 ## 4. Durable owner-local projection
 
 Add non-synced storage entities for upstream subscription state, canonical Run

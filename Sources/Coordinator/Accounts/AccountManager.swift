@@ -64,6 +64,7 @@ public actor AccountManager {
     /// reads nothing.
     public var legacySecretStore: (any SecretStore)?
     var migrationObserver: AccountMigrationObserver? = nil
+    var migrationCloseTaskExecutor: (any TaskExecutor)? = nil
 
     public init(
       cluster: StoreCluster, registry: AccountRegistry, scope: AccountScope.Context,
@@ -92,6 +93,7 @@ public actor AccountManager {
   let flavor: Flavor
   let legacySecretStore: (any SecretStore)?
   let migrationObserver: AccountMigrationObserver?
+  let migrationCloseTaskExecutor: (any TaskExecutor)?
   let slot = Slot()
   let logger = Log.logger("accounts")
 
@@ -134,6 +136,7 @@ public actor AccountManager {
     flavor = context.flavor
     legacySecretStore = context.legacySecretStore
     migrationObserver = context.migrationObserver
+    migrationCloseTaskExecutor = context.migrationCloseTaskExecutor
   }
 
   /// The registry's database on the cluster whose default database is `endpoint.database`: `registry`
@@ -356,7 +359,7 @@ public actor AccountManager {
       migrationObserver?(.scopeCloseAwaitEntered, nil)
       await Self.close(
         previous, stoppingServers: false, drainTimeout: .zero, within: Self.switchCloseBudget,
-        migrationObserver: migrationObserver)
+        migrationObserver: migrationObserver, taskExecutor: migrationCloseTaskExecutor)
       // Closing admission and draining ALL old leases is the local database write fence, even if
       // service close is still finishing. This synchronous bridge returns with admission closed.
       migrationObserver?(.poolDrainEntered, nil)
@@ -596,7 +599,7 @@ public actor AccountManager {
   static func close(
     _ scope: AccountScope, stoppingServers: Bool = true, drainTimeout: Duration = AccountScope.drainTimeout,
     serverBudget: Duration = .seconds(10), within budget: Duration?,
-    migrationObserver: AccountMigrationObserver? = nil
+    migrationObserver: AccountMigrationObserver? = nil, taskExecutor: (any TaskExecutor)? = nil
   ) async {
     let close: @Sendable () async -> Void = {
       migrationObserver?(.scopeCloseWorkEntered, nil)
@@ -605,7 +608,7 @@ public actor AccountManager {
       migrationObserver?(.scopeCloseWorkReturned, nil)
     }
     guard let budget else { return await close() }
-    let completed = await Bounded.run(within: budget, close)
+    let completed = await Bounded.run(within: budget, executorPreference: taskExecutor, close)
     migrationObserver?(.scopeCloseAwaitReturned, completed)
     if !completed {
       Log.logger("accounts").warning(

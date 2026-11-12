@@ -172,7 +172,19 @@ private final class L1PhaseTrace: Sendable {
   }
 }
 
-final class L1RunState: Sendable { let finished = Mutex(false) }
+final class L1RunState: Sendable {
+  let finished = Mutex(false)
+  private let finishedAt = Mutex<ContinuousClock.Instant?>(nil)
+
+  func finishTimedOperation() {
+    finishedAt.withLock { value in
+      if value == nil { value = .now }
+    }
+    finished.withLock { $0 = true }
+  }
+
+  func timedOperationFinishedAt() -> ContinuousClock.Instant? { finishedAt.withLock { $0 } }
+}
 
 final class L1FactoryCalls: Sendable {
   private let count = Mutex(0)
@@ -515,7 +527,8 @@ final class L1FactoryCalls: Sendable {
     _ cleanup: L1Cleanup, pending: Bool = true, hubURL: String = AgentProtocolAccountMigrationTests.hubURL,
     apiFactory: HubSync.APIFactory? = nil, isolatedDiagnostics: Bool = false,
     adapterFactory: SessionService.AdapterFactory? = nil,
-    migrationObserver: AccountMigrationObserver? = nil
+    migrationObserver: AccountMigrationObserver? = nil,
+    migrationCloseTaskExecutor: (any TaskExecutor)? = nil
   ) async throws -> Fixture {
     let files = try AgentProtocolFoundationFixture.knownFiles()
     let endpoint = try AgentProtocolResourceFixture.endpoint()
@@ -572,6 +585,7 @@ final class L1FactoryCalls: Sendable {
       cluster: StoreCluster(endpoint: endpoint, binDir: endpoint.binDir!), registry: registry,
       scope: scopeContext, flavor: .local)
     managerContext.migrationObserver = migrationObserver
+    managerContext.migrationCloseTaskExecutor = migrationCloseTaskExecutor
     let manager = AccountManager(context: managerContext)
     cleanup.own(manager)
     await manager.start()
@@ -606,6 +620,7 @@ final class L1FactoryCalls: Sendable {
     apiFactory: HubSync.APIFactory? = nil,
     isolatedDiagnostics: Bool = false, adapterFactory: SessionService.AdapterFactory? = nil,
     expectedAdapterFactoryCalls: Int = 0, migrationObserver: AccountMigrationObserver? = nil,
+    migrationCloseTaskExecutor: (any TaskExecutor)? = nil,
     _ body: @Sendable (Fixture, L1Cleanup) async throws -> Void
   ) async throws {
     let cleanup = L1Cleanup()
@@ -615,7 +630,7 @@ final class L1FactoryCalls: Sendable {
       let fixture = try await fixture(
         cleanup, pending: pending, hubURL: hubURL, apiFactory: apiFactory,
         isolatedDiagnostics: isolatedDiagnostics, adapterFactory: adapterFactory,
-        migrationObserver: migrationObserver)
+        migrationObserver: migrationObserver, migrationCloseTaskExecutor: migrationCloseTaskExecutor)
       created = fixture
       try await body(fixture, cleanup)
     } catch { failure = error }
@@ -785,7 +800,10 @@ final class L1FactoryCalls: Sendable {
   @Test func sameAccountPendingQuiescesBeforeCapture() async throws {
     let trace = L1PhaseTrace(.quiescence)
     defer { trace.emitAfterCleanup() }
-    try await Self.withFixture(migrationObserver: { trace.recordMigration($0, outcome: $1) }) {
+    let executor = AccountMigrationTestExecutor()
+    try await Self.withFixture(
+      migrationObserver: { trace.recordMigration($0, outcome: $1) }, migrationCloseTaskExecutor: executor
+    ) {
       fixture, cleanup in
       let writer = try Self.connection(fixture.endpoint)
       let writerPID = try #require(writer.execute("SELECT pg_backend_pid() AS pid").rows.first?.text("pid"))
@@ -803,7 +821,7 @@ final class L1FactoryCalls: Sendable {
       try writer.execute(
         #"UPDATE "connections" SET "label" = 'Committed before migration' WHERE "id" = 'old-b4'"#)
       let expected = try Self.snapshot(writer)
-      let run = Self.beginQuiescenceSubject(fixture, cleanup, trace: trace)
+      let run = Self.beginTimedMigrationSubject(fixture, cleanup, executor: executor, trace: trace)
       defer {
         trace.record(.bodyScopeClosing, flag: fixture.scope.isClosing)
         let finished = run.state.finished.withLock { $0 }
@@ -849,7 +867,7 @@ final class L1FactoryCalls: Sendable {
       if case .success = commit { active.withLock { $0 = false } }
       release.run()
       _ = try commit.get()
-      let result = try await Self.completed(run, trace: trace)
+      let result = try await Self.completedTimedMigration(run, trace: trace)
       _ = try result.get()
       try Self.assertArchive(fixture, expected: expected)
       try Self.assertHistory(expected, after: Self.snapshot(fixture.raw))
@@ -863,17 +881,18 @@ final class L1FactoryCalls: Sendable {
   @Test func pendingGateTimeoutRestoresSameLiveScopeWithoutMutation() async throws {
     let trace = L1PhaseTrace(.gateTimeout)
     defer { trace.emitAfterCleanup() }
+    let executor = AccountMigrationTestExecutor()
     try await Self.withFixture(migrationObserver: { trace.recordMigration($0, outcome: $1) }) {
       fixture, cleanup in
       try fixture.scope.enter()
       let release = cleanup.release { fixture.scope.leave() }
-      let run = Self.begin(fixture, cleanup, trace: trace)
+      let run = Self.beginTimedMigrationSubject(fixture, cleanup, executor: executor, trace: trace)
       defer {
         trace.record(.bodyScopeClosing, flag: fixture.scope.isClosing)
         let finished = run.state.finished.withLock { $0 }
         trace.record(.bodyRunFinished, flag: finished)
       }
-      let result = try await Self.completed(run, trace: trace)
+      let result = try await Self.completedTimedMigration(run, trace: trace)
       #expect(Self.refused(result))
       #expect(fixture.manager.current?.instance == fixture.scope.instance)
       #expect(!fixture.scope.isClosing)
@@ -995,10 +1014,10 @@ final class L1FactoryCalls: Sendable {
 }
 
 extension AgentProtocolAccountMigrationTests {
-  // One test subject only: a private queue supplies execution resources; AccountManager remains
+  // Only the two diagnostic subjects: each private queue supplies resources; AccountManager remains
   // actor-isolated. This is not a dedicated OS thread or a scheduling-deadline guarantee.
-  private final class QuiescenceSubjectExecutor: TaskExecutor {
-    private let queue = DispatchQueue(label: "b4app.test.account-quiescence-subject")
+  private final class AccountMigrationTestExecutor: TaskExecutor {
+    private let queue = DispatchQueue(label: "b4app.test.account-migration-subject")
 
     func enqueue(_ job: consuming ExecutorJob) {
       let job = UnownedJob(job)
@@ -1014,16 +1033,30 @@ extension AgentProtocolAccountMigrationTests {
     }
   }
 
-  private static func beginQuiescenceSubject(
-    _ fixture: Fixture, _ cleanup: L1Cleanup, trace: L1PhaseTrace?
+  // The two timed subjects publish an actual operation-end stamp; late caller resumption
+  // cannot turn a late result into timely completion. Shared/manual L2 completion stays unchanged.
+  private static func completedTimedMigration(
+    _ run: Run, trace: L1PhaseTrace?
+  ) async throws -> Result<AccountStatus.Result, any Error> {
+    let deadline = ContinuousClock.now + .seconds(15)
+    trace?.record(.completionObservationEntered)
+    let signalled = await observed(
+      within: max(.zero, deadline - .now), { run.state.finished.withLock { $0 } })
+    let finished = signalled && (run.state.timedOperationFinishedAt().map { $0 <= deadline } ?? false)
+    trace?.record(.completionObservationReturned, flag: finished)
+    guard finished else { throw SetupFailure.observationTimeout }
+    return await run.task.value
+  }
+
+  private static func beginTimedMigrationSubject(
+    _ fixture: Fixture, _ cleanup: L1Cleanup, executor: AccountMigrationTestExecutor, trace: L1PhaseTrace?
   ) -> Run {
-    let executor = QuiescenceSubjectExecutor()
     let state = L1RunState()
     let answer = Self.session()
     let task = Task(executorPreference: executor) {
       trace?.record(.taskEntered)
       defer {
-        state.finished.withLock { $0 = true }
+        state.finishTimedOperation()
         trace?.record(.finished)
       }
       do {

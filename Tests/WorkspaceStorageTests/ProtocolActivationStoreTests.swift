@@ -1045,3 +1045,979 @@ extension ProtocolActivationStoreTests {
     }
   }
 }
+
+// New captured-context companions only. The complete prior thirteen-method prefix is retained.
+// These tests describe storage comparison/fencing, never authenticated account or runtime admission.
+extension ProtocolActivationStoreTests {
+  private static let witnessConnection = "capture-witness-c"
+  private static let witnessThread = "capture-witness-t"
+  private static let witnessTurn = "capture-witness-turn"
+  private static let protocolColumns = [
+    "peerProfile", "agentId", "authMode", "authHeaderName", "protocolRetiredAt", "protocolRetiredReason",
+  ]
+  private static let privateProtocolTables = [
+    "protocolSubscriptions", "protocolRunSegments", "protocolOperations", "protocolGrantSecrets",
+    "protocolGrants", "protocolPromptAnswers", "protocolHistoryAnchors",
+  ]
+  private static func nativeMembership(_ link: WorkspaceDatabase.HubLink) throws -> ProtocolNativeMembership {
+    try ProtocolNativeMembership(
+      canonicalHubBase: link.url, deviceID: link.deviceId, linkJoinedAt: link.joinedAt)
+  }
+  private static func capture(_ f: Fixture) throws -> ProtocolVerificationSnapshot {
+    try f.database.captureProtocolVerification(
+      accountID: f.binding.accountID, expectedMembership: nativeMembership(f.link))
+  }
+  private static func capturedBinding(_ f: Fixture) throws -> ProtocolVerificationSnapshot {
+    try f.database.prepareProtocolVerification(expectedSnapshot: capture(f), expectedBinding: f.binding)
+  }
+  private static func incarnationBytesMatch(
+    _ a: [String: Any], _ b: [String: Any], field: String
+  ) -> Bool {
+    (a[field] as? String).flatMap { first in
+      (b[field] as? String).map { equalBytes(first, $0) }
+    } ?? false
+  }
+  private static func expectRequirement(_ f: Fixture, _ expected: ProtocolSyncRequirement) throws {
+    let before = try state(f)
+    let correct = try f.database.protocolSyncRequirement() == expected
+    #expect(correct)
+    try expectUnchanged(f, before)
+  }
+  private static func seedLegacyWitnesses(_ f: Fixture) throws {
+    _ = try f.database.insertConnection(
+      Connection(id: witnessConnection, kind: .codex, label: "Legacy witness", target: "/fixture/codex"))
+    _ = try f.database.insertThread(
+      ConversationThread(
+        id: witnessThread, connectionId: witnessConnection, nativeThreadId: "native-witness",
+        context: "/fixture/local"))
+    _ = try f.database.insertTurn(
+      Turn(id: witnessTurn, threadId: witnessThread, operationId: "capture-witness-operation"))
+  }
+  private static func insertLogWitness(
+    _ f: Fixture, table: String, op: String, column: String? = nil, value: String? = nil,
+    synced: Bool = false
+  ) throws -> Int {
+    guard
+      let seq = try f.raw.execute(
+        """
+        INSERT INTO public.changes("deviceId",wall,"table","rowId",op,"column",value,hlc,synced)
+        VALUES('local',0,$1,'retained-witness',$2,$3,$4::jsonb,'000000000000-0000-local',$5::boolean)
+        RETURNING seq
+        """, [table, op, column, value, synced ? "true" : "false"]
+      ).rows.first?.int("seq")
+    else { throw FixtureFailure.nativeShape }
+    return seq
+  }
+  private static func removeLogWitness(_ f: Fixture, seq: Int) throws {
+    try f.raw.execute("DELETE FROM public.changes WHERE seq=$1::bigint", [String(seq)])
+  }
+  /// Fixture setup only: suppress change recording to isolate one LIVE-column witness at a time.
+  /// Classifier assertions compare complete native snapshots; the classifier never resets history.
+  private static func setLiveWitnessColumn(_ f: Fixture, column: String, value: String?) throws {
+    guard protocolColumns.contains(column) else { throw FixtureFailure.nativeShape }
+    try f.raw.execute("BEGIN")
+    do {
+      try f.raw.execute("SET LOCAL b4app.replaying='on'")
+      try f.raw.execute(
+        "UPDATE public.connections SET \(Rows.quote(column))=$1 WHERE id=$2", [value, witnessConnection])
+      try f.raw.execute("COMMIT")
+    } catch {
+      _ = try? f.raw.execute("ROLLBACK")
+      throw error
+    }
+  }
+
+  @Test func nativeMembershipComparisonIsOrgFreeByteExactAndRedacted() throws {
+    let valid = try ProtocolNativeMembership(
+      canonicalHubBase: Self.base, deviceID: "ACTIVATION_NATIVE_DEVICE", linkJoinedAt: Self.stamp)
+    let original = [Self.base, "ACTIVATION_NATIVE_DEVICE", Self.stamp]
+    for index in original.indices {
+      for bad in ["", "ACTIVATION_BAD\0suffix"] {
+        var fields = original; fields[index] = bad
+        Self.expectSafe {
+          _ = try ProtocolNativeMembership(
+            canonicalHubBase: fields[0], deviceID: fields[1], linkJoinedAt: fields[2])
+        }
+      }
+    }
+    let a = try ProtocolNativeMembership(
+      canonicalHubBase: Self.base, deviceID: "e\u{301}", linkJoinedAt: Self.stamp)
+    let b = try ProtocolNativeMembership(canonicalHubBase: Self.base, deviceID: "é", linkJoinedAt: Self.stamp)
+    #expect(a != b)
+    let canonical = try ProtocolNativeMembership(
+      canonicalHubBase: "HTTPS://EXAMPLE.INVALID/Deployment/", deviceID: "ACTIVATION_NATIVE_DEVICE",
+      linkJoinedAt: Self.stamp)
+    #expect(canonical == valid)
+    for bad in [
+      "https://user@example.invalid/Deployment", "https://example.invalid/Deployment?",
+      "https://example.invalid/Deployment#",
+    ] {
+      Self.expectSafe {
+        _ = try ProtocolNativeMembership(
+          canonicalHubBase: bad, deviceID: original[1], linkJoinedAt: Self.stamp)
+      }
+    }
+    let description = String(describing: valid), debugDescription = String(reflecting: valid)
+    let fixedDescription = description == "ProtocolNativeMembership(redacted)"
+    let fixedDebugDescription = debugDescription == "ProtocolNativeMembership(redacted)"
+    let noMemberInEitherRendering = original.allSatisfy {
+      !description.contains($0) && !debugDescription.contains($0)
+    }
+    let emptyMirror = Mirror(reflecting: valid).children.isEmpty
+    #expect(fixedDescription); #expect(fixedDebugDescription)
+    #expect(noMemberInEitherRendering); #expect(emptyMirror)
+  }
+
+  @Test func captureBeforeFirstAwaitCreatesClosedInactiveEpochWithoutInventingOrg() async throws {
+    try await Self.withFixture { f in
+      let before = try Self.state(f)
+      Self.expectSafe {
+        _ = try f.database.captureProtocolVerification(
+          accountID: f.binding.accountID, expectedMembership: nil)
+      }
+      try Self.expectUnchanged(f, before)
+      for bad in ["", "ACTIVATION_BAD\0suffix"] {
+        Self.expectSafe {
+          _ = try f.database.captureProtocolVerification(
+            accountID: bad, expectedMembership: Self.nativeMembership(f.link))
+        }
+        try Self.expectUnchanged(f, before)
+      }
+      let capture = try Self.capture(f)
+      #expect(capture.observation == nil)
+      _ = try Self.expectRecord(f, revision: "0", binding: nil)
+      let captured = try Self.state(f)
+      _ = try Self.capture(f)
+      try Self.expectUnchanged(f, captured)
+      for field in ["url", "deviceId", "joinedAt"] {
+        var wrong = f.link
+        if field == "url" { wrong.url = "https://example.invalid/Other" }
+        if field == "deviceId" { wrong.deviceId = "ACTIVATION_WRONG_DEVICE" }
+        if field == "joinedAt" { wrong.joinedAt = "different-stamp" }
+        Self.expectSafe {
+          _ = try f.database.captureProtocolVerification(
+            accountID: f.binding.accountID, expectedMembership: Self.nativeMembership(wrong))
+        }
+        try Self.expectUnchanged(f, captured)
+      }
+    }
+  }
+
+  @Test func absentLinkCaptureMeansActualAbsenceAndBoundAccountMismatchCannotResetState() async throws {
+    try await Self.withFixture { f in
+      _ = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
+      let bound = try Self.state(f)
+      Self.expectSafe {
+        _ = try f.database.captureProtocolVerification(
+          accountID: "ACTIVATION_OTHER_ACCOUNT", expectedMembership: Self.nativeMembership(f.link))
+      }
+      try Self.expectUnchanged(f, bound)
+      try f.database.clearHubLink()
+      let cleared = try Self.state(f)
+      Self.expectSafe { _ = try Self.capture(f) }
+      try Self.expectUnchanged(f, cleared)
+      let unlinked = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      #expect(unlinked.observation == nil)
+      _ = try Self.expectRecord(f, revision: "1", binding: nil)
+      let noLink = try Self.state(f)
+      Self.expectSafe {
+        _ = try f.database.prepareProtocolVerification(expectedSnapshot: unlinked, expectedBinding: f.binding)
+      }
+      try Self.expectUnchanged(f, noLink)
+    }
+  }
+
+  @Test func capturedBindAndCommitPreserveContextAndExactRecordChronology() async throws {
+    try await Self.withFixture { f in
+      let first = try Self.capture(f)
+      let inactive = try Self.expectRecord(f, revision: "0", binding: nil)
+      let bound = try f.database.prepareProtocolVerification(
+        expectedSnapshot: first, expectedBinding: f.binding)
+      let one = try Self.expectRecord(f, revision: "1", binding: f.binding)
+      for field in ["storeIncarnation", "membershipIncarnation"] {
+        let unchanged = Self.incarnationBytesMatch(inactive, one, field: field)
+        #expect(unchanged)
+      }
+      let beforeStale = try Self.state(f)
+      Self.expectSafe {
+        _ = try f.database.prepareProtocolVerification(expectedSnapshot: first, expectedBinding: f.binding)
+      }
+      try Self.expectUnchanged(f, beforeStale)
+      let observed = try Self.observation(f.binding)
+      let committed = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: bound, observation: observed)
+      _ = try Self.expectRecord(f, revision: "2", binding: f.binding, observedVersion: 2)
+      // If either bind or positive commit drops captured context this actual fence must refuse.
+      try f.database.fenceProtocolVerification(expectedSnapshot: committed)
+      _ = try Self.expectRecord(f, revision: "3", binding: f.binding)
+      let fenced = try Self.state(f)
+      Self.expectSafe {
+        _ = try f.database.commitObservedProtocolFact(expectedSnapshot: committed, observation: observed)
+      }
+      try Self.expectUnchanged(f, fenced)
+    }
+  }
+
+  @Test func oldDirectSnapshotsNeverAcquireContextThroughReadOrCommit() async throws {
+    try await Self.withFixture { f in
+      let prepared = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
+      let observed = try Self.observation(f.binding)
+      let committed = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: prepared, observation: observed)
+      guard let read = try f.database.readProtocolFact(expectedBinding: f.binding) else {
+        throw FixtureFailure.nativeShape
+      }
+      for snapshot in [prepared, committed, read] {
+        let before = try Self.state(f)
+        Self.expectSafe {
+          _ = try f.database.prepareProtocolVerification(
+            expectedSnapshot: snapshot, expectedBinding: f.binding)
+        }
+        try Self.expectUnchanged(f, before)
+        Self.expectSafe { try f.database.fenceProtocolVerification(expectedSnapshot: snapshot) }
+        try Self.expectUnchanged(f, before)
+        Self.expectSafe {
+          _ = try f.database.saveHubLink(
+            f.link, membershipChange: .preserveIfUnchanged, expectedProtocolSnapshot: snapshot)
+        }
+        try Self.expectUnchanged(f, before)
+      }
+      let captured = try Self.capture(f)
+      #expect(captured.observation == observed)
+      try f.database.fenceProtocolVerification(expectedSnapshot: captured)
+      _ = try Self.expectRecord(f, revision: "2", binding: f.binding)
+    }
+  }
+
+  @Test func capturedContextRefusesDifferentObjectNativeTupleAndRecordChanges() async throws {
+    try await Self.withFixture { f in
+      let snapshot = try Self.capture(f)
+      let other = try f.reopen()
+      defer { try? other.close() }
+      var before = try Self.state(f)
+      Self.expectSafe {
+        _ = try other.prepareProtocolVerification(expectedSnapshot: snapshot, expectedBinding: f.binding)
+      }
+      try Self.expectUnchanged(f, before)
+      Self.expectSafe { try other.fenceProtocolVerification(expectedSnapshot: snapshot) }
+      try Self.expectUnchanged(f, before)
+      Self.expectSafe {
+        _ = try other.saveHubLink(f.link, membershipChange: .replace, expectedProtocolSnapshot: snapshot)
+      }
+      try Self.expectUnchanged(f, before)
+      try other.close()
+      let wrongDatabase = try Self.binding(databaseName: "ACTIVATION_OTHER_DATABASE")
+      Self.expectSafe {
+        _ = try f.database.prepareProtocolVerification(
+          expectedSnapshot: snapshot, expectedBinding: wrongDatabase)
+      }
+      try Self.expectUnchanged(f, before)
+      let valid = try Self.nativeRecord(f)
+      for field in ["storeIncarnation", "membershipIncarnation", "revision"] {
+        var changed = valid
+        changed[field] = field == "revision" ? "1" : UUID().uuidString
+        try Self.putRecord(f, changed)
+        before = try Self.state(f)
+        Self.expectSafe {
+          _ = try f.database.prepareProtocolVerification(
+            expectedSnapshot: snapshot, expectedBinding: f.binding)
+        }
+        try Self.expectUnchanged(f, before)
+        if field != "revision" {
+          Self.expectSafe { try f.database.fenceProtocolVerification(expectedSnapshot: snapshot) }
+          try Self.expectUnchanged(f, before)
+        }
+        Self.expectSafe {
+          _ = try f.database.saveHubLink(
+            f.link, membershipChange: .replace, expectedProtocolSnapshot: snapshot)
+        }
+        try Self.expectUnchanged(f, before)
+        try Self.putRecord(f, valid)
+      }
+      try f.raw.execute(#"UPDATE public."hubLink" SET "deviceId"='é' WHERE id=1"#)
+      before = try Self.state(f)
+      Self.expectSafe {
+        _ = try f.database.prepareProtocolVerification(expectedSnapshot: snapshot, expectedBinding: f.binding)
+      }
+      try Self.expectUnchanged(f, before)
+      Self.expectSafe { try f.database.fenceProtocolVerification(expectedSnapshot: snapshot) }
+      try Self.expectUnchanged(f, before)
+      Self.expectSafe {
+        _ = try f.database.saveHubLink(f.link, membershipChange: .replace, expectedProtocolSnapshot: snapshot)
+      }
+      try Self.expectUnchanged(f, before)
+    }
+  }
+
+  @Test func firstAwaitCaptureCannotAdoptRestoreOrSameLookingExplicitReplacement() async throws {
+    try await Self.withFixture { f in
+      let beforeAwait = try Self.capture(f)
+      try f.database.saveHubLink(f.link, membershipChange: .replace)
+      let replaced = try Self.state(f)
+      Self.expectSafe {
+        _ = try f.database.prepareProtocolVerification(
+          expectedSnapshot: beforeAwait, expectedBinding: f.binding)
+      }
+      try Self.expectUnchanged(f, replaced)
+      Self.expectSafe { try f.database.fenceProtocolVerification(expectedSnapshot: beforeAwait) }
+      try Self.expectUnchanged(f, replaced)
+      Self.expectSafe {
+        _ = try f.database.saveHubLink(
+          f.link, membershipChange: .replace, expectedProtocolSnapshot: beforeAwait)
+      }
+      try Self.expectUnchanged(f, replaced)
+      try f.database.clearHubLink()
+      let unlinked = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      let path = f.root + "/before-await.jsonl"
+      try f.database.export(to: path)
+      try f.database.restore(from: path, replace: true)
+      let restored = try Self.state(f)
+      Self.expectSafe { try f.database.fenceProtocolVerification(expectedSnapshot: unlinked) }
+      try Self.expectUnchanged(f, restored)
+      Self.expectSafe {
+        _ = try f.database.saveHubLink(f.link, membershipChange: .replace, expectedProtocolSnapshot: unlinked)
+      }
+      try Self.expectUnchanged(f, restored)
+      // These are actual native interpositions between capture and redemption, not HTTP evidence.
+    }
+  }
+
+  @Test func negativeFenceClearsLatestRevisionOnlyInsideItsCapturedMembershipEpoch() async throws {
+    try await Self.withFixture { f in
+      let bound = try Self.capturedBinding(f)
+      let observed = try Self.observation(f.binding)
+      let two = try f.database.commitObservedProtocolFact(expectedSnapshot: bound, observation: observed)
+      let negativeCapture = try Self.capture(f)
+      let three = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: two, observation: Self.observation(f.binding, version: 3))
+      let before = try Self.nativeRecord(f)
+      try f.database.fenceProtocolVerification(expectedSnapshot: negativeCapture)
+      let now = try Self.expectRecord(f, revision: "4", binding: f.binding)
+      for field in ["storeIncarnation", "membershipIncarnation"] {
+        let same = Self.incarnationBytesMatch(before, now, field: field)
+        #expect(same)
+      }
+      let fenced = try Self.state(f)
+      Self.expectSafe {
+        _ = try f.database.commitObservedProtocolFact(expectedSnapshot: three, observation: observed)
+      }
+      try Self.expectUnchanged(f, fenced)
+      Self.expectSafe {
+        _ = try f.database.prepareProtocolVerification(
+          expectedSnapshot: negativeCapture, expectedBinding: f.binding)
+      }
+      try Self.expectUnchanged(f, fenced)
+      let fresh = try Self.capture(f)
+      let rebound = try f.database.prepareProtocolVerification(
+        expectedSnapshot: fresh, expectedBinding: f.binding)
+      _ = try f.database.commitObservedProtocolFact(expectedSnapshot: rebound, observation: observed)
+      _ = try Self.expectRecord(f, revision: "5", binding: f.binding, observedVersion: 2)
+      let oldEpoch = try Self.capture(f)
+      try f.database.saveHubLink(f.link, membershipChange: .replace)
+      let replaced = try Self.state(f)
+      Self.expectSafe { try f.database.fenceProtocolVerification(expectedSnapshot: oldEpoch) }
+      try Self.expectUnchanged(f, replaced)
+    }
+  }
+
+  @Test func capturedFenceDeferredCommitFailureRollsBackAndKeepsSafeError() async throws {
+    try await Self.withFixture { f in
+      let bound = try Self.capturedBinding(f)
+      _ = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: bound, observation: Self.observation(f.binding))
+      let negative = try Self.capture(f)
+      let before = try Self.state(f)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA activation_capture_fault;
+        CREATE SEQUENCE activation_capture_fault.probe;
+        CREATE FUNCTION activation_capture_fault.refuse_fence() RETURNS trigger
+          LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          IF OLD.value->>'revision' IS DISTINCT FROM '2' OR NEW.value->>'revision' IS DISTINCT FROM '3'
+            OR NOT (OLD.value ? 'observation') OR NEW.value ? 'observation'
+            OR NEW.value->'binding' IS DISTINCT FROM OLD.value->'binding'
+            OR NOT EXISTS(SELECT 1 FROM public.settings WHERE key=NEW.key AND value=NEW.value)
+          THEN RAISE EXCEPTION 'ACTIVATION_FENCE_STAGE_NOT_REACHED'; END IF;
+          UPDATE public.settings SET value='"changed-in-commit"'::jsonb WHERE key='activation-unrelated';
+          PERFORM nextval('activation_capture_fault.probe');
+          RAISE EXCEPTION 'ACTIVATION_FENCE_PRIVATE_CANARY' USING ERRCODE='23514', DETAIL=NEW.value::text;
+        END $$;
+        CREATE CONSTRAINT TRIGGER activation_fence_fault AFTER UPDATE ON public.settings
+          DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN(NEW.key='__b4app_agent_protocol_activation_v1')
+          EXECUTE FUNCTION activation_capture_fault.refuse_fence();
+        """)
+      Self.expectSafe { try f.database.fenceProtocolVerification(expectedSnapshot: negative) }
+      try Self.expectUnchanged(f, before)
+      let probe = try f.raw.execute(
+        "SELECT last_value::text AS n,is_called::text AS called FROM activation_capture_fault.probe"
+      ).rows.first
+      #expect(probe?.text("n") == "1" && probe?.text("called") == "true")
+      try Self.expectUnchanged(f, before)
+      try f.raw.execute("DROP TRIGGER activation_fence_fault ON public.settings")
+      try f.database.fenceProtocolVerification(expectedSnapshot: negative)
+      _ = try Self.expectRecord(f, revision: "3", binding: f.binding)
+    }
+  }
+
+  @Test func checkedPresentLinkPreservesCursorAndReturnsOnlyItsOwnTransitionContext() async throws {
+    try await Self.withFixture { f in
+      try f.database.setHubCursor(7)
+      let capture = try Self.capture(f)
+      var refresh = f.link; refresh.cursor = 999; refresh.tokenRef = "secret:refreshed";
+      refresh.deviceName = "refreshed label"
+      let original = try Self.recordText(f)
+      try f.database.saveHubLink(refresh)  // Existing unconditional wrapper remains valid.
+      let oldWrapperPreserved = try Self.recordText(f).map { Data($0.utf8) } == original.map { Data($0.utf8) }
+      #expect(oldWrapperPreserved)
+      let checked = try f.database.saveHubLink(
+        refresh, membershipChange: .preserveIfUnchanged, expectedProtocolSnapshot: capture)
+      #expect(try f.database.hubLink()?.cursor == 7)
+      let bound = try f.database.prepareProtocolVerification(
+        expectedSnapshot: checked, expectedBinding: f.binding)
+      _ = try Self.expectRecord(f, revision: "1", binding: f.binding)
+      let observed = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: bound, observation: Self.observation(f.binding))
+      var replacement = refresh; replacement.deviceId = "ACTIVATION_CHECKED_REPLACEMENT"
+      let transitioned = try f.database.saveHubLink(
+        replacement, membershipChange: .replace, expectedProtocolSnapshot: observed)
+      _ = try Self.expectRecord(f, revision: "3", binding: nil)
+      let replacementBinding = try Self.binding(
+        deviceID: replacement.deviceId, databaseName: f.endpoint.database)
+      let rebound = try f.database.prepareProtocolVerification(
+        expectedSnapshot: transitioned, expectedBinding: replacementBinding)
+      let committed = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: rebound, observation: Self.observation(replacementBinding))
+      try f.database.fenceProtocolVerification(expectedSnapshot: committed)
+      _ = try Self.expectRecord(f, revision: "6", binding: replacementBinding)
+      let state = try Self.state(f)
+      Self.expectSafe {
+        _ = try f.database.saveHubLink(f.link, membershipChange: .replace, expectedProtocolSnapshot: capture)
+      }
+      try Self.expectUnchanged(f, state)
+    }
+  }
+
+  @Test func positiveWitnessClassifierUsesLiveColumnsWithoutReadingOpaqueUserJSON() async throws {
+    try await Self.withFixture { f in
+      try Self.seedLegacyWitnesses(f)
+      try f.database.setSetting(
+        key: "opaque-agentProtocol", value: ["peerProfile": "agentProtocol", "agentId": "user text"])
+      _ = try f.database.insertDisplayItem(
+        DisplayItem(
+          id: "opaque-display", threadId: Self.witnessThread, role: .assistant, type: "agentProtocol",
+          payload: ["kind": "agentProtocol", "agentId": "opaque", "nested": ["authMode": "bearer"]],
+          sequence: 1, provenance: .cache))
+      try f.raw.execute(
+        """
+        UPDATE public.connections SET capabilities='{"agentId":"opaque","kind":"agentProtocol"}',
+          models='[{"peerProfile":"agentProtocol","protocolRetiredAt":"opaque"}]' WHERE id='capture-witness-c';
+        INSERT INTO public."runtimeRequests"(id,"nativeRequestId","threadId","adapterGeneration",kind,state,payload,"createdAt","updatedAt")
+          VALUES('opaque-request','opaque-native','capture-witness-t',0,'unknown','pending',
+            '{"authMode":"bearer","kind":"agentProtocol"}','then','then');
+        INSERT INTO public."viewSettings"(id,arrangement,"quietThreads") VALUES('view','future-value','agentProtocol');
+        """)
+      _ = try Self.capture(f)  // An inactive control row alone is not a modern graph witness.
+      try Self.expectRequirement(f, .legacyOnly)
+      for (column, value) in [
+        ("peerProfile", "agentProtocol"), ("agentId", "agent"), ("authMode", "none"),
+        ("authHeaderName", "X-Private"),
+      ] {
+        try Self.setLiveWitnessColumn(f, column: column, value: value)
+        try Self.expectRequirement(f, .protocolTwo)
+        try Self.setLiveWitnessColumn(f, column: column, value: nil)
+        try Self.expectRequirement(f, .legacyOnly)
+      }
+      // Native CHECK requires the retirement pair together; retained-update cases below isolate
+      // each literal column independently without weakening that schema constraint.
+      try f.raw.execute("BEGIN")
+      try f.raw.execute("SET LOCAL b4app.replaying='on'")
+      try f.raw.execute(
+        "UPDATE public.connections SET \"protocolRetiredAt\"='then',\"protocolRetiredReason\"='agent_protocol_cutover' WHERE id=$1",
+        [Self.witnessConnection])
+      try f.raw.execute("COMMIT")
+      try Self.expectRequirement(f, .protocolTwo)
+    }
+  }
+
+  @Test func everyPrivateProtocolTableIsAnIndependentRetainedPositiveWitness() async throws {
+    try await Self.withFixture { f in
+      try Self.seedLegacyWitnesses(f)
+      let inserts = [
+        "INSERT INTO public.\"protocolSubscriptions\"(\"threadId\",\"connectionId\",\"nativeThreadId\",generation,channels,namespaces,coverage,\"updatedAt\") VALUES('capture-witness-t','capture-witness-c','n','g','[]','[]','{}','then')",
+        "INSERT INTO public.\"protocolRunSegments\"(\"connectionId\",\"threadId\",\"identityEpochKind\",\"identityEpochId\",namespace,\"nativeRunId\",\"localTurnId\",facts,\"updatedAt\") VALUES('capture-witness-c','capture-witness-t','local','retained-epoch','[]','run','capture-witness-turn','{}','then')",
+        "INSERT INTO public.\"protocolOperations\"(\"operationId\",\"connectionId\",\"threadId\",kind,\"operationThreadId\",payload,\"grantReferences\",expectations,fingerprint,status,\"createdAt\",\"updatedAt\") VALUES('op','capture-witness-c','capture-witness-t','create','native','null','[]','{}','f','settled','then','then')",
+        "INSERT INTO public.\"protocolGrantSecrets\"(reference,\"connectionId\",\"threadId\",material,\"createdAt\") VALUES('secret:private-witness','capture-witness-c','capture-witness-t','ACTIVATION_PRIVATE_SENTINEL','then')",
+        "INSERT INTO public.\"protocolGrants\"(\"threadId\",\"pausedGeneration\",namespace,\"interruptId\",\"proposalHash\",\"connectionId\",disposition,\"updatedAt\") VALUES('capture-witness-t','g','[]','i','h','capture-witness-c','denied','then')",
+        "INSERT INTO public.\"protocolPromptAnswers\"(\"threadId\",\"pausedGeneration\",namespace,\"interruptId\",\"proposalHash\",\"connectionId\",answer,status,\"updatedAt\") VALUES('capture-witness-t','g','[]','i','h','capture-witness-c','null','draft','then')",
+        "INSERT INTO public.\"protocolHistoryAnchors\"(\"threadId\",generation,anchor,\"connectionId\",coverage,revision,\"updatedAt\") VALUES('capture-witness-t','g','a','capture-witness-c','{}','r','then')",
+      ]
+      try Self.expectRequirement(f, .legacyOnly)
+      for (table, sql) in zip(Self.privateProtocolTables, inserts) {
+        try f.raw.execute(sql)
+        try Self.expectRequirement(f, .protocolTwo)
+        try f.raw.execute("DELETE FROM public.\(Rows.quote(table))")
+        try Self.expectRequirement(f, .legacyOnly)
+      }
+      // Parent remains a legacy Codex row; no live AP root/owner join can explain these positives.
+    }
+  }
+
+  @Test func retainedRootImagesDistinguishMissingJsonNullAndOnlyLiteralProtocolValues() async throws {
+    try await Self.withFixture { f in
+      try Self.seedLegacyWitnesses(f)
+      var negatives = [
+        #"{"kind":"codex"}"#,
+        #"{"kind":"codex","capabilities":{"kind":"agentProtocol","agentId":"opaque"}}"#,
+        #"{"kind":"codex","agentId-suffix":"opaque","PeerProfile":"agentProtocol"}"#,
+        #"{"kind":"AgentProtocol"}"#,
+        #"["agentId","agentProtocol"]"#,
+      ]
+      for column in Self.protocolColumns {
+        negatives.append("{\"kind\":\"codex\",\"\(column)\":null}")
+      }
+      for value in negatives {
+        let seq = try Self.insertLogWitness(f, table: "connections", op: "insert", value: value)
+        try Self.expectRequirement(f, .legacyOnly)
+        try Self.removeLogWitness(f, seq: seq)
+      }
+      for value in [#"{"kind":"agentProtocol"}"#]
+        + Self.protocolColumns.map({ "{\"kind\":\"codex\",\"\($0)\":\"witness\"}" })
+      {
+        let seq = try Self.insertLogWitness(f, table: "connections", op: "insert", value: value)
+        try Self.expectRequirement(f, .protocolTwo)
+        try f.raw.execute("UPDATE public.changes SET synced=true WHERE seq=$1::bigint", [String(seq)])
+        try Self.expectRequirement(f, .protocolTwo)
+        try Self.removeLogWitness(f, seq: seq)
+      }
+      try Self.expectRequirement(f, .legacyOnly)
+    }
+  }
+
+  @Test func retainedExplicitProtocolColumnClearsAndPrivateTableNamesRemainPositive() async throws {
+    try await Self.withFixture { f in
+      try Self.seedLegacyWitnesses(f)
+      for column in Self.protocolColumns {
+        for value in [nil, "null", "\"witness\""] as [String?] {
+          let seq = try Self.insertLogWitness(
+            f, table: "connections", op: "update", column: column, value: value)
+          try Self.expectRequirement(f, .protocolTwo)
+          try Self.removeLogWitness(f, seq: seq)
+        }
+      }
+      let modernKind = try Self.insertLogWitness(
+        f, table: "connections", op: "update", column: "kind", value: "\"agentProtocol\"")
+      try Self.expectRequirement(f, .protocolTwo)
+      try Self.removeLogWitness(f, seq: modernKind)
+      for table in Self.privateProtocolTables {
+        let seq = try Self.insertLogWitness(f, table: table, op: "delete", synced: true)
+        try Self.expectRequirement(f, .protocolTwo)
+        try Self.removeLogWitness(f, seq: seq)
+      }
+      for (table, column, value) in [
+        ("connections", "agentId-suffix", "\"x\""), ("connections", "kind", "\"b4\""),
+        ("displayItems", "payload", "{\"agentId\":\"opaque\"}"),
+        ("protocolOperationsSuffix", "kind", "\"agentProtocol\""),
+      ] {
+        let seq = try Self.insertLogWitness(f, table: table, op: "update", column: column, value: value)
+        try Self.expectRequirement(f, .legacyOnly)
+        try Self.removeLogWitness(f, seq: seq)
+      }
+      let tombstone = try Self.insertLogWitness(f, table: "connections", op: "delete")
+      try Self.expectRequirement(f, .legacyOnly)
+      try Self.removeLogWitness(f, seq: tombstone)
+    }
+  }
+
+  @Test func actualInsertDeleteHistoryCannotBecomeLegacyWhenTheLiveProfileIsGone() async throws {
+    try await Self.withFixture { f in
+      _ = try f.database.insertConnection(
+        Connection(
+          id: "deleted-modern", kind: .agentProtocol, label: "Modern",
+          target: "https://example.invalid/agent",
+          nativeScope: "native-scope", peerProfile: .agentProtocol, agentId: "agent",
+          authMode: ConnectionAuthMode.none))
+      try f.raw.execute("DELETE FROM public.connections WHERE id='deleted-modern'")
+      let liveGone =
+        try f.raw.execute("SELECT count(*) AS n FROM public.connections WHERE id='deleted-modern'").rows
+        .first?.int("n") == 0
+      #expect(liveGone)
+      try Self.expectRequirement(f, .protocolTwo)
+      try f.raw.execute("UPDATE public.changes SET synced=true WHERE \"rowId\"='deleted-modern'")
+      try Self.expectRequirement(f, .protocolTwo)
+    }
+  }
+
+  @Test func actualRetirementSetThenClearStillHasModernQueuedHistory() async throws {
+    try await Self.withFixture { f in
+      try Self.seedLegacyWitnesses(f)
+      try f.raw.execute(
+        """
+        UPDATE public.connections SET "protocolRetiredAt"='then',"protocolRetiredReason"='agent_protocol_cutover'
+          WHERE id='capture-witness-c';
+        UPDATE public.connections SET "protocolRetiredAt"=NULL,"protocolRetiredReason"=NULL
+          WHERE id='capture-witness-c';
+        """)
+      let cleared =
+        try f.raw.execute(
+          "SELECT 1 FROM public.connections WHERE id=$1 AND \"protocolRetiredAt\" IS NULL AND \"protocolRetiredReason\" IS NULL",
+          [Self.witnessConnection]
+        ).rows.count == 1
+      #expect(cleared)
+      try Self.expectRequirement(f, .protocolTwo)
+    }
+  }
+
+  @Test func literalConnectionClockColumnsCountWithoutNewLegacyAncestryRules() async throws {
+    try await Self.withFixture { f in
+      try Self.seedLegacyWitnesses(f)
+      for column in Self.protocolColumns {
+        try f.raw.execute(
+          "INSERT INTO public.\"columnClocks\"(\"table\",\"rowId\",\"column\",hlc) VALUES('connections','missing-live-row',$1,'000000000000-0000-local')",
+          [column])
+        try Self.expectRequirement(f, .protocolTwo)
+        try f.raw.execute("DELETE FROM public.\"columnClocks\" WHERE \"rowId\"='missing-live-row'")
+      }
+      for column in ["agentIdSuffix", "PeerProfile", "title"] {
+        try f.raw.execute(
+          "INSERT INTO public.\"columnClocks\"(\"table\",\"rowId\",\"column\",hlc) VALUES('connections','missing-live-row',$1,'000000000000-0000-local')",
+          [column])
+        try Self.expectRequirement(f, .legacyOnly)
+        try f.raw.execute("DELETE FROM public.\"columnClocks\" WHERE \"rowId\"='missing-live-row'")
+      }
+      // A legacy child update whose parent no longer exists is NOT a new classifier rejection.
+      let seq = try Self.insertLogWitness(
+        f, table: "threads", op: "update", column: "title", value: "\"ordinary\"")
+      try Self.expectRequirement(f, .legacyOnly)
+      try Self.removeLogWitness(f, seq: seq)
+    }
+  }
+
+  @Test func capturedBindIsACompareAndWriteAndCannotRebindAnExistingPrincipal() async throws {
+    try await Self.withFixture { f in
+      let snapshot = try Self.capture(f)
+      let (ready, called, outcomes) = await Self.compete {
+        try f.database.prepareProtocolVerification(expectedSnapshot: snapshot, expectedBinding: f.binding)
+      }
+      #expect(ready); #expect(called == 2)
+      var winner: ProtocolVerificationSnapshot?, failures = 0
+      for result in outcomes {
+        switch result {
+        case .success(let value):
+          let first = winner == nil
+          #expect(first)
+          winner = value
+        case .failure:
+          failures += 1
+          Self.expectSafe { _ = try result.get() }
+        }
+      }
+      #expect(failures == 1)
+      guard let bound = winner else { throw FixtureFailure.nativeShape }
+      _ = try Self.expectRecord(f, revision: "1", binding: f.binding)
+      let current = try Self.capture(f)
+      for field in ["accountID", "hubUserID", "hubOrgID"] {
+        var values = Self.expectedBinding(f.binding); values[field] = "ACTIVATION_OTHER_PRINCIPAL"
+        let wrong = try Self.makeBinding(values), before = try Self.state(f)
+        Self.expectSafe {
+          _ = try f.database.prepareProtocolVerification(expectedSnapshot: current, expectedBinding: wrong)
+        }
+        try Self.expectUnchanged(f, before)
+      }
+      let observed = try Self.observation(f.binding)
+      let (commitReady, commitCalled, committed) = await Self.compete {
+        try f.database.commitObservedProtocolFact(expectedSnapshot: bound, observation: observed)
+      }
+      #expect(commitReady); #expect(commitCalled == 2)
+      var successes = 0, stale = 0
+      for result in committed {
+        switch result {
+        case .success: successes += 1
+        case .failure: stale += 1; Self.expectSafe { _ = try result.get() }
+        }
+      }
+      #expect(successes == 1 && stale == 1)
+      _ = try Self.expectRecord(f, revision: "2", binding: f.binding, observedVersion: 2)
+    }
+  }
+
+  @Test func checkedAbsentLinkReturnsItsOwnNewContextInsteadOfRecapturingOtherState() async throws {
+    try await Self.withFixture { f in
+      try f.database.clearHubLink()
+      let capture = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      _ = try Self.expectRecord(f, revision: "0", binding: nil)
+      let linked = try f.database.saveHubLink(
+        f.link, membershipChange: .replace, expectedProtocolSnapshot: capture)
+      _ = try Self.expectRecord(f, revision: "1", binding: nil)
+      let bound = try f.database.prepareProtocolVerification(
+        expectedSnapshot: linked, expectedBinding: f.binding)
+      let observed = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: bound, observation: Self.observation(f.binding))
+      try f.database.fenceProtocolVerification(expectedSnapshot: observed)
+      _ = try Self.expectRecord(f, revision: "4", binding: f.binding)
+    }
+  }
+
+  @Test func initialCaptureActualDeferredCommitFailureCannotLeaveAnUncommittedEpoch() async throws {
+    try await Self.withFixture { f in
+      let before = try Self.state(f)
+      try f.raw.execute(
+        """
+        CREATE SCHEMA activation_capture_insert_fault;
+        CREATE SEQUENCE activation_capture_insert_fault.probe;
+        CREATE FUNCTION activation_capture_insert_fault.refuse_initial() RETURNS trigger
+          LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          IF NEW.value->>'revision' IS DISTINCT FROM '0' OR NEW.value ? 'binding' OR NEW.value ? 'observation'
+            OR (SELECT count(*) FROM jsonb_object_keys(NEW.value)) <> 4
+          THEN RAISE EXCEPTION 'ACTIVATION_INITIAL_STAGE_NOT_REACHED'; END IF;
+          PERFORM nextval('activation_capture_insert_fault.probe');
+          RAISE EXCEPTION 'ACTIVATION_INITIAL_PRIVATE_CANARY' USING ERRCODE='23514',DETAIL=NEW.value::text;
+        END $$;
+        CREATE CONSTRAINT TRIGGER activation_initial_fault AFTER INSERT ON public.settings
+          DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN(NEW.key='__b4app_agent_protocol_activation_v1')
+          EXECUTE FUNCTION activation_capture_insert_fault.refuse_initial();
+        """)
+      Self.expectSafe { _ = try Self.capture(f) }
+      try Self.expectUnchanged(f, before)
+      let probe = try f.raw.execute(
+        "SELECT last_value::text AS n,is_called::text AS called FROM activation_capture_insert_fault.probe"
+      ).rows.first
+      #expect(probe?.text("n") == "1" && probe?.text("called") == "true")
+      try Self.expectUnchanged(f, before)
+      try f.raw.execute("DROP TRIGGER activation_initial_fault ON public.settings")
+      _ = try Self.capture(f)
+      _ = try Self.expectRecord(f, revision: "0", binding: nil)
+    }
+  }
+
+  @Test func capturedFenceRejectsDecreasedOrExhaustedChronologyWithoutChangingMembership() async throws {
+    try await Self.withFixture { f in
+      let bound = try Self.capturedBinding(f)
+      _ = try f.database.commitObservedProtocolFact(
+        expectedSnapshot: bound, observation: Self.observation(f.binding))
+      let snapshot = try Self.capture(f)
+      var current = try Self.nativeRecord(f)
+      current["revision"] = "1"
+      try Self.putRecord(f, current)
+      var before = try Self.state(f)
+      Self.expectSafe { try f.database.fenceProtocolVerification(expectedSnapshot: snapshot) }
+      try Self.expectUnchanged(f, before)
+      current["revision"] = "9223372036854775807"
+      try Self.putRecord(f, current)
+      let exhausted = try Self.capture(f)
+      before = try Self.state(f)
+      Self.expectSafe { try f.database.fenceProtocolVerification(expectedSnapshot: exhausted) }
+      try Self.expectUnchanged(f, before)
+      Self.expectSafe {
+        _ = try f.database.saveHubLink(
+          f.link, membershipChange: .replace, expectedProtocolSnapshot: exhausted)
+      }
+      try Self.expectUnchanged(f, before)
+    }
+  }
+
+  private static let absentInsertGate: Int64 = 0x6234_5f61_6335_6e6c
+  private static let absentCandidateDevice = "ACTIVATION_ABSENT_CANDIDATE"
+  private static let absentCompetitorDevice = "ACTIVATION_ABSENT_COMPETITOR"
+  private struct AbsentInsertFacts: Sendable {
+    let paused: Bool
+    let competitorBeforeRelease: Bool
+    let released: Bool
+    let candidateJoined: Bool
+    let competitorJoined: Bool
+    let expectedRows: [String: [Data]]?
+    let expectedSequence: Data?
+    let controller: Result<Void, any Error>
+    let candidate: Result<ProtocolVerificationSnapshot, any Error>
+    let competitor: Result<Int, any Error>
+  }
+  private static func absentInsertController(
+    _ f: Fixture, snapshot: ProtocolVerificationSnapshot, candidateLink: WorkspaceDatabase.HubLink
+  ) async -> AbsentInsertFacts {
+    await onThread {
+      let candidate = WorkerResult(), competitor = MembershipWriterResult()
+      let candidateDone = DispatchSemaphore(value: 0), competitorDone = DispatchSemaphore(value: 0)
+      var candidateThread: Thread?, competitorThread: Thread?
+      var control: PostgresConnection?
+      var ownsGate = false, paused = false, competitorBeforeRelease = false, released = false
+      var competitorOperationJoined = false
+      var expectedRows: [String: [Data]]?, expectedSequence: Data?
+      var failure: (any Error)?
+      do {
+        let c = try membershipConnection(f.endpoint)
+        control = c
+        guard let controllerPID = try c.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid"),
+          controllerPID > 0
+        else { throw FixtureFailure.nativeShape }
+        try c.execute("SELECT pg_advisory_lock($1::bigint)", [String(absentInsertGate)])
+        ownsGate = true
+        let worker = Thread {
+          let outcome = Result {
+            try f.database.saveHubLink(
+              candidateLink, membershipChange: .replace, expectedProtocolSnapshot: snapshot)
+          }
+          candidate.value.withLock { $0 = outcome }
+          candidateDone.signal()
+        }
+        candidateThread = worker; worker.start()
+        let pauseDeadline = ContinuousClock.now + .seconds(3)
+        while ContinuousClock.now < pauseDeadline {
+          let rows = try c.execute(
+            """
+            SELECT a.pid FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+            WHERE a.datname=$1 AND a.application_name='b4app' AND l.locktype='advisory'
+              AND NOT l.granted AND $2::int=ANY(pg_blocking_pids(a.pid))
+            """, [f.endpoint.database, String(controllerPID)]
+          ).rows
+          let completed = ContinuousClock.now
+          if completed <= pauseDeadline, rows.count == 1 { paused = true; break }
+          guard completed < pauseDeadline, !candidate.value.withLock({ $0 != nil }) else { break }
+          Thread.sleep(forTimeInterval: 0.005)
+        }
+        guard paused else { throw FixtureFailure.barrierTimeout }
+        let writer = Thread {
+          let outcome = Result<Int, any Error> {
+            let raw = try membershipConnection(f.endpoint)
+            try raw.execute("BEGIN")
+            do {
+              let affected = try raw.execute(
+                """
+                INSERT INTO public."hubLink"(id,url,"deviceId","deviceName","tokenRef","orgSlug",username,cursor,"joinedAt")
+                VALUES(1,$1,$2,'competitor label','secret:competitor','competitor-org','competitor-user',41,$3)
+                """, [f.link.url, absentCompetitorDevice, f.link.joinedAt]
+              ).affected
+              try raw.execute("COMMIT")
+              return affected
+            } catch {
+              _ = try? raw.execute("ROLLBACK")
+              throw error
+            }
+          }
+          competitor.value.withLock { $0 = outcome }
+          competitorDone.signal()
+        }
+        competitorThread = writer; writer.start()
+        let commitDeadline = ContinuousClock.now + .seconds(3)
+        while ContinuousClock.now < commitDeadline {
+          if competitor.value.withLock({ $0 != nil }) {
+            competitorDone.wait()  // Actual original operation has completed; no DB wait remains.
+            competitorOperationJoined = true
+            competitorBeforeRelease = ContinuousClock.now <= commitDeadline
+            break
+          }
+          Thread.sleep(forTimeInterval: 0.005)
+        }
+        if competitorBeforeRelease, let outcome = competitor.value.withLock({ $0 }),
+          case .success(let count) = outcome, count == 1
+        {
+          // Raw connection is scoped to the finished competitor. Native reads see its full committed
+          // row and OLD committed control, while candidate may hold uncommitted control changes.
+          let expected = try state(f)
+          expectedRows = expected.rows; expectedSequence = expected.sequence
+        }
+      } catch { failure = error }
+      // Gate release/lexical close always precedes BOTH original work joins, even on failed stage.
+      if ownsGate {
+        do {
+          guard let c = control,
+            try c.execute("SELECT pg_advisory_unlock($1::bigint) AS released", [String(absentInsertGate)])
+              .rows.first?.text("released") == "t"
+          else { throw FixtureFailure.nativeShape }
+          released = true
+        } catch { if failure == nil { failure = error } }
+      }
+      control = nil
+      var candidateJoined = false, competitorJoined = false
+      withExtendedLifetime((candidateThread, competitorThread)) {
+        if candidateThread != nil { candidateDone.wait(); candidateJoined = true }
+        // A prior on-time join consumed this semaphore; otherwise release first, THEN join.
+        if competitorThread != nil {
+          if !competitorOperationJoined { competitorDone.wait() }
+          competitorJoined = true
+        }
+      }
+      let controller: Result<Void, any Error> = failure.map { .failure($0) } ?? .success(())
+      return AbsentInsertFacts(
+        paused: paused, competitorBeforeRelease: competitorBeforeRelease, released: released,
+        candidateJoined: candidateJoined, competitorJoined: competitorJoined,
+        expectedRows: expectedRows, expectedSequence: expectedSequence, controller: controller,
+        candidate: candidate.value.withLock { $0 } ?? .failure(FixtureFailure.nativeShape),
+        competitor: competitor.value.withLock { $0 } ?? .failure(FixtureFailure.nativeShape))
+    }
+  }
+
+  @Test func checkedAbsentLinkNativeInsertRaceRefusesWithoutOverwritingCompetitor() async throws {
+    try await Self.withFixture { f in
+      try f.database.clearHubLink()
+      let snapshot = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: nil)
+      _ = try Self.expectRecord(f, revision: "0", binding: nil)
+      var link = f.link; link.deviceId = Self.absentCandidateDevice
+      let cleanup =
+        "DROP TRIGGER IF EXISTS activation_absent_pause ON public.\"hubLink\"; DROP SCHEMA IF EXISTS activation_absent_race CASCADE;"
+      var cleaned = false
+      defer { if !cleaned { _ = try? f.raw.execute(cleanup) } }
+      try f.raw.execute(
+        """
+        CREATE SCHEMA activation_absent_race;
+        CREATE SEQUENCE activation_absent_race.probe;
+        CREATE FUNCTION activation_absent_race.pause_candidate() RETURNS trigger
+          LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN
+          IF EXISTS(SELECT 1 FROM public."hubLink" WHERE id=1)
+          THEN RAISE EXCEPTION 'ACTIVATION_ABSENCE_STAGE_NOT_REACHED'; END IF;
+          PERFORM nextval('activation_absent_race.probe');
+          PERFORM pg_advisory_xact_lock(\(Self.absentInsertGate)::bigint);
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER activation_absent_pause BEFORE INSERT ON public."hubLink"
+          FOR EACH ROW WHEN(NEW."deviceId"='ACTIVATION_ABSENT_CANDIDATE')
+          EXECUTE FUNCTION activation_absent_race.pause_candidate();
+        """)
+      let facts = await Self.absentInsertController(f, snapshot: snapshot, candidateLink: link)
+      // No Issue/#expect/#require on raw workers; all stage checks follow actual joins here.
+      #expect(facts.paused); #expect(facts.competitorBeforeRelease)
+      #expect(facts.released && facts.candidateJoined && facts.competitorJoined)
+      try facts.controller.get()
+      let competitorAffected = try facts.competitor.get()
+      #expect(competitorAffected == 1)
+      guard let rows = facts.expectedRows, let sequence = facts.expectedSequence else {
+        throw FixtureFailure.nativeShape
+      }
+      Self.expectSafe { _ = try facts.candidate.get() }
+      try Self.expectUnchanged(f, NativeState(rows: rows, sequence: sequence))
+      let probe = try f.raw.execute(
+        "SELECT last_value::text AS n,is_called::text AS called FROM activation_absent_race.probe"
+      ).rows.first
+      #expect(probe?.text("n") == "1" && probe?.text("called") == "true")
+      let competitor = try f.database.hubLink()
+      let competitorDevice =
+        competitor.map { Self.equalBytes($0.deviceId, Self.absentCompetitorDevice) } ?? false
+      #expect(competitorDevice)
+      #expect(competitor?.cursor == 41)
+      try f.raw.execute(cleanup); cleaned = true
+    }
+  }
+  @Test func captureRefusesMalformedClosedDestinationBeforeIssuingContext() async throws {
+    try await Self.withFixture { f in
+      _ = try Self.capture(f)
+      let valid = try Self.nativeRecord(f)
+      var variants: [[String: Any]] = []
+      var bad = valid; bad["unknown"] = true; variants.append(bad)
+      bad = valid; bad["binding"] = NSNull(); variants.append(bad)
+      bad = valid; bad["revision"] = 0; variants.append(bad)
+      bad = valid; bad["storeIncarnation"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; variants.append(bad)
+      for value in variants {
+        try Self.putRecord(f, value)
+        let before = try Self.state(f)
+        Self.expectSafe { _ = try Self.capture(f) }
+        try Self.expectUnchanged(f, before)
+      }
+    }
+  }
+
+}
