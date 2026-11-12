@@ -97,8 +97,16 @@ public enum Attention {
   /// By state, then pinned first, then newest activity first, ties by `id`. A pin never lifts a
   /// thread above a more urgent state. Threads without `activity` count from their creation.
   public static func ordered(_ threads: [ConversationThread]) -> [ConversationThread] {
+    ordered(threads, by: state(of:))
+  }
+
+  /// The same order with the state a list ranks each thread by (`rank`), for a list that holds a
+  /// thread above its real state (the selected thread, in `WorkspaceUI`).
+  public static func ordered(
+    _ threads: [ConversationThread], by rank: (ConversationThread) -> ThreadState
+  ) -> [ConversationThread] {
     func key(_ thread: ConversationThread) -> (state: ThreadState, pinned: Bool, at: String, id: String) {
-      (state(of: thread), thread.pinned, thread.activity?.lastActivityAt ?? thread.createdAt, thread.id)
+      (rank(thread), thread.pinned, thread.activity?.lastActivityAt ?? thread.createdAt, thread.id)
     }
     return threads.map { (key($0), $0) }.sorted { lhs, rhs in
       let (l, r) = (lhs.0, rhs.0)

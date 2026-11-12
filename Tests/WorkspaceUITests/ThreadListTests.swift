@@ -92,6 +92,24 @@ import WorkspaceProtocol
     #expect(ThreadListView.gap == 24)
   }
 
+  /// C5: 1 pt of space between consecutive rows in every list of the sidebar; a section gap (24 pt, 8 pt,
+  /// or none after a heading) replaces it above a list's first row, never adds to it.
+  @Test func rowsHaveAHairlineGapThatASectionGapReplaces() {
+    #expect(LLA.Metrics.rowGap == 1)
+    #expect(ThreadRows.spacing == LLA.Metrics.rowGap)
+    #expect(ThreadListView.gapAbove(isFirst: false, sectionGap: 0) == 1)
+    #expect(ThreadListView.gapAbove(isFirst: false, sectionGap: 24) == 1)
+    #expect(ThreadListView.gapAbove(isFirst: true, sectionGap: 24) == 24)
+    #expect(ThreadListView.gapAbove(isFirst: true, sectionGap: 0) == 0)
+    // The row heights are unchanged.
+    #if os(macOS)
+      #expect(LLA.Metrics.threadRow == 28)
+    #else
+      #expect(LLA.Metrics.threadRow == 44)
+    #endif
+    #expect(LLA.Metrics.threadRowTiny == 20)
+  }
+
   @Test func environmentNameIsTheDisplayNameAndNilForOther() async throws {
     let model = try await ListFixture.model()
     let thread = try #require(model.threads.first { $0.id == "asks" })

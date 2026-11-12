@@ -58,6 +58,11 @@
       return ("line.3.horizontal.decrease.circle.fill", true)
     }
 
+    /// What VoiceOver says: the title, whatever the symbol. The symbols carry descriptions of their own
+    /// ("filter" for both of view options' faces), which AppKit spoke once a thread was open while the
+    /// label sat only on a wrapper outside the menu's own label; `TopBarLabel` sets this on the symbol.
+    func accessibilityLabel(filtered: Bool) -> String { title }
+
     /// The shortcut, declared once, by the app's File menu (so it works with the sidebar hidden and
     /// over the palette or the composer); the buttons only name it in their help.
     public var shortcut: KeyboardShortcut? {
@@ -113,7 +118,7 @@
       .tint(face.isInk ? LLA.Color.ink : LLA.Color.muted)
       .disabled(!button.isEnabled(entryReason: model.newThreadEntryReason))
       .help(button.help(entryReason: model.newThreadEntryReason))
-      .accessibilityLabel(button.title)
+      .accessibilityLabel(button.accessibilityLabel(filtered: model.viewOptionsFiltered))
       .accessibilityIdentifier(button.identifier)
     }
   }
@@ -131,6 +136,9 @@
         .foregroundStyle(face.isInk ? LLA.Color.ink : LLA.Color.muted)
         .frame(width: TopBarButton.side, height: TopBarButton.side)
         .contentShape(Rectangle())
+        // On the symbol itself, so no host of the button (the menu's, the toolbar's) falls back on the
+        // symbol's own description.
+        .accessibilityLabel(button.accessibilityLabel(filtered: filtered))
     }
   }
 

@@ -426,8 +426,22 @@ struct SnapshotShell: View {
     try await render("iosQuietThreads-collapsed-open", size: CGSize(width: 390, height: 760)) {
       FlatThreadList(model: model, showsStowed: .constant(true))
     }
+    // The open thread is never stowed: a quiet thread selected is an ordinary row where the lower list
+    // starts, above "N more", which no longer counts it; opened, it is not repeated.
+    model.selectedThreadId = "quiet"
+    try await render("macQuietThreads-collapsed-selected", size: size) { SidebarView(model: model) }
+    try await render("macQuietThreads-collapsed-selected-open", size: size) {
+      ScrollView {
+        ThreadListView(model: model, showsStowed: .constant(true))
+          .padding(.horizontal, 10).padding(.top, LLA.Space.s)
+      }
+    }
+    try await render("iosQuietThreads-collapsed-selected", size: CGSize(width: 390, height: 760)) {
+      FlatThreadList(model: model, showsStowed: .constant(false))
+    }
+    model.selectedThreadId = nil
     try await show(.hidden)
-    guard case .needsYouFirst(_, .hidden(let working)) = model.listLayout.body else {
+    guard case .needsYouFirst(_, .hidden(let working, _)) = model.listLayout.body else {
       Issue.record("Hidden: \(model.listLayout.body)")
       return
     }

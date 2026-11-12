@@ -300,7 +300,8 @@ struct StowedThreadsRow: View {
 /// a heading per group with its threads beneath, 8 pt between groups. The archived block follows a
 /// 24 pt gap while "Show archived" is on. Hidden's row is the sidebar's on the Mac
 /// (`HiddenWorkingRow`, pinned above the profile footer, the rows it opens last in this list) and the
-/// list's last row on the phone.
+/// list's last row on the phone. Consecutive rows are `LLA.Metrics.rowGap` apart; a section gap above a
+/// list's first row replaces that gap (`gapAbove`).
 struct ThreadListView: View {
   @Bindable var model: WorkspaceModel
   /// Whether the stowed threads (Collapsed or Hidden) are shown: per window, never stored.
@@ -315,6 +316,22 @@ struct ThreadListView: View {
 
   /// Between the top list and the lower list, and before the archived block.
   static let gap: CGFloat = LLA.Space.xl
+
+  /// The space above a row: `sectionGap` (24 pt, 8 pt, or none after a heading or at the top) above a
+  /// list's first row, else the hairline `LLA.Metrics.rowGap`; the two never add up.
+  static func gapAbove(isFirst: Bool, sectionGap: CGFloat) -> CGFloat {
+    isFirst ? sectionGap : LLA.Metrics.rowGap
+  }
+
+  /// A working row's scroll id among the rows Hidden's row opens.
+  static func hiddenOpenedId(_ thread: ConversationThread) -> String { "hidden-opened-\(thread.id)" }
+
+  /// The scroll id of the first working row Hidden's row opens, which the sidebar brings into view as
+  /// they open; nil unless Hidden stows something.
+  static func hiddenOpenedScrollTarget(_ layout: ListLayout) -> String? {
+    guard case .needsYouFirst(_, .hidden(let working, _)) = layout.body else { return nil }
+    return working.first.map(hiddenOpenedId)
+  }
 
   var body: some View {
     #if os(macOS)
@@ -338,13 +355,9 @@ struct ThreadListView: View {
       switch layout.body {
       case .needsYouFirst(let top, let lower):
         ThreadRows(model: model, threads: top)
-        switch lower {
-        case .hidden:
-          // Nothing here, so no gap: Hidden's row is the sidebar's, and the rows it opens come last.
-          EmptyView()
-        case .rows, .collapsed:
-          if !lower.drawsNothing { macLower(lower).padding(.top, top.isEmpty ? 0 : Self.gap) }
-        }
+        // Under Hidden only the selected row, if any, is drawn here: Hidden's row is the sidebar's, and
+        // the rows it opens come last. Nothing drawn, no gap.
+        if lower.drawsInList { macLower(lower).padding(.top, top.isEmpty ? 0 : Self.gap) }
       case .byEnvironment(let groups):
         EnvironmentGroupsView(
           model: model, groups: groups,
@@ -357,9 +370,12 @@ struct ThreadListView: View {
           .padding(.top, layout.body.drawsAboveArchive ? Self.gap : 0)
       }
       // The working threads Hidden's row opens: the scrolling list's last rows, so many of them scroll.
-      if showsStowed, case .needsYouFirst(_, .hidden(let working)) = layout.body, !working.isEmpty {
-        ThreadRows(model: model, threads: working)
-          .padding(.top, layout.body.drawsAboveArchive || !layout.archived.isEmpty ? Self.gap : 0)
+      // The first carries a scroll id, so the sidebar brings it into view as they open.
+      if showsStowed, case .needsYouFirst(_, .hidden(let working, _)) = layout.body, !working.isEmpty {
+        VStack(spacing: ThreadRows.spacing) {
+          ForEach(working) { ThreadRow(model: model, thread: $0).id(Self.hiddenOpenedId($0)) }
+        }
+        .padding(.top, layout.body.drawsAboveArchive || !layout.archived.isEmpty ? Self.gap : 0)
       }
     }
 
@@ -367,31 +383,40 @@ struct ThreadListView: View {
       switch lower {
       case .rows(let threads, let tiny):
         ThreadRows(model: model, threads: threads, tiny: tiny)
-      case .collapsed(let count, let working, let threads):
-        VStack(spacing: 0) {
-          StowedThreadsRow(
-            text: ListLayout.collapsedLabel(count: count, working: working), working: working > 0,
-            open: showsStowed
-          ) { showsStowed.toggle() }
-          .accessibilityIdentifier("collapsed-threads")
-          if showsStowed { ThreadRows(model: model, threads: threads) }
+      case .collapsed(let count, let working, let threads, let selected):
+        // The selected thread first, as an ordinary row; then the row standing for the rest (absent with
+        // nothing else stowed) and, opened, the rest beneath it.
+        VStack(spacing: ThreadRows.spacing) {
+          if let selected { ThreadRow(model: model, thread: selected) }
+          if count > 0 {
+            StowedThreadsRow(
+              text: ListLayout.collapsedLabel(count: count, working: working), working: working > 0,
+              open: showsStowed
+            ) { showsStowed.toggle() }
+            .accessibilityIdentifier("collapsed-threads")
+            if showsStowed { ThreadRows(model: model, threads: threads) }
+          }
         }
-      case .hidden:
-        // Never reached: `macList` draws Hidden's opened rows last, and the sidebar draws its row.
-        EmptyView()
+      case .hidden(_, let selected):
+        // Only the selected row: `macList` draws Hidden's opened rows last, and the sidebar draws its row.
+        if let selected { ThreadRow(model: model, thread: selected) }
       }
     }
   #endif
 }
 
-/// Thread rows, touching: no gap between one row's fill and the next (the Mac's stacks).
+/// Thread rows with a hairline of space between one row's fill and the next (the Mac's stacks).
 struct ThreadRows: View {
   @Bindable var model: WorkspaceModel
   let threads: [ConversationThread]
   var tiny = false
 
+  /// Between consecutive rows; nesting stacks use it too, so a stack's last row and the next stack's
+  /// first are as far apart as any two rows.
+  static let spacing = LLA.Metrics.rowGap
+
   var body: some View {
-    VStack(spacing: 0) { ForEach(threads) { ThreadRow(model: model, thread: $0, tiny: tiny) } }
+    VStack(spacing: Self.spacing) { ForEach(threads) { ThreadRow(model: model, thread: $0, tiny: tiny) } }
   }
 }
 
@@ -430,7 +455,7 @@ struct FlatThreadRows: View {
         .listRowBackground(Color.clear)
     }
     let hidden: [ConversationThread] = {
-      if case .needsYouFirst(_, .hidden(let working)) = layout.body { return working }
+      if case .needsYouFirst(_, .hidden(let working, _)) = layout.body { return working }
       return []
     }()
     let drawn = layout.body.drawsAboveArchive
@@ -439,17 +464,21 @@ struct FlatThreadRows: View {
       case .needsYouFirst(let top, let lower):
         rows(top, gap: 0)
         let lowerGap = top.isEmpty ? 0 : gap
+        // The selected thread that would be stowed, as an ordinary row where the lower list starts.
+        let selected = lower.selected.map { [$0] } ?? []
+        rows(selected, gap: lowerGap)
+        let afterSelected = selected.isEmpty ? lowerGap : LLA.Metrics.rowGap
         switch lower {
         case .rows(let threads, let tiny):
           rows(threads, tiny: tiny, gap: lowerGap)
-        case .collapsed(let count, let working, let threads) where count > 0:
+        case .collapsed(let count, let working, let threads, _) where count > 0:
           StowedThreadsRow(
             text: ListLayout.collapsedLabel(count: count, working: working), working: working > 0,
             open: showsStowed
           ) { showsStowed.toggle() }
           .accessibilityIdentifier("collapsed-threads")
-          .modifier(PhoneRowChrome(gap: lowerGap))
-          if showsStowed { rows(threads, gap: 0) }
+          .modifier(PhoneRowChrome(gap: afterSelected))
+          if showsStowed { rows(threads, gap: LLA.Metrics.rowGap) }
         case .collapsed, .hidden:
           EmptyView()
         }
@@ -471,17 +500,20 @@ struct FlatThreadRows: View {
         StowedThreadsRow(text: text, working: true, open: showsStowed) { showsStowed.toggle() }
           .accessibilityIdentifier("hidden-working")
           .modifier(PhoneRowChrome(gap: drawn || !layout.archived.isEmpty ? gap : 0))
-        if showsStowed { rows(hidden, gap: 0) }
+        if showsStowed { rows(hidden, gap: LLA.Metrics.rowGap) }
       }
     }
     .deleteThreadAlert(model: model, thread: $deleting)
   }
 
-  /// Rows with their swipe actions; `gap` opens above the first.
+  /// Rows with their swipe actions; `gap` opens above the first, the hairline row gap above the others.
   private func rows(_ threads: [ConversationThread], tiny: Bool = false, gap: CGFloat) -> some View {
     ForEach(threads) { thread in
       ThreadRow(model: model, thread: thread, tiny: tiny)
-        .modifier(PhoneRowChrome(gap: thread.id == threads.first?.id ? gap : 0))
+        .modifier(
+          PhoneRowChrome(
+            gap: ThreadListView.gapAbove(isFirst: thread.id == threads.first?.id, sectionGap: gap))
+        )
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
           // Not `role: .destructive`, which would remove the row before the confirmation is answered.
           Button("Delete", systemImage: "trash") { deleting = thread }
@@ -512,8 +544,8 @@ struct FlatThreadRows: View {
 }
 
 /// A list row on the phone: the 6 pt side inset, no separator or background, and `gap` of empty space
-/// above it, outside its button (the 24 pt between the list's parts; a list has no spacer row shorter
-/// than its least row height).
+/// above it, outside its button (the 24 pt between the list's parts, or the 1 pt row gap; a list has no
+/// spacer row shorter than its least row height). The button keeps its 44 pt height.
 private struct PhoneRowChrome: ViewModifier {
   let gap: CGFloat
 
@@ -652,19 +684,25 @@ struct EnvironmentHeading: View {
   #endif
 }
 
+/// An environment action the Mac asked for, from a heading's context menu or the view-options menu's
+/// "Environments" submenu (`EnvironmentActionItems`); the sidebar shows its sheet, folder picker, or
+/// confirmation.
+enum EnvironmentAction: Equatable {
+  case rename(WorkEnvironment)
+  case addFolder(WorkEnvironment)
+  case delete(WorkEnvironment)
+}
+
 #if os(macOS)
   /// The Mac's "By environment": each group's heading, then its threads unless it is collapsed, 8 pt
   /// between groups. Plain stacks, not `List`: a List drew nothing in the macOS 26 split-view sidebar
   /// (see `SidebarView`). A heading's context menu keeps Rename, Add Folder, and (for a manual one)
-  /// Delete until the environment form gives them a home.
+  /// Delete until the environment form gives them a home; the view-options menu's "Environments"
+  /// submenu offers the same (`EnvironmentActionItems`).
   struct EnvironmentGroupsView: View {
     @Bindable var model: WorkspaceModel
     let groups: [ListLayout.Group]
     @Binding var collapsed: Set<String>
-    @State private var renaming: WorkEnvironment?
-    @State private var deleting: WorkEnvironment?
-    @State private var folderTarget: WorkEnvironment?
-    @State private var choosingFolder = false
 
     var body: some View {
       VStack(alignment: .leading, spacing: 0) {
@@ -674,43 +712,81 @@ struct EnvironmentHeading: View {
             EnvironmentHeading(model: model, group: group, isCollapsed: isCollapsed) {
               if isCollapsed { collapsed.remove(group.id) } else { collapsed.insert(group.id) }
             }
-            .contextMenu { environmentActions(group) }
+            .contextMenu {
+              if let environment = model.environments.first(where: { $0.id == group.environmentId }) {
+                EnvironmentActionItems(model: model, environment: environment)
+              }
+            }
             if !isCollapsed { ThreadRows(model: model, threads: group.threads) }
           }
           .padding(.top, group.id == groups.first?.id ? 0 : EnvironmentHeading.groupGap)
         }
       }
-      .sheet(item: $renaming) { RenameEnvironmentSheet(model: model, environment: $0) }
-      .confirmationDialog(
-        deleting.map { "Delete \u{201C}\($0.displayName)\u{201D}?" } ?? "Delete environment?",
-        isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
-        titleVisibility: .visible, presenting: deleting
-      ) { environment in
-        Button("Delete Environment", role: .destructive) {
-          Task { await model.deleteEnvironment(id: environment.id) }
-        }
-        Button("Cancel", role: .cancel) {}
-      } message: { _ in
-        Text("Its folders return to automatic environments. No threads are deleted.")
+    }
+  }
+
+  /// One environment's actions on the Mac: Rename, Add Folder, and for a manual environment Delete. A
+  /// heading's context menu and the view-options menu's "Environments" submenu both offer them; each
+  /// asks the model (`environmentAction`), and the sidebar's `EnvironmentActionPresenter` shows the
+  /// sheet, the folder picker, or the confirmation.
+  struct EnvironmentActionItems: View {
+    @Bindable var model: WorkspaceModel
+    let environment: WorkEnvironment
+
+    var body: some View {
+      Button("Rename\u{2026}", systemImage: "pencil") { model.environmentAction = .rename(environment) }
+      Button("Add Folder\u{2026}", systemImage: "folder.badge.plus") {
+        model.environmentAction = .addFolder(environment)
       }
-      .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
-        guard case .success(let url) = result, let environment = folderTarget else { return }
-        Task { await model.addFolder(environmentId: environment.id, path: url.path) }
+      if environment.manual {
+        Divider()
+        Button("Delete Environment\u{2026}", systemImage: "trash", role: .destructive) {
+          model.environmentAction = .delete(environment)
+        }
       }
     }
+  }
 
-    @ViewBuilder private func environmentActions(_ group: ListLayout.Group) -> some View {
-      if let environment = model.environments.first(where: { $0.id == group.environmentId }) {
-        Button("Rename…", systemImage: "pencil") { renaming = environment }
-        Button("Add Folder…", systemImage: "folder.badge.plus") {
-          folderTarget = environment
-          choosingFolder = true
+  /// Shows what `EnvironmentActionItems` asked for: the rename sheet, the folder picker (its folder is
+  /// added to the environment), or the delete confirmation. On the sidebar, so it is there under either
+  /// arrangement and for the toolbar's menu.
+  struct EnvironmentActionPresenter: ViewModifier {
+    @Bindable var model: WorkspaceModel
+    @State private var renaming: WorkEnvironment?
+    @State private var deleting: WorkEnvironment?
+    @State private var folderTarget: WorkEnvironment?
+    @State private var choosingFolder = false
+
+    func body(content: Content) -> some View {
+      content
+        .onChange(of: model.environmentAction) { _, action in
+          guard let action else { return }
+          model.environmentAction = nil
+          switch action {
+          case .rename(let environment): renaming = environment
+          case .addFolder(let environment):
+            folderTarget = environment
+            choosingFolder = true
+          case .delete(let environment): deleting = environment
+          }
         }
-        if environment.manual {
-          Divider()
-          Button("Delete Environment", systemImage: "trash", role: .destructive) { deleting = environment }
+        .sheet(item: $renaming) { RenameEnvironmentSheet(model: model, environment: $0) }
+        .confirmationDialog(
+          deleting.map { "Delete \u{201C}\($0.displayName)\u{201D}?" } ?? "Delete environment?",
+          isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+          titleVisibility: .visible, presenting: deleting
+        ) { environment in
+          Button("Delete Environment", role: .destructive) {
+            Task { await model.deleteEnvironment(id: environment.id) }
+          }
+          Button("Cancel", role: .cancel) {}
+        } message: { _ in
+          Text("Its folders return to automatic environments. No threads are deleted.")
         }
-      }
+        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
+          guard case .success(let url) = result, let environment = folderTarget else { return }
+          Task { await model.addFolder(environmentId: environment.id, path: url.path) }
+        }
     }
   }
 #endif

@@ -56,6 +56,29 @@ import WorkspaceProtocol
     #expect(TopBarButton.side == 28)
   }
 
+  /// C1: the buttons speak their titles, never their symbols' own descriptions. The view-options
+  /// symbol's is "filter" (both the plain and the filled one), which VoiceOver read once a thread was
+  /// open; the label is now chosen here and set on the symbol itself.
+  @Test func viewOptionsAlwaysSpeaksViewOptions() {
+    for filtered in [false, true] {
+      #expect(TopBarButton.viewOptions.accessibilityLabel(filtered: filtered) == "View options")
+      #expect(TopBarButton.search.accessibilityLabel(filtered: filtered) == "Search")
+      #expect(TopBarButton.newThread.accessibilityLabel(filtered: filtered) == "New thread")
+    }
+  }
+
+  /// C4: the Mac's view options list every environment by name, ignoring case, then id; none, no submenu.
+  @Test func theEnvironmentsSubmenuListsEveryEnvironmentByName() {
+    let environments = [
+      WorkEnvironment(id: "pz", name: "zulu"),
+      WorkEnvironment(id: "pb", name: "alpha"),
+      WorkEnvironment(id: "pa", name: "Alpha"),
+      WorkEnvironment(id: "pm", name: "Mike"),
+    ]
+    #expect(ViewOptions.environments(environments).map(\.id) == ["pa", "pb", "pm", "pz"])
+    #expect(ViewOptions.environments([]).isEmpty)
+  }
+
   @Test func theModelSaysWhenViewOptionsFilter() async throws {
     let model = try await ListFixture.model()
     #expect(!model.viewOptionsFiltered)

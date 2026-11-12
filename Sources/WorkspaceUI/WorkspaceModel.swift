@@ -101,7 +101,9 @@ public final class WorkspaceModel {
   public private(set) var link: LinkState = .connecting
   public private(set) var linkMessage: String?
   public private(set) var connections: [Connection] = []
-  public private(set) var threads: [ConversationThread] = []
+  public private(set) var threads: [ConversationThread] = [] {
+    didSet { holdSelectedState() }
+  }
   public private(set) var diagnostics: DiagnosticsReport?
   public private(set) var diagnosticsError: String?
   public private(set) var diagnosticsLoading = false
@@ -177,7 +179,16 @@ public final class WorkspaceModel {
   public var showSettingsSheet = false
   /// Set by the Settings views while they are on screen.
   public var settingsVisible = false
-  public var selectedThreadId: String?
+  public var selectedThreadId: String? {
+    didSet { if selectedThreadId != oldValue { holdSelectedState(restart: true) } }
+  }
+  /// The most urgent state the selected thread has had since it was selected: the list orders it by
+  /// the more urgent of this and its state now, so the thread being read does not move under the owner
+  /// (`ListLayout.Selection`; D-206, the owner's changes). Released, and started afresh, whenever the
+  /// selection changes, so every way the selection moves (a row, the composer, a delete, sign-out)
+  /// moves the hold with it; nil while the selected thread is not in the live list (unknown yet, or
+  /// archived). Only the order uses it: the mark, the badge, and the arrivals keep the real state.
+  private(set) var selectionHold: ThreadState?
   /// The search palette (⌘K on the Mac, the list's search button on the iPhone).
   public var showSearch = false
   /// The profile menu above the sidebar's profile button.
@@ -187,6 +198,9 @@ public final class WorkspaceModel {
   }
   /// The phone's environment sheet: a new environment, or one environment's name and folders.
   public var environmentSheet: EnvironmentSheetRequest?
+  /// The Mac's environment action, asked for by a heading's context menu or the view-options menu's
+  /// "Environments" submenu and shown by the sidebar (`EnvironmentActionPresenter`), which clears it.
+  var environmentAction: EnvironmentAction?
   /// The iPhone's "Other ways to sign in" sheet, over the signed-out screen. On the model, like the
   /// sheets above, so the app holds a pairing link back until it closes.
   public var showSignInOptions = false
@@ -377,7 +391,20 @@ public final class WorkspaceModel {
   var listLayout: ListLayout {
     ListLayout.build(
       threads: threads.filter { connectionFilter == nil || $0.connectionId == connectionFilter },
-      environments: environments, settings: shownSettings)
+      environments: environments, settings: shownSettings,
+      selection: selectedThreadId.map { ListLayout.Selection(threadId: $0, held: selectionHold) })
+  }
+
+  /// Keeps `selectionHold` the most urgent state the selected thread has had since it was selected;
+  /// `restart` (a new selection, or none) releases the old hold first. Releasing a hold moves rows but
+  /// changes no thread's state, so the arrival tracker is not told and nothing traces.
+  private func holdSelectedState(restart: Bool = false) {
+    var hold = restart ? nil : selectionHold
+    if let id = selectedThreadId, let thread = threads.first(where: { $0.id == id }) {
+      // An archived thread is out of the live list: its hold ends, and starts again if it comes back.
+      hold = thread.archived ? nil : min(hold ?? state(of: thread), state(of: thread))
+    }
+    if hold != selectionHold { selectionHold = hold }
   }
 
   public func state(of thread: ConversationThread) -> ThreadState { Attention.state(of: thread) }
@@ -1742,6 +1769,7 @@ public final class WorkspaceModel {
     hubLink = nil
     diagnostics = nil
     environmentSheet = nil
+    environmentAction = nil
     showSearch = false
     showProfileMenu = false
     lastError = nil

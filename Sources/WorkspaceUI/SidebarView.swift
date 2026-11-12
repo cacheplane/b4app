@@ -18,6 +18,7 @@ struct SidebarView: View {
   @State private var showsStowed = false
   #if os(macOS)
     @Environment(\.sidebarVisibility) private var visibility
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
   #endif
 
   var body: some View {
@@ -39,6 +40,8 @@ struct SidebarView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(model: model) }
         .onHover { inside in if !inside { showsStowed = false } }
+        // Rename, Add Folder, and Delete, from a heading or from view options' "Environments".
+        .modifier(EnvironmentActionPresenter(model: model))
       #else
         // On "Connect your Mac" too, so the account can still be left from there.
         .toolbar {
@@ -76,16 +79,27 @@ struct SidebarView: View {
     private var content: some View {
       VStack(alignment: .leading, spacing: 0) {
         listNotice
-        ScrollView {
-          ThreadListView(model: model, showsStowed: $showsStowed)
-            .padding(.horizontal, 10)
-            .padding(.top, LLA.Space.s)
-            .padding(.bottom, LLA.Space.l)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollViewReader { proxy in
+          ScrollView {
+            ThreadListView(model: model, showsStowed: $showsStowed)
+              .padding(.horizontal, 10)
+              .padding(.top, LLA.Space.s)
+              .padding(.bottom, LLA.Space.l)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          // Hidden's opened rows are the list's last rows, maybe below the fold: as they open, the first
+          // scrolls into view (animated unless Reduce Motion is on). Nothing scrolls as they close.
+          .onChange(of: showsStowed) { _, open in
+            guard open, let target = ThreadListView.hiddenOpenedScrollTarget(model.listLayout) else { return }
+            // On the next turn of the run loop, once the opened rows are laid out.
+            Task { @MainActor in
+              withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo(target) }
+            }
+          }
         }
         // Hidden's row: pinned to the bottom of the scrolling area, just above the profile footer. The
         // working threads it opens are the scrolling list's last rows (`ThreadListView`).
-        if case .needsYouFirst(_, .hidden(let working)) = model.listLayout.body, !working.isEmpty {
+        if case .needsYouFirst(_, .hidden(let working, _)) = model.listLayout.body, !working.isEmpty {
           HiddenWorkingRow(working: working.count, open: $showsStowed)
             .padding(.horizontal, 10)
             .padding(.vertical, LLA.Space.xs)
@@ -234,12 +248,25 @@ enum ViewOptions {
   static func quietThreadsDisabled(_ settings: ViewSettings) -> Bool {
     settings.arrangement == .byEnvironment
   }
+
+  /// The Mac's "Environments" submenu: every environment, with threads or not, by display name ignoring
+  /// case, then id. Empty, and the submenu absent, without environments.
+  static func environments(_ environments: [WorkEnvironment]) -> [WorkEnvironment] {
+    environments.sorted { lhs, rhs in
+      switch lhs.displayName.caseInsensitiveCompare(rhs.displayName) {
+      case .orderedAscending: true
+      case .orderedDescending: false
+      case .orderedSame: lhs.id < rhs.id
+      }
+    }
+  }
 }
 
 /// The list's view options, a menu behind a toolbar button on both platforms (decision 11): Arrange,
 /// "Threads that don't need you", "Show archived", and the connection filter. On the Mac it is the top
-/// bar's view-options button (`TopBarButton.viewOptions`); on the iPhone the navigation bar's button,
-/// which also keeps New Environment and Edit Environment at its foot until the environment form gives
+/// bar's view-options button (`TopBarButton.viewOptions`), with an "Environments" submenu last (each
+/// environment's Rename, Add Folder, and Delete); on the iPhone the navigation bar's button, which keeps
+/// New Environment and Edit Environment at its foot. Both are interim, until the environment form gives
 /// them a home of their own. The items check the stored values; choosing one writes it for every device.
 struct MoreMenu: View {
   @Bindable var model: WorkspaceModel
@@ -265,12 +292,10 @@ struct MoreMenu: View {
       Divider()
       Toggle("Show archived", isOn: showArchived)
       connectionPicker
-      #if os(iOS)
-        environmentActions
-      #endif
+      environmentActions
     } label: {
       #if os(macOS)
-        // Filled and in ink while a connection is picked.
+        // Filled and in ink while a connection is picked; "View options" whatever the symbol.
         TopBarLabel(button: .viewOptions, filtered: model.viewOptionsFiltered)
           .accessibilityValue(activeFilter ?? "None")
       #else
@@ -288,6 +313,7 @@ struct MoreMenu: View {
       // The menu's button sizes itself to the symbol; this gives it the other buttons' 28 pt target.
       .frame(width: TopBarButton.side, height: TopBarButton.side)
       .contentShape(Rectangle())
+      .accessibilityLabel(TopBarButton.viewOptions.accessibilityLabel(filtered: model.viewOptionsFiltered))
       .accessibilityIdentifier(TopBarButton.viewOptions.identifier)
     #else
       .accessibilityIdentifier("sidebar-more")
@@ -325,7 +351,23 @@ struct MoreMenu: View {
     }
   }
 
-  #if os(iOS)
+  #if os(macOS)
+    /// Every environment, each a submenu of Rename, Add Folder, and (manual ones) Delete, as its
+    /// heading's context menu offers them; the only way to them under "Needs you first", and for an
+    /// environment without live threads, until the environment form.
+    @ViewBuilder private var environmentActions: some View {
+      let environments = ViewOptions.environments(model.environments)
+      if !environments.isEmpty {
+        Divider()
+        Menu("Environments") {
+          ForEach(environments) { environment in
+            Menu(environment.displayName) { EnvironmentActionItems(model: model, environment: environment) }
+          }
+        }
+        .accessibilityIdentifier("view-options-environments")
+      }
+    }
+  #else
     /// New Environment and Edit Environment, which have no other home on the phone yet. A name alone
     /// saves through the change log; folders and Delete go to the environment's Mac.
     @ViewBuilder private var environmentActions: some View {

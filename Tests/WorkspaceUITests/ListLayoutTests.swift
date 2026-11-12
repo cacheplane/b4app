@@ -50,9 +50,9 @@ import WorkspaceProtocol
 
   private func layout(
     _ threads: [ConversationThread], _ settings: ViewSettings = ViewSettings(),
-    environments: [WorkEnvironment] = []
+    environments: [WorkEnvironment] = [], selection: ListLayout.Selection? = nil
   ) -> ListLayout {
-    ListLayout.build(threads: threads, environments: environments, settings: settings)
+    ListLayout.build(threads: threads, environments: environments, settings: settings, selection: selection)
   }
 
   private func groups(
@@ -123,7 +123,7 @@ import WorkspaceProtocol
     var threads = mixed
     threads += (0..<5).map { thread("quiet-\($0)", .quiet, at: 0) }
     let built = try #require(parts(layout(threads, ViewSettings(quietThreads: .collapsed))))
-    guard case .collapsed(let count, let working, let stowed) = built.lower else {
+    guard case .collapsed(let count, let working, let stowed, nil) = built.lower else {
       Issue.record("Collapsed stows the lower list: \(built.lower)")
       return
     }
@@ -143,7 +143,7 @@ import WorkspaceProtocol
 
   @Test func hiddenKeepsOnlyWorkingAndIsNilLabelWithNone() throws {
     let built = try #require(parts(layout(mixed, ViewSettings(quietThreads: .hidden))))
-    guard case .hidden(let working) = built.lower else {
+    guard case .hidden(let working, nil) = built.lower else {
       Issue.record("Hidden keeps the working threads: \(built.lower)")
       return
     }
@@ -370,5 +370,124 @@ import WorkspaceProtocol
     let built = try #require(groups(threads, named))
     #expect(built.map(\.title) == ["Alpha", "No folder"])
     #expect(built.last?.threads.map(\.id) == ["gone", "loose"])
+  }
+
+  // MARK: The selected thread
+
+  /// C2: under Collapsed or Hidden the selected thread is never stowed. It is drawn as an ordinary row
+  /// where the lower list starts, counted in neither "N more" nor "N working", and it is not among the
+  /// stowed rows, so it appears once whether they are open or closed.
+  @Test func theSelectedThreadIsNeverStowed() throws {
+    let threads = [
+      thread("top", .finished, at: 9),
+      thread("w", .working, at: 5),
+      thread("q", .quiet, at: 3),
+      thread("q2", .quiet, at: 1),
+    ]
+    let onQuiet = ListLayout.Selection(threadId: "q", held: .quiet)
+    let collapsed = try #require(
+      parts(layout(threads, ViewSettings(quietThreads: .collapsed), selection: onQuiet)))
+    #expect(collapsed.top == ["top"])
+    #expect(
+      collapsed.lower
+        == .collapsed(count: 2, working: 1, threads: [threads[1], threads[3]], selected: threads[2]))
+
+    let hidden = try #require(parts(layout(threads, ViewSettings(quietThreads: .hidden), selection: onQuiet)))
+    #expect(hidden.lower == .hidden(working: [threads[1]], selected: threads[2]))
+
+    // A selected working thread is not in Hidden's "N working": nothing else works, so no row stows.
+    let onWorking = ListLayout.Selection(threadId: "w", held: .working)
+    let hiddenWorking = layout(threads, ViewSettings(quietThreads: .hidden), selection: onWorking)
+    #expect(try #require(parts(hiddenWorking)).lower == .hidden(working: [], selected: threads[1]))
+    #expect(hiddenWorking.stowing == nil)
+    #expect(hiddenWorking.body.drawsAboveArchive)
+    #expect(!hiddenWorking.body.drawsNothing)
+
+    // With nothing else stowed the Collapsed row is absent: the count is 0 and nothing stows.
+    let alone = layout([threads[0], threads[2]], ViewSettings(quietThreads: .collapsed), selection: onQuiet)
+    #expect(
+      try #require(parts(alone)).lower == .collapsed(count: 0, working: 0, threads: [], selected: threads[2]))
+    #expect(alone.stowing == nil)
+    #expect(!alone.body.drawsNothing)
+    #expect(alone.body.drawsAboveArchive)
+
+    // A selected thread in the top list stays there and pulls nothing out of the stowed rows.
+    let onTop = ListLayout.Selection(threadId: "top", held: .finished)
+    #expect(
+      try #require(parts(layout(threads, ViewSettings(quietThreads: .collapsed), selection: onTop))).lower
+        == .collapsed(count: 3, working: 1, threads: Array(threads[1...]), selected: nil))
+
+    // Small and Tiny draw every row already: a selection changes nothing.
+    for mode in [ViewSettings.QuietThreads.small, .tiny] {
+      #expect(
+        layout(threads, ViewSettings(quietThreads: mode), selection: onQuiet)
+          == layout(threads, ViewSettings(quietThreads: mode)))
+    }
+  }
+
+  /// C6: the selected thread is ordered by the most urgent state it has had since it was selected
+  /// (`held`), so a finished thread read on opening keeps its slot in the top list; without a hold it
+  /// takes its real place. Only the order and top-list membership change: `Attention.state(of:)` and
+  /// the group's mark stay the real state.
+  @Test func aHeldThreadKeepsTheSlotOfItsMostUrgentState() throws {
+    // "t" was finished when selected and has been read since: it is quiet now.
+    let threads = [
+      thread("a", .approve, at: 5),
+      thread("t", .quiet, at: 4),
+      thread("f", .finished, at: 3),
+      thread("q", .quiet, at: 9),
+    ]
+    let released = try #require(parts(layout(threads)))
+    #expect(released.top == ["a", "f"])
+    #expect(released.lower == .rows([threads[3], threads[1]], tiny: false))
+
+    let held = ListLayout.Selection(threadId: "t", held: .finished)
+    let holding = try #require(parts(layout(threads, selection: held)))
+    #expect(holding.top == ["a", "t", "f"])
+    #expect(holding.lower == .rows([threads[3]], tiny: false))
+    #expect(Attention.state(of: threads[1]) == .quiet)
+
+    // Under Collapsed it stays in the top list, not stowed and not the selected row; released, it is stowed.
+    let collapsed = try #require(
+      parts(layout(threads, ViewSettings(quietThreads: .collapsed), selection: held)))
+    #expect(collapsed.top == ["a", "t", "f"])
+    #expect(collapsed.lower == .collapsed(count: 1, working: 0, threads: [threads[3]], selected: nil))
+    let stowed = try #require(parts(layout(threads, ViewSettings(quietThreads: .collapsed))))
+    #expect(
+      stowed.lower == .collapsed(count: 2, working: 0, threads: [threads[3], threads[1]], selected: nil))
+
+    // A hold of approve orders it among the approvals, newest first.
+    let asks = ListLayout.Selection(threadId: "t", held: .approve)
+    #expect(try #require(parts(layout(threads, selection: asks))).top == ["a", "t", "f"])
+    var newer = threads
+    newer[1] = thread("t", .quiet, at: 6)
+    #expect(try #require(parts(layout(newer, selection: asks))).top == ["t", "a", "f"])
+
+    // A hold never lowers a thread: the real state wins when it is more urgent.
+    let stale = ListLayout.Selection(threadId: "f", held: .quiet)
+    #expect(try #require(parts(layout(threads, selection: stale))).top == ["a", "f"])
+  }
+
+  @Test func aHeldThreadKeepsItsPlaceInsideItsGroup() throws {
+    let threads = [
+      thread("a", .approve, at: 5, environment: "pa"),
+      thread("t", .quiet, at: 4, environment: "pa"),
+      thread("f", .finished, at: 3, environment: "pa"),
+      thread("w", .working, at: 9, environment: "pa"),
+    ]
+    let settings = ViewSettings(arrangement: .byEnvironment)
+    let held = layout(
+      threads, settings, environments: named, selection: ListLayout.Selection(threadId: "t", held: .finished))
+    guard case .byEnvironment(let groups) = held.body else {
+      Issue.record("By environment: \(held.body)")
+      return
+    }
+    #expect(groups.map { $0.threads.map(\.id) } == [["a", "t", "f", "w"]])
+    #expect(try #require(self.groups(threads, named)).map { $0.threads.map(\.id) } == [["a", "f", "w", "t"]])
+
+    // The collapsed heading's mark is the most urgent real state, whatever the order.
+    let quietFirst = ListLayout.Group(
+      id: "pa", title: "Alpha", environmentId: "pa", threads: [threads[1], threads[3]])
+    #expect(quietFirst.mostUrgent == .working)
   }
 }

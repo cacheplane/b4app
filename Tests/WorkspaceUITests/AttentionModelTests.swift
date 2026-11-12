@@ -1018,6 +1018,170 @@ private struct AttentionDocument: Decodable {
     #expect(model.arrival(for: asks)?.laps == true)
   }
 
+  // MARK: The selected thread holds its place (C6)
+
+  /// "a" asks for an approval, "t1" and "f" are finished and unread, "q" is quiet; "t1" opens with its
+  /// reply on screen, so opening it marks it read.
+  private func modelWithAFinishedThread(
+    _ transport: ScriptedTransport, environment: String? = nil, environments: [WorkEnvironment] = []
+  ) async throws -> WorkspaceModel {
+    let finishedThread = thread(
+      "t1", environment: environment, activity: activity(turn: "u1", status: .terminal, at: 4))
+    transport.set(
+      threads: [
+        thread("a", environment: environment, activity: activity(pending: 1, approvals: 1, at: 5)),
+        finishedThread,
+        thread("f", environment: environment, activity: activity(turn: "uf", status: .terminal, at: 3)),
+        thread(
+          "q", environment: environment, readTurnId: "uq",
+          activity: activity(turn: "uq", status: .terminal, at: 9)),
+      ],
+      environments: environments)
+    transport.setRead(read(finishedThread, turns: [turn("u1", in: "t1", at: 4)]))
+    transport.setRead(read(thread("f"), turns: [turn("uf", in: "f", at: 3)]))
+    transport.setRead(read(thread("q", readTurnId: "uq"), turns: [turn("uq", in: "q", at: 9)]))
+    return try await connected(transport)
+  }
+
+  private func topList(_ model: WorkspaceModel) -> [String] {
+    guard case .needsYouFirst(let top, _) = model.listLayout.body else { return [] }
+    return top.map(\.id)
+  }
+
+  @Test func aFinishedThreadOpenedAndReadKeepsItsSlotUntilTheSelectionMoves() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    #expect(topList(model) == ["a", "t1", "f"])
+    let badge = model.threads.filter(Attention.countsTowardBadge).map(\.id)
+    #expect(badge == ["a", "t1", "f"])
+
+    await model.openThread(id: "t1")
+    let t1 = try #require(model.threads.first { $0.id == "t1" })
+    #expect(t1.readTurnId == "u1")
+    // Its state is the real one (quiet, so no mark and a quiet title) and the badge no longer counts it,
+    // but it keeps its slot in the top list.
+    #expect(model.state(of: t1) == .quiet)
+    #expect(Attention.state(of: t1) == .quiet)
+    #expect(model.threads.filter(Attention.countsTowardBadge).map(\.id) == ["a", "f"])
+    #expect(topList(model) == ["a", "t1", "f"])
+
+    // Another thread selected: the hold is released and "t1" takes its real place, without tracing
+    // itself or any row that shifted.
+    await model.openThread(id: "q")
+    #expect(topList(model) == ["a", "f"])
+    guard case .needsYouFirst(_, .rows(let lower, _)) = model.listLayout.body else {
+      Issue.record("Small: \(model.listLayout.body)")
+      return
+    }
+    #expect(lower.map(\.id) == ["q", "t1"])
+    #expect(model.threads.allSatisfy { model.arrival(for: $0) == nil })
+  }
+
+  @Test func everyWayTheSelectionGoesReleasesTheHold() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    await model.openThread(id: "t1")
+    #expect(topList(model) == ["a", "t1", "f"])
+    // The new-thread composer selects nothing.
+    await model.openNewThread()
+    #expect(topList(model) == ["a", "f"])
+
+    // Selecting it again starts a new hold from its state now (quiet): nothing to hold.
+    model.selectedThreadId = "t1"
+    #expect(topList(model) == ["a", "f"])
+
+    // A row selects before it opens (`ThreadRow`); the open that follows keeps the same hold.
+    model.selectedThreadId = "f"
+    await model.openThread(id: "f")
+    #expect(model.state(of: try #require(model.threads.first { $0.id == "f" })) == .quiet)
+    #expect(topList(model) == ["a", "f"])
+    // Archiving the selected thread drops its hold: it is no longer in the live list.
+    var archived = try #require(model.threads.first { $0.id == "f" })
+    archived.archived = true
+    transport.emit(try .threadUpdated(archived))
+    try await waitUntil("archived") { model.threads.contains { $0.id == "f" && $0.archived } }
+    #expect(topList(model) == ["a"])
+    archived.archived = false
+    transport.emit(try .threadUpdated(archived))
+    try await waitUntil("unarchived") { model.threads.contains { $0.id == "f" && !$0.archived } }
+    // Back in the live list while still selected, it starts a new hold from its state now: quiet.
+    #expect(topList(model) == ["a"])
+    // Signing out drops it with everything else.
+    model.forgetWorkspace()
+    #expect(model.selectedThreadId == nil)
+    #expect(model.threads.isEmpty)
+  }
+
+  @Test func aHeldThreadUnderCollapsedIsNotStowedUntilReleased() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    transport.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .collapsed)))
+    try await waitUntil("collapsed") { model.viewSettings.quietThreads == .collapsed }
+    await model.openThread(id: "t1")
+    guard
+      case .needsYouFirst(let top, .collapsed(let count, _, let stowed, let selected)) = model.listLayout.body
+    else {
+      Issue.record("Collapsed: \(model.listLayout.body)")
+      return
+    }
+    #expect(top.map(\.id) == ["a", "t1", "f"])
+    #expect(count == 1)
+    #expect(stowed.map(\.id) == ["q"])
+    #expect(selected == nil)
+
+    model.selectedThreadId = nil
+    guard case .needsYouFirst(let after, .collapsed(let count, _, let stowed, nil)) = model.listLayout.body
+    else {
+      Issue.record("Collapsed, released: \(model.listLayout.body)")
+      return
+    }
+    #expect(after.map(\.id) == ["a", "f"])
+    #expect(count == 2)
+    #expect(stowed.map(\.id) == ["q", "t1"])
+  }
+
+  @Test func aHeldThreadThatAsksAgainMovesUpWithinTheTopList() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(transport)
+    await model.openThread(id: "t1")
+    #expect(topList(model) == ["a", "t1", "f"])
+
+    // A new approval on the held (now read) thread: approve, newer than "a", so it leads.
+    var asks = try #require(model.threads.first { $0.id == "t1" })
+    asks.activity = activity(turn: "u1", status: .terminal, pending: 1, approvals: 1, at: 6)
+    transport.emit(try .threadUpdated(asks))
+    try await waitUntil("asks") {
+      model.threads.contains { $0.id == "t1" && model.state(of: $0) == .approve }
+    }
+    #expect(topList(model) == ["t1", "a", "f"])
+
+    // The approval answered, it is quiet again; the hold is now approve, so it stays first.
+    var answered = asks
+    answered.activity = activity(turn: "u1", status: .terminal, at: 7)
+    transport.emit(try .threadUpdated(answered))
+    try await waitUntil("answered") {
+      model.threads.contains { $0.id == "t1" && model.state(of: $0) == .quiet }
+    }
+    #expect(topList(model) == ["t1", "a", "f"])
+  }
+
+  @Test func underByEnvironmentAHeldThreadKeepsItsPlaceInItsGroup() async throws {
+    let transport = ScriptedTransport()
+    let model = try await modelWithAFinishedThread(
+      transport, environment: "pa", environments: [environment("pa", "Alpha")])
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment)))
+    try await waitUntil("by environment") { model.viewSettings.arrangement == .byEnvironment }
+    func order() -> [String] {
+      guard case .byEnvironment(let groups) = model.listLayout.body else { return [] }
+      return groups.flatMap(\.threads).map(\.id)
+    }
+    #expect(order() == ["a", "t1", "f", "q"])
+    await model.openThread(id: "t1")
+    #expect(order() == ["a", "t1", "f", "q"])
+    model.selectedThreadId = nil
+    #expect(order() == ["a", "f", "q", "t1"])
+  }
+
   private func liveArrival(_ model: WorkspaceModel) -> Bool {
     model.threads.first { $0.id == "live" }.map { model.arrival(for: $0) != nil } ?? false
   }
