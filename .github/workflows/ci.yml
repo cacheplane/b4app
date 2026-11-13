@@ -147,7 +147,7 @@ jobs:
               "Sources/Coordinator/Accounts/AccountManager.swift": "06119d341433560101eca806f4497eb4ae93b9b99c06db2968ce33e8520d2cfe",
               "Sources/Coordinator/HubSync/HubSync.swift": "1e5524a1fb3616c6ce2db218168b3c4d144ba57821c51b5c06dbdbcdc2b7338c",
               "Sources/WorkspaceStorage/ProtocolActivation.swift": "19c70eaee753786a2493f12aa4af074070ce60bc93bd1796d28226d88418ae99",
-              "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "db58acdd9b8d31959915f7c3a40134186a4f77541e2ea94399b93b4a9c650d85",
+              "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "5df36f2f9c81de0e2326452184fbc4991cd0fca4a6fd4e68cf2c115ed9f2c1d8",
           }
 
           class Rejected(Exception):

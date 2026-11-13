@@ -1449,7 +1449,7 @@ private struct OwnerFixture: Sendable {
   func binding() throws -> ProtocolMembershipBinding {
     try ProtocolMembershipBinding(
       accountID: scope.account.id, canonicalHubBase: link.url,
-      hubUserID: user, hubOrgID: "fixture-org-identity", deviceID: link.deviceId,
+      hubUserID: Self.user, hubOrgID: "fixture-org-identity", deviceID: link.deviceId,
       databaseName: endpoint.database, linkJoinedAt: link.joinedAt)
   }
   func makeOrdinary(_ snapshot: ProtocolVerificationSnapshot? = nil) async throws -> HubOwnerCarrier {
