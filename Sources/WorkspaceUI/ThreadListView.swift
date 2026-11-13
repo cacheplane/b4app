@@ -97,7 +97,7 @@ struct SidebarErrorBanner: View {
 struct ThreadRow: View {
   @Bindable var model: WorkspaceModel
   let thread: ConversationThread
-  /// The Mac's lower list under Dense: a 20 pt row, 11 pt title, and 8 pt mark; nothing else changes.
+  /// The Mac's quiet rows under Dense (`ThreadListView.tiny`): a 20 pt row, 11 pt title, and 8 pt mark.
   var tiny = false
   @State private var renaming = false
   @State private var newTitle = ""
@@ -323,6 +323,33 @@ struct ThreadListView: View {
     isFirst ? sectionGap : LLA.Metrics.rowGap
   }
 
+  #if os(macOS)
+    /// Where the Mac's "Needs you first" draws a row ("By environment" draws its groups apart).
+    enum RowPlace: CaseIterable {
+      /// The top list: the threads that need the owner.
+      case top
+      /// Shown's lower list.
+      case lower
+      /// The rows opened beneath Collapsed's row.
+      case collapsedOpened
+      /// The working rows Hidden's row opens, last in the list.
+      case hiddenOpened
+      /// The selected thread kept out of the stow, where the lower list starts.
+      case selected
+      /// The archived block.
+      case archived
+    }
+
+    /// Whether a row in `place` is drawn tight: the threads that do not need the owner, wherever they
+    /// are drawn, while `tight` (`WorkspaceModel.tightQuietRows`); never the top list or the archived rows.
+    static func tiny(_ place: RowPlace, tight: Bool) -> Bool {
+      switch place {
+      case .lower, .collapsedOpened, .hiddenOpened, .selected: tight
+      case .top, .archived: false
+      }
+    }
+  #endif
+
   /// A working row's scroll id among the rows Hidden's row opens.
   static func hiddenOpenedId(_ thread: ConversationThread) -> String { "hidden-opened-\(thread.id)" }
 
@@ -348,13 +375,16 @@ struct ThreadListView: View {
   }
 
   #if os(macOS)
+    /// Whether a row in `place` is drawn tight now.
+    private func tiny(_ place: RowPlace) -> Bool { Self.tiny(place, tight: model.tightQuietRows) }
+
     @ViewBuilder private func macList(_ layout: ListLayout) -> some View {
       if layout.saysNoThreadsYet(hasLiveThreads: !model.orderedThreads.isEmpty) {
         Text("No threads yet.").llaSmallMuted().padding(.horizontal, 10).padding(.vertical, 6)
       }
       switch layout.body {
       case .needsYouFirst(let top, let lower):
-        ThreadRows(model: model, threads: top)
+        ThreadRows(model: model, threads: top, tiny: tiny(.top))
         // Under Hidden only the selected row, if any, is drawn here: Hidden's row is the sidebar's, and
         // the rows it opens come last. Nothing drawn, no gap.
         if lower.drawsInList { macLower(lower).padding(.top, top.isEmpty ? 0 : Self.gap) }
@@ -366,14 +396,16 @@ struct ThreadListView: View {
             set: { collapsedRaw = CollapsedEnvironments.encode($0) }))
       }
       if !layout.archived.isEmpty {
-        ThreadRows(model: model, threads: layout.archived)
+        ThreadRows(model: model, threads: layout.archived, tiny: tiny(.archived))
           .padding(.top, layout.body.drawsAboveArchive ? Self.gap : 0)
       }
       // The working threads Hidden's row opens: the scrolling list's last rows, so many of them scroll.
       // The first carries a scroll id, so the sidebar brings it into view as they open.
       if showsStowed, case .needsYouFirst(_, .hidden(let working, _)) = layout.body, !working.isEmpty {
         VStack(spacing: ThreadRows.spacing) {
-          ForEach(working) { ThreadRow(model: model, thread: $0).id(Self.hiddenOpenedId($0)) }
+          ForEach(working) {
+            ThreadRow(model: model, thread: $0, tiny: tiny(.hiddenOpened)).id(Self.hiddenOpenedId($0))
+          }
         }
         .padding(.top, layout.body.drawsAboveArchive || !layout.archived.isEmpty ? Self.gap : 0)
       }
@@ -381,25 +413,25 @@ struct ThreadListView: View {
 
     @ViewBuilder private func macLower(_ lower: ListLayout.Lower) -> some View {
       switch lower {
-      case .rows(let threads, let tiny):
-        ThreadRows(model: model, threads: threads, tiny: tiny)
+      case .rows(let threads):
+        ThreadRows(model: model, threads: threads, tiny: tiny(.lower))
       case .collapsed(let count, let working, let threads, let selected):
         // The selected thread first, as an ordinary row; then the row standing for the rest (absent with
         // nothing else stowed) and, opened, the rest beneath it.
         VStack(spacing: ThreadRows.spacing) {
-          if let selected { ThreadRow(model: model, thread: selected) }
+          if let selected { ThreadRow(model: model, thread: selected, tiny: tiny(.selected)) }
           if count > 0 {
             StowedThreadsRow(
               text: ListLayout.collapsedLabel(count: count, working: working), working: working > 0,
               open: showsStowed
             ) { showsStowed.toggle() }
             .accessibilityIdentifier("collapsed-threads")
-            if showsStowed { ThreadRows(model: model, threads: threads) }
+            if showsStowed { ThreadRows(model: model, threads: threads, tiny: tiny(.collapsedOpened)) }
           }
         }
       case .hidden(_, let selected):
         // Only the selected row: `macList` draws Hidden's opened rows last, and the sidebar draws its row.
-        if let selected { ThreadRow(model: model, thread: selected) }
+        if let selected { ThreadRow(model: model, thread: selected, tiny: tiny(.selected)) }
       }
     }
   #endif
@@ -469,7 +501,7 @@ struct FlatThreadRows: View {
         rows(selected, gap: lowerGap)
         let afterSelected = selected.isEmpty ? lowerGap : LLA.Metrics.rowGap
         switch lower {
-        case .rows(let threads, _):
+        case .rows(let threads):
           // The phone keeps its 44 pt rows whatever the density.
           rows(threads, gap: lowerGap)
         case .collapsed(let count, let working, let threads, _) where count > 0:

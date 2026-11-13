@@ -196,6 +196,70 @@ import WorkspaceProtocol
     await phone.disconnect()
   }
 
+  @Test func aDensitySetShowsAtOnceAndSendsOnlyDensity() async throws {
+    let transport = ScriptedTransport()
+    transport.script(.viewSettingsGet, [try Self.reply(ViewSettings(quietThreads: .collapsed))])
+    let model = try await Self.connected(transport)
+    transport.script(.viewSettingsSet, [.hold])
+    let write = Task { await model.setDensity(.dense) }
+    try await waitUntil("the set is out") { transport.heldCount(.viewSettingsSet) == 1 }
+    // Shown before the answer, the other fields untouched.
+    #expect(model.viewSettings == ViewSettings(quietThreads: .collapsed, density: .dense))
+    let call = try #require(transport.recorded(.viewSettingsSet).first)
+    #expect(call.params == ["density": "dense"])
+    #expect(call.operationId != nil)
+    #expect(
+      transport.release(
+        .viewSettingsSet, with: try Self.reply(ViewSettings(quietThreads: .collapsed, density: .dense))))
+    await write.value
+    #expect(model.viewSettings == ViewSettings(quietThreads: .collapsed, density: .dense))
+
+    // A refusal puts the old density back.
+    transport.script(.viewSettingsSet, [.failure(WorkspaceError(.endpointUnavailable, "The Mac is away."))])
+    await model.setDensity(.normal)
+    #expect(model.viewSettings == ViewSettings(quietThreads: .collapsed, density: .dense))
+    await model.disconnect()
+  }
+
+  @Test func aSlowReadDoesNotUndoADensitySet() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Self.connected(transport)
+    transport.script(.viewSettingsGet, [.hold])
+    let read = Task { await model.refreshViewSettings() }
+    try await waitUntil("the read is out") { transport.heldCount(.viewSettingsGet) == 1 }
+    transport.script(.viewSettingsSet, [try Self.reply(ViewSettings(density: .dense))])
+    await model.setDensity(.dense)
+    // The read's row is from before the set.
+    transport.release(.viewSettingsGet, with: try Self.reply(ViewSettings()))
+    await read.value
+    #expect(model.viewSettings == ViewSettings(density: .dense))
+    await model.disconnect()
+  }
+
+  /// Tight quiet rows are the Mac's: dense on the Mac's model; never on the phone's, which relays
+  /// through the hub and keeps its 44 pt rows at either density.
+  @Test func tightQuietRowsAreTheMacsAtDense() async throws {
+    let transport = ScriptedTransport()
+    transport.script(.viewSettingsGet, [try Self.reply(ViewSettings(density: .dense))])
+    let mac = try await Self.connected(transport)
+    #expect(mac.tightQuietRows)
+    transport.emit(try .viewSettingsChanged(ViewSettings()))
+    try await waitUntil("normal") { mac.viewSettings.density == .normal }
+    #expect(!mac.tightQuietRows)
+    await mac.disconnect()
+
+    let phoneTransport = ScriptedTransport()
+    phoneTransport.set(threads: [Self.thread("t1")])
+    phoneTransport.script(
+      .viewSettingsGet, [try Self.reply(ViewSettings(quietThreads: .shown, density: .dense))])
+    let phone = try await Self.connected(phoneTransport, phone: true)
+    #expect(phone.viewSettings.density == .dense)
+    #expect(!phone.tightQuietRows)
+    // The layout carries no row size: the phone draws Shown's rows as it always does.
+    #expect(phone.listLayout.body == .needsYouFirst(top: [], lower: .rows(phone.threads)))
+    await phone.disconnect()
+  }
+
   @Test func quietThreadsIsDisabledByEnvironment() {
     #expect(!ViewOptions.quietThreadsDisabled(ViewSettings()))
     #expect(!ViewOptions.quietThreadsDisabled(ViewSettings(quietThreads: .hidden)))

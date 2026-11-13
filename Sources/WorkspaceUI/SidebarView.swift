@@ -217,6 +217,8 @@ struct SidebarActionRow: View {
 enum ViewOptions {
   static let arrangements = ViewSettings.Arrangement.allCases
   static let quietThreads = ViewSettings.QuietThreads.allCases
+  /// The heading of the three ways of drawing the threads that do not need the owner.
+  static let quietThreadsTitle = "Threads that don\u{2019}t need you"
 
   static func title(_ arrangement: ViewSettings.Arrangement) -> String {
     switch arrangement {
@@ -267,7 +269,7 @@ struct MoreMenu: View {
         ForEach(ViewOptions.arrangements, id: \.self) { Text(ViewOptions.title($0)).tag($0) }
       }
       .pickerStyle(.inline)
-      Picker("Threads that don\u{2019}t need you", selection: quietThreads) {
+      Picker(ViewOptions.quietThreadsTitle, selection: quietThreads) {
         ForEach(ViewOptions.quietThreads, id: \.self) { Text(ViewOptions.title($0)).tag($0) }
       }
       .pickerStyle(.inline)

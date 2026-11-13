@@ -1100,7 +1100,7 @@ private struct AttentionDocument: Decodable {
     // itself or any row that shifted.
     await model.openThread(id: "q")
     #expect(topList(model) == ["a", "f"])
-    guard case .needsYouFirst(_, .rows(let lower, _)) = model.listLayout.body else {
+    guard case .needsYouFirst(_, .rows(let lower)) = model.listLayout.body else {
       Issue.record("Shown: \(model.listLayout.body)")
       return
     }
@@ -1123,7 +1123,7 @@ private struct AttentionDocument: Decodable {
     model.isDetailOnScreen = false
     #expect(model.selectedThreadId == "t1")
     #expect(topList(model) == ["a", "f"])
-    guard case .needsYouFirst(_, .rows(let lower, _)) = model.listLayout.body else {
+    guard case .needsYouFirst(_, .rows(let lower)) = model.listLayout.body else {
       Issue.record("Shown: \(model.listLayout.body)")
       return
     }
