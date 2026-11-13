@@ -45,7 +45,8 @@ struct ComposerView: View {
       if let turn = activeTurn { turnRow(turn) }
       ComposerField(
         text: $model.composerText, placeholder: placeholder, focused: $focused,
-        onKeyPress: { slash.handle($0, text: $model.composerText) { chooseSlash() } }
+        onSlashKey: { slash.handle($0, text: $model.composerText) { chooseSlash() } },
+        onReturn: { if canSend { send() } }
       ) {
         sendOrStop
       }
@@ -118,7 +119,7 @@ struct ComposerView: View {
     if slash.isShowing {
       // While completions show, Return picks one: a typed slash is never sent, and never stops a turn.
       Button(slash.selected?.primary ?? "Choose", systemImage: "return") { chooseSlash() }
-        .keyboardShortcut(.return, modifiers: [])
+        .returnSends()
         .buttonStyle(ComposerCircleStyle(diameter: controlSize, glyph: 13 * scale))
         .disabled(slash.selected?.isAvailable != true)
         .accessibilityIdentifier("slash-choose")
@@ -131,13 +132,15 @@ struct ComposerView: View {
         )
         .accessibilityIdentifier("stop")
     } else {
-      Button("Send", systemImage: "arrow.up") { Task { await model.send() } }
-        .keyboardShortcut(.return, modifiers: [])
+      Button("Send", systemImage: "arrow.up", action: send)
+        .returnSends()
         .buttonStyle(ComposerCircleStyle(diameter: controlSize, glyph: 15 * scale))
         .disabled(!canSend)
         .accessibilityIdentifier("send")
     }
   }
+
+  private func send() { Task { await model.send() } }
 
   // MARK: Above the field
 

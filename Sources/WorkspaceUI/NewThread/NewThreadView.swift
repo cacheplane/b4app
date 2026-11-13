@@ -174,7 +174,8 @@ struct NewThreadView: View {
         .padding(.bottom, LLA.Space.l)
       ComposerField(
         text: Bindable(draft).text, placeholder: placeholder(draft), focused: $focused,
-        onKeyPress: { slash.handle($0, text: Bindable(draft).text) { chooseSlash(draft) } }
+        onSlashKey: { slash.handle($0, text: Bindable(draft).text) { chooseSlash(draft) } },
+        onReturn: { if draft.canSend { Task { await draft.send() } } }
       ) {
         send(draft)
       }
@@ -218,13 +219,13 @@ struct NewThreadView: View {
     if slash.isShowing {
       // While completions show, Return picks one: a typed slash never starts a thread.
       Button(slash.selected?.primary ?? "Choose", systemImage: "return") { chooseSlash(draft) }
-        .keyboardShortcut(.return, modifiers: [])
+        .returnSends()
         .buttonStyle(style)
         .disabled(slash.selected?.isAvailable != true)
         .accessibilityIdentifier("slash-choose")
     } else {
       Button("Send", systemImage: "arrow.up") { Task { await draft.send() } }
-        .keyboardShortcut(.return, modifiers: [])
+        .returnSends()
         .buttonStyle(style)
         .disabled(!draft.canSend)
         .accessibilityIdentifier("send")

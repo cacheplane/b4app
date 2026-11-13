@@ -3,7 +3,8 @@ import SwiftUI
 /// D-061: one rounded field in two shapes, for the thread composer and a new thread's first message.
 /// The box (every iPhone, and any wider screen once the draft wraps) has the text on top and a tool
 /// row underneath, the trailing control at its end. The line (iPad and Mac while the draft fits) is a
-/// 44 pt capsule with the control inline. The text grows to three lines, then scrolls. Attachments,
+/// 44 pt capsule with the control inline. The text grows to three lines, then scrolls inside the
+/// field. Attachments,
 /// when a turn can carry them, go in a row between the text and the tool row, with attach at the tool
 /// row's leading end; neither is drawn until then.
 ///
@@ -13,13 +14,14 @@ struct ComposerField<Trailing: View>: View {
   @Binding var text: String
   let placeholder: String
   var focused: FocusState<Bool>.Binding
-  /// Opt-in: what Return does in the phone's text field. Without it Return adds a line and only the
-  /// trailing control sends, as in the thread composer. The Mac's `TextEditor` has no submit, so
-  /// there the caller's control owns the shortcut either way.
-  let onSubmit: (() -> Void)?
-  /// Opt-in: arrow keys and Escape offered to the caller before the editor takes them (the `/`
-  /// completions). Returning `.ignored` leaves the key to the editor.
-  let onKeyPress: ((KeyPress) -> KeyPress.Result)?
+  /// What Return does on the Mac (D-219): the caller sends when it can and otherwise does nothing.
+  /// Shift-, Option- and Control-Return add a line there. The phone's on-screen Return adds a line,
+  /// as in Messages, and its round control sends.
+  let onReturn: () -> Void
+  /// Opt-in: the keys the `/` completions take while they show (the arrows, Escape, and Return to
+  /// pick), offered to the caller before the editor or `onReturn` has them. False leaves the key
+  /// where it was going.
+  let onSlashKey: ((SlashKey) -> Bool)?
   let trailing: Trailing
   @Environment(\.dynamicTypeSize) private var typeSize
   #if os(iOS)
@@ -30,23 +32,20 @@ struct ComposerField<Trailing: View>: View {
   /// The draft's natural one-line width and the field's own width, for choosing the shape.
   @State private var draftWidth: CGFloat = 0
   @State private var fieldWidth: CGFloat = 0
-  #if os(macOS)
-    @State private var editorHeight: CGFloat = 20
-  #endif
   /// How far Dynamic Type has grown the draft text; the line and the control follow it up to 1.5
   /// times, so the control stays a meaningful size beside large text without crowding the field.
   @ScaledMetric(relativeTo: .callout) private var growth: CGFloat = 1
 
   init(
     text: Binding<String>, placeholder: String, focused: FocusState<Bool>.Binding,
-    onSubmit: (() -> Void)? = nil, onKeyPress: ((KeyPress) -> KeyPress.Result)? = nil,
+    onSlashKey: ((SlashKey) -> Bool)? = nil, onReturn: @escaping () -> Void,
     @ViewBuilder trailing: () -> Trailing
   ) {
     _text = text
     self.placeholder = placeholder
     self.focused = focused
-    self.onSubmit = onSubmit
-    self.onKeyPress = onKeyPress
+    self.onSlashKey = onSlashKey
+    self.onReturn = onReturn
     self.trailing = trailing()
   }
 
@@ -149,8 +148,7 @@ struct ComposerField<Trailing: View>: View {
 
   #if os(iOS)
     /// A vertical text field: it grows a line at a time to three, then scrolls, with no inner inset,
-    /// so its text sits exactly at the padding above. Return adds a line and the control sends,
-    /// unless the caller gave `onSubmit`.
+    /// so its text sits exactly at the padding above. Return adds a line and the control sends.
     private var editor: some View {
       TextField(
         "", text: $text,
@@ -161,55 +159,47 @@ struct ComposerField<Trailing: View>: View {
       .foregroundStyle(LLA.Color.ink)
       .lineLimit(1...3)
       .focused(focused)
-      .onKeyPress(keys: [.upArrow, .downArrow, .escape, .return]) { onKeyPress?($0) ?? .ignored }
-      .submitting(onSubmit)
+      .onKeyPress(keys: [.upArrow, .downArrow, .escape, .return]) { press in
+        guard let onSlashKey, let key = SlashKey(press) else { return .ignored }
+        return onSlashKey(key) ? .handled : .ignored
+      }
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityLabel(placeholder)
       .accessibilityIdentifier("composer")
     }
   #else
-    /// The Mac keeps `TextEditor`, whose Return the Send button's shortcut takes and whose Shift-Return
-    /// adds a line. A hidden copy of the draft sets its height, one line to three. The editor indents
-    /// its text 5 pt (its line fragment padding), which the copy and the placeholder match.
+    /// The Mac's own text view (D-219): it reports its height, one line to three, and scrolls inside
+    /// past that, so the field's background always holds the text; Return is the caller's. Its text
+    /// starts at its leading edge, where the placeholder sits.
     private var editor: some View {
-      ZStack(alignment: .topLeading) {
-        Text(text.isEmpty ? " " : text + " ")
-          .font(LLAFont.composer)
-          .padding(.horizontal, 5)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .fixedSize(horizontal: false, vertical: true)
-          .hidden()
-          .accessibilityHidden(true)
-          .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { editorHeight = $0 }
+      ComposerTextView(
+        text: $text, label: placeholder, maxLines: 3, onSlashKey: onSlashKey, onReturn: onReturn
+      )
+      .focused(focused)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .overlay(alignment: .topLeading) {
         if text.isEmpty {
           Text(placeholder)
             .font(LLAFont.composer)
             .foregroundStyle(LLA.Color.muted)
-            .padding(.horizontal, 5)
+            .lineLimit(1)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
-        TextEditor(text: $text)
-          .font(LLAFont.composer)
-          .foregroundStyle(LLA.Color.ink)
-          .scrollContentBackground(.hidden)
-          .scrollIndicators(.never)
-          .focused(focused)
-          .onKeyPress(keys: [.upArrow, .downArrow, .escape, .return]) { onKeyPress?($0) ?? .ignored }
-          .accessibilityLabel(placeholder)
-          .accessibilityIdentifier("composer")
       }
-      .frame(height: min(max(editorHeight, lineHeight), lineHeight * 3))
-      .padding(.leading, -5)
     }
   #endif
 }
 
-#if os(iOS)
-  extension View {
-    /// `.onSubmit` only when there is an action, so a field without one is untouched by it.
-    @ViewBuilder fileprivate func submitting(_ action: (() -> Void)?) -> some View {
-      if let action { onSubmit(action) } else { self }
-    }
+extension View {
+  /// Return on a hardware keyboard sends from the phone and iPad, through the round control. The Mac
+  /// leaves Return to its text view (D-219): a shortcut would take the key before an input method
+  /// could commit a candidate with it, and Return would add lines whenever the control was off.
+  @ViewBuilder func returnSends() -> some View {
+    #if os(iOS)
+      keyboardShortcut(.return, modifiers: [])
+    #else
+      self
+    #endif
   }
-#endif
+}

@@ -457,24 +457,50 @@ extension View {
   }
 }
 
+/// A key the `/` completions take while they show.
+enum SlashKey: Equatable {
+  case up, down, escape
+  /// Return: pick the selected row.
+  case choose
+
+  /// From SwiftUI's key press (the phone's text field). Shift-Return is a new line, never a pick.
+  init?(_ press: KeyPress) {
+    switch press.key {
+    case .upArrow: self = .up
+    case .downArrow: self = .down
+    case .escape: self = .escape
+    case .return where !press.modifiers.contains(.shift): self = .choose
+    default: return nil
+    }
+  }
+
+  /// From a text view's command (the Mac's composer). Return is not here: the composer decides what
+  /// a Return is (D-219) and offers `.choose` itself.
+  init?(command selector: String) {
+    switch selector {
+    case "moveUp:": self = .up
+    case "moveDown:": self = .down
+    case "cancelOperation:": self = .escape
+    default: return nil
+    }
+  }
+}
+
 extension SlashController {
   /// Arrow keys and Escape go to the completions while they show; otherwise they are the editor's.
   /// Escape here only ever closes the completions: it never reaches a running turn.
   /// Return picks the selected row through `choose` (the composer's own pick, which applies what it
-  /// does to the draft): the editor has the key before the round control's shortcut does, and would
-  /// add a line. Shift-Return is still a new line.
-  func handle(_ press: KeyPress, text: Binding<String>, choose: () -> Void) -> KeyPress.Result {
-    guard isShowing else { return .ignored }
-    switch press.key {
-    case .return:
-      guard !press.modifiers.contains(.shift) else { return .ignored }
-      choose()
-    case .upArrow: move(by: -1)
-    case .downArrow: move(by: 1)
+  /// does to the draft): with the completions showing, a typed slash is never sent.
+  /// True when the key was taken.
+  func handle(_ key: SlashKey, text: Binding<String>, choose: () -> Void) -> Bool {
+    guard isShowing else { return false }
+    switch key {
+    case .choose: choose()
+    case .up: move(by: -1)
+    case .down: move(by: 1)
     case .escape:
       if let change = dismiss() { text.wrappedValue = change }
-    default: return .ignored
     }
-    return .handled
+    return true
   }
 }
