@@ -16,12 +16,27 @@
     /// Where the panel was left, as the app keeps it between openings; nil while `remembers` is false.
     var offset: CGSize?
     var remembers = false
+    /// The content is a text field, as a palette's header is, and not a drag area.
+    var field = false
+    var text = ""
   }
 
   /// The panel's content, a view of its own so it follows the state as a palette follows its model.
   private struct PanelBody: View {
     let state: PanelState
-    var body: some View { WindowDragArea().frame(height: state.height).background(Color.white) }
+    var body: some View {
+      if state.field {
+        @Bindable var state = state
+        TextField("Run a command", text: $state.text)
+          .textFieldStyle(.plain)
+          .padding(.horizontal, 12)
+          .frame(height: 36)
+          .frame(maxHeight: state.height, alignment: .top)
+          .background(Color.white)
+      } else {
+        WindowDragArea().frame(height: state.height).background(Color.white)
+      }
+    }
   }
 
   private struct PanelHost: View {
@@ -297,8 +312,14 @@
       state.shown = true
       try await settle()
       panel = try #require(host.window.childWindows?.first as? PalettePanel)
-      #expect(abs(panel.frame.origin.x - home.x + 180) < 0.5)
-      #expect(abs(panel.frame.origin.y - home.y + 90) < 0.5)
+      // Where it was left, as far as the screen allows (a small screen cuts the way down short).
+      let visible = try #require(host.window.screen ?? NSScreen.main).visibleFrame
+      let left = FloatingPanelGeometry.clamped(
+        CGPoint(x: home.x - 180, y: home.y + panel.frame.height - 90), size: panel.frame.size,
+        visible: visible)
+      #expect(abs(panel.frame.minX - left.x) < 0.5)
+      #expect(abs(panel.frame.maxY - left.y) < 0.5)
+      #expect(abs(panel.frame.minX - home.x) > 100)
       // A double click on a drag area: home, now and next time.
       panel.resetRequested()
       try await settle()
@@ -363,6 +384,40 @@
       // Released, it is still where it was left.
       #expect(abs(panel.frame.origin.x - home.x - 200) < 0.5)
       #expect(abs(panel.frame.origin.y - home.y + 40) < 0.5)
+      state.shown = false
+      try await settle()
+    }
+
+    /// The empty part of a palette's field drags it, with the cursor in the field (as it always is in
+    /// an open palette): the press lands on the field's editor, not on the field.
+    @Test func theEmptyPartOfAFocusedFieldDragsThePanel() async throws {
+      let state = PanelState()
+      state.field = true
+      let host = try shortWindow(state)
+      defer { host.window.close() }
+      state.shown = true
+      try await settle()
+      try await settle()
+      let panel = try #require(host.window.childWindows?.first as? PalettePanel)
+      let home = panel.frame.origin
+      // 70% along the field's row, as the screen test presses.
+      let grip = CGPoint(x: panel.frame.minX + panel.frame.width * 0.7, y: panel.frame.maxY - 18)
+      let hit = panel.contentView?.hitTest(
+        CGPoint(x: grip.x - panel.frame.minX, y: grip.y - panel.frame.minY))
+      let what =
+        "pressed on \(hit.map { String(describing: type(of: $0)) } ?? "nothing"), first responder "
+        + "\(panel.firstResponder.map { String(describing: type(of: $0)) } ?? "none")"
+      try send(.leftMouseDown, at: grip, to: panel)
+      for step in 1...20 {
+        try send(
+          .leftMouseDragged, at: CGPoint(x: grip.x + CGFloat(step) * 9, y: grip.y - CGFloat(step) * 6.5),
+          to: panel)
+        pump()
+      }
+      try send(.leftMouseUp, at: CGPoint(x: grip.x + 180, y: grip.y - 130), to: panel)
+      try await settle()
+      #expect(abs(panel.frame.origin.x - home.x - 180) < 0.5, "\(what)")
+      #expect(abs(panel.frame.origin.y - home.y + 130) < 0.5, "\(what)")
       state.shown = false
       try await settle()
     }

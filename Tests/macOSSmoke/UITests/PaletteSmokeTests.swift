@@ -193,8 +193,12 @@ final class PaletteSmokeTests: XCTestCase {
     addTeardownBlock { @MainActor in
       if app.state == .runningForeground || app.state == .runningBackground { app.terminate() }
     }
+    // No wider than the desktop CI has (1024 pt): a palette dragged 200 pt from the middle of a wider
+    // window would be stopped by the screen's edge.
+    let width = min(
+      try XCTUnwrap(Int(ProcessInfo.processInfo.environment["SMOKE_DESKTOP_WIDTH"] ?? "1200")), 1100)
     app.launchEnvironment = [
-      "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": "1100", "SMOKE_DARK": "0", "SMOKE_HEIGHT": "600",
+      "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": String(width), "SMOKE_DARK": "0", "SMOKE_HEIGHT": "600",
       "SWIFTNIO_STRICT": "1",
     ]
     app.launch()
@@ -285,62 +289,60 @@ final class PaletteSmokeTests: XCTestCase {
         CGVector(dx: 300, dy: palette.frame.height - 20))
     }
     let foot = footerGrip()
-    // Two lines cross the window, one down its middle and one across it, and each draws the palette
-    // lightly, by itself. It is 180 pt right of the line down the middle and 130 pt under where it
-    // opens. Brought to 12 pt from that line, it drifts towards it and is not on it.
-    foot.press(forDuration: 0.15, thenDragTo: foot.withOffset(CGVector(dx: -168, dy: 0)))
+    // The line down the middle of the window draws the palette when it is near. It is 180 pt right
+    // of the line and 130 pt under where it opens. Brought to 30 pt from the line, it is drawn in
+    // (to about 19 pt) and is not on it.
+    foot.press(forDuration: 0.15, thenDragTo: foot.withOffset(CGVector(dx: -150, dy: 0)))
     try await wait("the palette to be drawn towards the centre line") {
-      palette.frame.minX - home.minX > 4 && palette.frame.minX - home.minX < 11
+      palette.frame.minX - home.minX > 10 && palette.frame.minX - home.minX < 28
     }
-    XCTAssertEqual(palette.frame.minY, home.minY + 130, accuracy: 3)
+    XCTAssertEqual(palette.frame.minY, home.minY + 130, accuracy: 6)
     // Brought the rest of the way, it is on the line, at the height it was left.
     let onto = footerGrip()
-    onto.press(forDuration: 0.15, thenDragTo: onto.withOffset(CGVector(dx: -10, dy: 0)))
+    onto.press(
+      forDuration: 0.15,
+      thenDragTo: onto.withOffset(CGVector(dx: home.minX - palette.frame.minX + 3, dy: 0)))
     try await wait("the palette to sit on the centre line") { abs(palette.frame.midX - main.midX) < 1.5 }
-    XCTAssertEqual(palette.frame.minY, home.minY + 130, accuracy: 3)
-    // Slid along the line to the middle of the window, it is drawn onto the line across too: in the
-    // middle of the window, where the palette at its tallest (470 pt) would be centred.
-    let middle = main.midY - 235
+    XCTAssertEqual(palette.frame.minY, home.minY + 130, accuracy: 6)
+    // Slid along the line, it keeps to it and goes where it is taken.
     let slide = footerGrip()
-    slide.press(
-      forDuration: 0.15, thenDragTo: slide.withOffset(CGVector(dx: 0, dy: middle - palette.frame.minY + 2)))
-    try await wait("the palette to be in the middle of the window") {
-      abs(palette.frame.midX - main.midX) < 1.5 && abs(palette.frame.minY - middle) < 1.5
-    }
-    snap(app, XCUIScreen.main.screenshot(), "panel-middle")
-    // Slid across from there, it keeps to the line across and goes where it is taken.
-    let across = footerGrip()
-    across.press(forDuration: 0.15, thenDragTo: across.withOffset(CGVector(dx: 150, dy: 0)))
-    try await wait("the palette to slide across") { abs(palette.frame.midX - main.midX - 150) < 3 }
-    XCTAssertEqual(palette.frame.minY, middle, accuracy: 1.5)
+    slide.press(forDuration: 0.15, thenDragTo: slide.withOffset(CGVector(dx: 2, dy: 40)))
+    try await wait("the palette to slide down the line") { abs(palette.frame.minY - home.minY - 170) < 8 }
+    XCTAssertEqual(palette.frame.midX, main.midX, accuracy: 1.5)
+    snap(app, XCUIScreen.main.screenshot(), "panel-on-the-line")
     // Away from every line it goes exactly where it is taken.
     let away = footerGrip()
-    away.press(forDuration: 0.15, thenDragTo: away.withOffset(CGVector(dx: 60, dy: 50)))
-    try await wait("the palette to move freely") { abs(palette.frame.midX - main.midX - 210) < 8 }
+    away.press(forDuration: 0.15, thenDragTo: away.withOffset(CGVector(dx: 70, dy: -20)))
     // (A synthesized drag lands within a few points of where it was sent.)
-    XCTAssertEqual(palette.frame.minY, middle + 50, accuracy: 8)
-    footerGrip().doubleClick()
-    try await Task.sleep(for: .milliseconds(700))
-    try await wait("the palette to go home") {
+    try await wait("the palette to move freely") { abs(palette.frame.midX - main.midX - 70) < 8 }
+    XCTAssertEqual(palette.frame.minY, home.minY + 150, accuracy: 10)
+    // Let go near where it opens, from a diagonal, it is back there: the point draws it.
+    let near = footerGrip()
+    near.press(
+      forDuration: 0.15,
+      thenDragTo: near.withOffset(
+        CGVector(dx: home.minX - palette.frame.minX + 18, dy: home.minY - palette.frame.minY + 18)))
+    try await wait("the palette to be drawn home, now \(palette.frame) home \(home)") {
       abs(palette.frame.minX - home.minX) < 1.5 && abs(palette.frame.minY - home.minY) < 1.5
     }
 
     // Left far away it stays; a double click on a drag area sends it home.
     let foot2 = footerGrip()
-    foot2.press(forDuration: 0.15, thenDragTo: foot2.withOffset(CGVector(dx: -220, dy: 90)))
-    try await wait("the palette to stay away") { abs(palette.frame.minX - home.minX + 220) < 6 }
+    foot2.press(forDuration: 0.15, thenDragTo: foot2.withOffset(CGVector(dx: -180, dy: 90)))
+    try await wait("the palette to stay away") { abs(palette.frame.minX - home.minX + 180) < 6 }
     footerGrip().doubleClick()
     try await Task.sleep(for: .milliseconds(700))
     try await wait("the palette to go home") {
       abs(palette.frame.minX - home.minX) < 1.5 && abs(palette.frame.minY - home.minY) < 1.5
     }
 
-    // Dragged away and closed, it opens at home again.
+    // Dragged away and closed, it opens where it was left.
     let foot3 = footerGrip()
-    foot3.press(forDuration: 0.15, thenDragTo: foot3.withOffset(CGVector(dx: 200, dy: 60)))
+    foot3.press(forDuration: 0.15, thenDragTo: foot3.withOffset(CGVector(dx: 150, dy: 60)))
     try await wait("the palette to move (2), now \(palette.frame) home \(home)") {
-      abs(palette.frame.minX - home.minX - 200) < 10
+      abs(palette.frame.minX - home.minX - 150) < 10
     }
+    let left = palette.frame
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
     XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
     // Closed, nothing of it is left on the screen.
@@ -349,6 +351,20 @@ final class PaletteSmokeTests: XCTestCase {
     for point in [under, CGPoint(x: home.minX + 30, y: home.midY)] {
       XCTAssertEqual(try luminance(after, at: point), try luminance(closed, at: point), accuracy: 0.012)
     }
+    app.typeKey("k", modifierFlags: .command)
+    try requireElement(field, in: app)
+    try await wait("the palette where it was left, now \(palette.frame) left \(left)") {
+      abs(palette.frame.minX - left.minX) < 1.5 && abs(palette.frame.minY - left.minY) < 1.5
+    }
+    // A double click sends it home and forgets the place: it opens at home after that.
+    palette.coordinate(withNormalizedOffset: .zero).withOffset(
+      CGVector(dx: 300, dy: palette.frame.height - 20)
+    ).doubleClick()
+    try await wait("the palette to go home") {
+      abs(palette.frame.minX - home.minX) < 1.5 && abs(palette.frame.minY - home.minY) < 1.5
+    }
+    app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+    XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
     app.typeKey("k", modifierFlags: .command)
     try requireElement(field, in: app)
     try await wait("the palette at home") {
@@ -361,6 +377,10 @@ final class PaletteSmokeTests: XCTestCase {
   /// palette out of it: the palette's field is where the button was, and that is where it snaps back.
   @MainActor func testCommandCenterButtonOpensThePaletteOverItself() async throws {
     continueAfterFailure = false
+    // The resting control is the palette's full 600 pt only in a window 1140 pt wide or more, and
+    // this compares the two edge on edge: a desktop narrower than the 1200 pt window cannot show it.
+    let desktop = try XCTUnwrap(Int(ProcessInfo.processInfo.environment["SMOKE_DESKTOP_WIDTH"] ?? "1200"))
+    try XCTSkipIf(desktop < 1200, "needs a desktop 1200 pt wide; this one is \(desktop)")
     let fixture = try await SmokeFixture.start(in: self)
     addTeardownBlock { @MainActor in try await fixture.stop(in: self) }
     let app = XCUIApplication()

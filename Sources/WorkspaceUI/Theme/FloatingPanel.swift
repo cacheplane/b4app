@@ -175,7 +175,7 @@
     }
 
     private func clickPastText(_ down: NSEvent) {
-      guard let hit = contentView?.hitTest(down.locationInWindow) else { return }
+      guard let hit = text(at: down) else { return }
       if let field = hit as? NSTextField, firstResponder !== field.currentEditor() {
         makeFirstResponder(field)
       }
@@ -184,21 +184,31 @@
       }
     }
 
+    /// The field or the field's editor under a press. The press may land on a view inside either (a
+    /// clip view), depending on the system, so it is the nearest of the few views above the one hit.
+    private func text(at event: NSEvent) -> NSView? {
+      guard let hit = contentView?.hitTest(event.locationInWindow) else { return nil }
+      return sequence(first: hit, next: \.superview).prefix(4).first { $0 is NSTextView || $0 is NSTextField }
+    }
+
     /// Whether a press here can start a drag, and if so whether it is on a field: nil for a press on
     /// anything else (a row, a button, text in a field).
     private func dragStart(_ event: NSEvent) -> Bool? {
       guard let hit = contentView?.hitTest(event.locationInWindow) else { return nil }
       if hit is WindowDragArea.Handle { return false }
-      let point = hit.convert(event.locationInWindow, from: nil)
-      if let editor = hit as? NSTextView, let layout = editor.layoutManager,
-        let container = editor.textContainer
-      {
-        layout.ensureLayout(for: container)
-        let end = layout.usedRect(for: container).maxX + editor.textContainerOrigin.x
+      guard let text = text(at: event) else { return nil }
+      let point = text.convert(event.locationInWindow, from: nil)
+      // The text's width is measured from the text itself, not asked of a layout manager: a field's
+      // editor has one only under TextKit 1, and without it no press on a field ever began a drag.
+      if let editor = text as? NSTextView {
+        let written = editor.attributedString()
+        let width = written.length == 0 ? 0 : written.size().width
+        let end = editor.textContainerOrigin.x + (editor.textContainer?.lineFragmentPadding ?? 0) + width
         return point.x > end + 6 ? true : nil
       }
-      if let field = hit as? NSTextField {
-        return point.x > field.attributedStringValue.size().width + 6 ? true : nil
+      if let field = text as? NSTextField {
+        let width = field.stringValue.isEmpty ? 0 : field.attributedStringValue.size().width
+        return point.x > width + 6 ? true : nil
       }
       return nil
     }
