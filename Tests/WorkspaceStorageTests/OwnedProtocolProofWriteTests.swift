@@ -995,3 +995,72 @@ extension OwnedProtocolProofWriteTests {
     #expect(finalDrain)
   }
 }
+
+extension OwnedProtocolProofWriteTests {
+  @Test func ownedBindEqualBindingNoopRequiresActualCommitReceipt() throws {
+    var committedCurrent = false
+    var redeemed = false
+    try Self.withFixture { f in
+      let predecessor = try Self.validateFixture(f)
+      let before = try Self.preserved(f)
+      // Independently derive the entire bound image from native S0 and the fixture binding.
+      var expected = predecessor.object
+      expected["revision"] = "1"
+      expected["binding"] = [
+        "accountID": f.binding.accountID, "canonicalHubBase": f.binding.canonicalHubBase,
+        "hubUserID": f.binding.hubUserID, "hubOrgID": f.binding.hubOrgID,
+        "deviceID": f.binding.deviceID, "databaseName": f.binding.databaseName,
+        "linkJoinedAt": f.binding.linkJoinedAt,
+      ]
+      let expectedControl = try JSONSerialization.data(withJSONObject: expected, options: [.sortedKeys])
+      // The ordinary captured overload is setup only; its returned bound snapshot is the anchor.
+      let bound = try f.database.prepareProtocolVerification(
+        expectedSnapshot: f.anchor, expectedBinding: f.binding)
+      let prepared = try Self.control(f)
+      let setupMatches =
+        try JSONSerialization.data(withJSONObject: prepared.object, options: [.sortedKeys])
+        == expectedControl
+      let setupPreserved = try Self.preserved(f) == before
+      guard setupMatches, setupPreserved, bound.observation == nil else {
+        throw FixtureFailure.nativeShape
+      }
+      try f.database.validateProtocolVerification(expectedSnapshot: bound)
+      try f.database.compareOriginalLinkedCaptureOwner(
+        expectedSnapshot: bound, accountID: f.binding.accountID,
+        databaseName: f.binding.databaseName, hubBase: Self.base)
+      try f.database.compareOriginalLinkedCredentialReference(
+        expectedSnapshot: bound, expectedTokenRef: f.link.tokenRef)
+
+      let admission = ProtocolProofMemoryAdmission {}
+      let receipt = f.database.prepareProtocolVerification(
+        expectedSnapshot: bound, expectedBinding: f.binding, expectedTokenRef: f.link.tokenRef,
+        memoryAdmission: admission)
+      let actual = try Self.control(f)
+      let controlUnchanged =
+        try JSONSerialization.data(withJSONObject: actual.object, options: [.sortedKeys])
+        == expectedControl
+      // This includes every public table (including the original native link/reference) and
+      // sequence state, excluding only the control row compared independently above.
+      let preserved = try Self.preserved(f) == before
+      let redacted =
+        String(describing: receipt) == "ProtocolOwnedProofWriteReceipt(redacted)"
+        && String(reflecting: receipt) == "ProtocolOwnedProofWriteReceipt(redacted)"
+        && Mirror(reflecting: receipt).children.isEmpty
+      guard controlUnchanged, preserved, receipt.operation == .bind, redacted else {
+        throw FixtureFailure.nativeShape
+      }
+      committedCurrent = receipt.disposition == .committedCurrent
+      do {
+        _ = try receipt.currentSuccessor(
+          expectedSnapshot: bound, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+        redeemed = true
+      } catch {
+        redeemed = false
+      }
+    }
+    // Only primitive facts reach assertions, after the existing fixture has actually cleaned up.
+    // No DML means no deferred probe: a committed receipt requires the writer's actual COMMIT ACK.
+    #expect(committedCurrent)
+    #expect(redeemed)
+  }
+}
