@@ -390,7 +390,6 @@ jobs:
               CANCELLED = False
               OWNERS = []
               FAILURE_CLEANUP_USED = False
-              DECLARATION_NOTE_OBSERVATION = None
               MAX_INPUT = 4194304
               MAX_SAMPLE = 262144
               MAX_OUTPUT = 65536
@@ -400,7 +399,6 @@ jobs:
               TOP_FIELDS = {'builtTestProducts': 'array', 'copyCommands': 'object', 'explicitTargetDependencyImportCheckingMode': 'object', 'generatedSourceTargetSet': 'array', 'pluginDescriptions': 'array', 'swiftCommands': 'object', 'swiftFrontendCommands': 'object', 'swiftTargetScanArgs': 'object', 'targetDependencyMap': 'object', 'testDiscoveryCommands': 'object', 'testEntryPointCommands': 'object', 'traitConfiguration': 'object', 'writeCommands': 'object'}
               FIELD_TYPES = {'executable': 'string', 'fileList': 'string', 'importPath': 'string', 'inputs': 'array', 'isLibrary': 'boolean', 'moduleName': 'string', 'moduleOutputPath': 'string', 'objects': 'array', 'otherArguments': 'array', 'outputFileMapPath': 'string', 'outputs': 'array', 'prepareForIndexing': 'boolean', 'sources': 'array', 'tempsPath': 'string', 'wholeModuleOptimization': 'boolean'}
               FIXTURES = [('Positive.swift', 'import Foundation\n@testable import Coordinator\ntypealias Origin = HubSync.ConfiguredClientOrigin\nfunc readIdentity(_ original: Origin) -> UUID { original.identity }\n', '0c951a76d897a2bc9512ccd34b37e12cad203d81f63c29b692b9d1de4a2c4e36'), ('PrivateInit.swift', 'import Foundation\n@testable import Coordinator\nlet forbidden = HubSync.ConfiguredClientOrigin.init(hub:database:baseURL:reference:store:makeAPI:)\n', '19552054a41d62dc904c2c4631687c61c2d4524d4758e884156bfa95f2cd8da6'), ('ImmutableIdentity.swift', 'import Foundation\n@testable import Coordinator\nfunc mutate(_ original: HubSync.ConfiguredClientOrigin) {\n  original.identity = UUID()\n}\n', '2236ff3f57371ef42ed1c9e1fc4b9ce0ad8e50195bf170d3b3de13c031fdbd8f')]
-              DECLARATION_LINES = {47: '    private enum Installation: Equatable { case pending, installed, retired }', 48: '    private let installation = Mutex(Installation.pending)', 49: '    let identity = UUID()', 50: '    let hubIdentity: ObjectIdentifier', 51: '    let database: WorkspaceDatabase', 55: '    let api: any HubAPI', 56: '', 57: '    fileprivate init(', 58: '      hub: HubSync, database: WorkspaceDatabase, baseURL: URL, reference: SecretRef,', 59: '      store: any SecretStore, makeAPI: APIFactory', 60: '    ) {', 61: '      hubIdentity = ObjectIdentifier(hub)'}
               DEVELOPER = "/Applications/Xcode_26.6.app/Contents/Developer"
               TOOLCHAIN = DEVELOPER + "/Toolchains/XcodeDefault.xctoolchain"
               COMPILER = TOOLCHAIN + "/usr/bin/swiftc"
@@ -831,82 +829,36 @@ jobs:
               INIT_NOTE = "'init(hub:database:baseURL:reference:store:makeAPI:)' declared here"
               IDENTITY_NOTES = ("change 'let' to 'var' to make it mutable", "'identity' declared here")
 
-              # Closed public observation alphabet; never extends diagnostic acceptance.
-              NOTE_LEXEMES = {'Coordinator': 1, 'HubSync': 2, 'ConfiguredClientOrigin': 3, 'Foundation': 4, 'WorkspaceStorage': 5, 'WorkspaceSecrets': 6, 'WorkspaceDatabase': 7, 'URL': 8, 'SecretRef': 9, 'SecretStore': 10, 'APIFactory': 11, 'HubAPI': 12, 'UUID': 13, 'Sendable': 14, 'hub': 15, 'database': 16, 'baseURL': 17, 'reference': 18, 'store': 19, 'makeAPI': 20, 'identity': 21, 'hubIdentity': 22, 'api': 23, 'init': 24, 'deinit': 25, 'final': 26, 'class': 27, 'struct': 28, 'enum': 29, 'let': 30, 'var': 31, 'private': 32, 'fileprivate': 33, 'internal': 34, 'public': 35, 'any': 36, 'func': 37, 'unchecked': 38, 'escaping': 39, 'Swift': 40, 'WorkspaceSync': 41, 'String': 42, 'async': 43, 'throws': 44, 'ObjectIdentifier': 45, 'FoundationEssentials': 46, 'Synchronization': 47, 'Mutex': 48, 'nonisolated': 49, 'get': 50}
-              NOTE_PUNCTUATION = {'.': 101, ':': 102, ',': 103, '(': 104, ')': 105, '{': 106, '}': 107, '<': 108, '>': 109, '@': 110, '?': 111, '&': 112, '=': 113, '->': 114, "'": 115}
-              NOTE_FILES = {'Coordinator.HubSync': 'virtual_hubsync', 'Coordinator.HubSync (fileprivate)': 'virtual_hubsync_fileprivate', 'Coordinator.HubSync (internal)': 'virtual_hubsync_internal', 'Coordinator.HubSync.ConfiguredClientOrigin': 'virtual_hubsync_configured_client_origin', 'Coordinator.HubSync.ConfiguredClientOrigin (fileprivate)': 'virtual_hubsync_configured_client_origin_fileprivate', 'Coordinator.HubSync.ConfiguredClientOrigin (internal)': 'virtual_hubsync_configured_client_origin_internal'}
-
-              def declaration_note_observation(header, context_lines, note_path, note_line, note_columns, note_messages):
-                  global DECLARATION_NOTE_OBSERVATION
-                  file_name, line_text, col_text, severity, message = header
-                  base = {"ordinal": 2, "block": 2, "stage": "declaration_note",
-                          "path_expected": file_name == note_path, "line_expected": int(line_text) == note_line,
-                          "column_expected": int(col_text) in note_columns, "severity_expected": severity == "note",
-                          "message_expected": message in note_messages, "severity": severity,
-                          "known_note_complete": False, "cause": "observer_failure"}
-                  DECLARATION_NOTE_OBSERVATION = base
-                  try:
-                      file_id = "checkout_hubsync_source" if file_name == note_path else NOTE_FILES.get(file_name)
-                      require(file_id is not None, "unknown_file")
-                      member = re.fullmatch(r"'((?:Coordinator\.)?(?:HubSync\.)?(?:ConfiguredClientOrigin\.)?init\(hub:database:baseURL:reference:store:makeAPI:\))' declared here", message)
-                      require(member is not None, "unknown_message")
-                      line_number, column = int(line_text), int(col_text)
-                      require(1 <= line_number <= 256 and 1 <= column <= 256, "location_bound")
-                      require(len(context_lines) <= 12, "observation_bound")
-                      runs = 32  # Conservative header and fixed renderer overhead.
-
-                      def charge(count):
-                          nonlocal runs
-                          runs += count
-                          require(runs <= 512, "observation_bound")
-
-                      def tokens(value):
-                          result = []
-                          for atom in re.findall(r" +|[A-Za-z_][A-Za-z_0-9]*|->|.", value):
-                              charge(1)
-                              if atom.startswith(" "):
-                                  require(len(atom) <= 256, "observation_bound")
-                                  result.append([0, len(atom)])
-                              else:
-                                  token_id = NOTE_LEXEMES.get(atom, NOTE_PUNCTUATION.get(atom))
-                                  require(token_id is not None and token_id != 115, "unknown_context_lexeme")
-                                  result.append([token_id, 1])
-                          return result
-
-                      member_runs = tokens(member[1])
-                      message_id = ({"kind": "init_note"} if message == INIT_NOTE else
-                                    {"kind": "member_declared_here", "runs": member_runs})
-                      rows = []
-                      for rendered in context_lines:
-                          if rendered == "":
-                              charge(1)
-                              rows.append({"kind": "blank"})
+              def auxiliary_note(header, context_lines, note_messages):
+                  _file_name, line_text, col_text, severity, message = header
+                  require(len(line_text) <= 5 and len(col_text) <= 5, "declaration_note_location")
+                  line_number, column = int(line_text), int(col_text)
+                  require(1 <= line_number <= 10000 and 1 <= column <= 10000, "declaration_note_location")
+                  require(severity == "note" and message in note_messages, "declaration_note")
+                  width = None
+                  seen = []
+                  annotations = 0
+                  for rendered in context_lines:
+                      if rendered == "":
+                          continue
+                      if width is not None:
+                          annotation = " " * (width + 1) + "| " + " " * (column - 1) + "`- note: " + message
+                          if rendered == annotation:
+                              require(bool(seen) and seen[-1] == line_number and annotations == 0, "diagnostic_annotation")
+                              annotations += 1
                               continue
-                          source_row = re.fullmatch(r"( {0,255})([1-9][0-9]{0,2}) \| (.*)", rendered)
-                          if source_row:
-                              spaces, number_text, value = source_row.groups()
-                              number = int(number_text)
-                              require(1 <= number <= 256 and len(spaces) + len(number_text) <= 256, "location_bound")
-                              charge(12)
-                              rows.append({"kind": "source", "gutter_spaces": len(spaces), "line": number,
-                                           "delimiter": "space_bar_space", "runs": tokens(value)})
-                              continue
-                          annotation = re.fullmatch(r"( {1,256})\| ( {0,256})`- (error|note|warning): (.+)", rendered)
-                          require(annotation is not None, "unknown_renderer")
-                          gutter, indent, annotation_severity, annotation_message = annotation.groups()
-                          require(annotation_severity == severity and annotation_message == message, "unknown_renderer")
-                          charge(32 + len(member_runs))
-                          rows.append({"kind": "annotation", "gutter_spaces": len(gutter), "column_spaces": len(indent),
-                                       "delimiter": "bar_space", "marker": "backtick_dash_space", "message": "header"})
-                      complete = {**base, "known_note_complete": True, "cause": "complete", "file": file_id,
-                                  "line": line_number, "column": column, "message": message_id, "rows": rows}
-                      encoded = json.dumps({"category": "owner_carrier_declaration_note_observation", **complete}, sort_keys=True)
-                      require(len(encoded.encode("ascii")) + 1 <= 8192, "observation_bound")
-                      DECLARATION_NOTE_OBSERVATION = complete
-                  except Failure as failure:
-                      base["cause"] = failure.code
-                  except BaseException:
-                      pass
+                      match = re.fullmatch(r"( {0,4})([1-9][0-9]{0,4}) \| (.*)", rendered)
+                      require(match is not None, "diagnostic_context_form")
+                      padding, number_text, value = match.groups()
+                      number = int(number_text)
+                      row_width = len(padding) + len(number_text)
+                      if width is None:
+                          width = row_width
+                      require(1 <= number <= 10000 and 1 <= width <= 5 and row_width == width
+                              and rendered == f"{number:>{width}} | {value}", "diagnostic_context_text")
+                      require(not seen or number == seen[-1] + 1, "diagnostic_context_order")
+                      seen.append(number)
+                  require(line_number in seen and annotations == 1, "diagnostic_context_missing")
 
               def diagnostics(data, ordinal, path, fixture, checkout):
                   if ordinal == 1:
@@ -923,12 +875,7 @@ jobs:
                   columns = ({target.index("HubSync") + 1, target.index("ConfiguredClientOrigin") + 1, target.index("init(") + 1}
                              if ordinal == 2 else {target.index("original") + 1, target.index("identity") + 1})
                   messages = INIT_MESSAGES if ordinal == 2 else (IDENTITY_MESSAGE,)
-                  note_path = str(checkout / "Sources/Coordinator/HubSync/HubSync.swift")
-                  note_line = 57 if ordinal == 2 else 49
-                  note_columns = {17} if ordinal == 2 else {5, 9}
                   note_messages = (INIT_NOTE,) if ordinal == 2 else IDENTITY_NOTES
-                  note_context = {line: value for line, value in DECLARATION_LINES.items()
-                                  if (55 <= line <= 61 if ordinal == 2 else 47 <= line <= 51)}
                   raw_lines = text.splitlines()
                   require(len(raw_lines) <= 24 and raw_lines.count("") <= 4, "diagnostic_line_bound")
                   blocks = []
@@ -948,17 +895,8 @@ jobs:
                                   and severity == "error" and message in messages, "intended_error")
                           allowed, width = source, 1
                       else:
-                          try:
-                              require(file_name == note_path and line_number == note_line and column in note_columns
-                                      and severity == "note" and message in note_messages, "declaration_note")
-                          except Failure:
-                              if ordinal == 2:
-                                  try:
-                                      declaration_note_observation(header, context_lines, note_path, note_line, note_columns, note_messages)
-                                  except BaseException:
-                                      pass
-                              raise
-                          allowed, width = note_context, 2
+                          auxiliary_note(header, context_lines, note_messages)
+                          continue
                       seen = []
                       annotations = 0
                       for rendered in context_lines:
@@ -1062,11 +1000,6 @@ jobs:
               for receipt in cleanup_receipts:
                   emit("owner_carrier_failed_cleanup", **receipt)
               if result:
-                  if DECLARATION_NOTE_OBSERVATION is not None:
-                      try:
-                          emit("owner_carrier_declaration_note_observation", **DECLARATION_NOTE_OBSERVATION)
-                      except BaseException:
-                          pass
                   emit("owner_carrier_compiler_controls_failed", reason=reason, compiler_controls_qualified=False,
                        descendant_quiescence_proven=False)
               else:
