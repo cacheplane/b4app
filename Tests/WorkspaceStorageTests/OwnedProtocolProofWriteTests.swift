@@ -1943,3 +1943,598 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 }
+
+// Prospective T04/T08 owned-writer pairs. The raw controls qualify the installed recipe;
+// only these actual owned calls and native observations supply the target evidence.
+extension OwnedProtocolProofWriteTests {
+  private final class OwnedBindMemory: Sendable {
+    private struct State: Sendable {
+      var current = true
+      var calls = 0
+      var selected: Int?
+    }
+    private let state: Mutex<State>
+
+    init(selected: Int?) { state = Mutex(State(selected: selected)) }
+
+    func compare() -> Bool {
+      state.withLock {
+        $0.calls += 1
+        return $0.current && $0.selected != $0.calls
+      }
+    }
+
+    func calls() -> Int { state.withLock { $0.calls } }
+    func setCurrent(_ current: Bool) { state.withLock { $0.current = current } }
+    func disableSelector() { state.withLock { $0.selected = nil } }
+  }
+
+  private final class OwnedBindFinished: Sendable {
+    private let finished = Mutex(false)
+    func markReturned() { finished.withLock { $0 = true } }
+    // This conservative rejection guard is not a native stage or Thread-exit oracle.
+    func pending() -> Bool { finished.withLock { !$0 } }
+  }
+
+  private enum OwnedBindWaitKind: Sendable, Equatable { case advisory, link }
+
+  private final class OwnedBindHolderState: Sendable {
+    struct Facts: Sendable {
+      var pid = 0
+      var acquired = false
+    }
+    private let facts = Mutex(Facts())
+    func acquired(pid: Int) { facts.withLock { $0 = Facts(pid: pid, acquired: true) } }
+    func snapshot() -> Facts { facts.withLock { $0 } }
+  }
+
+  private struct OwnedBindHolderResult: Sendable {
+    let acquired: Bool
+    let released: Bool
+    let expired: Bool
+    let rollbackAcknowledged: Bool
+
+    var normal: Bool { acquired && released && !expired && rollbackAcknowledged }
+    static let invalid = Self(
+      acquired: false, released: false, expired: false, rollbackAcknowledged: false)
+  }
+
+  private struct OwnedBindPairFacts {
+    let rawControls: Int
+    let negativeCalls: Int
+    let positiveCalls: Int
+    let redemptionCalls: Int
+    let nativeWaits: Int
+    let normalHolders: Int
+    let qualified: Bool
+  }
+
+  private static func ownedBindWriter(
+    database: WorkspaceDatabase, anchor: ProtocolVerificationSnapshot,
+    binding: ProtocolMembershipBinding, reference: String,
+    admission: ProtocolProofMemoryAdmission, finished: OwnedBindFinished
+  ) -> OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt> {
+    OwnedProofNativeWork { [database, anchor, binding, reference, admission, finished] in
+      let receipt = database.prepareProtocolVerification(
+        expectedSnapshot: anchor, expectedBinding: binding, expectedTokenRef: reference,
+        memoryAdmission: admission)
+      finished.markReturned()
+      return receipt
+    }
+  }
+
+  private static func ownedBindHolder(
+    binDir: String, socketDir: String, port: Int, database: String, user: String,
+    application: String, kind: OwnedBindWaitKind, hold: OwnedProofHold,
+    state: OwnedBindHolderState
+  ) -> OwnedProofNativeWork<OwnedBindHolderResult> {
+    OwnedProofNativeWork {
+      [binDir, socketDir, port, database, user, application, kind, hold, state] in
+      do {
+        // The native connection is lexical to this actual operation's Thread.
+        let c = try PostgresConnection(
+          lib: LibPQ.load(binDir: binDir),
+          connectionString:
+            "host=\(socketDir) port=\(port) user=\(user) dbname=\(database) application_name=\(application)")
+        var beginAttempted = false
+        var rollbackAcknowledged = false
+        // Installed before BEGIN; best effort on an error never earns ACK evidence.
+        defer {
+          if beginAttempted && !rollbackAcknowledged { _ = try? c.execute("ROLLBACK") }
+        }
+        beginAttempted = true
+        try c.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+        try c.execute("SET LOCAL lock_timeout='2s'")
+        try c.execute("SET LOCAL statement_timeout='2s'")
+        let identity = try c.execute("SELECT pg_catalog.pg_backend_pid() AS pid").rows
+        guard identity.count == 1, let pid = identity[0].int("pid"), pid > 0 else {
+          return .invalid
+        }
+        switch kind {
+        case .advisory:
+          try c.execute(
+            "SELECT pg_catalog.pg_advisory_xact_lock($1::bigint)",
+            [String(WorkspaceDatabase.remoteApplyLockKey)])
+        case .link:
+          let locked = try c.execute("SELECT id FROM public.\"hubLink\" WHERE id=1 FOR UPDATE").rows
+          guard locked.count == 1, locked[0].int("id") == 1 else { return .invalid }
+        }
+        state.acquired(pid: pid)
+        let released = hold.wait()
+        try c.execute("ROLLBACK")
+        rollbackAcknowledged = true
+        let final = hold.snapshot()
+        return OwnedBindHolderResult(
+          acquired: true, released: released && final.released, expired: final.expired,
+          rollbackAcknowledged: rollbackAcknowledged)
+      } catch {
+        return .invalid
+      }
+    }
+  }
+
+  private static func ownedBindHolderReady(
+    _ state: OwnedBindHolderState, hold: OwnedProofHold, deadline: UInt64
+  ) throws -> Int {
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      let holder = state.snapshot()
+      let held = hold.heldUnexpired()
+      let end = DispatchTime.now().uptimeNanoseconds
+      guard end <= deadline else { throw FixtureFailure.nativeShape }
+      if holder.pid > 0 && holder.acquired && held { return holder.pid }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static let ownedBindAdvisoryWait = """
+    SELECT a.pid::text AS pid FROM pg_catalog.pg_stat_activity a
+    WHERE a.datname=$1 AND a.usename=current_user AND a.application_name='b4app'
+      AND a.backend_type='client backend' AND a.pid<>pg_backend_pid() AND a.pid<>$2::int
+      AND NOT(a.pid=ANY($5::int[]))
+      AND a.state='active' AND a.wait_event_type='Lock' AND a.query=$4
+      AND $2::int=ANY(pg_catalog.pg_blocking_pids(a.pid))
+      AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks w WHERE w.pid=a.pid
+        AND w.locktype='advisory' AND w.mode='ExclusiveLock' AND NOT w.granted
+        AND w.classid=0::oid AND w.objid=$3::oid AND w.objsubid=1)
+    """
+
+  private static let ownedBindLinkWait = """
+    SELECT a.pid::text AS pid FROM pg_catalog.pg_stat_activity a
+    WHERE a.datname=$1 AND a.usename=current_user AND a.application_name='b4app'
+      AND a.backend_type='client backend' AND a.pid<>pg_backend_pid() AND a.pid<>$2::int
+      AND NOT(a.pid=ANY($5::int[]))
+      AND a.state='active' AND a.wait_event_type='Lock' AND a.query=$4
+      AND $2::int=ANY(pg_catalog.pg_blocking_pids(a.pid))
+      AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks g WHERE g.pid=a.pid
+        AND g.locktype='advisory' AND g.mode='ExclusiveLock' AND g.granted
+        AND g.classid=0::oid AND g.objid=$3::oid AND g.objsubid=1)
+      AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks w WHERE w.pid=a.pid AND NOT w.granted
+        AND ((w.locktype='transactionid' AND w.mode='ShareLock'
+          AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks h WHERE h.pid=$2::int
+            AND h.locktype='transactionid' AND h.mode='ExclusiveLock' AND h.granted
+            AND h.transactionid=w.transactionid))
+        OR (w.locktype='tuple' AND w.relation='public."hubLink"'::pg_catalog.regclass
+          AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks h WHERE h.pid=$2::int
+            AND h.locktype='tuple' AND h.granted AND h.database=w.database
+            AND h.relation=w.relation AND h.page=w.page AND h.tuple=w.tuple))))
+    """
+
+  private static func ownedBindObserveWait(
+    _ c: PostgresConnection, database: String, holderPID: Int, knownOwnedPIDs: [Int],
+    kind: OwnedBindWaitKind, hold: OwnedProofHold, finished: OwnedBindFinished,
+    memory: OwnedBindMemory, invocationStart: Int, deadline: UInt64
+  ) throws {
+    guard holderPID > 0, !knownOwnedPIDs.isEmpty,
+      knownOwnedPIDs.allSatisfy({ $0 > 0 }), knownOwnedPIDs.contains(holderPID)
+    else { throw FixtureFailure.nativeShape }
+    let query =
+      kind == .advisory
+      ? "SELECT pg_advisory_xact_lock($1::bigint)"
+      : "SELECT id FROM public.\"hubLink\" WHERE id=1 FOR UPDATE"
+    let excluded = "{" + knownOwnedPIDs.map(String.init).joined(separator: ",") + "}"
+    let sql = kind == .advisory ? ownedBindAdvisoryWait : ownedBindLinkWait
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      guard finished.pending(), hold.heldUnexpired(), memory.calls() == invocationStart else {
+        throw FixtureFailure.nativeShape
+      }
+      let rows = try c.execute(
+        sql, [database, String(holderPID), String(WorkspaceDatabase.remoteApplyLockKey), query, excluded]
+      ).rows
+      let queryEnd = DispatchTime.now().uptimeNanoseconds
+      // A truthy result after the original deadline is invalid, including the final query.
+      guard queryEnd <= deadline, rows.count <= 1, finished.pending(),
+        hold.heldUnexpired(), memory.calls() == invocationStart
+      else { throw FixtureFailure.nativeShape }
+      if rows.count == 1 {
+        guard let text = rows[0].text("pid"), let pid = Int(text), pid > 0,
+          !knownOwnedPIDs.contains(pid)
+        else { throw FixtureFailure.nativeShape }
+        return
+      }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedBindReleaseObservedHold(
+    _ hold: OwnedProofHold, finished: OwnedBindFinished, memory: OwnedBindMemory,
+    invocationStart: Int, retiring: Bool, deadline: UInt64
+  ) throws {
+    guard hold.heldUnexpired(), finished.pending(), memory.calls() == invocationStart else {
+      throw FixtureFailure.nativeShape
+    }
+    if retiring { memory.setCurrent(false) }
+    // Retirement's mutex is released before this monotonic sample or any release operation.
+    let retirement = DispatchTime.now().uptimeNanoseconds
+    let original = hold.snapshot()
+    guard original.entered, original.held, !original.expired, !original.released,
+      retirement < original.expiry, finished.pending(), memory.calls() == invocationStart
+    else { throw FixtureFailure.nativeShape }
+    let releaseStart = DispatchTime.now().uptimeNanoseconds
+    hold.release()
+    let releaseEnd = DispatchTime.now().uptimeNanoseconds
+    let released = hold.snapshot()
+    // No SQL or scheduling is interposed between the retirement and prompt release.
+    guard retirement <= releaseStart, releaseStart <= releaseEnd,
+      releaseEnd < original.expiry, releaseEnd <= deadline, released.released, !released.expired
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedBindMode(_ c: PostgresConnection, replacement: String) throws {
+    let rows = try c.execute(
+      """
+      SELECT singleton::text AS singleton,replacement,raw_body_fault::text AS fault
+      FROM "owned_bind_stage"."mode"
+      """
+    ).rows
+    guard rows.count == 1, rows[0].text("singleton") == "1",
+      let actual = rows[0].text("replacement"), equalBytes(actual, replacement),
+      rows[0].text("fault") == "false"
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedBindObservedEmpty(_ c: PostgresConnection) throws {
+    let rows = try c.execute("SELECT count(*) AS n FROM \"owned_bind_stage\".\"observed\"").rows
+    guard rows.count == 1, rows[0].int("n") == 0 else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedBindWriterReady(
+    _ f: Fixture, stage: OwnedBindStageFixture, replacement: String,
+    body: OwnedBindProbe, commit: OwnedBindProbe
+  ) throws {
+    try ownedBindMode(f.inspector, replacement: replacement)
+    try ownedBindObservedEmpty(f.inspector)
+    guard try ownedBindImage(f.inspector) == stage.before,
+      try ownedBindProbe(f.inspector, "body_probe") == body,
+      try ownedBindProbe(f.inspector, "commit_probe") == commit
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedBindWriterObserved(
+    _ c: PostgresConnection, stage: OwnedBindStageFixture, actualDevice: String
+  ) throws {
+    let rows = try c.execute(
+      "SELECT isolation,lock_budget,statement_budget,hlc,device FROM \"owned_bind_stage\".\"observed\""
+    ).rows
+    // This native upper wall sample follows the actual writer join. No readback stamp is
+    // substituted for an independently authored clock expectation.
+    let serverUpper = try ownedBindWall(c)
+    guard rows.count == 1, let row = rows.first, let text = row.text("hlc"),
+      let native = HLC(rawValue: text), equalBytes(native.rawValue, text),
+      equalBytes(stage.device, actualDevice), equalBytes(native.deviceId, actualDevice),
+      native.millis >= stage.lowerWall, native.millis <= serverUpper,
+      row.text("isolation") == "read committed", row.text("lock_budget") == "2s",
+      row.text("statement_budget") == "2s"
+    else { throw FixtureFailure.nativeShape }
+    if equalBytes(actualDevice, "local") {
+      guard row.text("device") == nil || row.text("device") == "" else {
+        throw FixtureFailure.nativeShape
+      }
+    } else {
+      guard let device = row.text("device"), equalBytes(device, actualDevice) else {
+        throw FixtureFailure.nativeShape
+      }
+    }
+  }
+
+  private static func ownedBindCheckRefusal(
+    _ receipt: ProtocolOwnedProofWriteReceipt, fixture f: Fixture,
+    stage: OwnedBindStageFixture, admission: ProtocolProofMemoryAdmission,
+    memory: OwnedBindMemory, invocationStart: Int, expectedCalls: Int,
+    bodyBefore: OwnedBindProbe, commitBefore: OwnedBindProbe, bodyAllocations: Int64
+  ) throws -> Int {
+    let beforeRedemption = memory.calls()
+    guard receipt.operation == .bind, receipt.disposition == .confirmedNoncommit,
+      beforeRedemption - invocationStart == expectedCalls
+    else { throw FixtureFailure.nativeShape }
+    let refusedSuccessor =
+      (try? receipt.currentSuccessor(
+        expectedSnapshot: f.anchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission))
+      == nil
+    guard refusedSuccessor, memory.calls() == beforeRedemption,
+      try ownedBindImage(f.inspector) == stage.before,
+      try ownedBindProbe(f.inspector, "body_probe").advanced(from: bodyBefore, by: bodyAllocations),
+      try ownedBindProbe(f.inspector, "commit_probe").advanced(from: commitBefore, by: 0)
+    else { throw FixtureFailure.nativeShape }
+    try ownedBindObservedEmpty(f.inspector)
+    return beforeRedemption - invocationStart
+  }
+
+  private static func ownedBindCheckCurrent(
+    _ receipt: ProtocolOwnedProofWriteReceipt, fixture f: Fixture,
+    stage: OwnedBindStageFixture, admission: ProtocolProofMemoryAdmission,
+    memory: OwnedBindMemory, invocationStart: Int,
+    bodyBefore: OwnedBindProbe, commitBefore: OwnedBindProbe
+  ) throws -> (calls: Int, redemption: Int) {
+    let beforeRedemption = memory.calls()
+    guard receipt.operation == .bind, receipt.disposition == .committedCurrent,
+      beforeRedemption - invocationStart == 4,
+      try ownedBindImage(f.inspector) == stage.expected,
+      try ownedBindProbe(f.inspector, "body_probe").advanced(from: bodyBefore, by: 1),
+      try ownedBindProbe(f.inspector, "commit_probe").advanced(from: commitBefore, by: 1)
+    else { throw FixtureFailure.nativeShape }
+    try ownedBindWriterObserved(f.inspector, stage: stage, actualDevice: f.database.deviceId)
+    // Redemption compares sealed lineage plus fresh memory; it performs no native read.
+    let successor = try receipt.currentSuccessor(
+      expectedSnapshot: f.anchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+    let afterRedemption = memory.calls()
+    guard afterRedemption - beforeRedemption == 1 else { throw FixtureFailure.nativeShape }
+    try validateSuccessor(f, successor)
+    guard try ownedBindImage(f.inspector) == stage.expected else { throw FixtureFailure.nativeShape }
+    return (beforeRedemption - invocationStart, afterRedemption - beforeRedemption)
+  }
+
+  private static func ownedBindHeldPair(_ kind: OwnedBindWaitKind) throws -> OwnedBindPairFacts {
+    // Each unit completes all four distinct raw fixture teardowns before opening its target.
+    let raw = try ownedBindRawStageControls()
+    guard raw.count == 4, raw.allSatisfy({ $0.qualified }) else { throw FixtureFailure.nativeShape }
+    var facts: OwnedBindPairFacts?
+    try withFixture { f in
+      let predecessor = try validateFixture(f)
+      let reference = f.link.tokenRef
+      guard reference.utf8.allSatisfy({ $0 > 0 && $0 < 128 }),
+        ProtocolCredentialReference(reference) != nil
+      else { throw FixtureFailure.nativeShape }
+      let stage = try ownedBindFreeze(f, predecessor: predecessor, replacement: reference)
+      try ownedBindInstall(f, stage: stage, rawBodyFault: false)
+      let bodyBefore = try ownedBindProbe(f.inspector, "body_probe")
+      let commitBefore = try ownedBindProbe(f.inspector, "commit_probe")
+      guard bodyBefore == OwnedBindProbe(last: 1, called: false),
+        commitBefore == OwnedBindProbe(last: 1, called: false)
+      else { throw FixtureFailure.nativeShape }
+      try ownedBindWriterReady(
+        f, stage: stage, replacement: reference, body: bodyBefore, commit: commitBefore)
+      let inspectorRows = try f.inspector.execute("SELECT pg_catalog.pg_backend_pid() AS pid").rows
+      guard inspectorRows.count == 1, let inspectorPID = inspectorRows[0].int("pid"), inspectorPID > 0
+      else { throw FixtureFailure.nativeShape }
+      let database = f.database
+      let anchor = f.anchor
+      let binding = f.binding
+      let endpoint = database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        let allowed = memory.compare()
+        if !allowed { throw FixtureFailure.redactedFailure }
+      }
+      let originalHold = OwnedProofHold()
+      let inverseHold = OwnedProofHold()
+      let originalState = OwnedBindHolderState()
+      let inverseState = OwnedBindHolderState()
+      let originalFinished = OwnedBindFinished()
+      let inverseFinished = OwnedBindFinished()
+      var originalHolder: OwnedProofNativeWork<OwnedBindHolderResult>?
+      var inverseHolder: OwnedProofNativeWork<OwnedBindHolderResult>?
+      var originalWriter: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+      var inverseWriter: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+      // One cleanup covers every partial attempt. Release ALL holds before joining ANY work.
+      defer {
+        originalHold.release()
+        inverseHold.release()
+        if let originalHolder { _ = originalHolder.join() }
+        if let inverseHolder { _ = inverseHolder.join() }
+        if let originalWriter { _ = originalWriter.join() }
+        if let inverseWriter { _ = inverseWriter.join() }
+      }
+      let user = NSUserName()
+      let originalApplication = "owned-bind-holder-\(UUID().uuidString)"
+      let inverseApplication = "owned-bind-holder-\(UUID().uuidString)"
+      let readinessDeadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+      originalHolder = ownedBindHolder(
+        binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+        database: endpoint.database, user: user, application: originalApplication,
+        kind: kind, hold: originalHold, state: originalState)
+      let originalPID = try ownedBindHolderReady(
+        originalState, hold: originalHold, deadline: readinessDeadline)
+      let negativeStart = memory.calls()
+      guard negativeStart == 0 else { throw FixtureFailure.nativeShape }
+      let originalDeadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+      originalWriter = ownedBindWriter(
+        database: database, anchor: anchor, binding: binding, reference: reference,
+        admission: admission, finished: originalFinished)
+      // The sequencer exports no raw PID and has already closed every raw connection. Exclude
+      // all known owned PIDs here, including the lexical inspector and this actual holder.
+      try ownedBindObserveWait(
+        f.inspector, database: endpoint.database, holderPID: originalPID,
+        knownOwnedPIDs: [inspectorPID, originalPID], kind: kind, hold: originalHold,
+        finished: originalFinished, memory: memory, invocationStart: negativeStart,
+        deadline: originalDeadline)
+      try ownedBindReleaseObservedHold(
+        originalHold, finished: originalFinished, memory: memory, invocationStart: negativeStart,
+        retiring: true, deadline: originalDeadline)
+      let originalHeld = originalHolder!.join()
+      let negativeReceipt = originalWriter!.join()
+      guard originalHeld.normal else { throw FixtureFailure.nativeShape }
+      let negativeCalls = try ownedBindCheckRefusal(
+        negativeReceipt, fixture: f, stage: stage, admission: admission, memory: memory,
+        invocationStart: negativeStart, expectedCalls: 1, bodyBefore: bodyBefore,
+        commitBefore: commitBefore, bodyAllocations: 0)
+      let bodyInverse = try ownedBindProbe(f.inspector, "body_probe")
+      let commitInverse = try ownedBindProbe(f.inspector, "commit_probe")
+      // Same target/stage/installer/anchor/reference/admission/probes; only current changes.
+      memory.setCurrent(true)
+      try ownedBindWriterReady(
+        f, stage: stage, replacement: reference, body: bodyInverse, commit: commitInverse)
+      let inverseReadinessDeadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+      inverseHolder = ownedBindHolder(
+        binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+        database: endpoint.database, user: user, application: inverseApplication,
+        kind: kind, hold: inverseHold, state: inverseState)
+      let inversePID = try ownedBindHolderReady(
+        inverseState, hold: inverseHold, deadline: inverseReadinessDeadline)
+      let positiveStart = memory.calls()
+      guard positiveStart == negativeStart + negativeCalls else { throw FixtureFailure.nativeShape }
+      let inverseDeadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+      inverseWriter = ownedBindWriter(
+        database: database, anchor: anchor, binding: binding, reference: reference,
+        admission: admission, finished: inverseFinished)
+      try ownedBindObserveWait(
+        f.inspector, database: endpoint.database, holderPID: inversePID,
+        knownOwnedPIDs: [inspectorPID, originalPID, inversePID], kind: kind, hold: inverseHold,
+        finished: inverseFinished, memory: memory, invocationStart: positiveStart,
+        deadline: inverseDeadline)
+      try ownedBindReleaseObservedHold(
+        inverseHold, finished: inverseFinished, memory: memory, invocationStart: positiveStart,
+        retiring: false, deadline: inverseDeadline)
+      let inverseHeld = inverseHolder!.join()
+      let positiveReceipt = inverseWriter!.join()
+      guard inverseHeld.normal else { throw FixtureFailure.nativeShape }
+      let positive = try ownedBindCheckCurrent(
+        positiveReceipt, fixture: f, stage: stage, admission: admission, memory: memory,
+        invocationStart: positiveStart, bodyBefore: bodyInverse, commitBefore: commitInverse)
+      facts = OwnedBindPairFacts(
+        rawControls: raw.count, negativeCalls: negativeCalls, positiveCalls: positive.calls,
+        redemptionCalls: positive.redemption, nativeWaits: 2,
+        normalHolders: (originalHeld.normal ? 1 : 0) + (inverseHeld.normal ? 1 : 0), qualified: true)
+    }
+    guard let facts else { throw FixtureFailure.nativeShape }
+    return facts
+  }
+
+  private static func ownedBindUnheldPair(
+    selector: Int?, replacingReference: Bool
+  ) throws -> OwnedBindPairFacts {
+    guard replacingReference ? selector == nil : (selector == 2 || selector == 3) else {
+      throw FixtureFailure.nativeShape
+    }
+    let raw = try ownedBindRawStageControls()
+    guard raw.count == 4, raw.allSatisfy({ $0.qualified }) else { throw FixtureFailure.nativeShape }
+    var facts: OwnedBindPairFacts?
+    try withFixture { f in
+      let predecessor = try validateFixture(f)
+      let reference = f.link.tokenRef
+      let replacement = replacingReference ? "secret:OWNED_BIND_WRITER_REFERENCE_B" : reference
+      guard reference.utf8.allSatisfy({ $0 > 0 && $0 < 128 }),
+        replacement.utf8.allSatisfy({ $0 > 0 && $0 < 128 }),
+        ProtocolCredentialReference(reference) != nil,
+        ProtocolCredentialReference(replacement) != nil,
+        !replacingReference || !equalBytes(reference, replacement)
+      else { throw FixtureFailure.nativeShape }
+      let stage = try ownedBindFreeze(f, predecessor: predecessor, replacement: replacement)
+      try ownedBindInstall(f, stage: stage, rawBodyFault: false)
+      let bodyBefore = try ownedBindProbe(f.inspector, "body_probe")
+      let commitBefore = try ownedBindProbe(f.inspector, "commit_probe")
+      guard bodyBefore == OwnedBindProbe(last: 1, called: false),
+        commitBefore == OwnedBindProbe(last: 1, called: false)
+      else { throw FixtureFailure.nativeShape }
+      try ownedBindWriterReady(
+        f, stage: stage, replacement: replacement, body: bodyBefore, commit: commitBefore)
+      let database = f.database
+      let anchor = f.anchor
+      let binding = f.binding
+      let memory = OwnedBindMemory(selected: selector)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        let allowed = memory.compare()
+        if !allowed { throw FixtureFailure.redactedFailure }
+      }
+      let originalFinished = OwnedBindFinished()
+      let inverseFinished = OwnedBindFinished()
+      var originalWriter: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+      var inverseWriter: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+      // Installed before the first actual writer, including a partially started inverse.
+      defer {
+        if let originalWriter { _ = originalWriter.join() }
+        if let inverseWriter { _ = inverseWriter.join() }
+      }
+      let negativeStart = memory.calls()
+      guard negativeStart == 0 else { throw FixtureFailure.nativeShape }
+      originalWriter = ownedBindWriter(
+        database: database, anchor: anchor, binding: binding, reference: reference,
+        admission: admission, finished: originalFinished)
+      let negativeReceipt = originalWriter!.join()
+      // Ordinals only check consistency. Full body predicates/settings, nontransactional body
+      // allocation, qualified normal return, deferred absence and source ordering are the oracle.
+      let negativeCalls = try ownedBindCheckRefusal(
+        negativeReceipt, fixture: f, stage: stage, admission: admission, memory: memory,
+        invocationStart: negativeStart, expectedCalls: replacingReference ? 1 : selector!,
+        bodyBefore: bodyBefore, commitBefore: commitBefore, bodyAllocations: 1)
+      let bodyInverse = try ownedBindProbe(f.inspector, "body_probe")
+      let commitInverse = try ownedBindProbe(f.inspector, "commit_probe")
+      if replacingReference {
+        // Exactly one private B-to-A mode change, after the joined refusal. No public repair,
+        // installer rerun, expected-image recapture, admission change, or probe reset occurs.
+        guard
+          try f.inspector.execute(
+            """
+            UPDATE "owned_bind_stage"."mode" SET replacement=$2
+            WHERE singleton=1 AND convert_to(replacement,'UTF8')=convert_to($1,'UTF8')
+              AND raw_body_fault=false
+            """, [replacement, reference]
+          ).affected == 1
+        else { throw FixtureFailure.nativeShape }
+      } else {
+        memory.disableSelector()
+      }
+      try ownedBindWriterReady(
+        f, stage: stage, replacement: reference, body: bodyInverse, commit: commitInverse)
+      let positiveStart = memory.calls()
+      guard positiveStart == negativeStart + negativeCalls else { throw FixtureFailure.nativeShape }
+      inverseWriter = ownedBindWriter(
+        database: database, anchor: anchor, binding: binding, reference: reference,
+        admission: admission, finished: inverseFinished)
+      let positiveReceipt = inverseWriter!.join()
+      // stage.expected is independently frozen S1/A, including for immutable replacement B.
+      let positive = try ownedBindCheckCurrent(
+        positiveReceipt, fixture: f, stage: stage, admission: admission, memory: memory,
+        invocationStart: positiveStart, bodyBefore: bodyInverse, commitBefore: commitInverse)
+      facts = OwnedBindPairFacts(
+        rawControls: raw.count, negativeCalls: negativeCalls, positiveCalls: positive.calls,
+        redemptionCalls: positive.redemption, nativeWaits: 0, normalHolders: 0, qualified: true)
+    }
+    guard let facts else { throw FixtureFailure.nativeShape }
+    return facts
+  }
+
+  @Test func ownedBindRetirementAfterObservedNativePreWaitRefuses() throws {
+    for kind in [OwnedBindWaitKind.advisory, .link] {
+      let facts = try Self.ownedBindHeldPair(kind)
+      // Only fixed primitive facts remain after target pool/inspector/physical-root teardown.
+      #expect(facts.qualified)
+      #expect(facts.rawControls == 4)
+      #expect(facts.negativeCalls == 1)
+      #expect(facts.positiveCalls == 4 && facts.redemptionCalls == 1)
+      #expect(facts.nativeWaits == 2 && facts.normalHolders == 2)
+    }
+  }
+
+  @Test func ownedBindMemoryPostAndImmediatePreCommitRefuseAfterSuccessfulBody() throws {
+    for selector in [2, 3] {
+      let facts = try Self.ownedBindUnheldPair(selector: selector, replacingReference: false)
+      #expect(facts.qualified)
+      #expect(facts.rawControls == 4)
+      #expect(facts.negativeCalls == selector)
+      #expect(facts.positiveCalls == 4 && facts.redemptionCalls == 1)
+      #expect(facts.nativeWaits == 0 && facts.normalHolders == 0)
+    }
+  }
+
+  @Test func ownedBindSuccessfulReferenceReplacementRefusesPostAndSameEnabledAtoACommits() throws {
+    let facts = try Self.ownedBindUnheldPair(selector: nil, replacingReference: true)
+    #expect(facts.qualified)
+    #expect(facts.rawControls == 4)
+    #expect(facts.negativeCalls == 1)
+    #expect(facts.positiveCalls == 4 && facts.redemptionCalls == 1)
+    #expect(facts.nativeWaits == 0 && facts.normalHolders == 0)
+  }
+}
