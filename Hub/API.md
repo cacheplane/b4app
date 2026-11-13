@@ -1308,7 +1308,7 @@ the reader's as `view`. Migration 0020 moved the rows a hub already held to `vie
 with their column clocks. Migration 0021 added `density` and split the old four-way
 `quietThreads` of the rows a hub already held: `small` became `normal` and `shown`, `tiny` became
 `dense` and `shown`, and `collapsed` and `hidden` kept their value with `normal`. Each `density` it
-set carries the clock of the row's `quietThreads`; the change log was left as it was.
+set carries the clock of the row's `quietThreads`, when it had one; the change log was left as it was.
 
 ### `StoredChange` (the feed shape)
 

@@ -89,7 +89,6 @@ mod tests {
             ("viewSettings", "showArchived"),
             ("viewSettings", "updatedAt"),
             ("viewSettings", "density"),
-            ("viewSettings", "density"),
         ] {
             assert!(is_phone_writable(table, column), "{table}.{column}");
         }
