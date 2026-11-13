@@ -67,7 +67,7 @@ private func connected(
 }
 
 /// One turn of the run loop, for a view drawn in a test's own window.
-@MainActor private func pumpRunLoop() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+@MainActor private func pumpRunLoop() { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
 
 @Suite struct FuzzyMatchTests {
   private func score(_ query: String, _ title: String, also: [String] = []) -> Int? {

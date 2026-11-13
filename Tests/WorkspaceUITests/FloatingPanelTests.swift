@@ -179,7 +179,10 @@
   /// The Mac's palettes are presented in a panel attached to the window, so a short window does not
   /// cut them. These drive a real window and panel; what a key or a drag does is the smoke suite's.
   @Suite(.serialized) @MainActor struct FloatingPanelTests {
-    private func pump() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    /// One short turn of the run loop. Short, because nothing else on the main actor runs meanwhile:
+    /// these tests ran beside the whole package on CI, and their longer turns held other suites'
+    /// requests past the client's 15 second timeout.
+    private func pump() { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
 
     private func settle() async throws {
       for _ in 0..<8 {
