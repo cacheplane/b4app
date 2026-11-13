@@ -89,6 +89,33 @@ public enum CodexProtocol {
     return .object(params)
   }
 
+  /// The commands this adapter runs for Codex. Codex's own slash commands belong to its terminal UI
+  /// and the app-server lists none, so these are the ones with an app-server method behind them
+  /// (codex-cli 0.166.0: `review/start`, `thread/compact/start`).
+  public static let commands: [RuntimeCommand] = [
+    RuntimeCommand(
+      name: "review", description: "Review the uncommitted changes, or what you describe",
+      argumentHint: "[what to review]"),
+    RuntimeCommand(name: "compact", description: "Summarize the conversation to free up context"),
+  ]
+
+  /// A message that is one of `commands`, as the request that runs it; nil for any other message.
+  /// `/review` alone reviews the working tree; words after it are the reviewer's instructions.
+  public static func commandRequest(threadId: String, text: String) -> (method: String, params: JSONValue)? {
+    guard let (name, arguments) = RuntimeCommand.parse(text) else { return nil }
+    switch name {
+    case "review":
+      let target: JSONValue =
+        arguments.isEmpty
+        ? ["type": "uncommittedChanges"] : ["type": "custom", "instructions": .string(arguments)]
+      return ("review/start", ["threadId": .string(threadId), "target": target])
+    case "compact":
+      return arguments.isEmpty ? ("thread/compact/start", ["threadId": .string(threadId)]) : nil
+    default:
+      return nil
+    }
+  }
+
   /// `model/list` (first page only); hidden models are not offered.
   public static func modelListParams() -> JSONValue { ["includeHidden": false] }
 

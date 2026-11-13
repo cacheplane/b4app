@@ -348,9 +348,10 @@ private struct HubHarness {
     }
     #expect(sent["futureSecret"] == nil)
     #expect(Set(sent.keys) == SyncFilter.connectionColumns)
-    #expect(sent.count == 18)
+    #expect(sent.count == 19)
     #expect(sent["environmentId"] == .string("v-environmentId"))
     #expect(sent["models"] == .string("v-models"))
+    #expect(sent["commands"] == .string("v-commands"))
     #expect(sent["authReference"] == .null)
     #expect(sent["localServerId"] == .null)
     #expect(sent["target"] == .string(""))

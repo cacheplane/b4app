@@ -41,6 +41,17 @@ import WorkspaceUI
     .restorationBehavior(.disabled)
     .defaultLaunchBehavior(.presented)
     .commands {
+      // The shipped app's File menu (`B4AppMac`) declares Find and Commands from the catalog, with
+      // its shortcuts. New Window stays: the journeys open one when macOS restores none.
+      CommandGroup(after: .newItem) {
+        ForEach([CommandID.find, .commands], id: \.self) { id in
+          let command = CommandCatalog.definition(id)
+          Button("\(command.title)\u{2026}") {
+            Task { _ = await model.run(id, target: .workspace) }
+          }
+          .keyboardShortcut(command.shortcut)
+        }
+      }
       CommandMenu("Fixture") {
         Button("Render recovery reference") {
           RecoveryReference.show(socket: ProcessInfo.processInfo.environment["SMOKE_SOCKET"] ?? "")

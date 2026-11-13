@@ -1,7 +1,7 @@
 import Foundation
 import WorkspaceProtocol
 
-/// The account's view settings (migrations 0013 and 0014): one synced row, id `ViewSettings.rowId`.
+/// The account's view settings (migrations 0013 and 0015): one synced row, id `ViewSettings.rowId`.
 extension WorkspaceDatabase {
   /// The stored settings, read leniently: no row, a null, or a value this build does not know is the
   /// field's default. Writes nothing.

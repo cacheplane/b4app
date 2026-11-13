@@ -107,6 +107,7 @@ public actor SessionService {
       logger.error("startup reconciliation failed: \(String(describing: error), privacy: .public)")
     }
     startThreadDeleteSweep()
+    readMissingCommands()
   }
 
   /// Dispose every adapter. `closing` is set before the first suspension, so no adapter (and no
@@ -306,12 +307,14 @@ public actor SessionService {
     } else {
       inspection = try await inspectRetrying(connection, adapter: adapter)
     }
+    let commands = await commandsToStore(connection, inspection: inspection, adapter: adapter)
     let updated =
       try db.updateConnection(id: connection.id) {
         $0.status = inspection.status
         $0.authStatus = inspection.authStatus
         $0.capabilities = inspection.capabilities
         $0.models = inspection.models
+        if let commands { $0.commands = commands }
         if let path = inspection.executablePath, $0.target.isEmpty { $0.target = path }
         // The identity the runtime presents now; nil (signed out, unreachable) keeps the last known one.
         if let scope = inspection.nativeScope, !scope.isEmpty { $0.nativeScope = scope }
@@ -1387,6 +1390,10 @@ public actor SessionService {
         }
       case .usageChanged:
         try storeUsage(raw)
+      case .commandsChanged:
+        // The list belongs to the connection; clients learn of it from `connection.changed`.
+        try await storeCommands(raw)
+        return
       case .adapterError:
         await context.diagnostics.recordError(
           scope: raw.payload["scope"]?.stringValue ?? "adapter",

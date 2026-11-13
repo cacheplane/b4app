@@ -5,7 +5,7 @@ import os
 
 /// Claude Code adapter over the CLI's stream-json protocol (spec section 8, decision D-002). One
 /// `claude` process per native session (D-015); every control request gets exactly one answer.
-public actor ClaudeAdapter: AgentAdapter, LoginCapable {
+public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
   public nonisolated let kind = ConnectionKind.claude
   public nonisolated let connectionId: String
   public var autoDeclineUnsupported = true
@@ -107,6 +107,30 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
     return inspection
   }
 
+  /// Start Claude Code in an empty folder, read the commands its handshake reports, and close it.
+  /// No message is sent, so no transcript is written and nothing is inferred; the session-start
+  /// hooks the owner configured do run.
+  public func readCommands() async throws -> [RuntimeCommand] {
+    let path = try locate()
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "b4app-claude-commands-\(UUID().uuidString.lowercased())", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let session = ClaudeSession(
+      options: ClaudeSession.Options(
+        executablePath: path, environment: environment, workingDirectory: folder.path,
+        sessionId: UUID().uuidString.lowercased(), resume: false, clientVersion: clientVersion))
+    do {
+      try await session.start()
+    } catch {
+      await session.close()
+      throw error
+    }
+    let commands = await session.commands
+    await session.close()
+    return commands
+  }
+
   static let capabilities: Capabilities = [
     .streaming: .supported, .nativeResume: .supported, .historyRetrieval: .supported,
     .explicitInterruption: .supported, .reconnect: .unverified, .permissionDecisions: .supported,
@@ -154,6 +178,14 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable {
     }
     sessions[id] = session
     applied[id] = settings
+    // What this session can run; the coordinator keeps the list on the connection.
+    let commands = await session.commands
+    if !commands.isEmpty {
+      eventContinuation.yield(
+        AdapterEvent(
+          kind: .commandsChanged, connectionId: connectionId, adapterGeneration: generation,
+          payload: ["commands": (try? JSONValue(encoding: commands)) ?? []]))
+    }
     trackers[id] = ClaudeTurnTracker(connectionId: connectionId, sessionId: id, generation: generation)
     pumps[id] = Task { [weak self] in
       for await inbound in session.inbound {

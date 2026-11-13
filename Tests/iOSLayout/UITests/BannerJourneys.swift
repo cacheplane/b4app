@@ -33,10 +33,11 @@ extension BannerLayoutTests {
     done(id("testNavigateIntoThreadAndBackWithBannerPresent"))
     checkLayout(app, screen: "list", covering: [point("testSearchWithBannerPresent")])
     // The list keeps no search field of its own (D-201): the button opens the Search sheet.
-    XCTAssertFalse(app.searchFields["Search threads"].exists)
+    // The sheet is the palette (D-207), opened for Find; its field says what Find searches.
+    XCTAssertFalse(app.searchFields.firstMatch.exists)
     app.buttons["list-search"].tap()
     XCTAssertTrue(app.descendants(matching: .any)["search-palette"].firstMatch.waitForExistence(timeout: 5))
-    let search = app.searchFields["Search threads"]
+    let search = app.searchFields["Threads, environments, commands"]
     XCTAssertTrue(search.waitForExistence(timeout: 5))
     XCTAssertTrue(search.isHittable)
     done(id("testSearchWithBannerPresent"))

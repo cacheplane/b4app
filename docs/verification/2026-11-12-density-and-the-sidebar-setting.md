@@ -15,7 +15,7 @@ Run on the merged tree, each log saved and the counts read from it:
 The tests that carry the change:
 
 - `ViewSettingsTests`: each old stored value reads as its density and sidebar setting; a stored density wins over what `tiny` implies; density round-trips through JSON, and JSON from before the split still decodes.
-- `ViewSettingsStoreTests` and `MirrorMigrationTests`, `MirrorViewSettingsTests`: the Mac store's migration 0014 and the mirror's schema 9 convert each old value and add nothing to the change log or the outbox and move no clock; replacing an unconverted `tiny` through the sidebar setting also writes dense; a stored density this build does not know is kept.
+- `ViewSettingsStoreTests` and `MirrorMigrationTests`, `MirrorViewSettingsTests`: the Mac store's migration 0015 and the mirror's schema 10 convert each old value and add nothing to the change log or the outbox and move no clock; replacing an unconverted `tiny` through the sidebar setting also writes dense; a stored density this build does not know is kept.
 - Hub `tests/migrate.rs` `density_is_split_from_the_sidebar_setting` (run as the non-superuser owner, five organisations, one table left unforced to show each row-security flag is put back as found; a carried clock still beats an older write) and `tests/changes.rs` `a_phone_may_write_density`.
 - `ThreadListHeightTests`: the real Mac list is measured at normal and at dense. Quiet rows, the rows opened from Collapsed and from Hidden, and the selected row beside a stow are 8 pt shorter each; the top list, "By environment", archived rows and the "N more" row are the same height. Swapping two row places in the view, or dropping the size at one call site, was tried and failed these tests.
 - `ViewSettingsModelTests`: `setDensity` shows at once, sends only `density`, is put back when refused, and survives a slow read; a phone model at dense has no tight rows.
@@ -33,7 +33,7 @@ Failed on the way, and what was done:
 
 - Nothing was run in an app. The Local app on this Mac holds another build's store migration `0014`, which this build's store would refuse. The switch, the menu and the tight rows were seen only in rendered snapshots.
 - VoiceOver on the Dense switch (that it reads the label and the description as one switch) was not checked.
-- No hosted hub was migrated with `0021`. The beta hub runs `0020` from D-213's merge.
+- No hosted hub was migrated with `0022`. The beta hub runs `0020` from D-213's merge.
 - Two devices syncing density through a hub was not tried; the phone's side is covered by the mirror's tests and the fake hub only.
 - The iOS layout UI tests (`./Scripts/test-ios-layout.sh`) were not run locally.
-- Pull request 188 holds the same three migration numbers (hub `0021`, store `0014`, mirror schema 9). If it merges first, this branch's migrations are renumbered and these gates are run again.
+- Pull request 188 merged first with the same three migration numbers, so on 2026-11-13 main was merged in and this branch's migrations were renumbered to hub `0022`, store `0015` and mirror schema 10, unchanged in content. On that tree: `swift test`, 1791 tests in 214 suites passed (after a clean rebuild; the incremental build first failed to link and then crashed on stale objects); hub `cargo test --workspace --locked --no-fail-fast`, 30 suites, 545 passed, 0 failed, with `cargo fmt --check` and clippy clean; `swift format lint --strict` and `Scripts/docs-index.sh --check` passed. The two `xcodebuild` builds were not run again locally; CI runs them.

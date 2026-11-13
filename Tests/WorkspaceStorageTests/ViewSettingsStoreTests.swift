@@ -189,7 +189,7 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
     #expect(try storedRow(newer)?["quietThreads"] == .some("collapsed"))
   }
 
-  /// Migration 0014 rewrites the old sidebar values into `quietThreads` and `density`, logging and
+  /// Migration 0015 rewrites the old sidebar values into `quietThreads` and `density`, logging and
   /// clocking nothing.
   @Test(arguments: [
     (old: "small" as String?, quietThreads: "shown" as String?, density: "normal" as String?),
@@ -208,7 +208,7 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
       connectionString:
         "host=\(endpoint.socketDir) port=\(endpoint.port) dbname=\(endpoint.database) user=\(NSUserName())")
     _ = try Migrator.applied(raw)
-    for file in try Migrator.files() where file.name < "0014" {
+    for file in try Migrator.files() where file.name < "0015" {
       try raw.execute(file.sql)
       try raw.execute(
         "INSERT INTO \"schemaMigrations\" (\"name\", \"appliedAt\") VALUES ($1, 'then')", [file.name])
@@ -228,7 +228,7 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
     #expect(before.changes == "1")
 
     let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
-    #expect(try db.appliedMigrations().last == "0014_density")
+    #expect(try db.appliedMigrations().last == "0015_density")
     let stored = try #require(try storedRow(db))
     #expect(stored["quietThreads"] == .some(row.quietThreads))
     #expect(stored["density"] == .some(row.density))

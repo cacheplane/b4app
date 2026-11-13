@@ -39,6 +39,21 @@ if "--bare" in args:
     sys.exit(3)
 
 
+# What `initialize` lists, in 2.1.282's shape: a built-in, a plugin skill with an alias and a hint,
+# and one entry the app must drop (a name no composer token can spell).
+COMMANDS = [
+    {"name": "context", "description": "Show what is using the context window", "argumentHint": "", "builtin": True},
+    {"name": "compact", "description": "Summarize the conversation so far\nand free up context.", "argumentHint": "[instructions]", "builtin": True},
+    {"name": "superpowers:brainstorming", "description": "(superpowers) Work out what to build before building it", "argumentHint": "",
+     "aliases": ["brainstorming"]},
+    {"name": "not a command", "description": "dropped", "argumentHint": ""},
+]
+# A project's own commands, as Claude Code finds them: one per file in <cwd>/.claude/commands.
+_project = os.path.join(os.getcwd(), ".claude", "commands")
+if os.path.isdir(_project):
+    COMMANDS = COMMANDS + [{"name": name[:-3], "description": "(project) " + name[:-3], "argumentHint": ""}
+                           for name in sorted(os.listdir(_project)) if name.endswith(".md")]
+
 def arg(name):
     return args[args.index(name) + 1] if name in args else None
 
@@ -66,7 +81,12 @@ def record_log(obj):
 
 
 log("argv %r" % args)
-record_log({"argv": args})
+# The adapter's one-time read of the commands runs in a folder of its own; it is logged apart from
+# the sessions, so a test that counts launches counts conversations.
+if os.path.basename(os.getcwd()).startswith("b4app-claude-commands-"):
+    record_log({"commandRead": args})
+else:
+    record_log({"argv": args})
 if resumed and session_id == "missing-late":
     import subprocess
     # Only stderr is inherited: stdout reaches EOF when this process exits, stderr 300 ms later.
@@ -176,7 +196,7 @@ while True:
         if request.get("subtype") == "initialize":
             send({"type": "system", "subtype": "hook_started", "hook_name": "SessionStart:startup", "uuid": next_id("uuid")})
             send({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": {
-                "commands": [], "agents": [], "models": [], "account": {"email": "owner@example.com", "organization": "Owner",
+                "commands": COMMANDS, "agents": [], "models": [], "account": {"email": "owner@example.com", "organization": "Owner",
                                                                         "subscriptionType": "max", "apiProvider": "firstParty"},
                 "current_permission_mode": "default", "session_state": "idle", "pid": os.getpid()}}})
         elif request.get("subtype") == os.environ.get("FAKE_CLAUDE_REJECT_CONTROL"):
@@ -202,6 +222,17 @@ while True:
     if "crash" in text:
         log("crashing on request")
         os._exit(1)
+    if text == "/context":
+        # As Claude Code 2.1.282 answers a local command live: no inference, one synthetic message
+        # carrying the output, the command echoed as a replayed user frame, and a zero-cost result.
+        send({"type": "command_lifecycle", "command_uuid": user_uuid, "state": "started", "uuid": next_id("uuid")})
+        message = {"id": next_id("msg"), "role": "assistant", "model": "<synthetic>",
+                   "content": [{"type": "text", "text": "## Context Usage\n\n**Tokens:** 35.2k / 1m (4%)"}], "stop_reason": "end_turn"}
+        send({"type": "assistant", "message": message, "parent_tool_use_id": None, "uuid": next_id("uuid")})
+        send({"type": "user", "message": {"role": "user", "content": "<command-name>/context</command-name>"},
+              "parent_tool_use_id": None, "uuid": user_uuid, "isReplay": True})
+        result(user_uuid, text="## Context Usage\n\n**Tokens:** 35.2k / 1m (4%)")
+        continue
     if "fail" in text:
         message = {"id": next_id("msg"), "role": "assistant", "model": "<synthetic>",
                    "content": [{"type": "text", "text": "Failed to authenticate: OAuth session expired"}], "stop_reason": "stop_sequence"}

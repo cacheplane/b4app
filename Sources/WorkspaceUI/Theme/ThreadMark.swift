@@ -17,7 +17,8 @@ extension ThreadState {
 
 /// A thread's state as one mark in a 12 pt box that grows with the text. The shape carries the state
 /// and colour only reinforces it: approve is a dot in a ring, pulsing until the thread is opened
-/// (`acknowledged`); reply a large dot; failed a cross in danger; finished a small dot; working a
+/// (`acknowledged`); reply a large dot; failed a danger disc with a small cross cut in it (a cross by itself read as a
+/// button that closes the row); finished a small dot; working a
 /// faint ring with a lime arc that orbits; quiet nothing (the box keeps its place). Under Reduce
 /// Motion, or with `animated` off (the widget), nothing moves: the working mark is a still ring and arc.
 public struct ThreadMark: View {
@@ -81,8 +82,9 @@ public struct ThreadMark: View {
       case .reply:
         Circle().fill(LLA.Color.ink).frame(width: 8 * u, height: 8 * u)
       case .failed:
+        Circle().fill(LLA.Color.danger).frame(width: 10.5 * u, height: 10.5 * u)
         Cross()
-          .stroke(LLA.Color.danger, style: StrokeStyle(lineWidth: 1.8 * u, lineCap: .round))
+          .stroke(LLA.Color.bg, style: StrokeStyle(lineWidth: 1.5 * u, lineCap: .round))
       case .finished:
         Circle().fill(LLA.Color.ink).frame(width: 5 * u, height: 5 * u)
       case .working:
@@ -122,7 +124,8 @@ public struct ThreadMark: View {
     .accessibilityHidden(state == .quiet)
   }
 
-  /// The failed cross, from (2.6, 2.6) to (9.4, 9.4) and (9.4, 2.6) to (2.6, 9.4) in the 12 pt box.
+  /// The cross in the failed disc, from (4.1, 4.1) to (7.9, 7.9) and (7.9, 4.1) to (4.1, 7.9) in the
+  /// 12 pt box.
   private struct Cross: Shape {
     func path(in rect: CGRect) -> Path {
       let u = rect.width / 12
@@ -130,10 +133,10 @@ public struct ThreadMark: View {
         CGPoint(x: rect.minX + x * u, y: rect.minY + y * u)
       }
       var path = Path()
-      path.move(to: point(2.6, 2.6))
-      path.addLine(to: point(9.4, 9.4))
-      path.move(to: point(9.4, 2.6))
-      path.addLine(to: point(2.6, 9.4))
+      path.move(to: point(4.1, 4.1))
+      path.addLine(to: point(7.9, 7.9))
+      path.move(to: point(7.9, 4.1))
+      path.addLine(to: point(4.1, 7.9))
       return path
     }
   }

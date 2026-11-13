@@ -18,7 +18,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(status.pending, 0);
-    assert_eq!(status.applied, (1..=21).collect::<Vec<i64>>());
+    assert_eq!(status.applied, (1..=22).collect::<Vec<i64>>());
 
     let app = Db::connect(&app_url).await.unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")
@@ -30,7 +30,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(migrations, 21);
+    assert_eq!(migrations, 22);
     app.pool.close().await;
 
     let row =
@@ -947,7 +947,7 @@ async fn settings_rows_move_to_their_users(pool: PgPool) {
     .unwrap();
 
     // The full migrator, as the owner, applies 0020 (and provisions the application role). It
-    // also applies 0021, which turns the moved row's `tiny` into `shown` with a `dense` density
+    // also applies 0022, which turns the moved row's `tiny` into `shown` with a `dense` density
     // and gives that density the `quietThreads` clock.
     let app_url = app_url(&pool, "pw-test");
     b4hub_db::migrate::run(&owner_url, &app_url).await.unwrap();
@@ -1075,7 +1075,7 @@ async fn settings_rows_move_to_their_users(pool: PgPool) {
     );
 }
 
-/// `0021_density.sql` splits the old four-way `quietThreads` into `density` and a three-way
+/// `0022_density.sql` splits the old four-way `quietThreads` into `density` and a three-way
 /// `quietThreads`, gives each `density` it sets the clock of the row's `quietThreads`, leaves a row
 /// with no `quietThreads` alone, and leaves the log and each table's forced row security as found.
 #[sqlx::test(migrations = false)]
@@ -1099,7 +1099,7 @@ async fn density_is_split_from_the_sidebar_setting(pool: PgPool) {
     }
     let owner_url = url_as(&pool, "b4hub_test_owner", "owner-pw");
     let owner_pool = PgPool::connect(&owner_url).await.unwrap();
-    migrate_before(&owner_pool, "0021").await;
+    migrate_before(&owner_pool, "0022").await;
     owner_pool.close().await;
 
     struct Seeded {
@@ -1197,7 +1197,7 @@ async fn density_is_split_from_the_sidebar_setting(pool: PgPool) {
             .await
             .unwrap();
 
-    // The full migrator, as the owner, applies 0021.
+    // The full migrator, as the owner, applies 0022.
     let app_url = app_url(&pool, "pw-test");
     b4hub_db::migrate::run(&owner_url, &app_url).await.unwrap();
 

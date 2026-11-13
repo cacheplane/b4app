@@ -11,6 +11,8 @@ public struct ConnectionInspection: Codable, Sendable, Equatable {
   public var capabilities: Capabilities
   /// The models the runtime offers for a new thread; nil when the adapter did not read them.
   public var models: [RuntimeModel]?
+  /// The commands the runtime runs from a message; nil when the adapter did not read them here.
+  public var commands: [RuntimeCommand]?
   public var message: String?
   public var error: WorkspaceError?
 
@@ -18,7 +20,8 @@ public struct ConnectionInspection: Codable, Sendable, Equatable {
     status: ConnectionStatus = .unconfigured, authStatus: AuthStatus = .unknown,
     executablePath: String? = nil,
     version: String? = nil, nativeScope: String? = nil, capabilities: Capabilities = .unverified,
-    models: [RuntimeModel]? = nil, message: String? = nil, error: WorkspaceError? = nil
+    models: [RuntimeModel]? = nil, commands: [RuntimeCommand]? = nil, message: String? = nil,
+    error: WorkspaceError? = nil
   ) {
     self.status = status
     self.authStatus = authStatus
@@ -27,6 +30,7 @@ public struct ConnectionInspection: Codable, Sendable, Equatable {
     self.nativeScope = nativeScope
     self.capabilities = capabilities
     self.models = models
+    self.commands = commands
     self.message = message
     self.error = error
   }
@@ -230,6 +234,13 @@ public enum SessionDeletion: String, Codable, Sendable {
 /// Adapters whose runtime answers a plan-usage question on demand (Codex). Nil: nothing reported.
 public protocol UsageReporting: Sendable {
   func readUsage() async throws -> UsageReading?
+}
+
+/// Adapters whose runtime reports its commands only from a running session (Claude Code). The
+/// coordinator asks once, when a connection has no list yet; after that the adapter's
+/// `commands.changed` events keep the list. Never issues inference.
+public protocol CommandListing: Sendable {
+  func readCommands() async throws -> [RuntimeCommand]
 }
 
 /// Adapters whose runtime offers an official browser sign-in the app can start.

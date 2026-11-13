@@ -93,7 +93,11 @@ const PINNED: &[(&str, &str)] = &[
         "ccf5c0b4cb0ef3230f138887c74df30c25e3756e3ba5245e6e02535b107aff8b",
     ),
     (
-        "0021_density.sql",
+        "0021_connection_commands.sql",
+        "a0ed9144dafcb5f0243e9d03166e5ab6ecbf1f92f2d80433d0d16608189ba99a",
+    ),
+    (
+        "0022_density.sql",
         "8837d9fbfb7f8d68fb52e2b9855480b0b06ff3648d87fcd6140c55f47d2a1141",
     ),
 ];

@@ -132,7 +132,7 @@ struct SidebarView: View {
       .toolbar {
         ToolbarItemGroup(placement: .topBarTrailing) {
           MoreMenu(model: model)
-          Button("Search", systemImage: "magnifyingglass") { model.showSearch = true }
+          Button("Search", systemImage: "magnifyingglass") { model.presentPalette(.find) }
             .accessibilityIdentifier("list-search")
         }
       }

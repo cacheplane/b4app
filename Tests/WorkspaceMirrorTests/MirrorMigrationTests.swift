@@ -97,8 +97,8 @@ private func writeVersion1File(_ path: String) throws {
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
-    #expect(MirrorSchema.version == 9)
-    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7, 8, 9])
+    #expect(MirrorSchema.version == 10)
+    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     for table in ["environments", "environmentFolders", "devices", "outbox", "columnClocks"] {
       #expect(try raw.integer("SELECT count(*) FROM sqlite_master WHERE name = '\(table)'") == 1, "\(table)")
     }
@@ -337,6 +337,7 @@ private func writeVersion1File(_ path: String) throws {
       try raw.exec("PRAGMA user_version = 7")
       try raw.exec("COMMIT")
     }
+    #expect(MirrorSchema.version == 10)
 
     let store = try MirrorStore(path: path)
     #expect(try store.thread(id: "thread-1")?.title == "Kept")
@@ -358,7 +359,7 @@ private func writeVersion1File(_ path: String) throws {
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
   }
 
-  /// The stored `quietThreads` and `density` a version 8 file holds, and what version 9 leaves.
+  /// The stored `quietThreads` and `density` a version 9 file holds, and what version 10 leaves.
   struct SidebarCase: Sendable, CustomTestStringConvertible {
     let quietThreads: String?
     let density: String?
@@ -378,10 +379,10 @@ private func writeVersion1File(_ path: String) throws {
     .init(quietThreads: "tiny", density: "normal", expectedQuietThreads: "shown", expectedDensity: "normal"),
   ]
 
-  /// Version 9 adds `density` and converts the stored row's old sidebar value, writing no outbox entry
+  /// Version 10 adds `density` and converts the stored row's old sidebar value, writing no outbox entry
   /// and claiming no clock; an unpushed outbox entry carrying an old value is left as it is.
   @Test(arguments: sidebarCases)
-  func version9ConvertsTheOldSidebarValue(_ sidebar: SidebarCase) throws {
+  func version10ConvertsTheOldSidebarValue(_ sidebar: SidebarCase) throws {
     let path = temporaryPath()
     defer { MirrorStoreTests.remove(path) }
     try writeVersion1File(path)
@@ -389,14 +390,14 @@ private func writeVersion1File(_ path: String) throws {
       let raw = try RawSQLite(path: path)
       defer { raw.close() }
       try raw.exec("BEGIN")
-      for migration in MirrorSchema.migrations where (2...8).contains(migration.version) {
+      for migration in MirrorSchema.migrations where (2...9).contains(migration.version) {
         for statement in migration.statements { try raw.exec(statement) }
       }
       let quiet = sidebar.quietThreads.map { "'\($0)'" } ?? "NULL"
       try raw.exec(
         #"INSERT INTO "viewSettings" ("id", "arrangement", "quietThreads", "updatedAt") "#
           + #"VALUES ('view', 'byEnvironment', \#(quiet), '2026-11-11T12:00:00.000Z')"#)
-      try raw.exec("PRAGMA user_version = 8")
+      try raw.exec("PRAGMA user_version = 9")
       try raw.exec("COMMIT")
     }
     if let density = sidebar.density {
@@ -405,12 +406,12 @@ private func writeVersion1File(_ path: String) throws {
       defer { raw.close() }
       try raw.exec(#"ALTER TABLE "viewSettings" ADD COLUMN "density" TEXT"#)
       try raw.exec(#"UPDATE "viewSettings" SET "density" = '\#(density)'"#)
-      // Run version 9 without its `ALTER`, which the column now already answers.
+      // Run version 10 without its `ALTER`, which the column now already answers.
       try raw.exec("BEGIN")
       for statement in try #require(MirrorSchema.migrations.last?.statements).dropFirst() {
         try raw.exec(statement)
       }
-      try raw.exec("PRAGMA user_version = 9")
+      try raw.exec("PRAGMA user_version = 10")
       try raw.exec("COMMIT")
     } else {
       // An unsent edit from the old build, carrying the old value.
@@ -443,11 +444,11 @@ private func writeVersion1File(_ path: String) throws {
     }
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 9)
+    #expect(try raw.integer("PRAGMA user_version") == 10)
   }
 
-  /// A version 8 file with no view settings row opens at version 9 with none, and an empty outbox.
-  @Test func version9LeavesNoRowAndQueuesNothing() throws {
+  /// A version 9 file with no view settings row opens at version 10 with none, and an empty outbox.
+  @Test func version10LeavesNoRowAndQueuesNothing() throws {
     let path = temporaryPath()
     defer { MirrorStoreTests.remove(path) }
     try writeVersion1File(path)
@@ -455,10 +456,10 @@ private func writeVersion1File(_ path: String) throws {
       let raw = try RawSQLite(path: path)
       defer { raw.close() }
       try raw.exec("BEGIN")
-      for migration in MirrorSchema.migrations where (2...8).contains(migration.version) {
+      for migration in MirrorSchema.migrations where (2...9).contains(migration.version) {
         for statement in migration.statements { try raw.exec(statement) }
       }
-      try raw.exec("PRAGMA user_version = 8")
+      try raw.exec("PRAGMA user_version = 9")
       try raw.exec("COMMIT")
     }
     let store = try MirrorStore(path: path)

@@ -97,6 +97,8 @@ struct ThreadDetailView: View {
         Spacer(minLength: 0)
       }
     }
+    // The composer's `/` list, over the transcript.
+    .slashCompletionsHost()
     .navigationTitle(thread.title.isEmpty ? "Untitled" : thread.title)
     #if os(iOS)
       // A pushed detail takes the inline title (HIG, Navigation bars); the header below drops its own
@@ -108,6 +110,9 @@ struct ThreadDetailView: View {
     }
     .toolbar {
       #if os(macOS)
+        // At the trailing edge: the bar has no title to push them there, and its middle is the
+        // command centre's.
+        ToolbarSpacer(.flexible)
         ToolbarItemGroup { threadActions }
       #else
         // One overflow menu on the phone, so the inline title keeps the bar's width (HIG, Toolbars:

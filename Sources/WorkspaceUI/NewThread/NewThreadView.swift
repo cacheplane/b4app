@@ -14,10 +14,13 @@ import WorkspaceProtocol
 struct NewThreadView: View {
   @Bindable var model: WorkspaceModel
   @FocusState private var focused: Bool
+  /// The `/` completions for the draft.
+  @State private var slash: SlashController
   #if os(macOS)
     @State private var placesOpen: Bool
     @State private var choosingFolder = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.floatsPalettes) private var floatsPalettes
   #endif
   /// How far Dynamic Type has grown the draft text; the send button follows it like the field does.
   @ScaledMetric(relativeTo: .callout) private var growth: CGFloat = 1
@@ -31,6 +34,7 @@ struct NewThreadView: View {
   /// `placesOpen` shows the place palette from the start (the Mac; for snapshots).
   init(model: WorkspaceModel, placesOpen: Bool = false) {
     self.model = model
+    _slash = State(initialValue: SlashController(workspace: model, target: .draft))
     #if os(macOS)
       _placesOpen = State(initialValue: placesOpen)
     #endif
@@ -54,12 +58,25 @@ struct NewThreadView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(LLA.Color.bg)
+    .slashCompletionsHost()
     #if os(macOS)
       .blur(radius: placesOpen ? 8 : 0)
       // Under the palette the composer takes no keys (Tab cannot reach it) and is not read out.
       .disabled(placesOpen)
       .accessibilityHidden(placesOpen)
       .overlay { if placesOpen { places(draft) } }
+      // In the app the palette itself is in a panel over the veil, so a short window does not cut it.
+      .background(
+        FloatingPanel(
+          isPresented: placesOpen && floatsPalettes,
+          size: CGSize(width: PlacePaletteView.width, height: PlacePaletteView.fullHeight),
+          placement: .centered, cornerRadius: PlacePaletteView.radius,
+          dismissesOnResign: !choosingFolder, dismiss: { closePlaces() }
+        ) {
+          PlacePaletteView(
+            model: model, draft: draft, close: closePlaces, chooseFolder: { choosingFolder = true })
+        }
+      )
       .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: placesOpen)
       // Search opens over this view: the palette gives way and leaves the focus to it.
       .onChange(of: model.showSearch) { _, shown in if shown { placesOpen = false } }
@@ -110,18 +127,20 @@ struct NewThreadView: View {
           .onTapGesture { closePlaces() }
           .accessibilityHidden(true)
           .transition(reduceMotion ? .identity : .opacity)
-        PlacePaletteView(
-          model: model, draft: draft, close: closePlaces, chooseFolder: { choosingFolder = true }
-        )
-        // Its top stays put while the filter shortens the list.
-        .frame(height: PlacePaletteView.fullHeight, alignment: .top)
-        .transition(
-          reduceMotion
-            ? .identity
-            : .asymmetric(
-              insertion: .opacity.combined(with: .offset(y: 10)).combined(with: .scale(scale: 0.98))
-                .animation(.easeOut(duration: 0.2)),
-              removal: .opacity.animation(.easeIn(duration: 0.12))))
+        if !floatsPalettes {
+          PlacePaletteView(
+            model: model, draft: draft, close: closePlaces, chooseFolder: { choosingFolder = true }
+          )
+          // Its top stays put while the filter shortens the list.
+          .frame(height: PlacePaletteView.fullHeight, alignment: .top)
+          .transition(
+            reduceMotion
+              ? .identity
+              : .asymmetric(
+                insertion: .opacity.combined(with: .offset(y: 10)).combined(with: .scale(scale: 0.98))
+                  .animation(.easeOut(duration: 0.2)),
+                removal: .opacity.animation(.easeIn(duration: 0.12))))
+        }
       }
     }
 
@@ -153,9 +172,16 @@ struct NewThreadView: View {
         .frame(maxWidth: .infinity, alignment: compact ? .leading : .center)
         .padding(.horizontal, LLA.Space.xs)
         .padding(.bottom, LLA.Space.l)
-      ComposerField(text: Bindable(draft).text, placeholder: placeholder(draft), focused: $focused) {
+      ComposerField(
+        text: Bindable(draft).text, placeholder: placeholder(draft), focused: $focused,
+        onSlashKey: { slash.handle($0, text: Bindable(draft).text) { chooseSlash(draft) } },
+        onReturn: { if draft.canSend { Task { await draft.send() } } }
+      ) {
         send(draft)
       }
+      // Below the field, over the picker row, so the headline above never moves.
+      .slashCompletions(slash, placement: .below) { chooseSlash(draft) }
+      .onChange(of: draft.text) { old, new in slash.textChanged(from: old, to: new) }
       ComposerPickerRow(model: model, .draft(draft), openPlaces: openPlaces)
         .padding(.top, LLA.Space.s)
       statusLine(draft)
@@ -173,15 +199,37 @@ struct NewThreadView: View {
     draft.connection.map { "Message \($0.label)" } ?? "Message"
   }
 
-  private func send(_ draft: NewThreadDraft) -> some View {
+  private func chooseSlash(_ draft: NewThreadDraft) {
+    Task {
+      switch await slash.choose() {
+      case .text(let text): draft.text = text
+      case .send(let text):
+        // A runtime command is the new thread's first message, when the draft can start one.
+        draft.text = text
+        if draft.canSend { await draft.send() } else { draft.text = text + " " }
+      case nil: break
+      }
+    }
+  }
+
+  @ViewBuilder private func send(_ draft: NewThreadDraft) -> some View {
     let scale = ComposerField<EmptyView>.scale(growth)
-    return Button("Send", systemImage: "arrow.up") { Task { await draft.send() } }
-      .keyboardShortcut(.return, modifiers: [])
-      .buttonStyle(
-        ComposerCircleStyle(diameter: ComposerField<EmptyView>.control * scale, glyph: 15 * scale)
-      )
-      .disabled(!draft.canSend)
-      .accessibilityIdentifier("send")
+    let style = ComposerCircleStyle(
+      diameter: ComposerField<EmptyView>.control * scale, glyph: (slash.isShowing ? 13 : 15) * scale)
+    if slash.isShowing {
+      // While completions show, Return picks one: a typed slash never starts a thread.
+      Button(slash.selected?.primary ?? "Choose", systemImage: "return") { chooseSlash(draft) }
+        .returnSends()
+        .buttonStyle(style)
+        .disabled(slash.selected?.isAvailable != true)
+        .accessibilityIdentifier("slash-choose")
+    } else {
+      Button("Send", systemImage: "arrow.up") { Task { await draft.send() } }
+        .returnSends()
+        .buttonStyle(style)
+        .disabled(!draft.canSend)
+        .accessibilityIdentifier("send")
+    }
   }
 
   /// "Starting…" or why the start did not go through; otherwise why Send is off, unless the notice
