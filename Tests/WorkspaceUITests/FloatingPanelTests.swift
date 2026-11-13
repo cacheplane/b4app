@@ -56,24 +56,25 @@
     @Test func aLineDrawsAPanelLightlyAndOnlyWhenItIsNear() {
       let line: CGFloat = 400
       // Out of reach: exactly where it was taken.
-      #expect(FloatingPanelGeometry.drawn(428, toward: line) == 428)
+      #expect(FloatingPanelGeometry.drawn(440, toward: line) == 440)
       #expect(FloatingPanelGeometry.drawn(460, toward: line) == 460)
       #expect(FloatingPanelGeometry.drawn(340, toward: line) == 340)
       // In reach: nearer the line than it was taken, and not on it.
       let half = FloatingPanelGeometry.drawn(412, toward: line)
-      #expect(half > 401 && half < 405)
+      #expect(half > 400 && half < 403)
       #expect(FloatingPanelGeometry.drawn(388, toward: line) == 800 - half)
-      // Felt well before the line: at 20 pt it has been drawn 8 pt in.
+      // Felt well before the line: at 20 pt it has been drawn 14 pt in.
       let far = FloatingPanelGeometry.drawn(420, toward: line)
-      #expect(far > 410 && far < 414)
+      #expect(far > 404 && far < 408)
       // Close: on the line, and held there over a few points of the pointer's travel.
+      #expect(FloatingPanelGeometry.drawn(408, toward: line) == line)
       #expect(FloatingPanelGeometry.drawn(405, toward: line) == line)
       #expect(FloatingPanelGeometry.drawn(395, toward: line) == line)
       #expect(FloatingPanelGeometry.drawn(403, toward: line) == line)
       #expect(FloatingPanelGeometry.drawn(399, toward: line) == line)
       // Nothing jumps: past the hold, as the pointer moves away so does the panel, all the way.
       var last = line
-      for step in 10...60 {
+      for step in 16...90 {
         let drawn = FloatingPanelGeometry.drawn(line + CGFloat(step) / 2, toward: line)
         #expect(drawn >= last && drawn - last < 1.5)
         last = drawn
@@ -98,6 +99,31 @@
       #expect(snapped(398, 902) == CGPoint(x: 400, y: 900))
       // Away from all of them, nothing.
       #expect(snapped(520, 760) == CGPoint(x: 520, y: 760))
+    }
+
+    @Test func whereThePanelOpensDrawsItFromEverySide() {
+      let home = CGPoint(x: 400, y: 900)
+      func snapped(_ x: CGFloat, _ y: CGFloat, home: CGPoint?) -> CGPoint {
+        FloatingPanelGeometry.snapped(CGPoint(x: x, y: y), centre: 400, heights: [900, 600], home: home)
+      }
+      // Off both lines' holds, from a diagonal: the point takes it home; the lines alone would not.
+      #expect(snapped(430, 880, home: home) == home)
+      #expect(snapped(375, 925, home: home) == home)
+      #expect(snapped(430, 880, home: nil) != home)
+      // Further off it is drawn towards home, not onto it.
+      let near = FloatingPanelGeometry.drawn(CGPoint(x: 450, y: 860), towardPoint: home)
+      #expect(near.x > 400 && near.x < 450 && near.y > 860 && near.y < 900)
+      #expect(abs((near.x - 400) / (900 - near.y) - 50 / 40) < 0.001)
+      // Out of its reach, nothing.
+      #expect(snapped(470, 840, home: home) == CGPoint(x: 470, y: 840))
+      // Nothing jumps on the way out.
+      var last: CGFloat = 0
+      for step in 28...160 {
+        let distance = CGFloat(step) / 2
+        let drawn = FloatingPanelGeometry.drawn(CGPoint(x: 400 + distance, y: 900), towardPoint: home)
+        #expect(drawn.x - 400 >= last && drawn.x - 400 - last < 1.5)
+        last = drawn.x - 400
+      }
     }
 
     @Test func aPanelIsKeptWhollyOnItsScreen() {
@@ -228,9 +254,11 @@
         panel.snap(CGPoint(x: home.x + 210, y: home.y + 197)) == CGPoint(x: home.x + 210, y: home.y + 196))
       #expect(panel.snap(CGPoint(x: home.x - 1, y: home.y + 195)) == CGPoint(x: home.x, y: home.y + 196))
       #expect(
-        panel.snap(CGPoint(x: home.x + 40, y: home.y - 60)) == CGPoint(x: home.x + 40, y: home.y - 60))
-      let near = panel.snap(CGPoint(x: home.x + 12, y: home.y - 60))
-      #expect(near.x > home.x + 1 && near.x < home.x + 5 && near.y == home.y - 60)
+        panel.snap(CGPoint(x: home.x + 60, y: home.y - 70)) == CGPoint(x: home.x + 60, y: home.y - 70))
+      let near = panel.snap(CGPoint(x: home.x + 20, y: home.y - 140))
+      #expect(near.x > home.x + 4 && near.x < home.x + 8 && near.y == home.y - 140)
+      // Near where it opens, from a diagonal: home.
+      #expect(panel.snap(CGPoint(x: home.x + 25, y: home.y - 25)) == home)
       // Left on the line down the middle, lower: it stays there.
       panel.setFrameOrigin(panel.snap(CGPoint(x: home.x - 2, y: home.y - 150)))
       panel.dragEnded()
@@ -323,8 +351,10 @@
       try send(.leftMouseUp, at: CGPoint(x: grip.x + 200, y: grip.y - 40), to: panel)
       try await settle()
       // Every step moved it on, never back; out of reach of the lines it is exactly under the pointer.
-      for (before, after) in zip(path, path.dropFirst()) {
-        #expect(after.x > before.x, "went back across: \(before) then \(after)")
+      // (Near where it opens it is held there, so the first steps may not move it; it never goes back.)
+      for (index, (before, after)) in zip(path, path.dropFirst()).enumerated() {
+        #expect(after.x >= before.x, "went back across: \(before) then \(after)")
+        if index >= 16 { #expect(after.x > before.x, "stood still out of reach: \(before) then \(after)") }
         #expect(after.y < before.y + 0.01, "went back up: \(before) then \(after)")
       }
       #expect(abs(path[39].x - home.x - 200) < 0.5)

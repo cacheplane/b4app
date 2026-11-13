@@ -24,10 +24,14 @@
   /// (y up), because the panel's height changes and its top is what stays put.
   nonisolated enum FloatingPanelGeometry {
     /// How far a line's pull reaches. Beyond it a dragged panel goes exactly where the pointer takes it.
-    static let reach: CGFloat = 28
+    static let reach: CGFloat = 40
     /// How near a line the panel sits on it: a short stretch of the pointer's travel that does not
     /// move it, which is what says "it is on the line".
-    static let hold: CGFloat = 5
+    static let hold: CGFloat = 8
+    /// The same two figures for the point where the panel opens, which draws from every side and
+    /// from further off than a line does, so the panel is easy to put back.
+    static let pointReach: CGFloat = 72
+    static let pointHold: CGFloat = 14
     /// How the pull grows from the edge of the reach to the hold: 1 would be no pull at all, larger
     /// is stronger.
     static let pull: CGFloat = 2
@@ -40,23 +44,43 @@
     /// as it comes close and leaves it as smoothly: nothing jumps, at the hold or at the edge.
     static func drawn(_ value: CGFloat, toward line: CGFloat) -> CGFloat {
       let distance = abs(value - line)
-      guard distance < reach else { return value }
-      guard distance > hold else { return line }
-      let eased = reach * pow((distance - hold) / (reach - hold), pull)
-      guard eased >= 1 else { return line }
+      guard let eased = eased(distance, reach: reach, hold: hold) else { return value }
       return line + (value < line ? -eased : eased)
+    }
+
+    /// `point` drawn towards `home` along the straight line between them, by the same rule with the
+    /// point's own reach and hold.
+    static func drawn(_ point: CGPoint, towardPoint home: CGPoint) -> CGPoint {
+      let distance = hypot(point.x - home.x, point.y - home.y)
+      guard let eased = eased(distance, reach: pointReach, hold: pointHold) else { return point }
+      guard eased > 0 else { return home }
+      let scale = eased / distance
+      return CGPoint(x: home.x + (point.x - home.x) * scale, y: home.y + (point.y - home.y) * scale)
+    }
+
+    /// A distance from a line or a point, as it is drawn: nil beyond `reach` (it is itself), 0 within
+    /// `hold` or when under half a point is left.
+    private static func eased(_ distance: CGFloat, reach: CGFloat, hold: CGFloat) -> CGFloat? {
+      guard distance < reach else { return nil }
+      guard distance > hold else { return 0 }
+      let eased = reach * pow((distance - hold) / (reach - hold), pull)
+      return eased >= 0.5 ? eased : 0
     }
 
     /// Where a panel dragged to `topLeft` is drawn. Two lines cross the window, one down its middle
     /// and one across it, and each draws the panel by itself: near the line down the middle the panel
     /// drifts onto it and still moves freely up and down; near a line across (`heights`: the middle
     /// of the window, and where the panel opens) it drifts to that height and still moves freely from
-    /// side to side. Where two cross, both draw it.
-    static func snapped(_ topLeft: CGPoint, centre: CGFloat, heights: [CGFloat]) -> CGPoint {
-      let nearest = heights.min { abs($0 - topLeft.y) < abs($1 - topLeft.y) }
+    /// side to side. Where two cross, both draw it. `home`, where the panel opens, is a point as
+    /// well: it draws the panel first, from any direction, and the lines draw what that leaves.
+    static func snapped(
+      _ topLeft: CGPoint, centre: CGFloat, heights: [CGFloat], home: CGPoint? = nil
+    ) -> CGPoint {
+      let near = home.map { drawn(topLeft, towardPoint: $0) } ?? topLeft
+      let nearest = heights.min { abs($0 - near.y) < abs($1 - near.y) }
       return CGPoint(
-        x: drawn(topLeft.x, toward: centre),
-        y: nearest.map { drawn(topLeft.y, toward: $0) } ?? topLeft.y)
+        x: drawn(near.x, toward: centre),
+        y: nearest.map { drawn(near.y, toward: $0) } ?? near.y)
     }
 
     /// `topLeft` moved so a panel of `size` is wholly on `visible`.
@@ -188,7 +212,7 @@
   /// Put it in a `background` of the view to open over. `size` is the content's width and its height
   /// at its tallest, which places it. A `draggable` panel can be moved by its `WindowDragArea`s and by
   /// the empty part of a text field. While it is dragged, the line down the middle of the window and
-  /// the lines across it (its middle, and where the panel opens) each draw it when it is near; a
+  /// the lines across it (its middle, and where the panel opens) each draw it when it is near, and so does the point where it opens; a
   /// double click on a drag area sends it back. With `remember`, it opens where it was last left
   /// (`offset`, from where it would open otherwise); without, it opens at home every time.
   struct FloatingPanel<Content: View>: NSViewRepresentable {
@@ -482,9 +506,9 @@
     /// The lines that draw a dragged panel, as places for its top-left corner: the line down the
     /// middle of the window, and two heights, where it opens and where it would sit (at its tallest)
     /// in the middle of the window.
-    private var lines: (centre: CGFloat, heights: [CGFloat])? {
+    private var lines: (centre: CGFloat, heights: [CGFloat], home: CGPoint)? {
       guard let home, let parent = panel?.parent else { return nil }
-      return (parent.frame.midX - size.width / 2, [home.y, parent.frame.midY + size.height / 2])
+      return (parent.frame.midX - size.width / 2, [home.y, parent.frame.midY + size.height / 2], home)
     }
 
     /// A drag would put the panel's origin at `origin`: the origin it is given, drawn towards the lines
@@ -493,7 +517,8 @@
       guard let panel, let lines else { return origin }
       let height = panel.frame.height
       let rest = FloatingPanelGeometry.snapped(
-        CGPoint(x: origin.x, y: origin.y + height), centre: lines.centre, heights: lines.heights)
+        CGPoint(x: origin.x, y: origin.y + height), centre: lines.centre, heights: lines.heights,
+        home: lines.home)
       return CGPoint(x: rest.x, y: rest.y - height)
     }
 
