@@ -198,31 +198,7 @@ struct ToolCard: View {
     }
   }
 
-  private var title: String {
-    switch item.type {
-    case "commandExecution": return item.payload["command"]?.stringValue ?? "Command"
-    case "fileChange":
-      let count = item.payload["changes"]?.arrayValue?.count ?? 0
-      return "File change (\(count) file\(count == 1 ? "" : "s"))"
-    case "mcpToolCall":
-      return
-        "\(item.payload["server"]?.stringValue ?? "mcp") / \(item.payload["tool"]?.stringValue ?? "tool")"
-    case "webSearch": return "Web search"
-    case "toolUse":
-      let name = item.payload["name"]?.stringValue ?? "Tool"
-      if let command = item.payload["command"]?.stringValue { return "\(name): \(command)" }
-      if let path = item.payload["path"]?.stringValue { return "\(name): \(path)" }
-      return name
-    case "toolCall":
-      let name = item.payload["name"]?.stringValue ?? "Tool"
-      if let input = item.payload["input"], !input.isNull {
-        let preview = input.stringValue ?? String(describing: input)
-        return "\(name): \(preview.prefix(80))"
-      }
-      return name
-    default: return item.type
-    }
-  }
+  private var title: String { DenseTranscript.title(of: item) }
 }
 
 /// A bordered row with a mono title that opens to its detail. No icon; the title says what it is.
