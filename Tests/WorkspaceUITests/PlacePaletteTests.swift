@@ -73,6 +73,28 @@ import WorkspaceProtocol
         .map(\.title) == ["infra", "infra-modules"])
   }
 
+  /// When the rows change under an open palette the highlight stays on its row, wherever that row
+  /// now is; a row that went away leaves the highlight where it was, inside the list.
+  @Test func theHighlightFollowsItsRow() {
+    let before = PlacePalette.rows(Self.all, filter: "", place: .noFolder)
+    let modules = before[3]
+    #expect(modules.title == "infra-modules")
+    let newer = Self.environment("aaa", "aaa", ["/Users/me/repos/aaa"])
+    let after = PlacePalette.rows([newer] + Self.all, filter: "", place: .noFolder)
+    #expect(PlacePalette.highlight(3, keeping: modules.id, in: after) == 4)
+    let fewer = PlacePalette.rows([Self.b4app], filter: "", place: .noFolder)
+    #expect(PlacePalette.highlight(3, keeping: modules.id, in: fewer) == 0)
+    #expect(PlacePalette.highlight(1, keeping: nil, in: after) == 1)
+    #expect(PlacePalette.highlight(2, keeping: modules.id, in: []) == 0)
+  }
+
+  /// A folder's row says which environment it is in, for a reader who cannot see the indent.
+  @Test func folderRowsNameTheirEnvironment() {
+    let rows = PlacePalette.rows(Self.all, filter: "", place: .noFolder)
+    #expect(rows.map(\.environmentName) == ["b4app", "infra", "infra", "infra"])
+    #expect(rows.map(\.indented) == [false, false, true, true])
+  }
+
   /// With nothing to list, the line says why: no environments at all, or none that match.
   @Test func theEmptyLineSaysWhy() {
     #expect(

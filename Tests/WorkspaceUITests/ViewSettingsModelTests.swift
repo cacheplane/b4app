@@ -159,17 +159,79 @@ import WorkspaceProtocol
   @Test func aSlowReadDoesNotUndoNewerValues() async throws {
     let transport = ScriptedTransport()
     let model = try await Self.connected(transport)
-    transport.script(.viewSettingsGet, [.hold])
+    // The overtaken read is made again, and that one sees what the store now holds: the two newer
+    // values, and a field neither of them touched.
+    let current = ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny)
+    let reread = ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny, showArchived: true)
+    transport.script(.viewSettingsGet, [.hold, try Self.reply(reread)])
     let read = Task { await model.refreshViewSettings() }
     try await waitUntil("the read is out") { transport.heldCount(.viewSettingsGet) == 1 }
     transport.script(.viewSettingsSet, [try Self.reply(ViewSettings(arrangement: .byEnvironment))])
     await model.setArrangement(.byEnvironment)
-    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny)))
+    transport.emit(try .viewSettingsChanged(current))
     try await waitUntil("the change") { model.viewSettings.quietThreads == .tiny }
     // The read's row is from before both.
     transport.release(.viewSettingsGet, with: try Self.reply(ViewSettings()))
     await read.value
-    #expect(model.viewSettings == ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny))
+    #expect(model.viewSettings == reread)
+    await model.disconnect()
+  }
+
+  /// A set made during the first read overtakes it. The read is made again, so the fields the set did
+  /// not touch still load instead of staying on their defaults until the next snapshot.
+  @Test func aReadOvertakenByASetIsReadAgain() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Self.connected(transport)
+    transport.script(.viewSettingsGet, [.hold, try Self.reply(Self.stored)])
+    let read = Task { await model.refreshViewSettings() }
+    try await waitUntil("the read is out") { transport.heldCount(.viewSettingsGet) == 1 }
+    transport.script(.viewSettingsSet, [try Self.reply(Self.stored)])
+    await model.setArrangement(.byEnvironment)
+    #expect(model.viewSettings == ViewSettings(arrangement: .byEnvironment))
+    transport.release(.viewSettingsGet, with: try Self.reply(ViewSettings()))
+    await read.value
+    #expect(model.viewSettings == Self.stored)
+    await model.disconnect()
+  }
+
+  /// A read that answers while a set is still out may carry the row from before the set. It is not
+  /// shown; the read is made again once the set has settled.
+  @Test func aReadThatAnswersDuringASetWaitsForIt() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Self.connected(transport)
+    transport.script(.viewSettingsSet, [.hold])
+    let set = Task { await model.setQuietThreads(.collapsed) }
+    try await waitUntil("the set is out") { transport.heldCount(.viewSettingsSet) == 1 }
+    // The store's row from before the set, then the row after it.
+    transport.script(
+      .viewSettingsGet,
+      [
+        try Self.reply(Self.stored),
+        try Self.reply(ViewSettings(quietThreads: .collapsed, showArchived: true)),
+      ])
+    await model.refreshViewSettings()
+    #expect(model.viewSettings == ViewSettings(quietThreads: .collapsed))
+    transport.release(.viewSettingsSet, with: try Self.reply(ViewSettings(quietThreads: .collapsed)))
+    await set.value
+    #expect(model.viewSettings == ViewSettings(quietThreads: .collapsed, showArchived: true))
+    await model.disconnect()
+  }
+
+  /// A set still out when its account ends neither holds back the next account's read nor undoes it
+  /// when it finally answers.
+  @Test func aSetLeftOutByAnEndedAccountDoesNotHoldTheNextRead() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Self.connected(transport)
+    transport.script(.viewSettingsSet, [.hold])
+    let set = Task { await model.setQuietThreads(.collapsed) }
+    try await waitUntil("the set is out") { transport.heldCount(.viewSettingsSet) == 1 }
+    model.forgetWorkspace()
+    transport.script(.viewSettingsGet, [try Self.reply(Self.stored)])
+    await model.refreshViewSettings()
+    #expect(model.viewSettings == Self.stored)
+    transport.release(.viewSettingsSet, with: try Self.reply(ViewSettings(quietThreads: .collapsed)))
+    await set.value
+    #expect(model.viewSettings == Self.stored)
     await model.disconnect()
   }
 
