@@ -345,7 +345,8 @@ public struct MeResponse: Codable, Sendable, Equatable {
 }
 
 /// A change the hub refused: final, not recorded in the feed, and covered by `acceptedThrough`. `code`
-/// is `column_not_writable`, `payload_too_large`, or `invalid_clock`.
+/// is `column_not_writable`, `payload_too_large`, `invalid_clock`, or `invalid_row_id` (a `viewSettings`
+/// change whose row id is not `view`).
 public struct RejectedChange: Codable, Sendable, Equatable {
   public var deviceSeq: Int
   public var code: String

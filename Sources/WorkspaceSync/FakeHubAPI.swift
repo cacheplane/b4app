@@ -584,6 +584,8 @@ public actor FakeHubAPI: HubAPI {
       let phoneInsert = change.op == "insert" && ["drafts", "viewSettings"].contains(change.table)
       if !phoneUpdate && !phoneInsert { return "column_not_writable" }
     }
+    // The settings row is one per user and always `view` on the wire; the hub keeps it under the user.
+    if change.table == "viewSettings" && change.rowId != "view" { return "invalid_row_id" }
     if let value = change.value,
       let encoded = try? JSONCoding.encoder.encode(value), encoded.count > Self.maxValueBytes
     {

@@ -5,7 +5,8 @@
 //! land.
 
 use b4hub_core::change::{
-    table_spec, ChangeOp, Snapshot, SnapshotClock, StoredChange, SYNCED_TABLES,
+    stored_row_id, table_spec, wire_row_id, ChangeOp, Snapshot, SnapshotClock, StoredChange,
+    SYNCED_TABLES, USER_SETTINGS_TABLE, USER_SETTINGS_WIRE_ID,
 };
 use b4hub_core::protocol::{ClientProtocol, CONNECTION_COLUMNS};
 use serde_json::Value;
@@ -29,6 +30,11 @@ const HUB_COLUMNS: &str = "{org_id,user_id,device_id,owner_device_id,deleted_at}
 /// (the zero clock of its owner if none). `clocks` lists every column clock of those rows. `next`
 /// is the highest `hubSeq` the org's feed had at that instant, or its horizon if pruning has
 /// emptied the feed, so a pull from `next` is neither stale nor missing a change.
+///
+/// The user's settings row, stored as `view:<userId>`, is served under its wire id `view` (the
+/// row id, the value's `id`, and its clocks' row ids). Any other settings row of the user, and
+/// its clocks, is left out: a device could not write it, and during a rolling deploy an old hub
+/// task can still store one named `view`.
 pub async fn take(db: &Db, auth: &AuthedDevice) -> Result<Snapshot> {
     take_for_protocol(db, auth, ClientProtocol::LEGACY).await
 }
@@ -41,6 +47,10 @@ pub async fn take_for_protocol(
     let (mut tx, floor) = db.protocol_read_tx(auth.org_id, client).await?;
     let mut changes = Vec::new();
     let mut clocks = Vec::new();
+
+    let own_settings = stored_row_id(USER_SETTINGS_TABLE, USER_SETTINGS_WIRE_ID, auth.user_id);
+    // True for a row the snapshot serves: every row but a settings row other than the user's.
+    let served = |table: &str, row_id: &str| table != USER_SETTINGS_TABLE || row_id == own_settings;
 
     for name in SYNCED_TABLES {
         let spec = table_spec(name).expect("a synced table has a spec");
@@ -61,6 +71,15 @@ pub async fn take_for_protocol(
         .fetch_all(&mut *tx)
         .await?;
         for (row_id, owner, mut value, clock) in rows {
+            if !served(spec.name, &row_id) {
+                continue;
+            }
+            let row_id = wire_row_id(spec.name, &row_id, auth.user_id).to_string();
+            if spec.name == USER_SETTINGS_TABLE {
+                if let Value::Object(columns) = &mut value {
+                    columns.insert(spec.key.to_string(), Value::String(row_id.clone()));
+                }
+            }
             if spec.name == "connections" && floor.minimum() < 2 {
                 if let Some(object) = value.as_object_mut() {
                     for column in CONNECTION_COLUMNS {
@@ -97,9 +116,10 @@ pub async fn take_for_protocol(
         clocks.extend(
             table_clocks
                 .into_iter()
+                .filter(|(row_id, _, _)| served(spec.name, row_id))
                 .map(|(row_id, column, hlc)| SnapshotClock {
                     table: spec.name.to_string(),
-                    row_id,
+                    row_id: wire_row_id(spec.name, &row_id, auth.user_id).to_string(),
                     column,
                     hlc,
                 }),

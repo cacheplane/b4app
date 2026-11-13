@@ -3,6 +3,7 @@
 //! `ChangeRecord` minus its local-only fields (`seq` is `deviceSeq`; the device id is not sent,
 //! the hub attributes every change to the authenticated device; `synced` never leaves the Mac).
 
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 use serde::{Deserialize, Serialize};
@@ -183,8 +184,9 @@ const TABLES: [TableSpec; 10] = [
         columns: &["connectionId", "reading", "tokens", "updatedAt"],
         parent: Some(("connectionId", "connections")),
     },
-    // How the account's thread list is arranged: one row, whose id is always `view`, that any
-    // device may insert and write (the values are listed in `Hub/API.md`; the hub never checks them).
+    // How a user's thread list is arranged: one row per user, stored as `view:<userId>` and
+    // `view` on the wire (see [`stored_row_id`]), that any of the user's devices may insert and
+    // write (the values are listed in `Hub/API.md`; the hub never checks them).
     TableSpec {
         name: "viewSettings",
         key: "id",
@@ -217,6 +219,43 @@ pub fn is_scrubbed(table: &str, column: &str) -> bool {
 /// which never syncs).
 pub fn table_spec(name: &str) -> Option<&'static TableSpec> {
     TABLES.iter().find(|spec| spec.name == name)
+}
+
+/// The table that holds one row of settings per user.
+pub const USER_SETTINGS_TABLE: &str = "viewSettings";
+
+/// The only row id a device sends or receives for [`USER_SETTINGS_TABLE`].
+pub const USER_SETTINGS_WIRE_ID: &str = "view";
+
+/// False only for a [`USER_SETTINGS_TABLE`] change whose row id is not
+/// [`USER_SETTINGS_WIRE_ID`]: a device reaches only its own user's settings row.
+pub fn accepts_row_id(table: &str, row_id: &str) -> bool {
+    table != USER_SETTINGS_TABLE || row_id == USER_SETTINGS_WIRE_ID
+}
+
+/// The id the hub stores a row under: `view:<user_id>` for the user's settings row, and
+/// `row_id` unchanged for anything else.
+pub fn stored_row_id<'a>(table: &str, row_id: &'a str, user_id: Uuid) -> Cow<'a, str> {
+    if table == USER_SETTINGS_TABLE && row_id == USER_SETTINGS_WIRE_ID {
+        Cow::Owned(format!("{USER_SETTINGS_WIRE_ID}:{user_id}"))
+    } else {
+        Cow::Borrowed(row_id)
+    }
+}
+
+/// The id a device sees for a stored row: `view` for exactly this user's settings row
+/// (`view:<user_id>`), and `stored` unchanged for anything else.
+pub fn wire_row_id<'a>(table: &str, stored: &'a str, user_id: Uuid) -> &'a str {
+    if table == USER_SETTINGS_TABLE
+        && stored
+            .strip_prefix(USER_SETTINGS_WIRE_ID)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .is_some_and(|rest| rest == user_id.to_string())
+    {
+        USER_SETTINGS_WIRE_ID
+    } else {
+        stored
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -459,7 +498,7 @@ mod tests {
             .columns
             .contains(&"environmentId"));
         assert!(!is_scrubbed("connections", "environmentId"));
-        // The account's view settings: the `view` row inserted, then one column changed.
+        // The user's settings: the `view` row inserted, then one column changed.
         let view: Vec<(&str, ChangeOp, Option<&str>)> = changes
             .iter()
             .filter(|c| c.table == "viewSettings")
@@ -533,6 +572,33 @@ mod tests {
             ]
         );
         assert_eq!(SYNCED_TABLES.last(), Some(&"viewSettings"));
+    }
+
+    #[test]
+    fn the_users_settings_row_is_stored_under_the_user() {
+        let user = Uuid::parse_str("6f1c2a4e-0b7d-4c1e-9a55-0c9d3e2b1a00").unwrap();
+        let other = Uuid::parse_str("11111111-2222-4333-8444-555555555555").unwrap();
+        let stored = stored_row_id("viewSettings", "view", user);
+        assert_eq!(stored, "view:6f1c2a4e-0b7d-4c1e-9a55-0c9d3e2b1a00");
+        assert_eq!(wire_row_id("viewSettings", &stored, user), "view");
+        // Another user's stored id is never handed out as `view`.
+        assert_eq!(wire_row_id("viewSettings", &stored, other), stored);
+        // Other tables, and other ids, pass through.
+        assert_eq!(stored_row_id("threads", "view", user), "view");
+        assert_eq!(wire_row_id("threads", "view:x", user), "view:x");
+    }
+
+    #[test]
+    fn only_view_is_accepted_as_a_settings_row_id() {
+        assert!(accepts_row_id("viewSettings", "view"));
+        assert!(!accepts_row_id("viewSettings", "other"));
+        assert!(!accepts_row_id(
+            "viewSettings",
+            "view:6f1c2a4e-0b7d-4c1e-9a55-0c9d3e2b1a00"
+        ));
+        assert!(!accepts_row_id("viewSettings", ""));
+        assert!(accepts_row_id("threads", "anything"));
+        assert!(accepts_row_id("drafts", "view"));
     }
 
     #[test]

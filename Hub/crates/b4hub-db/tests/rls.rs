@@ -350,14 +350,14 @@ async fn push_tables_isolate_by_org(pool: PgPool) {
     }
 }
 
-/// The `view` row of `who`'s org, read under its tenant context.
+/// The settings row of `who`'s org, read under its tenant context.
 async fn view_row(
     app: &b4hub_db::Db,
     who: &b4hub_db::devices::AuthedDevice,
 ) -> Option<serde_json::Value> {
     let mut tx = app.tenant_tx(who.org_id).await.unwrap();
     let found =
-        sqlx::query_scalar("SELECT to_jsonb(v) FROM \"viewSettings\" v WHERE \"id\" = 'view'")
+        sqlx::query_scalar("SELECT to_jsonb(v) FROM \"viewSettings\" v WHERE \"id\" LIKE 'view:%'")
             .fetch_optional(&mut *tx)
             .await
             .unwrap();

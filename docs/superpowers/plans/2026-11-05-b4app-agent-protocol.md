@@ -40,11 +40,15 @@ D-208 main `7e11980` publishes local `0013_view_settings.sql`, Hub
 `0019_view_settings.sql` and phone mirror version 8. Preserve those resources
 and the list arrangements/unknown stored values. The unpublished protocol
 allocations are now `Sources/WorkspaceStorage/SQL/0014_agent_protocol.sql`,
-`Hub/crates/b4hub-db/migrations/0020_client_protocol.sql` and future phone
+`Hub/crates/b4hub-db/migrations/0021_client_protocol.sql` and future phone
 version 9. The protocol DDL bytes are unchanged by this ordinal move; the
 reviewed generation/auth refinements remain part of that unpublished DDL.
 Original AP13 source and native receipts remain historical evidence, with no
 qualification transferred. Do not edit or reuse a published migration number.
+Main `4228e3c` publishes Hub `0020_user_settings_rows.sql` for per-user settings
+(D-213); preserve it unchanged. The unpublished protocol floor therefore moves
+to Hub21 with identical SQL bytes. Prior floor20 receipts remain historical,
+without new execution or native qualification from this integration.
 
 Current relational APIs use `WorkEnvironment`, `EnvironmentFolder`,
 `EnvironmentService` and `environmentId`, following D-202. Preserve genuine
@@ -199,7 +203,7 @@ activation held until the coordinated acceptance matrix passes.
 
 ### A4: Gate hub/mirror activation without consuming deferred changes
 
-**Files:** Create ProtocolActivation.swift and hub `Hub/crates/b4hub-db/migrations/0020_client_protocol.sql`; modify `Hub/crates/b4hub-core/src/change.rs`, `writable.rs`, `Hub/crates/b4hub-db/src/{settings,changes,snapshot}.rs`, `Hub/crates/b4hub/src/{routes,serve}.rs`, `routes/{changes,snapshot}.rs`, `relay/link.rs`, `Sources/Coordinator/HubSync/{SyncFilter,HubSync,HubPull,HubLink}.swift`, `Sources/WorkspaceMirror/{MirrorSchema,MirrorMigrations,MirrorSync,MirrorTransport}.swift`, `Sources/WorkspaceSync/HubLinkConnection.swift`, `Sources/WorkspaceSync/HTTPHubAPI.swift`, `HubAPI.swift`, `Wire.swift` and `Tests/Fixtures/sync/changes.json`/relay fixtures.
+**Files:** Create ProtocolActivation.swift and hub `Hub/crates/b4hub-db/migrations/0021_client_protocol.sql`; modify `Hub/crates/b4hub-core/src/change.rs`, `writable.rs`, `Hub/crates/b4hub-db/src/{settings,changes,snapshot}.rs`, `Hub/crates/b4hub/src/{routes,serve}.rs`, `routes/{changes,snapshot}.rs`, `relay/link.rs`, `Sources/Coordinator/HubSync/{SyncFilter,HubSync,HubPull,HubLink}.swift`, `Sources/WorkspaceMirror/{MirrorSchema,MirrorMigrations,MirrorSync,MirrorTransport}.swift`, `Sources/WorkspaceSync/HubLinkConnection.swift`, `Sources/WorkspaceSync/HTTPHubAPI.swift`, `HubAPI.swift`, `Wire.swift` and `Tests/Fixtures/sync/changes.json`/relay fixtures.
 
 - [ ] Test joined-v1 creation/admission refusal, immediate local legacy retirement without mirrored writes, unrelated Codex/Claude sync through restart, v2 activation then one normal retirement transaction, never-joined local data refusing v1 join and already-open pull/link fencing.
 - [ ] Run `swift test --filter ProtocolActivationTests` after creating `Tests/CoordinatorTests/ProtocolActivationTests.swift`; run Rust fixtures/private-DB suite with the command above. Expect missing HTTP protocol gates and unknown-kind fixture failures.

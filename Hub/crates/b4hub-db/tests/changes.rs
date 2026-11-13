@@ -128,9 +128,15 @@ async fn push_materialises_and_is_idempotent(pool: PgPool) {
     assert!(draft["deleted_at"].is_string(), "{draft}");
     assert!(thread["deleted_at"].is_null());
     // The view settings row, inserted then given a new quietThreads.
-    let view = row(&app, &device, "viewSettings", "id", "view")
-        .await
-        .expect("the view row is mirrored");
+    let view = row(
+        &app,
+        &device,
+        "viewSettings",
+        "id",
+        &format!("view:{}", device.user_id),
+    )
+    .await
+    .expect("the view row is mirrored");
     assert_eq!(view["arrangement"], "needsYouFirst");
     assert_eq!(view["quietThreads"], "collapsed");
     assert_eq!(view["showArchived"], false);
@@ -2612,13 +2618,19 @@ async fn a_deleted_row_stays_with_its_user_and_its_org(pool: PgPool) {
         .is_string());
 }
 
-// ---- View settings: one row per account, id `view`, any device may write it ----
+// ---- View settings: one row per user, `view` on the wire, any of the user's devices may write it ----
 
-/// The view settings row as `who`'s org holds it.
+/// `who`'s user's view settings row as the hub stores it.
 async fn view(app: &Db, who: &AuthedDevice) -> Value {
-    row(app, who, "viewSettings", "id", "view")
-        .await
-        .expect("the view row is mirrored")
+    row(
+        app,
+        who,
+        "viewSettings",
+        "id",
+        &format!("view:{}", who.user_id),
+    )
+    .await
+    .expect("the view row is mirrored")
 }
 
 #[sqlx::test(migrations = false)]
@@ -3087,14 +3099,14 @@ async fn a_phone_update_of_the_view_id_is_recorded_and_leaves_the_row_alone(pool
     assert_eq!(count(&app, &mac, "changes").await, before + 1);
     assert_eq!(count(&app, &mac, "viewSettings").await, 1);
     let stored = view(&app, &mac).await;
-    assert_eq!(stored["id"], "view");
+    assert_eq!(stored["id"], format!("view:{}", mac.user_id));
     assert_eq!(stored["arrangement"], "needsYouFirst");
 }
 
-/// Decision 4's known limit: rows are keyed per org, and an upsert applies only for the row's own
-/// user, so a second user of the org cannot store a `view` row of their own.
+/// Settings are per user: a second user of the org stores a row of their own, and neither sees
+/// the other's.
 #[sqlx::test(migrations = false)]
-async fn a_second_user_of_the_org_shares_the_first_users_view_key(pool: PgPool) {
+async fn each_user_of_the_org_has_their_own_settings_row(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
     let alice = common::enrolled(&admin, &app, "alice").await;
     let bob = common::enrolled(&admin, &app, "bob").await;
@@ -3110,12 +3122,150 @@ async fn a_second_user_of_the_org_shares_the_first_users_view_key(pool: PgPool) 
     push_through(&app, &alice, &[view_insert("needsYouFirst")])
         .await
         .unwrap();
-    let outcome = changes::push(&app, &bob, &[view_insert("byEnvironment")])
+    push_through(&app, &bob, &[view_insert("byEnvironment")])
         .await
         .unwrap();
-    assert!(outcome.rejected.is_empty(), "recorded, then skipped");
-    assert_eq!(count(&app, &alice, "viewSettings").await, 1);
-    let stored = view(&app, &alice).await;
-    assert_eq!(stored["user_id"], alice.user_id.to_string());
-    assert_eq!(stored["arrangement"], "needsYouFirst");
+    assert_eq!(count(&app, &alice, "viewSettings").await, 2);
+    assert_eq!(view(&app, &alice).await["arrangement"], "needsYouFirst");
+    assert_eq!(view(&app, &bob).await["arrangement"], "byEnvironment");
+    assert_eq!(view(&app, &bob).await["user_id"], bob.user_id.to_string());
+
+    // Bob changes his; Alice's does not move, and her clock is not his.
+    push_through(
+        &app,
+        &bob,
+        &[update(
+            2,
+            "viewSettings",
+            "view",
+            "quietThreads",
+            Some(json!("hidden")),
+        )],
+    )
+    .await
+    .unwrap();
+    assert_eq!(view(&app, &bob).await["quietThreads"], "hidden");
+    assert!(view(&app, &alice).await["quietThreads"].is_null());
+
+    // A row named `view` (as an old hub task could still store during a rolling deploy) and its
+    // clock never reach a snapshot: a device could not write it.
+    let alices_clocks = b4hub_db::snapshot::take(&app, &alice)
+        .await
+        .unwrap()
+        .clocks
+        .iter()
+        .filter(|c| c.table == "viewSettings")
+        .count();
+    sqlx::query(
+        "INSERT INTO \"viewSettings\" (org_id, user_id, device_id, owner_device_id, \"id\", arrangement) \
+         VALUES ($1, $2, $3, $3, 'view', 'stray')",
+    )
+    .bind(alice.org_id)
+    .bind(alice.user_id)
+    .bind(alice.device_id)
+    .execute(&admin.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO column_clocks (org_id, \"table\", row_id, \"column\", hlc) \
+         VALUES ($1, 'viewSettings', 'view', 'arrangement', $2)",
+    )
+    .bind(alice.org_id)
+    .bind(format!("999999999999-0000-{}", alice.device_id))
+    .execute(&admin.pool)
+    .await
+    .unwrap();
+
+    for (who, arrangement) in [(&alice, "needsYouFirst"), (&bob, "byEnvironment")] {
+        let page = changes::pull(&app, who, 0, 100).await.unwrap();
+        let mine: Vec<_> = page
+            .changes
+            .iter()
+            .filter(|c| c.table == "viewSettings")
+            .collect();
+        assert!(mine.iter().all(|c| c.row_id == "view"));
+        // Alice pushed one change and Bob two; neither feed holds the other's.
+        assert_eq!(mine.len(), if who.user_id == bob.user_id { 2 } else { 1 });
+        assert_eq!(mine[0].value.as_ref().unwrap()["arrangement"], arrangement);
+        let snapshot = b4hub_db::snapshot::take(&app, who).await.unwrap();
+        let rows: Vec<_> = snapshot
+            .changes
+            .iter()
+            .filter(|c| c.table == "viewSettings")
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].row_id, "view");
+        assert_eq!(rows[0].value.as_ref().unwrap()["id"], "view");
+        assert_eq!(rows[0].value.as_ref().unwrap()["arrangement"], arrangement);
+        let clocks: Vec<_> = snapshot
+            .clocks
+            .iter()
+            .filter(|c| c.table == "viewSettings")
+            .collect();
+        assert!(!clocks.is_empty());
+        assert!(clocks.iter().all(|c| c.row_id == "view"));
+        if who.user_id == alice.user_id {
+            assert_eq!(clocks.len(), alices_clocks);
+        }
+    }
+}
+
+/// A device reaches only its own settings row: any row id but `view` is refused, recorded
+/// nowhere, and stores nothing.
+#[sqlx::test(migrations = false)]
+async fn a_settings_change_with_another_row_id_is_refused(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    let before = count(&app, &mac, "changes").await;
+    let own = format!("view:{}", mac.user_id);
+    for (who, id) in [
+        (&mac, "other"),
+        (&mac, own.as_str()),
+        (&phone, "view:someone"),
+        (&mac, ""),
+    ] {
+        let outcome = changes::push(
+            &app,
+            who,
+            &[
+                insert(
+                    1,
+                    "viewSettings",
+                    id,
+                    json!({"id": id, "arrangement": "byEnvironment"}),
+                ),
+                update(
+                    2,
+                    "viewSettings",
+                    id,
+                    "arrangement",
+                    Some(json!("byEnvironment")),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.accepted_through, 2);
+        assert_eq!(
+            outcome.rejected,
+            vec![
+                Rejected {
+                    device_seq: 1,
+                    code: changes::INVALID_ROW_ID
+                },
+                Rejected {
+                    device_seq: 2,
+                    code: changes::INVALID_ROW_ID
+                },
+            ]
+        );
+    }
+    assert_eq!(count(&app, &mac, "changes").await, before);
+    assert_eq!(count(&app, &mac, "viewSettings").await, 0);
+    // A Mac's delete of a foreign id is refused the same way.
+    let outcome = changes::push(&app, &mac, &[delete(3, "viewSettings", "other")])
+        .await
+        .unwrap();
+    assert_eq!(outcome.rejected[0].code, changes::INVALID_ROW_ID);
+    assert_eq!(count(&app, &mac, "changes").await, before);
 }

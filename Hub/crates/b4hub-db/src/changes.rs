@@ -11,18 +11,21 @@
 //! is more than five minutes ahead of the hub's wall clock); a column that merges
 //! last-writer-wins (`threads.title`, ...) takes a change only when its clock is greater than the
 //! clock of the change that last set it, recorded in `column_clocks`. A change that loses is
-//! still recorded: the log is the history. Two kinds of change are refused outright, reported
-//! per change and not recorded, so no other device ever sees them: one a phone may not make
-//! (anything but its writable columns and inserts of drafts and view settings) and a value over
-//! the size limit.
+//! still recorded: the log is the history. Some changes are refused outright, reported per
+//! change and not recorded, so no other device ever sees them: one a phone may not make
+//! (anything but its writable columns and inserts of drafts and view settings), a settings row
+//! id other than `view`, and a value over the size limit.
 //!
 //! Every statement runs in a tenant transaction. Mirrored rows are also keyed to the pushing
 //! user: ids are client-chosen and unique only per org, so a second user of the org pushing the
 //! same row id can neither overwrite, update, delete, nor adopt as a parent the first user's row.
+//! The settings row is the exception: each user's `view` is a row of their own, stored as
+//! `view:<userId>` (the feed keeps `view`, as pushed).
 
 pub use b4hub_core::change::MAX_PAGE_BYTES;
 use b4hub_core::change::{
-    is_scrubbed, table_spec, Change, ChangeOp, TableSpec, MAX_PAYLOAD_BYTES, MAX_PULL_LIMIT,
+    accepts_row_id, is_scrubbed, stored_row_id, table_spec, Change, ChangeOp, TableSpec,
+    MAX_PAYLOAD_BYTES, MAX_PULL_LIMIT,
 };
 pub use b4hub_core::change::{Page, StoredChange};
 use b4hub_core::hlc::Hlc;
@@ -48,6 +51,10 @@ enum Applied {
 
 /// A phone changed something only the Mac may change.
 pub const COLUMN_NOT_WRITABLE: &str = "column_not_writable";
+
+/// A settings change names a row id other than `view`: a device reaches only its own user's
+/// settings row.
+pub const INVALID_ROW_ID: &str = "invalid_row_id";
 
 /// A change carries an `hlc` that is not in the clock form. A change with none is fine: it gets
 /// one derived from its `wall`.
@@ -85,7 +92,7 @@ pub struct PushOutcome {
     pub refreshes: Vec<Refresh>,
 }
 
-/// The tables a phone may insert rows into: a draft, and the account's view settings row.
+/// The tables a phone may insert rows into: a draft, and the user's view settings row.
 const PHONE_INSERTABLE: &[&str] = &["drafts", "viewSettings"];
 
 /// Why `auth` may not make `change`, if it may not.
@@ -100,6 +107,9 @@ fn refusal(auth: &AuthedDevice, change: &Change) -> Option<&'static str> {
     };
     if auth.platform != Platform::Macos && !phone_allowed {
         return Some(COLUMN_NOT_WRITABLE);
+    }
+    if !accepts_row_id(&change.table, &change.row_id) {
+        return Some(INVALID_ROW_ID);
     }
     if change.op == ChangeOp::Update
         && change
@@ -797,6 +807,7 @@ async fn insert(
     if !parent_exists(conn, auth, spec, row.get(parent_column(spec))).await? {
         return Ok(Applied::Skipped);
     }
+    let row_id = stored_row_id(spec.name, &change.row_id, auth.user_id);
     let table = quote(spec.name);
     let key = quote(spec.key);
     // An insert of a key the user deleted revives the row. It starts over as a new row did when
@@ -808,7 +819,7 @@ async fn insert(
     ))
     .bind(auth.org_id)
     .bind(auth.user_id)
-    .bind(&change.row_id)
+    .bind(row_id.as_ref())
     .fetch_optional(&mut *conn)
     .await?
     .unwrap_or(false);
@@ -828,8 +839,7 @@ async fn insert(
                 .is_some_and(|value| !(value.is_null() && is_never_cleared(spec.name, column)));
         if carried
             && (!is_clocked(spec.name, column)
-                || claim_clock(conn, auth, spec.name, &change.row_id, column, hlc, reviving)
-                    .await?)
+                || claim_clock(conn, auth, spec.name, &row_id, column, hlc, reviving).await?)
         {
             provided.push(column);
         }
@@ -862,7 +872,7 @@ async fn insert(
         .bind(auth.org_id)
         .bind(auth.user_id)
         .bind(auth.device_id)
-        .bind(&change.row_id)
+        .bind(row_id.as_ref())
         .bind(change.value.as_ref())
         .execute(&mut *conn)
         .await?
@@ -894,8 +904,9 @@ async fn update(
     {
         return Ok(Applied::Skipped);
     }
+    let row_id = stored_row_id(spec.name, &change.row_id, auth.user_id);
     if is_clocked(spec.name, column)
-        && !claim_clock(conn, auth, spec.name, &change.row_id, column, hlc, false).await?
+        && !claim_clock(conn, auth, spec.name, &row_id, column, hlc, false).await?
     {
         return Ok(Applied::Lost);
     }
@@ -922,7 +933,7 @@ async fn update(
         .bind(value)
         .bind(auth.org_id)
         .bind(auth.user_id)
-        .bind(&change.row_id)
+        .bind(row_id.as_ref())
         .execute(conn)
         .await?
         .rows_affected();
@@ -942,6 +953,7 @@ async fn delete(
     spec: &TableSpec,
     change: &Change,
 ) -> Result<Applied> {
+    let row_id = stored_row_id(spec.name, &change.row_id, auth.user_id);
     let sql = format!(
         "UPDATE {table} SET deleted_at = now(), device_id = $4 \
          WHERE org_id = $1 AND user_id = $2 AND {key} = $3 AND deleted_at IS NULL",
@@ -951,7 +963,7 @@ async fn delete(
     let deleted = sqlx::query(&sql)
         .bind(auth.org_id)
         .bind(auth.user_id)
-        .bind(&change.row_id)
+        .bind(row_id.as_ref())
         .bind(auth.device_id)
         .execute(conn)
         .await?
