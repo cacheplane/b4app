@@ -130,6 +130,12 @@
       var moving = false
     }
     private var press: Press?
+    #if DEBUG
+      /// What the last press and drag did, for a screen test to read when a drag goes wrong on a
+      /// machine nobody can look at (`WindowDragArea.Handle`'s accessibility value).
+      private(set) var trace = "no press yet"
+      private var dragEvents = 0
+    #endif
 
     /// The owner is moving the panel now: its place is theirs until the pointer comes up.
     var isBeingDragged: Bool { press?.moving == true }
@@ -138,7 +144,17 @@
       guard isDraggable else { return super.sendEvent(event) }
       switch event.type {
       case .leftMouseDown:
-        guard let onField = dragStart(event) else { break }
+        let start = dragStart(event)
+        #if DEBUG
+          let hit = contentView?.hitTest(event.locationInWindow)
+          trace =
+            "down on \(hit.map { String(describing: type(of: $0)) } ?? "nothing")"
+            + " text \(text(at: event).map { String(describing: type(of: $0)) } ?? "none")"
+            + " start \(start.map { String($0) } ?? "nil") clicks \(event.clickCount)"
+            + " at \(Int(event.locationInWindow.x)),\(Int(event.locationInWindow.y)) pointer \(pointer(event))"
+          dragEvents = 0
+        #endif
+        guard let onField = start else { break }
         if !onField, event.clickCount == 2 {
           resetRequested()
           return
@@ -150,6 +166,10 @@
       case .leftMouseDragged:
         guard var current = press else { break }
         let pointer = pointer(event)
+        #if DEBUG
+          dragEvents += 1
+          trace += dragEvents <= 3 ? " | drag \(pointer)" : ""
+        #endif
         let travel = CGSize(width: pointer.x - current.pointer.x, height: pointer.y - current.pointer.y)
         if !current.moving, hypot(travel.width, travel.height) > FloatingPanelGeometry.dragThreshold {
           current.moving = true
@@ -165,6 +185,9 @@
       case .leftMouseUp:
         guard let current = press else { break }
         press = nil
+        #if DEBUG
+          trace += " | up after \(dragEvents) drags moving \(current.moving) frame \(frame)"
+        #endif
         if current.moving {
           dragEnded()
         } else if current.onField {
@@ -563,6 +586,10 @@
       override func accessibilityRole() -> NSAccessibility.Role? { .handle }
       override func accessibilityLabel() -> String? { "Move" }
       override func isAccessibilityElement() -> Bool { true }
+      #if DEBUG
+        override func accessibilityIdentifier() -> String { "palette-drag-area" }
+        override func accessibilityValue() -> Any? { (window as? PalettePanel)?.trace }
+      #endif
     }
   }
 #endif

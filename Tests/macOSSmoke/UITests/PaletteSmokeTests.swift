@@ -265,8 +265,28 @@ final class PaletteSmokeTests: XCTestCase {
     // Drag by the header, from the empty part of the field: it moves, and the field keeps the keyboard.
     let grip = field.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.5))
     grip.press(forDuration: 0.15, thenDragTo: grip.withOffset(CGVector(dx: 180, dy: 130)))
-    try await wait("the palette to move (1), now \(palette.frame) home \(home)") {
-      abs(palette.frame.minX - home.minX - 180) < 6
+    try await Task.sleep(for: .milliseconds(1500))
+    // What the panel made of that press, kept to say why if the drag did nothing.
+    func trace() -> String {
+      let areas = app.descendants(matching: .any).matching(identifier: "palette-drag-area")
+      return "field \(field.frame) palette \(palette.frame) home \(home) trace: "
+        + (0..<areas.count).map { String(describing: areas.element(boundBy: $0).value) }.joined(
+          separator: " // ")
+    }
+    var fieldDrag: String?
+    if abs(palette.frame.minX - home.minX - 180) >= 6 {
+      fieldDrag = trace()
+      // The same move by the footer, so the rest of this can still say what works.
+      let foot = palette.coordinate(withNormalizedOffset: .zero).withOffset(
+        CGVector(dx: 300, dy: palette.frame.height - 20))
+      foot.press(
+        forDuration: 0.15,
+        thenDragTo: foot.withOffset(
+          CGVector(dx: home.minX + 180 - palette.frame.minX, dy: home.minY + 130 - palette.frame.minY)))
+      try await Task.sleep(for: .milliseconds(1500))
+      XCTAssertEqual(
+        palette.frame.minX, home.minX + 180, accuracy: 6,
+        "the footer did not drag it either: \(trace()) AFTER the field drag: \(fieldDrag ?? "")")
     }
     XCTAssertEqual(palette.frame.minY, home.minY + 130, accuracy: 6)
     app.typeText("arch")
@@ -371,6 +391,7 @@ final class PaletteSmokeTests: XCTestCase {
       abs(palette.frame.minX - home.minX) < 1.5 && abs(palette.frame.minY - home.minY) < 1.5
     }
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+    if let fieldDrag { XCTFail("the field's empty part did not drag the palette: \(fieldDrag)") }
   }
 
   /// The palette rests in the title bar as a button in the middle of the window. A click lifts the
