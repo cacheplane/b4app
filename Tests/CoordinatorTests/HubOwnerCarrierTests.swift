@@ -770,6 +770,7 @@ private enum OwnerNativeDiagnostics {
     var baseWaiters = 0
     var earlyMatches = 0
     var referenceMatches = 0
+    var classifierMatches = 0
     var lateMatches = 0
     var maxQueryBytes = 0
   }
@@ -787,11 +788,12 @@ private enum OwnerNativeDiagnostics {
     let base = OwnerDiagnosticBounds.count(metadata.baseWaiters)
     let early = OwnerDiagnosticBounds.count(metadata.earlyMatches)
     let reference = OwnerDiagnosticBounds.count(metadata.referenceMatches)
+    let classifier = OwnerDiagnosticBounds.count(metadata.classifierMatches)
     let late = OwnerDiagnosticBounds.count(metadata.lateMatches)
     let queryBytes = OwnerDiagnosticBounds.bytes(metadata.maxQueryBytes)
     let cancelled = Task.isCancelled
     print(
-      "A5_NATIVE stage=\(stage.rawValue) retire=\(retire) exit=\(exit.rawValue) samples=\(sampleCount) elapsedMillis=\(elapsed) started=\(startCount) returned=\(returnCount) issued=\(issueCount) result=\(result.rawValue) readOK=\(metadata.readOK) capacityKnown=\(metadata.capacityKnown) capacityBytes=\(capacity) baseWaiters=\(base) earlyMatches=\(early) referenceMatches=\(reference) lateMatches=\(late) maxQueryBytes=\(queryBytes) cancelled=\(cancelled)"
+      "A5_NATIVE stage=\(stage.rawValue) retire=\(retire) exit=\(exit.rawValue) samples=\(sampleCount) elapsedMillis=\(elapsed) started=\(startCount) returned=\(returnCount) issued=\(issueCount) result=\(result.rawValue) readOK=\(metadata.readOK) capacityKnown=\(metadata.capacityKnown) capacityBytes=\(capacity) baseWaiters=\(base) earlyMatches=\(early) referenceMatches=\(reference) classifierMatches=\(classifier) lateMatches=\(late) maxQueryBytes=\(queryBytes) cancelled=\(cancelled)"
     )
   }
 }
@@ -1986,7 +1988,7 @@ private enum OwnerMetadata {
         AND $2::int=ANY(pg_blocking_pids(a.pid))
         AND position('SELECT current_database() AS database' IN a.query)>0
         AND position('AS native_token_ref' IN a.query)>0
-        AND position('AS requires_two' IN a.query)>0
+        AND position('EXISTS(SELECT 1 FROM public.connections c WHERE c.kind=''agentProtocol''' IN a.query)>0
       """, [database, blocker]
     ).rows.count
   }
@@ -2013,6 +2015,7 @@ private enum OwnerMetadata {
         count(*)::text AS base_waiters,
         count(*) FILTER (WHERE position('SELECT current_database() AS database' IN query)>0)::text AS early_matches,
         count(*) FILTER (WHERE position('AS native_token_ref' IN query)>0)::text AS reference_matches,
+        count(*) FILTER (WHERE position('EXISTS(SELECT 1 FROM public.connections c WHERE c.kind=''agentProtocol''' IN query)>0)::text AS classifier_matches,
         count(*) FILTER (WHERE position('AS requires_two' IN query)>0)::text AS late_matches,
         COALESCE(max(octet_length(query)),0)::text AS max_query_bytes
       FROM waiting
@@ -2021,13 +2024,15 @@ private enum OwnerMetadata {
     guard rows.count == 1, let row = rows.first,
       let capacity = row.int("capacity_bytes"), let base = row.int("base_waiters"),
       let early = row.int("early_matches"), let reference = row.int("reference_matches"),
-      let late = row.int("late_matches"), let queryBytes = row.int("max_query_bytes"),
+      let classifier = row.int("classifier_matches"), let late = row.int("late_matches"),
+      let queryBytes = row.int("max_query_bytes"),
       let known = row.text("capacity_known"), known == "true" || known == "false"
     else { throw OwnerFixtureFailure.failed }
     return OwnerNativeDiagnostics.Metadata(
       readOK: true, capacityKnown: known == "true", capacityBytes: OwnerDiagnosticBounds.bytes(capacity),
       baseWaiters: OwnerDiagnosticBounds.count(base), earlyMatches: OwnerDiagnosticBounds.count(early),
       referenceMatches: OwnerDiagnosticBounds.count(reference),
+      classifierMatches: OwnerDiagnosticBounds.count(classifier),
       lateMatches: OwnerDiagnosticBounds.count(late),
       maxQueryBytes: OwnerDiagnosticBounds.bytes(queryBytes))
   }
