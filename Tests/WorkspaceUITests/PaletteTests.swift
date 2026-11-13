@@ -112,6 +112,40 @@ private func connected(
   }
 }
 
+/// D-221: every key a hint shows is an SF Symbol or a printed character, and is said in words.
+struct HintKeyTests {
+  @Test func aLabelsGlyphsBecomeKeysInTheOrderWritten() {
+    #expect(HintKey.keys(in: "\u{21E7}\u{2318}P") == [.shift, .command, .character("P")])
+    #expect(HintKey.keys(in: "\u{2318}K") == [.command, .character("K")])
+    #expect(HintKey.keys(in: "\u{21E7}\u{21E5}") == [.shift, .tab])
+    #expect(HintKey.keys(in: "\u{21A9}\u{238B}\u{2325}\u{2303}") == [.return, .escape, .option, .control])
+    #expect(HintKey.spoken([.shift, .command, .character("p")]) == "Shift-Command-P")
+    #expect(HintKey.spoken([.shift, .tab]) == "Shift-Tab")
+  }
+
+  #if os(macOS)
+    @Test func everyNamedKeyHasASymbolTheSystemCanDraw() {
+      let named: [HintKey] = [.command, .shift, .option, .control, .tab, .return, .escape]
+      for key in named {
+        let symbol = try? #require(key.symbol)
+        #expect(
+          symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) } != nil, "\(key)")
+      }
+      #expect(HintKey.tab.symbol == "arrow.right.to.line.compact")
+      #expect(HintKey.character("K").symbol == nil)
+    }
+  #endif
+
+  /// Every command's key is drawn from its label, so each label must be keys the caps can draw.
+  @MainActor @Test func everyCommandsShortcutIsModifiersThenOnePrintedKey() {
+    for label in CommandCatalog.all.compactMap(\.shortcutLabel) {
+      let keys = HintKey.keys(in: label)
+      #expect(keys.dropLast().allSatisfy { $0.symbol != nil }, "\(label)")
+      #expect(keys.last?.symbol == nil, "\(label)")
+    }
+  }
+}
+
 @Suite @MainActor struct CommandCatalogTests {
   @Test func identifiersShortcutsAndSlashNamesAreUnambiguous() {
     let all = CommandCatalog.all

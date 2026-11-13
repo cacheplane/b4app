@@ -24,6 +24,8 @@ final class SlashController {
     var matchedPrefix = 0
     var title: String
     var trailing: String?
+    /// The command's key in the menu bar's glyphs, drawn as caps when the row has no value to show.
+    var shortcut: String?
     var isCurrent = false
     var isAvailable = true
     var reason: String?
@@ -127,9 +129,10 @@ final class SlashController {
       var item = Item(
         id: id.rawValue, command: "/\(name)",
         title: CommandCatalog.plain(workspace.title(of: id, target: commandTarget)),
-        trailing: workspace.currentValue(of: id, target: commandTarget) ?? Self.shortcut(definition),
+        trailing: workspace.currentValue(of: id, target: commandTarget),
         isAvailable: availability == .available, reason: availability.reason,
         primary: workspace.primaryLabel(of: id, target: commandTarget), action: .command(id))
+      if item.trailing == nil { item.shortcut = Self.shortcut(definition) }
       if name.hasPrefix(token) {
         item.matchedPrefix = token.count + 1
         named.append(item)
@@ -305,8 +308,12 @@ struct SlashCompletions: View {
               }
               .buttonStyle(.plain)
               .accessibilityLabel(
-                [item.command, item.title, item.trailing, item.isCurrent ? "Current" : nil, item.reason]
-                  .compactMap { $0 }.joined(separator: ", ")
+                [
+                  item.command, item.title, item.trailing,
+                  item.shortcut.map { HintKey.spoken(HintKey.keys(in: $0)) },
+                  item.isCurrent ? "Current" : nil, item.reason,
+                ]
+                .compactMap { $0 }.joined(separator: ", ")
               )
               .accessibilityAddTraits(item.id == selected ? [.isButton, .isSelected] : .isButton)
               .accessibilityIdentifier("slash-row")
@@ -331,7 +338,7 @@ struct SlashCompletions: View {
           HStack(spacing: LLA.Space.s) {
             Text(primary).font(LLAFont.caption).foregroundStyle(LLA.Color.ink).lineLimit(1)
             #if os(macOS)
-              Text("\u{21A9}").font(LLAFont.codeSmall).foregroundStyle(LLA.Color.muted)
+              KeyCaps([.return])
             #endif
           }
           .opacity(slash.selected?.isAvailable == true ? 1 : 0.45)
@@ -371,6 +378,9 @@ struct SlashCompletions: View {
       if let trailing = item.trailing {
         Text(trailing).font(item.isRuntime ? LLAFont.codeSmall : LLAFont.caption)
           .foregroundStyle(LLA.Color.muted).lineLimit(1)
+      }
+      if let shortcut = item.shortcut {
+        KeyCaps(label: shortcut)
       }
       if item.isCurrent {
         Text("Current").llaCaption().fixedSize()

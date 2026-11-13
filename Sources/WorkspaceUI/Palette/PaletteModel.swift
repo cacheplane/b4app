@@ -89,6 +89,7 @@ struct PaletteItem: Identifiable, Equatable {
     var parts = [title]
     if let secondary, !secondary.isEmpty { parts.append(secondary) }
     if let trailing, !trailing.isEmpty { parts.append(trailing) }
+    if let shortcut { parts.append(HintKey.spoken(HintKey.keys(in: shortcut))) }
     if isCurrent { parts.append("Current") }
     if let reason = availability.reason { parts.append("Unavailable: \(reason)") }
     return parts.joined(separator: ", ")

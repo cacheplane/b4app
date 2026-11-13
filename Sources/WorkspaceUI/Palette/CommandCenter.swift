@@ -46,8 +46,7 @@
             .foregroundStyle(Color(nsColor: .placeholderTextColor))
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
-          Text(CommandCatalog.definition(.find).shortcutLabel ?? "")
-            .font(LLAFont.codeSmall).foregroundStyle(LLA.Color.muted)
+          KeyCaps(label: CommandCatalog.definition(.find).shortcutLabel ?? "")
         }
         .padding(.horizontal, LLA.Space.l)
         .frame(maxWidth: .infinity)
