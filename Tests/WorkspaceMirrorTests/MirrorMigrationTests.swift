@@ -97,8 +97,8 @@ private func writeVersion1File(_ path: String) throws {
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
-    #expect(MirrorSchema.version == 8)
-    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7, 8])
+    #expect(MirrorSchema.version == 9)
+    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7, 8, 9])
     for table in ["environments", "environmentFolders", "devices", "outbox", "columnClocks"] {
       #expect(try raw.integer("SELECT count(*) FROM sqlite_master WHERE name = '\(table)'") == 1, "\(table)")
     }
@@ -337,7 +337,6 @@ private func writeVersion1File(_ path: String) throws {
       try raw.exec("PRAGMA user_version = 7")
       try raw.exec("COMMIT")
     }
-    #expect(MirrorSchema.version == 8)
 
     let store = try MirrorStore(path: path)
     #expect(try store.thread(id: "thread-1")?.title == "Kept")
@@ -356,7 +355,116 @@ private func writeVersion1File(_ path: String) throws {
 
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 8)
+    #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
+  }
+
+  /// The stored `quietThreads` and `density` a version 8 file holds, and what version 9 leaves.
+  struct SidebarCase: Sendable, CustomTestStringConvertible {
+    let quietThreads: String?
+    let density: String?
+    let expectedQuietThreads: String?
+    let expectedDensity: String?
+    var testDescription: String { "\(quietThreads ?? "null")/\(density ?? "null")" }
+  }
+
+  static let sidebarCases: [SidebarCase] = [
+    .init(quietThreads: "small", density: nil, expectedQuietThreads: "shown", expectedDensity: "normal"),
+    .init(quietThreads: "tiny", density: nil, expectedQuietThreads: "shown", expectedDensity: "dense"),
+    .init(
+      quietThreads: "collapsed", density: nil, expectedQuietThreads: "collapsed", expectedDensity: "normal"),
+    .init(quietThreads: "hidden", density: nil, expectedQuietThreads: "hidden", expectedDensity: "normal"),
+    .init(quietThreads: nil, density: nil, expectedQuietThreads: nil, expectedDensity: nil),
+    // A density already stored is kept; only `quietThreads` is rewritten.
+    .init(quietThreads: "tiny", density: "normal", expectedQuietThreads: "shown", expectedDensity: "normal"),
+  ]
+
+  /// Version 9 adds `density` and converts the stored row's old sidebar value, writing no outbox entry
+  /// and claiming no clock; an unpushed outbox entry carrying an old value is left as it is.
+  @Test(arguments: sidebarCases)
+  func version9ConvertsTheOldSidebarValue(_ sidebar: SidebarCase) throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    try writeVersion1File(path)
+    do {
+      let raw = try RawSQLite(path: path)
+      defer { raw.close() }
+      try raw.exec("BEGIN")
+      for migration in MirrorSchema.migrations where (2...8).contains(migration.version) {
+        for statement in migration.statements { try raw.exec(statement) }
+      }
+      let quiet = sidebar.quietThreads.map { "'\($0)'" } ?? "NULL"
+      try raw.exec(
+        #"INSERT INTO "viewSettings" ("id", "arrangement", "quietThreads", "updatedAt") "#
+          + #"VALUES ('view', 'byEnvironment', \#(quiet), '2026-11-11T12:00:00.000Z')"#)
+      try raw.exec("PRAGMA user_version = 8")
+      try raw.exec("COMMIT")
+    }
+    if let density = sidebar.density {
+      // A density stored before the conversion ran (for the test, by a file one step ahead).
+      let raw = try RawSQLite(path: path)
+      defer { raw.close() }
+      try raw.exec(#"ALTER TABLE "viewSettings" ADD COLUMN "density" TEXT"#)
+      try raw.exec(#"UPDATE "viewSettings" SET "density" = '\#(density)'"#)
+      // Run version 9 without its `ALTER`, which the column now already answers.
+      try raw.exec("BEGIN")
+      for statement in try #require(MirrorSchema.migrations.last?.statements).dropFirst() {
+        try raw.exec(statement)
+      }
+      try raw.exec("PRAGMA user_version = 9")
+      try raw.exec("COMMIT")
+    } else {
+      // An unsent edit from the old build, carrying the old value.
+      let raw = try RawSQLite(path: path)
+      defer { raw.close() }
+      try raw.exec(
+        #"INSERT INTO "outbox" ("deviceSeq", "hlc", "table", "rowId", "op", "column", "value") "#
+          + #"VALUES (1, '019a396c76e8-0000-phone-1', 'viewSettings', 'view', 'update', 'quietThreads', '"tiny"')"#
+      )
+      try raw.exec(#"UPDATE "syncState" SET "lastDeviceSeq" = 1 WHERE "id" = 1"#)
+    }
+
+    let store = try MirrorStore(path: path)
+    let row = try #require(
+      try store.locked { try store.query(#"SELECT * FROM "viewSettings" WHERE "id" = 'view'"#).first })
+    func text(_ column: String) -> String? {
+      if case .text(let value)? = row[column] { return value }
+      return nil
+    }
+    #expect(text("quietThreads") == sidebar.expectedQuietThreads)
+    #expect(text("density") == sidebar.expectedDensity)
+    #expect(text("arrangement") == "byEnvironment")
+    #expect(try store.columnClock(table: "viewSettings", rowId: "view", column: "density") == nil)
+    #expect(try store.columnClock(table: "viewSettings", rowId: "view", column: "quietThreads") == nil)
+    if sidebar.density == nil {
+      // The migration queued nothing, and the unsent edit is untouched.
+      let queued = try store.outbox(limit: 10)
+      #expect(queued.count == 1)
+      #expect(queued.first?.column == "quietThreads" && queued.first?.value == "tiny")
+    }
+    let raw = try RawSQLite(path: path)
+    defer { raw.close() }
+    #expect(try raw.integer("PRAGMA user_version") == 9)
+  }
+
+  /// A version 8 file with no view settings row opens at version 9 with none, and an empty outbox.
+  @Test func version9LeavesNoRowAndQueuesNothing() throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    try writeVersion1File(path)
+    do {
+      let raw = try RawSQLite(path: path)
+      defer { raw.close() }
+      try raw.exec("BEGIN")
+      for migration in MirrorSchema.migrations where (2...8).contains(migration.version) {
+        for statement in migration.statements { try raw.exec(statement) }
+      }
+      try raw.exec("PRAGMA user_version = 8")
+      try raw.exec("COMMIT")
+    }
+    let store = try MirrorStore(path: path)
+    #expect(try store.rowCount("viewSettings") == 0)
+    #expect(store.outboxCount == 0)
+    #expect(try store.viewSettings() == ViewSettings())
   }
 
   /// The index the relay's per-delta lookup uses: on `displayItems`, by thread then native item id.

@@ -212,6 +212,86 @@ private func settingsEvent(_ events: AsyncStream<EventEnvelope>) async throws ->
     await client.close()
   }
 
+  @Test func settingDensityOnAnEmptyMirrorInsertsOnlyDensity() throws {
+    let store = try linkedStore()
+    #expect(try store.setViewSettings(density: .dense) == ViewSettings(density: .dense))
+    #expect(try stored(store, "density") == "dense")
+    #expect(store.outboxCount == 1)
+    let insert = try #require(try store.outbox(limit: 10).first)
+    #expect(insert.op == "insert")
+    let row = try #require(insert.value?.objectValue)
+    #expect(Set(row.keys) == ["id", "density", "updatedAt"])
+    #expect(row["density"] == "dense")
+  }
+
+  /// Replacing a stored `tiny` with no density also writes the density it implied, so the rows keep
+  /// their size.
+  @Test func replacingTinyAlsoWritesTheDensityItImplied() throws {
+    let store = try linkedStore()
+    _ = try store.apply([
+      pulled("update", column: "quietThreads", value: "tiny", hlc: macClock.next().rawValue)
+    ])
+    #expect(try store.viewSettings() == ViewSettings(quietThreads: .shown, density: .dense))
+    #expect(try stored(store, "density") == nil)
+
+    let settings = try store.setViewSettings(quietThreads: .hidden)
+    #expect(settings == ViewSettings(quietThreads: .hidden, density: .dense))
+    #expect(try store.viewSettings() == settings)
+    #expect(try stored(store, "quietThreads") == "hidden")
+    #expect(try stored(store, "density") == "dense")
+    let queued = try store.outbox(limit: 10)
+    #expect(queued.allSatisfy { $0.op == "update" })
+    #expect(Set(queued.compactMap(\.column).filter { $0 != "updatedAt" }) == ["quietThreads", "density"])
+    #expect(queued.first { $0.column == "density" }?.value == "dense")
+    #expect(Set(queued.map(\.hlc)).count == 1)
+    let densityClock = try store.columnClock(table: "viewSettings", rowId: "view", column: "density")
+    #expect(densityClock == queued.first?.hlc)
+
+    // Once a density is stored, setting `quietThreads` writes only that (folded into its unsent
+    // update), and the queued density keeps its clock.
+    let densityHLC = queued.first { $0.column == "density" }?.hlc
+    _ = try store.setViewSettings(quietThreads: .collapsed)
+    let later = try store.outbox(limit: 10)
+    #expect(later.first { $0.column == "quietThreads" }?.value == "collapsed")
+    #expect(later.filter { $0.column == "density" }.map(\.hlc) == [densityHLC])
+    #expect(try store.viewSettings() == ViewSettings(quietThreads: .collapsed, density: .dense))
+  }
+
+  /// A density this build does not know (a newer build's) is never replaced by the implied one.
+  @Test func anUnknownStoredDensityIsKeptWhenTinyIsReplaced() throws {
+    let store = try linkedStore()
+    _ = try store.apply([
+      pulled("update", column: "quietThreads", value: "tiny", hlc: macClock.next().rawValue),
+      pulled("update", column: "density", value: "huge", hlc: macClock.next().rawValue),
+    ])
+    _ = try store.setViewSettings(quietThreads: .collapsed)
+    #expect(try stored(store, "density") == "huge")
+    #expect(try stored(store, "quietThreads") == "collapsed")
+    let queued = try store.outbox(limit: 10)
+    #expect(!queued.contains { $0.column == "density" })
+    #expect(queued.compactMap(\.column).filter { $0 != "updatedAt" } == ["quietThreads"])
+  }
+
+  /// A first write of `quietThreads` on a missing row implies nothing: the insert carries only it.
+  @Test func aFirstQuietThreadsWriteInsertsNoDensity() throws {
+    let store = try linkedStore()
+    _ = try store.setViewSettings(quietThreads: .hidden)
+    let insert = try #require(try store.outbox(limit: 10).first)
+    #expect(Set(try #require(insert.value?.objectValue).keys) == ["id", "quietThreads", "updatedAt"])
+    #expect(try stored(store, "density") == nil)
+  }
+
+  @Test func theTransportPassesDensity() async throws {
+    let store = try linkedStore()
+    let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0"))
+    _ = try await client.ready()
+    let result = try await client.request(
+      ViewSettingsSet.self, .init(density: .dense), options: RequestOptions(operationId: "op-1"))
+    #expect(result == ViewSettings(density: .dense))
+    #expect(try stored(store, "density") == "dense")
+    await client.close()
+  }
+
   @Test func anUnavailableMirrorRefusesViewSettingsWrites() async throws {
     let store = try MirrorStore.inMemory()
     let client = WorkspaceClient(

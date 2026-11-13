@@ -25,6 +25,9 @@ import Foundation
 /// `undecodableRows`) are rewritten with them.
 ///
 /// Version 8 adds `viewSettings`, the account's one row of view settings (id `view`).
+///
+/// Version 9 adds `viewSettings.density` and converts the stored row's old sidebar values, as the Mac's
+/// `0014_density.sql`.
 enum MirrorSchema {
   /// `PRAGMA user_version` once every migration has run.
   static var version: Int { migrations.last?.version ?? 0 }
@@ -75,7 +78,7 @@ enum MirrorSchema {
   /// every migration after `n`, all in one transaction.
   static let migrations: [(version: Int, statements: [String])] = [
     (1, version1), (2, version2), (3, version3), (4, version4), (5, version5), (6, version6),
-    (7, version7), (8, version8),
+    (7, version7), (8, version8), (9, version9),
   ]
 
   /// M8a's schema.
@@ -326,5 +329,22 @@ enum MirrorSchema {
       "updatedAt" TEXT
     ) STRICT
     """
+  ]
+
+  /// Density: how tall the thread list's rows are (`normal`, `dense`), split out of `quietThreads`,
+  /// which now holds only where the quiet threads go (`shown`, `collapsed`, `hidden`). Nullable and any
+  /// text, like the row's other columns. The stored row's old values are converted: `small` is shown at
+  /// normal density, `tiny` shown and dense, `collapsed` and `hidden` keep their place at normal
+  /// density; a density already stored is kept, and a null or unknown value, or no row, is left alone.
+  /// The conversion queues nothing and claims no clock (every device converts its own copy, and the hub
+  /// its own); an unsent outbox entry carrying an old value is pushed as it is.
+  static let version9 = [
+    #"ALTER TABLE "viewSettings" ADD COLUMN "density" TEXT"#,
+    """
+    UPDATE "viewSettings" SET
+      "density" = coalesce("density", CASE "quietThreads" WHEN 'tiny' THEN 'dense' ELSE 'normal' END),
+      "quietThreads" = CASE "quietThreads" WHEN 'small' THEN 'shown' WHEN 'tiny' THEN 'shown' ELSE "quietThreads" END
+    WHERE "quietThreads" IN ('small', 'tiny', 'collapsed', 'hidden')
+    """,
   ]
 }
