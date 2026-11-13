@@ -6,7 +6,7 @@ import WorkspaceProtocol
 
 /// The account's view settings in the model (arrangements plan, Task 4): read with the first snapshot,
 /// followed through `viewSettings.changed`, written optimistically with only the field that changed,
-/// and forgotten when the account ends. The phone shows Tiny as Collapsed and never writes that back.
+/// and forgotten when the account ends.
 @Suite @MainActor struct ViewSettingsModelTests {
   private static let stored = ViewSettings(
     arrangement: .byEnvironment, quietThreads: .hidden, showArchived: true)
@@ -38,7 +38,6 @@ import WorkspaceProtocol
     transport.script(.viewSettingsGet, [try Self.reply(Self.stored)])
     let model = try await Self.connected(transport)
     #expect(model.viewSettings == Self.stored)
-    #expect(model.shownSettings == Self.stored)
     #expect(model.threads.map(\.id) == ["t1"])
 
     // A read that fails leaves the defaults and does not hold the list back.
@@ -101,11 +100,11 @@ import WorkspaceProtocol
 
   @Test func aRefusedSetPutsTheOldValueBack() async throws {
     let transport = ScriptedTransport()
-    transport.script(.viewSettingsGet, [try Self.reply(ViewSettings(quietThreads: .tiny))])
+    transport.script(.viewSettingsGet, [try Self.reply(ViewSettings(density: .dense))])
     let model = try await Self.connected(transport)
     transport.script(.viewSettingsSet, [.failure(WorkspaceError(.endpointUnavailable, "The Mac is away."))])
     await model.setArrangement(.byEnvironment)
-    #expect(model.viewSettings == ViewSettings(quietThreads: .tiny))
+    #expect(model.viewSettings == ViewSettings(density: .dense))
     // The sidebar's error line says why.
     #expect(model.lastError?.contains("The Mac is away.") == true)
 
@@ -164,57 +163,36 @@ import WorkspaceProtocol
     try await waitUntil("the read is out") { transport.heldCount(.viewSettingsGet) == 1 }
     transport.script(.viewSettingsSet, [try Self.reply(ViewSettings(arrangement: .byEnvironment))])
     await model.setArrangement(.byEnvironment)
-    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny)))
-    try await waitUntil("the change") { model.viewSettings.quietThreads == .tiny }
+    transport.emit(try .viewSettingsChanged(ViewSettings(arrangement: .byEnvironment, density: .dense)))
+    try await waitUntil("the change") { model.viewSettings.density == .dense }
     // The read's row is from before both.
     transport.release(.viewSettingsGet, with: try Self.reply(ViewSettings()))
     await read.value
-    #expect(model.viewSettings == ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny))
+    #expect(model.viewSettings == ViewSettings(arrangement: .byEnvironment, density: .dense))
     await model.disconnect()
   }
 
-  @Test func thePhoneShowsCollapsedForTinyAndSendsNothing() async throws {
-    let tiny = ViewSettings(quietThreads: .tiny)
+  @Test func thePhoneReadsTheStoredValuesAndSendsNothing() async throws {
+    let dense = ViewSettings(density: .dense)
     let transport = ScriptedTransport()
-    transport.script(.viewSettingsGet, [try Self.reply(tiny)])
+    transport.script(.viewSettingsGet, [try Self.reply(dense)])
     let phone = try await Self.connected(transport, phone: true)
-    #expect(phone.viewSettings == tiny)
-    #expect(phone.shownSettings == ViewSettings(quietThreads: .collapsed))
-    transport.emit(try .viewSettingsChanged(ViewSettings(quietThreads: .tiny, showArchived: true)))
+    #expect(phone.viewSettings == dense)
+    transport.emit(try .viewSettingsChanged(ViewSettings(showArchived: true, density: .dense)))
     try await waitUntil("the change") { phone.viewSettings.showArchived }
-    #expect(phone.viewSettings.quietThreads == .tiny)
-    #expect(phone.shownSettings.quietThreads == .collapsed)
+    #expect(phone.viewSettings.density == .dense)
     // Reading alone never writes.
     #expect(transport.recorded(.viewSettingsSet).isEmpty)
-
-    // The Mac shows what is stored.
-    let macTransport = ScriptedTransport()
-    macTransport.script(.viewSettingsGet, [try Self.reply(tiny)])
-    let mac = try await Self.connected(macTransport)
-    #expect(mac.shownSettings == tiny)
-    #expect(macTransport.recorded(.viewSettingsSet).isEmpty)
     await phone.disconnect()
-    await mac.disconnect()
   }
 
-  @Test func choosingTinyOnThePhoneStoresTiny() async throws {
-    // The phone's menu lists Tiny, with a note that this device shows it collapsed.
-    #expect(ViewOptions.quietThreads.contains(.tiny))
-    #expect(ViewOptions.title(.tiny) == "Tiny")
-    #expect(ViewOptions.note(.tiny, onPhone: true) == "Shown collapsed on this device")
-    #expect(ViewOptions.note(.tiny, onPhone: false) == nil)
-    #expect(
-      ViewSettings.QuietThreads.allCases.allSatisfy {
-        $0 == .tiny || ViewOptions.note($0, onPhone: true) == nil
-      })
-
+  @Test func choosingOnThePhoneStoresTheValue() async throws {
     let transport = ScriptedTransport()
     let phone = try await Self.connected(transport, phone: true)
-    transport.script(.viewSettingsSet, [try Self.reply(ViewSettings(quietThreads: .tiny))])
-    await phone.setQuietThreads(.tiny)
-    #expect(transport.recorded(.viewSettingsSet).map(\.params) == [["quietThreads": "tiny"]])
-    #expect(phone.viewSettings.quietThreads == .tiny)
-    #expect(phone.shownSettings.quietThreads == .collapsed)
+    transport.script(.viewSettingsSet, [try Self.reply(ViewSettings(quietThreads: .collapsed))])
+    await phone.setQuietThreads(.collapsed)
+    #expect(transport.recorded(.viewSettingsSet).map(\.params) == [["quietThreads": "collapsed"]])
+    #expect(phone.viewSettings.quietThreads == .collapsed)
     await phone.disconnect()
   }
 
@@ -224,7 +202,7 @@ import WorkspaceProtocol
     #expect(ViewOptions.quietThreadsDisabled(ViewSettings(arrangement: .byEnvironment)))
     #expect(ViewOptions.title(.needsYouFirst) == "Needs you first")
     #expect(ViewOptions.title(.byEnvironment) == "By environment")
-    #expect(ViewOptions.quietThreads.map(ViewOptions.title) == ["Small", "Tiny", "Collapsed", "Hidden"])
+    #expect(ViewOptions.quietThreads.map(ViewOptions.title) == ["Shown", "Collapsed", "Hidden"])
   }
 
   @Test func signingOutForgetsTheSettings() async throws {
@@ -235,7 +213,6 @@ import WorkspaceProtocol
     transport.emit(try .accountChanged(AccountStatus.Result(state: .signedOut)))
     try await waitUntil("signed out") { model.rootScreen == .signIn }
     #expect(model.viewSettings == ViewSettings())
-    #expect(model.shownSettings == ViewSettings())
     await model.disconnect()
   }
 }

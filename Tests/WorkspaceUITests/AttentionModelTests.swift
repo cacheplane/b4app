@@ -1101,7 +1101,7 @@ private struct AttentionDocument: Decodable {
     await model.openThread(id: "q")
     #expect(topList(model) == ["a", "f"])
     guard case .needsYouFirst(_, .rows(let lower, _)) = model.listLayout.body else {
-      Issue.record("Small: \(model.listLayout.body)")
+      Issue.record("Shown: \(model.listLayout.body)")
       return
     }
     #expect(lower.map(\.id) == ["q", "t1"])
@@ -1124,7 +1124,7 @@ private struct AttentionDocument: Decodable {
     #expect(model.selectedThreadId == "t1")
     #expect(topList(model) == ["a", "f"])
     guard case .needsYouFirst(_, .rows(let lower, _)) = model.listLayout.body else {
-      Issue.record("Small: \(model.listLayout.body)")
+      Issue.record("Shown: \(model.listLayout.body)")
       return
     }
     #expect(lower.map(\.id) == ["q", "t1"])

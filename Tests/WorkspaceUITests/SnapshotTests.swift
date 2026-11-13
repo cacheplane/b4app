@@ -416,8 +416,8 @@ struct SnapshotShell: View {
     }
   }
 
-  /// "Needs you first" with each way of drawing the threads that do not need you: Small, Tiny,
-  /// Collapsed (closed, then open), and Hidden (closed, then open: its row above the profile footer, the
+  /// "Needs you first" with each way of drawing the threads that do not need you: Shown (normal, then
+  /// dense), Collapsed (closed, then open), and Hidden (closed, then open: its row above the profile footer, the
   /// working threads it opens last in the scrolling list); then Hidden with nothing but quiet threads,
   /// which draws an empty list. Then the phone's list with Collapsed open and with Hidden.
   @Test func quietThreadsInEachMode() async throws {
@@ -433,6 +433,9 @@ struct SnapshotShell: View {
       try await show(mode)
       try await render("macQuietThreads-\(mode.rawValue)", size: size) { SidebarView(model: model) }
     }
+    transport.emit(try .viewSettingsChanged(ViewSettings(density: .dense)))
+    try await waitUntil("dense") { model.viewSettings == ViewSettings(density: .dense) }
+    try await render("macQuietThreads-shown-dense", size: size) { SidebarView(model: model) }
     try await show(.collapsed)
     try await render("macQuietThreads-collapsed-open", size: size) {
       ScrollView {

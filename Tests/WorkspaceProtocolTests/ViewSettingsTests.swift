@@ -10,10 +10,12 @@ import WorkspaceProtocol
   @Test func defaultsWhenEverythingIsMissing() throws {
     let defaults = ViewSettings()
     #expect(defaults.arrangement == .needsYouFirst)
-    #expect(defaults.quietThreads == .small)
+    #expect(defaults.quietThreads == .shown)
+    #expect(defaults.density == .normal)
     #expect(defaults.showArchived == false)
     #expect(try decode("{}") == defaults)
-    #expect(try decode(#"{"arrangement":null,"quietThreads":null,"showArchived":null}"#) == defaults)
+    #expect(
+      try decode(#"{"arrangement":null,"quietThreads":null,"showArchived":null,"density":null}"#) == defaults)
     #expect(ViewSettings.rowId == "view")
   }
 
@@ -27,28 +29,34 @@ import WorkspaceProtocol
     #expect(try decode(String(decoding: try JSONCoding.encoder.encode(set), as: UTF8.self)) == set)
   }
 
-  @Test func tinyShowsAsCollapsedOnThePhoneOnly() {
-    let tiny = ViewSettings(quietThreads: .tiny)
-    #expect(tiny.shown(on: .phone).quietThreads == .collapsed)
-    #expect(tiny.shown(on: .mac).quietThreads == .tiny)
-    for quiet in ViewSettings.QuietThreads.allCases where quiet != .tiny {
-      #expect(ViewSettings(quietThreads: quiet).shown(on: .phone).quietThreads == quiet)
-      #expect(ViewSettings(quietThreads: quiet).shown(on: .mac).quietThreads == quiet)
+  @Test func oldValuesReadAsDensityAndTheSidebarSetting() {
+    func read(_ quiet: String?, _ density: String? = nil) -> ViewSettings {
+      ViewSettings(arrangement: nil, quietThreads: quiet, showArchived: nil, density: density)
     }
+    #expect(read("small") == ViewSettings())
+    #expect(read("tiny") == ViewSettings(density: .dense))
+    #expect(read("collapsed") == ViewSettings(quietThreads: .collapsed))
+    #expect(read("hidden") == ViewSettings(quietThreads: .hidden))
+    #expect(read("shown", "dense") == ViewSettings(density: .dense))
+    // A stored density wins over what an old value implies.
+    #expect(read("tiny", "normal") == ViewSettings())
+    #expect(read(nil) == ViewSettings())
+    #expect(read("nonsense", "nonsense") == ViewSettings())
   }
 
-  @Test func shownNeverChangesTheOtherFields() {
-    for arrangement in ViewSettings.Arrangement.allCases {
-      for quiet in ViewSettings.QuietThreads.allCases {
-        for archived in [false, true] {
-          let stored = ViewSettings(arrangement: arrangement, quietThreads: quiet, showArchived: archived)
-          for device in [ViewSettings.Device.mac, .phone] {
-            let shown = stored.shown(on: device)
-            #expect(shown.arrangement == arrangement)
-            #expect(shown.showArchived == archived)
-          }
-        }
-      }
-    }
+  @Test func onlyAnUnconvertedTinyImpliesDense() {
+    #expect(ViewSettings.impliedDensity(storedQuietThreads: "tiny", storedDensity: nil) == .dense)
+    #expect(ViewSettings.impliedDensity(storedQuietThreads: "tiny", storedDensity: "normal") == nil)
+    #expect(ViewSettings.impliedDensity(storedQuietThreads: "small", storedDensity: nil) == nil)
+    #expect(ViewSettings.impliedDensity(storedQuietThreads: "collapsed", storedDensity: nil) == nil)
+    #expect(ViewSettings.impliedDensity(storedQuietThreads: nil, storedDensity: nil) == nil)
+  }
+
+  @Test func densityRoundTripsThroughJSON() throws {
+    let settings = ViewSettings(quietThreads: .hidden, density: .dense)
+    let data = try JSONEncoder().encode(settings)
+    #expect(try JSONDecoder().decode(ViewSettings.self, from: data) == settings)
+    let old = Data(#"{"arrangement":"needsYouFirst","quietThreads":"tiny","showArchived":false}"#.utf8)
+    #expect(try JSONDecoder().decode(ViewSettings.self, from: old) == ViewSettings(density: .dense))
   }
 }

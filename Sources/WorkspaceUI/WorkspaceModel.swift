@@ -396,12 +396,11 @@ public final class WorkspaceModel {
   /// quiet, pinned first and then newest activity first inside each (`Attention.ordered`).
   public var orderedThreads: [ConversationThread] { Attention.ordered(filtered(archived: false)) }
 
-  /// What the list draws: the threads under the connection filter, arranged by the view settings
-  /// this device shows (`shownSettings`).
+  /// What the list draws: the threads under the connection filter, arranged by the view settings.
   var listLayout: ListLayout {
     ListLayout.build(
       threads: threads.filter { connectionFilter == nil || $0.connectionId == connectionFilter },
-      environments: environments, settings: shownSettings,
+      environments: environments, settings: viewSettings,
       selection: selectedThreadId.map { ListLayout.Selection(threadId: $0, held: selectionHold) })
   }
 
@@ -1159,10 +1158,6 @@ public final class WorkspaceModel {
   }
 
   // MARK: - View settings
-
-  /// What this device draws for `viewSettings`: the phone shows Tiny as Collapsed (decision 5). The
-  /// stored value is never rewritten for it.
-  public var shownSettings: ViewSettings { viewSettings.shown(on: relaysThroughHub ? .phone : .mac) }
 
   public func setArrangement(_ arrangement: ViewSettings.Arrangement) async {
     await setViewSetting(\.arrangement, arrangement, ViewSettingsSet.Params(arrangement: arrangement))

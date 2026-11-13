@@ -150,7 +150,7 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
       options: RequestOptions(operationId: "view-3"))
     #expect(same == both)
     let last = try await client.request(
-      ViewSettingsSet.self, ViewSettingsSet.Params(quietThreads: .small),
+      ViewSettingsSet.self, ViewSettingsSet.Params(quietThreads: .shown),
       options: RequestOptions(operationId: "view-4"))
 
     var iterator = events.makeAsyncIterator()

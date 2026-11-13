@@ -186,7 +186,7 @@ public enum LLAFont {
   public static var row: Font { sans(scale.row, relativeTo: scale.rowStyle) }
   public static var rowMedium: Font { sans(scale.row, weight: .medium, relativeTo: scale.rowStyle) }
   public static var rowStrong: Font { sans(scale.row, weight: .semibold, relativeTo: scale.rowStyle) }
-  /// A tiny thread row's title (the Mac's lower list under "Tiny"), 11 pt on every platform.
+  /// A tiny thread row's title (the Mac's lower list under Dense), 11 pt on every platform.
   public static var rowTiny: Font { sans(11, relativeTo: .caption2) }
   public static var rowTinyMedium: Font { sans(11, weight: .medium, relativeTo: .caption2) }
   /// The composer's draft text: body on the Mac, a step under body on the phone (16 pt, `.callout`),

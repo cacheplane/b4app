@@ -97,7 +97,7 @@ struct SidebarErrorBanner: View {
 struct ThreadRow: View {
   @Bindable var model: WorkspaceModel
   let thread: ConversationThread
-  /// The Mac's lower list under "Tiny": a 20 pt row, 11 pt title, and 8 pt mark; nothing else changes.
+  /// The Mac's lower list under Dense: a 20 pt row, 11 pt title, and 8 pt mark; nothing else changes.
   var tiny = false
   @State private var renaming = false
   @State private var newTitle = ""
@@ -469,8 +469,9 @@ struct FlatThreadRows: View {
         rows(selected, gap: lowerGap)
         let afterSelected = selected.isEmpty ? lowerGap : LLA.Metrics.rowGap
         switch lower {
-        case .rows(let threads, let tiny):
-          rows(threads, tiny: tiny, gap: lowerGap)
+        case .rows(let threads, _):
+          // The phone keeps its 44 pt rows whatever the density.
+          rows(threads, gap: lowerGap)
         case .collapsed(let count, let working, let threads, _) where count > 0:
           StowedThreadsRow(
             text: ListLayout.collapsedLabel(count: count, working: working), working: working > 0,
@@ -507,9 +508,9 @@ struct FlatThreadRows: View {
   }
 
   /// Rows with their swipe actions; `gap` opens above the first, the hairline row gap above the others.
-  private func rows(_ threads: [ConversationThread], tiny: Bool = false, gap: CGFloat) -> some View {
+  private func rows(_ threads: [ConversationThread], gap: CGFloat) -> some View {
     ForEach(threads) { thread in
-      ThreadRow(model: model, thread: thread, tiny: tiny)
+      ThreadRow(model: model, thread: thread)
         .modifier(
           PhoneRowChrome(
             gap: ThreadListView.gapAbove(isFirst: thread.id == threads.first?.id, sectionGap: gap))

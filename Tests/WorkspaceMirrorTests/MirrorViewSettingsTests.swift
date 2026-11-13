@@ -154,20 +154,19 @@ private func settingsEvent(_ events: AsyncStream<EventEnvelope>) async throws ->
     #expect(try store.rowCount("viewSettings") == 1)
   }
 
-  @Test func tinyFromTheMacStaysTinyInTheMirror() async throws {
+  @Test func tinyFromTheMacReadsAsDenseAndStaysTinyInTheMirror() async throws {
     let store = try MirrorStore.inMemory()
     _ = try store.apply([
       pulled("update", column: "quietThreads", value: "tiny", hlc: macClock.next().rawValue)
     ])
     let settings = try store.viewSettings()
-    #expect(settings.quietThreads == .tiny)
-    #expect(settings.shown(on: .phone).quietThreads == .collapsed)
+    #expect(settings == ViewSettings(density: .dense))
     #expect(try stored(store, "quietThreads") == "tiny")
 
     let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0"))
     _ = try await client.ready()
-    #expect(try await client.request(ViewSettingsGet.self, EmptyParams()).quietThreads == .tiny)
-    // Reading and showing the fallback writes nothing back.
+    #expect(try await client.request(ViewSettingsGet.self, EmptyParams()) == ViewSettings(density: .dense))
+    // Reading the old value writes nothing back.
     #expect(store.outboxCount == 0)
     #expect(try stored(store, "quietThreads") == "tiny")
     await client.close()
@@ -193,8 +192,8 @@ private func settingsEvent(_ events: AsyncStream<EventEnvelope>) async throws ->
 
     let result = try await client.request(
       ViewSettingsSet.self, .init(showArchived: true), options: options())
-    // An unknown arrangement reads as the default; tiny is answered as stored.
-    #expect(result == ViewSettings(quietThreads: .tiny, showArchived: true))
+    // An unknown arrangement reads as the default; the stored tiny is answered as shown and dense.
+    #expect(result == ViewSettings(showArchived: true, density: .dense))
     #expect(try await settingsEvent(events) == result)
     #expect(writes.withLock { $0 } == 1)
 
@@ -209,7 +208,7 @@ private func settingsEvent(_ events: AsyncStream<EventEnvelope>) async throws ->
     let changed = try await client.request(
       ViewSettingsSet.self, .init(arrangement: .byEnvironment), options: options())
     #expect(try await settingsEvent(events) == changed)
-    #expect(changed.arrangement == .byEnvironment && changed.quietThreads == .tiny)
+    #expect(changed == ViewSettings(arrangement: .byEnvironment, showArchived: true, density: .dense))
     await client.close()
   }
 

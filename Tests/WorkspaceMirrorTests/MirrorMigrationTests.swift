@@ -350,8 +350,8 @@ private func writeVersion1File(_ path: String) throws {
     #expect(try store.rowCount("viewSettings") == 0)
 
     // The table takes the settings, and the outbox keeps counting after the unsent edit.
-    _ = try store.setViewSettings(quietThreads: .tiny, showArchived: true)
-    #expect(try store.viewSettings() == ViewSettings(quietThreads: .tiny, showArchived: true))
+    _ = try store.setViewSettings(quietThreads: .collapsed, showArchived: true)
+    #expect(try store.viewSettings() == ViewSettings(quietThreads: .collapsed, showArchived: true))
     #expect(try store.outbox(limit: 10).map(\.deviceSeq) == [1, 2])
 
     let raw = try RawSQLite(path: path)

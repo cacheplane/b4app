@@ -129,8 +129,8 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
       )
     }
     #expect(try db.viewSettings() == ViewSettings())
-    let after = try db.setViewSettings(quietThreads: .tiny)
-    #expect(after == ViewSettings(quietThreads: .tiny))
+    let after = try db.setViewSettings(quietThreads: .collapsed)
+    #expect(after == ViewSettings(quietThreads: .collapsed))
     #expect(try storedRow(db)?["arrangement"] == .some("spiral"))
     #expect(
       try viewChanges(db).filter { $0.op == "update" }.compactMap(\.column).sorted() == [

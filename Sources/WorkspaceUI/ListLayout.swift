@@ -40,7 +40,7 @@ struct ListLayout: Equatable {
 
   /// The threads that do not need the owner, as `quietThreads` draws them.
   enum Lower: Equatable {
-    /// Small or Tiny: every row.
+    /// Shown: every row, tight under Dense.
     case rows([ConversationThread], tiny: Bool)
     /// One row standing for the stowed threads, working ones included; it opens to show them.
     /// `selected` is the selected thread when it would otherwise be stowed: an ordinary row where the
@@ -127,8 +127,7 @@ struct ListLayout: Equatable {
       let working = stowed.filter { Attention.state(of: $0) == .working }
       let lower: Lower =
         switch settings.quietThreads {
-        case .small: .rows(rest, tiny: false)
-        case .tiny: .rows(rest, tiny: true)
+        case .shown: .rows(rest, tiny: settings.density == .dense)
         case .collapsed:
           .collapsed(count: stowed.count, working: working.count, threads: stowed, selected: selected)
         case .hidden: .hidden(working: working, selected: selected)
@@ -181,7 +180,7 @@ struct ListLayout: Equatable {
   }
 
   /// The mode whose row stows threads now: Collapsed with something below the top list, or Hidden while
-  /// something works; nil under Small or Tiny, under "By environment", and when nothing is stowed.
+  /// something works; nil under Shown, under "By environment", and when nothing is stowed.
   var stowing: ViewSettings.QuietThreads? {
     switch body {
     case .needsYouFirst(_, .collapsed(let count, _, _, _)) where count > 0: .collapsed

@@ -65,7 +65,7 @@ import WorkspaceProtocol
     #expect(top.map(\.id) == ["asks", "failed", "unread"])
     // The pinned working thread leads the working threads; it is not lifted above the top list.
     guard case .rows(let rows, tiny: false) = lower else {
-      Issue.record("Small: \(lower)")
+      Issue.record("Shown: \(lower)")
       return
     }
     #expect(rows.map(\.id) == ["pinned", "busy", "quiet", "copy", "loose"])

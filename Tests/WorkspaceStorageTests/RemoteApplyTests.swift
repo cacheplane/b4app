@@ -297,7 +297,7 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
     #expect(created.touchedThreadIds.isEmpty && created.touchedDraftThreadIds.isEmpty)
     #expect(
       try db.viewSettings()
-        == ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny, showArchived: true))
+        == ViewSettings(arrangement: .byEnvironment, showArchived: true, density: .dense))
     #expect(
       try db.columnClock(table: "viewSettings", rowId: "view", column: "showArchived") == stamp(at, phone))
     // Nothing is recorded, so nothing echoes back to the hub.
