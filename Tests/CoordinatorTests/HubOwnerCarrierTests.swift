@@ -47,6 +47,7 @@ import WorkspaceSync
           databaseName: f.scope.account.database, hubBase: OwnerFixture.base)
       }
       // Restore the real link after taking the absent capture. It cannot change hidden context.
+      try await f.secrets.put(f.reference, value: OwnerFixture.secretValue)
       try f.database.saveHubLink(f.link)
       await f.scope.hub.start()
       try await f.settleRestart()
@@ -579,6 +580,23 @@ import WorkspaceSync
         _ = try await f.scope.hub.join(
           url: OwnerFixture.base, code: "fixture-enrollment", deviceName: "Fixture Mac")
       }
+      // One actual public owned row makes the successful join's API push a positive canary.
+      _ = try f.database.insertEnvironment(
+        WorkEnvironment(id: OwnerFixture.joinCanaryID, name: "Fixture upload canary"), folders: [])
+      let nativeCanary = try f.database.environment(id: OwnerFixture.joinCanaryID)
+      let pending = try f.database.unsyncedChanges(limit: HubSync.batchRows)
+      let canaryRecords = pending.filter {
+        $0.table == "environments" && $0.rowId == OwnerFixture.joinCanaryID && $0.op == "insert"
+      }
+      let outbound = pending.compactMap { SyncFilter.outbound($0) }
+      let canaryReady =
+        nativeCanary?.id == OwnerFixture.joinCanaryID
+        && nativeCanary?.folders.isEmpty == true && canaryRecords.count == 1
+        && outbound.count == 1 && outbound.first?.table == "environments"
+        && outbound.first?.rowId == OwnerFixture.joinCanaryID
+      #expect(canaryReady)
+      let canarySequence = try ownerRequire(canaryRecords.first?.seq)
+      guard canarySequence > 0 else { throw OwnerFixtureFailure.failed }
       f.api.armEnroll(failing: false)
       f.api.releaseEnroll()
       f.api.allowJoinPush()
@@ -589,6 +607,14 @@ import WorkspaceSync
       try installed.requireInstalledMemory()
       #expect(f.api.counts.factory == 2 && f.api.counts.enroll == 2)
       #expect(f.api.counts.push == 1 && f.secrets.counts.puts == 1)
+      #expect(f.api.counts.joinCanaryReceived == 1 && f.api.counts.joinCanaryAccepted == 1)
+      let acceptedCanary = try f.database.changes(after: canarySequence - 1, limit: 1).first
+      let nativeCanarySynced =
+        acceptedCanary?.seq == canarySequence
+        && acceptedCanary?.table == "environments" && acceptedCanary?.rowId == OwnerFixture.joinCanaryID
+        && acceptedCanary?.synced == true
+      let nativeCanaryRetained = try f.database.environment(id: OwnerFixture.joinCanaryID) != nil
+      #expect(nativeCanarySynced && nativeCanaryRetained)
       #expect(f.secrets.counts.readEntered == 0)  // Actual join remember() avoids a read.
       try await f.scope.hub.leave()
       expectOwnerRefusal { try installed.requireInstalledMemory() }
@@ -673,6 +699,100 @@ private func expectOwnerCode(_ code: ErrorCode, _ body: () async throws -> Void)
   } catch {
     let expected = (error as? WorkspaceError)?.code == code
     #expect(expected)
+  }
+}
+
+private enum OwnerDiagnosticBounds {
+  static func count(_ value: Int) -> Int { min(max(value, 0), 10_000) }
+  static func bytes(_ value: Int) -> Int { min(max(value, 0), 1_048_576) }
+  static func milliseconds(_ duration: Duration) -> Int {
+    let parts = duration.components
+    let whole = min(max(parts.seconds, 0), 60) * 1000
+    let fraction = parts.attoseconds / 1_000_000_000_000_000
+    return Int(min(max(whole + fraction, 0), 60_000))
+  }
+}
+
+private final class OwnerStartupDiagnostics: Sendable {
+  enum Stage: String, Hashable, Sendable { case collectorArmed, managerStartReturned, refreshJoined, failed }
+  private struct State {
+    var deadline: ContinuousClock.Instant?
+    var emitted: Set<Stage> = []
+  }
+  private let state = Mutex(State())
+
+  func arm(deadline: ContinuousClock.Instant) { state.withLock { $0.deadline = deadline } }
+  func emit(
+    _ stage: Stage, secrets: OwnerSecrets, links: FakeHubLinkConnection, access: OwnerAccessLedger
+  ) {
+    let observation = state.withLock { state -> (Bool, ContinuousClock.Instant?) in
+      (state.emitted.insert(stage).inserted, state.deadline)
+    }
+    guard observation.0 else { return }  // At most four fixed records per fixture, never per poll.
+    let now = ContinuousClock.now
+    let armed = observation.1 != nil
+    let elapsed =
+      observation.1.map {
+        OwnerDiagnosticBounds.milliseconds(($0 - .seconds(10)).duration(to: now))
+      } ?? 0
+    let remaining =
+      observation.1.map {
+        OwnerDiagnosticBounds.milliseconds(now.duration(to: $0))
+      } ?? 0
+    let expired = observation.1.map { now >= $0 } ?? false
+    let secret = secrets.counts
+    let collector = access.receipts.counts
+    let readEntered = OwnerDiagnosticBounds.count(secret.readEntered)
+    let readSettled = OwnerDiagnosticBounds.count(secret.readSettled)
+    let activeRead = OwnerDiagnosticBounds.count(secret.activeRead)
+    let opens = OwnerDiagnosticBounds.count(links.openCount)
+    let collectorStarted = OwnerDiagnosticBounds.count(collector.collectorStarted)
+    let collectorReturned = OwnerDiagnosticBounds.count(collector.collectorReturned)
+    let collectorSucceeded = OwnerDiagnosticBounds.count(collector.collectorSucceeded)
+    let parentCancelled = Task.isCancelled
+    let collectorCancelled = access.collectorCancelled
+    print(
+      "A5_STARTUP stage=\(stage.rawValue) armed=\(armed) elapsedMillis=\(elapsed) remainingMillis=\(remaining) expired=\(expired) parentCancelled=\(parentCancelled) collectorCancelled=\(collectorCancelled) readEntered=\(readEntered) readSettled=\(readSettled) activeRead=\(activeRead) opens=\(opens) collectorStarted=\(collectorStarted) collectorReturned=\(collectorReturned) collectorSucceeded=\(collectorSucceeded)"
+    )
+  }
+}
+
+private enum OwnerNativeDiagnostics {
+  enum Stage: String, Sendable { case beforeRollback, afterJoin }
+  enum Exit: String, Equatable, Sendable {
+    case polling, matched, sampleLimit, deadline, multipleWaiters, metadataFailed, memoryRefused
+  }
+  enum ResultKind: String, Sendable { case notJoined, success, fixedRefusal, other }
+  struct Metadata: Sendable {
+    var readOK = false
+    var capacityKnown = false
+    var capacityBytes = 0
+    var baseWaiters = 0
+    var earlyMatches = 0
+    var referenceMatches = 0
+    var lateMatches = 0
+    var maxQueryBytes = 0
+  }
+  static func emit(
+    _ stage: Stage, retire: Bool, exit: Exit, samples: Int, elapsedMillis: Int,
+    started: Int, returned: Int, issued: Int, result: ResultKind, metadata: Metadata
+  ) {
+    // Exactly two callsites per construction case; never called from the5000-sample loop.
+    let sampleCount = min(max(samples, 0), 5000)
+    let elapsed = min(max(elapsedMillis, 0), 60_000)
+    let startCount = OwnerDiagnosticBounds.count(started)
+    let returnCount = OwnerDiagnosticBounds.count(returned)
+    let issueCount = OwnerDiagnosticBounds.count(issued)
+    let capacity = OwnerDiagnosticBounds.bytes(metadata.capacityBytes)
+    let base = OwnerDiagnosticBounds.count(metadata.baseWaiters)
+    let early = OwnerDiagnosticBounds.count(metadata.earlyMatches)
+    let reference = OwnerDiagnosticBounds.count(metadata.referenceMatches)
+    let late = OwnerDiagnosticBounds.count(metadata.lateMatches)
+    let queryBytes = OwnerDiagnosticBounds.bytes(metadata.maxQueryBytes)
+    let cancelled = Task.isCancelled
+    print(
+      "A5_NATIVE stage=\(stage.rawValue) retire=\(retire) exit=\(exit.rawValue) samples=\(sampleCount) elapsedMillis=\(elapsed) started=\(startCount) returned=\(returnCount) issued=\(issueCount) result=\(result.rawValue) readOK=\(metadata.readOK) capacityKnown=\(metadata.capacityKnown) capacityBytes=\(capacity) baseWaiters=\(base) earlyMatches=\(early) referenceMatches=\(reference) lateMatches=\(late) maxQueryBytes=\(queryBytes) cancelled=\(cancelled)"
+    )
   }
 }
 
@@ -789,6 +909,8 @@ private final class OwnerAPIController: Sendable {
     var pull = 0
     var pullSettled = 0
     var push = 0
+    var joinCanaryReceived = 0
+    var joinCanaryAccepted = 0
     var enroll = 0
     var mint = 0
     var revoke = 0
@@ -940,7 +1062,17 @@ private final class OwnerAPIController: Sendable {
       return state.allowPush
     }
     guard permitted else { throw OwnerFixtureFailure.failed }
-    return PushResponse(acceptedThrough: changes.map(\.deviceSeq).max() ?? 0, rejected: [])
+    let acceptedThrough = changes.map(\.deviceSeq).max() ?? 0
+    let canary = changes.filter {
+      $0.table == "environments" && $0.rowId == OwnerFixture.joinCanaryID && $0.op == "insert"
+    }
+    let received = canary.count == 1
+    let accepted = received && canary.first.map { $0.deviceSeq <= acceptedThrough } == true
+    state.withLock {
+      if received { $0.counts.joinCanaryReceived += 1 }
+      if accepted { $0.counts.joinCanaryAccepted += 1 }
+    }
+    return PushResponse(acceptedThrough: acceptedThrough, rejected: [])
   }
   func mint() -> PairingCodeResponse {
     state.withLock { $0.counts.mint += 1 }
@@ -1081,6 +1213,10 @@ private final class OwnerAccessLedger: Sendable {
   }
   private let state = Mutex(Handles())
   let receipts = OwnerAccessReceipts()
+  var collectorCancelled: Bool {
+    let collector = state.withLock { $0.collector }
+    return collector?.isCancelled ?? false
+  }
 
   func ownCollector(_ task: Task<FakeHubLinkSocket, any Error>) {
     let duplicate = state.withLock { state -> Bool in
@@ -1203,6 +1339,7 @@ private struct OwnerFixture: Sendable {
   static let stamp = "2026-11-12T00:00:00.000Z"
   static let device = "owner-fixture-device"
   static let user = "0197aaaa-0000-7000-8000-00000000a505"
+  static let joinCanaryID = "owner-fixture-public-upload-canary"
   static let secretValue = "owner-fixture-nonempty-secret"
 
   let manager: AccountManager
@@ -1253,6 +1390,7 @@ private struct OwnerFixture: Sendable {
     let reference = SecretRef.make()
     let secrets = OwnerSecrets(reference: reference, held: heldSecret, seeded: linked)
     let links = FakeHubLinkConnection()
+    let startupDiagnostics = OwnerStartupDiagnostics()
     var actualManager: AccountManager?
     do {
       let endpoint = try AgentProtocolResourceFixture.endpoint()
@@ -1354,10 +1492,13 @@ private struct OwnerFixture: Sendable {
       }
       access.ownCollector(collector)
       let setupDeadline = ContinuousClock.now + .seconds(10)
+      startupDiagnostics.arm(deadline: setupDeadline)
       try await ownerWait("startup collector armed", until: setupDeadline) {
         receipts.counts.collectorStarted == 1
       }
+      startupDiagnostics.emit(.collectorArmed, secrets: secrets, links: links, access: access)
       await manager.start()
+      startupDiagnostics.emit(.managerStartReturned, secrets: secrets, links: links, access: access)
       let scope = try ownerRequire(manager.current)
       safeRoot.requireScopeDrain()
       cleanup.resource {
@@ -1371,6 +1512,7 @@ private struct OwnerFixture: Sendable {
         cleanup.own { await refresh.value }
         await refresh.value
       }
+      startupDiagnostics.emit(.refreshJoined, secrets: secrets, links: links, access: access)
       let f = OwnerFixture(
         manager: manager, scope: scope, slot: slot, database: scope.database, registry: registry,
         events: events, endpoint: endpoint, root: root, reference: reference, link: link,
@@ -1422,6 +1564,7 @@ private struct OwnerFixture: Sendable {
       }
       return f
     } catch {
+      startupDiagnostics.emit(.failed, secrets: secrets, links: links, access: access)
       Issue.record("The direct owner-carrier fixture setup failed; private details were suppressed.")
       await access.finish(
         hub: actualManager?.current?.hub, api: api, secrets: secrets, links: links, heldSecret: heldSecret)
@@ -1518,10 +1661,12 @@ private struct OwnerFixture: Sendable {
     let hold = try OwnerNativeHold(endpoint)
     cleanup.release { hold.rollbackForCleanup() }
     try hold.acquire()
+    let started = OwnerCounter()
     let receipt = OwnerCounter()
     let issued = OwnerCounter()
     try ownerUncancelled()
     let task = Task { () -> Result<HubOwnerCarrier, any Error> in
+      started.increment()
       defer { receipt.increment() }
       do {
         let carrier = try await manager.prepareDormantHubOwner(
@@ -1532,22 +1677,33 @@ private struct OwnerFixture: Sendable {
     }
     cleanup.own { _ = await task.value }
     var observationFailed = false
+    var samples = 0
+    var elapsedMillis = 0
+    var diagnosticExit = OwnerNativeDiagnostics.Exit.polling
     do {
       let deadline = ContinuousClock.now + .seconds(5)
-      var samples = 0
+      defer {
+        elapsedMillis = OwnerDiagnosticBounds.milliseconds(
+          (deadline - .seconds(5)).duration(to: .now))
+      }
       var blocked = false
       while samples < 5000 && ContinuousClock.now < deadline {
         samples += 1
         let waiters = try OwnerMetadata.comparisonWaiters(
           inspector, database: endpoint.database, blocker: hold.backend)
-        guard waiters <= 1 else { throw OwnerFixtureFailure.failed }
+        guard waiters <= 1 else {
+          diagnosticExit = .multipleWaiters
+          throw OwnerFixtureFailure.failed
+        }
         if waiters == 1 { blocked = true; break }
         await Task.yield()
       }
       guard blocked else {
+        diagnosticExit = samples >= 5000 ? .sampleLimit : .deadline
         Issue.record("The actual native comparison wait predicate was not established.")
         throw OwnerFixtureFailure.failed
       }
+      diagnosticExit = .matched
       #expect(receipt.value == 0 && issued.value == 0)
       if retire {
         originalSlot.set(nil)
@@ -1555,7 +1711,25 @@ private struct OwnerFixture: Sendable {
       } else {
         try original.requireOrdinaryMemory()
       }
-    } catch { observationFailed = true }
+    } catch {
+      observationFailed = true
+      if diagnosticExit == .polling {
+        diagnosticExit = .metadataFailed
+      } else if diagnosticExit == .matched {
+        diagnosticExit = .memoryRefused
+      }
+    }
+    // One separate metadata read, bounded by the inspector's existing statement_timeout2s.
+    // It diagnoses the exact selector without changing its query,5s/5000samples or outcome.
+    var diagnosticMetadata = OwnerNativeDiagnostics.Metadata()
+    do {
+      diagnosticMetadata = try OwnerMetadata.comparisonWaiterDiagnostics(
+        inspector, database: endpoint.database, blocker: hold.backend)
+    } catch {}  // Diagnostic failure is a redacted readOK=false, not a new positive-path Issue.
+    OwnerNativeDiagnostics.emit(
+      .beforeRollback, retire: retire, exit: diagnosticExit, samples: samples,
+      elapsedMillis: elapsedMillis, started: started.value, returned: receipt.value, issued: issued.value,
+      result: .notJoined, metadata: diagnosticMetadata)
     // Mandatory release BEFORE awaiting the actual construction Task, even on metadata failure.
     do { try hold.rollback() } catch {
       // rollback() has returned from its synchronous writer-transfer helper: all failed-writer
@@ -1564,6 +1738,15 @@ private struct OwnerFixture: Sendable {
       observationFailed = true
     }
     let result = await task.value
+    let diagnosticResult: OwnerNativeDiagnostics.ResultKind
+    switch result {
+    case .success: diagnosticResult = .success
+    case .failure(let error): diagnosticResult = ownerFixedRefusal(error) ? .fixedRefusal : .other
+    }
+    OwnerNativeDiagnostics.emit(
+      .afterJoin, retire: retire, exit: diagnosticExit, samples: samples,
+      elapsedMillis: elapsedMillis, started: started.value, returned: receipt.value, issued: issued.value,
+      result: diagnosticResult, metadata: diagnosticMetadata)
     #expect(receipt.value == 1)
     if observationFailed { throw OwnerFixtureFailure.failed }
     switch result {
@@ -1806,6 +1989,47 @@ private enum OwnerMetadata {
         AND position('AS requires_two' IN a.query)>0
       """, [database, blocker]
     ).rows.count
+  }
+  static func comparisonWaiterDiagnostics(
+    _ c: PostgresConnection, database: String, blocker: String
+  ) throws -> OwnerNativeDiagnostics.Metadata {
+    let rows = try c.execute(
+      """
+      WITH capacity AS (
+        SELECT CASE WHEN unit='B' AND setting ~ '^[0-9]+$' THEN setting::bigint ELSE 0 END AS bytes,
+          (unit='B' AND setting ~ '^[0-9]+$') AS known
+        FROM pg_settings WHERE name='track_activity_query_size'
+      ), waiting AS (
+        SELECT a.query
+        FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid
+        WHERE a.datname=$1 AND a.application_name='b4app'
+          AND a.state='active' AND a.wait_event_type='Lock'
+          AND l.locktype='relation' AND l.relation='public.settings'::regclass
+          AND l.mode='AccessShareLock' AND NOT l.granted
+          AND $2::int=ANY(pg_blocking_pids(a.pid))
+      )
+      SELECT COALESCE((SELECT bytes FROM capacity),0)::text AS capacity_bytes,
+        COALESCE((SELECT known FROM capacity),false)::text AS capacity_known,
+        count(*)::text AS base_waiters,
+        count(*) FILTER (WHERE position('SELECT current_database() AS database' IN query)>0)::text AS early_matches,
+        count(*) FILTER (WHERE position('AS native_token_ref' IN query)>0)::text AS reference_matches,
+        count(*) FILTER (WHERE position('AS requires_two' IN query)>0)::text AS late_matches,
+        COALESCE(max(octet_length(query)),0)::text AS max_query_bytes
+      FROM waiting
+      """, [database, blocker]
+    ).rows
+    guard rows.count == 1, let row = rows.first,
+      let capacity = row.int("capacity_bytes"), let base = row.int("base_waiters"),
+      let early = row.int("early_matches"), let reference = row.int("reference_matches"),
+      let late = row.int("late_matches"), let queryBytes = row.int("max_query_bytes"),
+      let known = row.text("capacity_known"), known == "true" || known == "false"
+    else { throw OwnerFixtureFailure.failed }
+    return OwnerNativeDiagnostics.Metadata(
+      readOK: true, capacityKnown: known == "true", capacityBytes: OwnerDiagnosticBounds.bytes(capacity),
+      baseWaiters: OwnerDiagnosticBounds.count(base), earlyMatches: OwnerDiagnosticBounds.count(early),
+      referenceMatches: OwnerDiagnosticBounds.count(reference),
+      lateMatches: OwnerDiagnosticBounds.count(late),
+      maxQueryBytes: OwnerDiagnosticBounds.bytes(queryBytes))
   }
   static func requireNoAppBackends(_ endpoint: PostgresEndpoint) async throws {
     let c = try connection(endpoint)
