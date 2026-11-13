@@ -176,6 +176,17 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
       try fresh.setViewSettings(quietThreads: .hidden, density: .normal)
         == ViewSettings(quietThreads: .hidden, density: .normal))
     #expect(try storedRow(fresh)?["density"] == .some("normal"))
+    // A stored density this build does not know is a newer build's value: it is kept.
+    let newer = try WorkspaceDatabase.temporary()
+    try newer.write { c in
+      try c.execute("SET LOCAL b4app.replaying = 'on'")
+      try c.execute(
+        "INSERT INTO \"viewSettings\" (\"id\", \"quietThreads\", \"density\") VALUES ('view', 'tiny', 'huge')"
+      )
+    }
+    try newer.setViewSettings(quietThreads: .collapsed)
+    #expect(try storedRow(newer)?["density"] == .some("huge"))
+    #expect(try storedRow(newer)?["quietThreads"] == .some("collapsed"))
   }
 
   /// Migration 0014 rewrites the old sidebar values into `quietThreads` and `density`, logging and

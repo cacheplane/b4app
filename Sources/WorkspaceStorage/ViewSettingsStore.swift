@@ -14,7 +14,8 @@ extension WorkspaceDatabase {
   ///
   /// Setting `quietThreads` without `density` on a stored row whose old value implied a density
   /// (`tiny`, with no density stored: `ViewSettings.impliedDensity`) also writes that density, so the
-  /// rows keep their size when the old value is replaced.
+  /// rows keep their size when the old value is replaced. A stored density this build does not know is
+  /// never replaced that way.
   @discardableResult
   public func setViewSettings(
     arrangement: ViewSettings.Arrangement? = nil, quietThreads: ViewSettings.QuietThreads? = nil,
@@ -32,8 +33,11 @@ extension WorkspaceDatabase {
         let stored = try c.execute(
           "SELECT \"quietThreads\", \"density\" FROM \"viewSettings\" WHERE \"id\" = $1", [ViewSettings.rowId]
         ).rows.first,
+        // Only when no density is stored: a text this build does not know is a newer build's value,
+        // and is kept.
+        stored.text("density") == nil,
         let implied = ViewSettings.impliedDensity(
-          storedQuietThreads: stored.text("quietThreads"), storedDensity: stored.text("density"))
+          storedQuietThreads: stored.text("quietThreads"), storedDensity: nil)
       {
         fields.append(("density", implied.rawValue))
       }
