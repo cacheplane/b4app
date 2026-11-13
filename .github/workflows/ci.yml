@@ -147,7 +147,7 @@ jobs:
               "Sources/Coordinator/Accounts/AccountManager.swift": "06119d341433560101eca806f4497eb4ae93b9b99c06db2968ce33e8520d2cfe",
               "Sources/Coordinator/HubSync/HubSync.swift": "1e5524a1fb3616c6ce2db218168b3c4d144ba57821c51b5c06dbdbcdc2b7338c",
               "Sources/WorkspaceStorage/ProtocolActivation.swift": "19c70eaee753786a2493f12aa4af074070ce60bc93bd1796d28226d88418ae99",
-              "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "c7e72dd2e9f0fce429b4b3aebe1e589a9544baa9dea564ece5f767840e4e4ec5",
+              "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "23a1c01b827d4d0ee1c533ba5c0391500efd37c28d0fa71182eecb43c70af23f",
           }
 
           class Rejected(Exception):
@@ -390,10 +390,11 @@ jobs:
               CANCELLED = False
               OWNERS = []
               FAILURE_CLEANUP_USED = False
+              DECLARATION_NOTE_OBSERVATION = None
               MAX_INPUT = 4194304
               MAX_SAMPLE = 262144
               MAX_OUTPUT = 65536
-              SOURCE_PINS = {'Sources/Coordinator/Accounts/AccountManager.swift': '06119d341433560101eca806f4497eb4ae93b9b99c06db2968ce33e8520d2cfe', 'Sources/Coordinator/HubSync/HubOwnerCarrier.swift': '217eee004c3d36fbeffc4a7efb96bc9eee955ca656eacc0e000dcb619332f51b', 'Sources/Coordinator/HubSync/HubSync.swift': '1e5524a1fb3616c6ce2db218168b3c4d144ba57821c51b5c06dbdbcdc2b7338c', 'Sources/WorkspaceStorage/ProtocolActivation.swift': '19c70eaee753786a2493f12aa4af074070ce60bc93bd1796d28226d88418ae99', 'Tests/CoordinatorTests/HubOwnerCarrierTests.swift': 'c7e72dd2e9f0fce429b4b3aebe1e589a9544baa9dea564ece5f767840e4e4ec5'}
+              SOURCE_PINS = {'Sources/Coordinator/Accounts/AccountManager.swift': '06119d341433560101eca806f4497eb4ae93b9b99c06db2968ce33e8520d2cfe', 'Sources/Coordinator/HubSync/HubOwnerCarrier.swift': '217eee004c3d36fbeffc4a7efb96bc9eee955ca656eacc0e000dcb619332f51b', 'Sources/Coordinator/HubSync/HubSync.swift': '1e5524a1fb3616c6ce2db218168b3c4d144ba57821c51b5c06dbdbcdc2b7338c', 'Sources/WorkspaceStorage/ProtocolActivation.swift': '19c70eaee753786a2493f12aa4af074070ce60bc93bd1796d28226d88418ae99', 'Tests/CoordinatorTests/HubOwnerCarrierTests.swift': '23a1c01b827d4d0ee1c533ba5c0391500efd37c28d0fa71182eecb43c70af23f'}
               SOURCE_NAMES = ['AccountCommandTests.swift', 'AccountManagerTests.swift', 'AgentProtocolAccountMigrationL2Tests.swift', 'AgentProtocolAccountMigrationTests.swift', 'AgentProtocolArchiveATests.swift', 'AgentProtocolConnectionIdentityTests.swift', 'AgentProtocolFoundationFixture.swift', 'AgentProtocolGrantCredentialTests.swift', 'AgentProtocolIdentityManagedFixtures.swift', 'AgentProtocolLegacyManagedTests.swift', 'AgentProtocolMainTenAccountReopenTests.swift', 'AgentProtocolMigrationBackupPathTests.swift', 'AgentProtocolPrivateBackupTests.swift', 'AgentProtocolResourceFixture.swift', 'AgentProtocolRetirementTests.swift', 'AgentProtocolUnicodeIdentityTests.swift', 'CoordinatorTests.swift', 'EnvironmentServiceTests.swift', 'FakeB4Project.swift', 'HubLinkRelayTests.swift', 'HubOwnerCarrierTests.swift', 'HubPullTests.swift', 'HubSyncTests.swift', 'InspectionObservation.swift', 'InspectionObservationTests.swift', 'InspectionRequestObservation.swift', 'InspectionRequestObservationTests.swift', 'KeepAwakeTests.swift', 'LaunchAgentInstallTests.swift', 'LauncherTests.swift', 'LegacyAdoptionLiveTests.swift', 'LegacyAdoptionTests.swift', 'LocalServerTests.swift', 'OwnedCloseConcurrencyTests.swift', 'PairingTests.swift', 'RelayExecutorTests.swift', 'SessionTests.swift', 'SignedInCoordinator.swift', 'SleepWatcherTests.swift', 'SocketClosePreservationTests.swift', 'SocketLifecycleTests.swift', 'SocketResponseOwnershipTests.swift', 'SocketServerShutdownTests.swift', 'SyncSignal.swift', 'ThreadDeleteTests.swift', 'UsageTests.swift']
               ARGUMENT_TEMPLATE = ['-target', 'arm64-apple-macosx26.0', '-incremental', '-enable-batch-mode', '-serialize-diagnostics', '-index-store-path', '{CHECKOUT}/.build/arm64-apple-macosx/debug/index/store', '-Onone', '-enable-testing', '-Xfrontend', '-enable-cross-import-overlays', '-j3', '-DSWIFT_PACKAGE', '-DDEBUG', '-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOLLHTTP.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOLLHTTP/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOAtomics.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOAtomics/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOWASI.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOWASI/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOWindows/include/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOWindows/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOLinux.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOLinux/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIODarwin.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIODarwin/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOFreeBSD.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOFreeBSD/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOOpenBSD.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOOpenBSD/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOPosix.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOPosix/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/checkouts/swift-subprocess/Sources/_SubprocessCShims/include/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-subprocess/Sources/_SubprocessCShims/include', '-module-cache-path', '{CHECKOUT}/.build/arm64-apple-macosx/debug/ModuleCache', '-parseable-output', '-parse-as-library', '-swift-version', '6', '-enable-upcoming-feature', 'NonisolatedNonsendingByDefault', '-enable-upcoming-feature', 'InferIsolatedConformances', '-plugin-path', '/Applications/Xcode_26.6.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing', '-sdk', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk', '-F', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks', '-I', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib', '-L', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib', '-g', '-Xcc', '-isysroot', '-Xcc', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk', '-Xcc', '-F', '-Xcc', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks', '-Xcc', '-fPIC', '-Xcc', '-g', '-package-name', 'b4app']
               TOP_FIELDS = {'builtTestProducts': 'array', 'copyCommands': 'object', 'explicitTargetDependencyImportCheckingMode': 'object', 'generatedSourceTargetSet': 'array', 'pluginDescriptions': 'array', 'swiftCommands': 'object', 'swiftFrontendCommands': 'object', 'swiftTargetScanArgs': 'object', 'targetDependencyMap': 'object', 'testDiscoveryCommands': 'object', 'testEntryPointCommands': 'object', 'traitConfiguration': 'object', 'writeCommands': 'object'}
@@ -830,6 +831,83 @@ jobs:
               INIT_NOTE = "'init(hub:database:baseURL:reference:store:makeAPI:)' declared here"
               IDENTITY_NOTES = ("change 'let' to 'var' to make it mutable", "'identity' declared here")
 
+              # Closed public observation alphabet; never extends diagnostic acceptance.
+              NOTE_LEXEMES = {'Coordinator': 1, 'HubSync': 2, 'ConfiguredClientOrigin': 3, 'Foundation': 4, 'WorkspaceStorage': 5, 'WorkspaceSecrets': 6, 'WorkspaceDatabase': 7, 'URL': 8, 'SecretRef': 9, 'SecretStore': 10, 'APIFactory': 11, 'HubAPI': 12, 'UUID': 13, 'Sendable': 14, 'hub': 15, 'database': 16, 'baseURL': 17, 'reference': 18, 'store': 19, 'makeAPI': 20, 'identity': 21, 'hubIdentity': 22, 'api': 23, 'init': 24, 'deinit': 25, 'final': 26, 'class': 27, 'struct': 28, 'enum': 29, 'let': 30, 'var': 31, 'private': 32, 'fileprivate': 33, 'internal': 34, 'public': 35, 'any': 36, 'func': 37, 'unchecked': 38, 'escaping': 39, 'Swift': 40, 'WorkspaceSync': 41, 'String': 42, 'async': 43, 'throws': 44, 'ObjectIdentifier': 45, 'FoundationEssentials': 46, 'Synchronization': 47, 'Mutex': 48, 'nonisolated': 49, 'get': 50}
+              NOTE_PUNCTUATION = {'.': 101, ':': 102, ',': 103, '(': 104, ')': 105, '{': 106, '}': 107, '<': 108, '>': 109, '@': 110, '?': 111, '&': 112, '=': 113, '->': 114, "'": 115}
+              NOTE_FILES = {'Coordinator.HubSync': 'virtual_hubsync', 'Coordinator.HubSync (fileprivate)': 'virtual_hubsync_fileprivate', 'Coordinator.HubSync (internal)': 'virtual_hubsync_internal', 'Coordinator.HubSync.ConfiguredClientOrigin': 'virtual_hubsync_configured_client_origin', 'Coordinator.HubSync.ConfiguredClientOrigin (fileprivate)': 'virtual_hubsync_configured_client_origin_fileprivate', 'Coordinator.HubSync.ConfiguredClientOrigin (internal)': 'virtual_hubsync_configured_client_origin_internal'}
+
+              def declaration_note_observation(header, context_lines, note_path, note_line, note_columns, note_messages):
+                  global DECLARATION_NOTE_OBSERVATION
+                  file_name, line_text, col_text, severity, message = header
+                  base = {"ordinal": 2, "block": 2, "stage": "declaration_note",
+                          "path_expected": file_name == note_path, "line_expected": int(line_text) == note_line,
+                          "column_expected": int(col_text) in note_columns, "severity_expected": severity == "note",
+                          "message_expected": message in note_messages, "severity": severity,
+                          "known_note_complete": False, "cause": "observer_failure"}
+                  DECLARATION_NOTE_OBSERVATION = base
+                  try:
+                      file_id = "checkout_hubsync_source" if file_name == note_path else NOTE_FILES.get(file_name)
+                      require(file_id is not None, "unknown_file")
+                      member = re.fullmatch(r"'((?:Coordinator\.)?(?:HubSync\.)?(?:ConfiguredClientOrigin\.)?init\(hub:database:baseURL:reference:store:makeAPI:\))' declared here", message)
+                      require(member is not None, "unknown_message")
+                      line_number, column = int(line_text), int(col_text)
+                      require(1 <= line_number <= 256 and 1 <= column <= 256, "location_bound")
+                      require(len(context_lines) <= 12, "observation_bound")
+                      runs = 32  # Conservative header and fixed renderer overhead.
+
+                      def charge(count):
+                          nonlocal runs
+                          runs += count
+                          require(runs <= 512, "observation_bound")
+
+                      def tokens(value):
+                          result = []
+                          for atom in re.findall(r" +|[A-Za-z_][A-Za-z_0-9]*|->|.", value):
+                              charge(1)
+                              if atom.startswith(" "):
+                                  require(len(atom) <= 256, "observation_bound")
+                                  result.append([0, len(atom)])
+                              else:
+                                  token_id = NOTE_LEXEMES.get(atom, NOTE_PUNCTUATION.get(atom))
+                                  require(token_id is not None and token_id != 115, "unknown_context_lexeme")
+                                  result.append([token_id, 1])
+                          return result
+
+                      member_runs = tokens(member[1])
+                      message_id = ({"kind": "init_note"} if message == INIT_NOTE else
+                                    {"kind": "member_declared_here", "runs": member_runs})
+                      rows = []
+                      for rendered in context_lines:
+                          if rendered == "":
+                              charge(1)
+                              rows.append({"kind": "blank"})
+                              continue
+                          source_row = re.fullmatch(r"( {0,255})([1-9][0-9]{0,2}) \| (.*)", rendered)
+                          if source_row:
+                              spaces, number_text, value = source_row.groups()
+                              number = int(number_text)
+                              require(1 <= number <= 256 and len(spaces) + len(number_text) <= 256, "location_bound")
+                              charge(12)
+                              rows.append({"kind": "source", "gutter_spaces": len(spaces), "line": number,
+                                           "delimiter": "space_bar_space", "runs": tokens(value)})
+                              continue
+                          annotation = re.fullmatch(r"( {1,256})\| ( {0,256})`- (error|note|warning): (.+)", rendered)
+                          require(annotation is not None, "unknown_renderer")
+                          gutter, indent, annotation_severity, annotation_message = annotation.groups()
+                          require(annotation_severity == severity and annotation_message == message, "unknown_renderer")
+                          charge(32 + len(member_runs))
+                          rows.append({"kind": "annotation", "gutter_spaces": len(gutter), "column_spaces": len(indent),
+                                       "delimiter": "bar_space", "marker": "backtick_dash_space", "message": "header"})
+                      complete = {**base, "known_note_complete": True, "cause": "complete", "file": file_id,
+                                  "line": line_number, "column": column, "message": message_id, "rows": rows}
+                      encoded = json.dumps({"category": "owner_carrier_declaration_note_observation", **complete}, sort_keys=True)
+                      require(len(encoded.encode("ascii")) + 1 <= 8192, "observation_bound")
+                      DECLARATION_NOTE_OBSERVATION = complete
+                  except Failure as failure:
+                      base["cause"] = failure.code
+                  except BaseException:
+                      pass
+
               def diagnostics(data, ordinal, path, fixture, checkout):
                   if ordinal == 1:
                       require(not data, "positive_output")
@@ -870,8 +948,16 @@ jobs:
                                   and severity == "error" and message in messages, "intended_error")
                           allowed, width = source, 1
                       else:
-                          require(file_name == note_path and line_number == note_line and column in note_columns
-                                  and severity == "note" and message in note_messages, "declaration_note")
+                          try:
+                              require(file_name == note_path and line_number == note_line and column in note_columns
+                                      and severity == "note" and message in note_messages, "declaration_note")
+                          except Failure:
+                              if ordinal == 2:
+                                  try:
+                                      declaration_note_observation(header, context_lines, note_path, note_line, note_columns, note_messages)
+                                  except BaseException:
+                                      pass
+                              raise
                           allowed, width = note_context, 2
                       seen = []
                       annotations = 0
@@ -976,6 +1062,11 @@ jobs:
               for receipt in cleanup_receipts:
                   emit("owner_carrier_failed_cleanup", **receipt)
               if result:
+                  if DECLARATION_NOTE_OBSERVATION is not None:
+                      try:
+                          emit("owner_carrier_declaration_note_observation", **DECLARATION_NOTE_OBSERVATION)
+                      except BaseException:
+                          pass
                   emit("owner_carrier_compiler_controls_failed", reason=reason, compiler_controls_qualified=False,
                        descendant_quiescence_proven=False)
               else:

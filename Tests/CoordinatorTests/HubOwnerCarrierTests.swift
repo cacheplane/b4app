@@ -1571,6 +1571,10 @@ private struct OwnerFixture: Sendable {
             socket.deviceClosedCode == 1000
           }
         }
+        guard ContinuousClock.now < observationDeadline else {
+          Issue.record("The owner-carrier observation phase completed after its deadline.")
+          throw OwnerFixtureFailure.failed
+        }
         let emptyDrain = try await scope.hub.pushNow()
         #expect(emptyDrain == 0 && api.counts.push == 0)
         let origin = try await scope.hub.captureConfiguredClientOrigin()
@@ -1580,10 +1584,6 @@ private struct OwnerFixture: Sendable {
         await scope.hub.stop()
         let emptyDrain = try await scope.hub.pushNow()
         #expect(emptyDrain == 0 && api.counts.factory == 0 && api.counts.active == 0)
-      }
-      guard ContinuousClock.now < observationDeadline else {
-        Issue.record("The owner-carrier observation phase completed after its deadline.")
-        throw OwnerFixtureFailure.failed
       }
       return f
     } catch {
