@@ -717,16 +717,20 @@ private final class OwnerStartupDiagnostics: Sendable {
   enum Stage: String, Hashable, Sendable { case collectorArmed, managerStartReturned, refreshJoined, failed }
   private struct State {
     var deadline: ContinuousClock.Instant?
+    var observationDeadline: ContinuousClock.Instant?
     var emitted: Set<Stage> = []
   }
   private let state = Mutex(State())
 
   func arm(deadline: ContinuousClock.Instant) { state.withLock { $0.deadline = deadline } }
+  func beginObservation(deadline: ContinuousClock.Instant) {
+    state.withLock { $0.observationDeadline = deadline }
+  }
   func emit(
     _ stage: Stage, secrets: OwnerSecrets, links: FakeHubLinkConnection, access: OwnerAccessLedger
   ) {
-    let observation = state.withLock { state -> (Bool, ContinuousClock.Instant?) in
-      (state.emitted.insert(stage).inserted, state.deadline)
+    let observation = state.withLock { state -> (Bool, ContinuousClock.Instant?, ContinuousClock.Instant?) in
+      (state.emitted.insert(stage).inserted, state.deadline, state.observationDeadline)
     }
     guard observation.0 else { return }  // At most four fixed records per fixture, never per poll.
     let now = ContinuousClock.now
@@ -740,6 +744,16 @@ private final class OwnerStartupDiagnostics: Sendable {
         OwnerDiagnosticBounds.milliseconds(now.duration(to: $0))
       } ?? 0
     let expired = observation.1.map { now >= $0 } ?? false
+    let observationArmed = observation.2 != nil
+    let observationElapsedMillis =
+      observation.2.map {
+        OwnerDiagnosticBounds.milliseconds(($0 - .seconds(10)).duration(to: now))
+      } ?? 0
+    let observationRemainingMillis =
+      observation.2.map {
+        OwnerDiagnosticBounds.milliseconds(now.duration(to: $0))
+      } ?? 0
+    let observationExpired = observation.2.map { now >= $0 } ?? false
     let secret = secrets.counts
     let collector = access.receipts.counts
     let readEntered = OwnerDiagnosticBounds.count(secret.readEntered)
@@ -752,7 +766,7 @@ private final class OwnerStartupDiagnostics: Sendable {
     let parentCancelled = Task.isCancelled
     let collectorCancelled = access.collectorCancelled
     print(
-      "A5_STARTUP stage=\(stage.rawValue) armed=\(armed) elapsedMillis=\(elapsed) remainingMillis=\(remaining) expired=\(expired) parentCancelled=\(parentCancelled) collectorCancelled=\(collectorCancelled) readEntered=\(readEntered) readSettled=\(readSettled) activeRead=\(activeRead) opens=\(opens) collectorStarted=\(collectorStarted) collectorReturned=\(collectorReturned) collectorSucceeded=\(collectorSucceeded)"
+      "A5_STARTUP stage=\(stage.rawValue) armed=\(armed) elapsedMillis=\(elapsed) remainingMillis=\(remaining) expired=\(expired) observationArmed=\(observationArmed) observationElapsedMillis=\(observationElapsedMillis) observationRemainingMillis=\(observationRemainingMillis) observationExpired=\(observationExpired) parentCancelled=\(parentCancelled) collectorCancelled=\(collectorCancelled) readEntered=\(readEntered) readSettled=\(readSettled) activeRead=\(activeRead) opens=\(opens) collectorStarted=\(collectorStarted) collectorReturned=\(collectorReturned) collectorSucceeded=\(collectorSucceeded)"
     )
   }
 }
@@ -1514,6 +1528,9 @@ private struct OwnerFixture: Sendable {
         cleanup.own { await refresh.value }
         await refresh.value
       }
+      // Observe the source after actual initialization and profile refresh have joined.
+      let observationDeadline = ContinuousClock.now + .seconds(10)
+      startupDiagnostics.beginObservation(deadline: observationDeadline)
       startupDiagnostics.emit(.refreshJoined, secrets: secrets, links: links, access: access)
       let f = OwnerFixture(
         manager: manager, scope: scope, slot: slot, database: scope.database, registry: registry,
@@ -1524,23 +1541,23 @@ private struct OwnerFixture: Sendable {
         && manager.current?.instance == scope.instance
       guard actualCurrent else { throw OwnerFixtureFailure.failed }
       if linked {
-        try await ownerWait("startup pull entry", until: setupDeadline) { api.counts.pull == 1 }
-        try await ownerWait("startup source secret read", until: setupDeadline) {
+        try await ownerWait("startup pull entry", until: observationDeadline) { api.counts.pull == 1 }
+        try await ownerWait("startup source secret read", until: observationDeadline) {
           secrets.counts.readEntered == 1
         }
         if heldSecret { access.expectLateOpen() }
-        try await ownerWait("startup display name", until: setupDeadline) {
+        try await ownerWait("startup display name", until: observationDeadline) {
           try await scope.hub.status().displayName == "Fixture User"
         }
         if !heldSecret {
-          try await ownerWait("startup collector returned", until: setupDeadline) {
+          try await ownerWait("startup collector returned", until: observationDeadline) {
             receipts.counts.collectorReturned == 1
           }
           let socket = try await collector.value
           access.remember(socket)
         }
         await scope.hub.stop()
-        try await ownerWait("startup pull settled", until: setupDeadline) {
+        try await ownerWait("startup pull settled", until: observationDeadline) {
           api.counts.pullSettled == 1 && api.counts.active == 0
         }
         if heldSecret {
@@ -1550,7 +1567,7 @@ private struct OwnerFixture: Sendable {
           guard exact else { throw OwnerFixtureFailure.failed }
         } else {
           let socket = try await collector.value
-          try await ownerWait("startup source socket closed", until: setupDeadline) {
+          try await ownerWait("startup source socket closed", until: observationDeadline) {
             socket.deviceClosedCode == 1000
           }
         }
@@ -1563,6 +1580,10 @@ private struct OwnerFixture: Sendable {
         await scope.hub.stop()
         let emptyDrain = try await scope.hub.pushNow()
         #expect(emptyDrain == 0 && api.counts.factory == 0 && api.counts.active == 0)
+      }
+      guard ContinuousClock.now < observationDeadline else {
+        Issue.record("The owner-carrier observation phase completed after its deadline.")
+        throw OwnerFixtureFailure.failed
       }
       return f
     } catch {
