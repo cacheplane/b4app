@@ -546,7 +546,10 @@ async fn published_view_settings_remain_public_at_both_protocol_floors(pool: PgP
     let mac = common::enrolled_as(&admin, &app, "view-owner", "macos").await;
     let bob = common::enrolled_as(&admin, &app, "view-other", "ios").await;
     assert_eq!(phone.user_id, mac.user_id);
+    assert_ne!(phone.device_id, mac.device_id);
+    assert_eq!(phone.org_id, mac.org_id);
     assert_eq!(phone.org_id, bob.org_id);
+    assert_ne!(phone.user_id, bob.user_id);
     for (floor, base) in [(1, 0), (2, 2)] {
         if floor == 2 {
             settings::raise_protocol_floor(&admin, 2).await.unwrap();
@@ -592,6 +595,7 @@ async fn published_view_settings_remain_public_at_both_protocol_floors(pool: PgP
             .filter(|change| change.table == "viewSettings")
             .collect();
         assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].row_id, "view");
         assert_eq!(rows[0].value, Some(expected.clone()));
         let feed = changes::pull_for_protocol(&app, &phone, 0, 100, client)
             .await
@@ -604,27 +608,53 @@ async fn published_view_settings_remain_public_at_both_protocol_floors(pool: PgP
             (base + 2) as usize
         );
         assert_eq!(feed.changes.last().unwrap().value, Some(json!("someday")));
-        // A different user cannot adopt/overwrite the existing per-org `view` key.
+        // Each user owns an independent stored row; both still use `view` on the wire.
         let mut foreign = first;
         foreign.device_seq = base + 1;
-        foreign.value = Some(json!({"id":"view","arrangement":"not-owned"}));
+        foreign.value = Some(json!({"id":"view","arrangement":"bob-layout"}));
         let attempted = changes::push_for_protocol(&app, &bob, &[foreign], client)
             .await
             .unwrap();
-        assert!(
-            attempted.rejected.is_empty(),
-            "the published policy records then skips this collision"
+        assert!(attempted.rejected.is_empty());
+        assert_eq!(attempted.accepted_through, base + 1);
+        let stored_id = format!("view:{}", phone.user_id);
+        let mut stored_expected = expected.clone();
+        stored_expected["id"] = json!(stored_id.clone());
+        let physical:(serde_json::Value,sqlx::types::Uuid,sqlx::types::Uuid)=sqlx::query_as("SELECT to_jsonb(t)-ARRAY['org_id','user_id','device_id','owner_device_id','deleted_at'],user_id,owner_device_id FROM public.\"viewSettings\" t WHERE org_id=$1 AND id=$2")
+            .bind(phone.org_id).bind(&stored_id).fetch_one(&admin.pool).await.unwrap();
+        assert_eq!(physical, (stored_expected, phone.user_id, phone.device_id));
+        let bob_expected = json!({"id":"view","arrangement":"bob-layout","quietThreads":null,"showArchived":null,"updatedAt":null});
+        let bob_stored_id = format!("view:{}", bob.user_id);
+        let mut bob_stored_expected = bob_expected.clone();
+        bob_stored_expected["id"] = json!(bob_stored_id.clone());
+        let bob_physical:(serde_json::Value,sqlx::types::Uuid,sqlx::types::Uuid)=sqlx::query_as("SELECT to_jsonb(t)-ARRAY['org_id','user_id','device_id','owner_device_id','deleted_at'],user_id,owner_device_id FROM public.\"viewSettings\" t WHERE org_id=$1 AND id=$2")
+            .bind(bob.org_id).bind(&bob_stored_id).fetch_one(&admin.pool).await.unwrap();
+        assert_eq!(
+            bob_physical,
+            (bob_stored_expected, bob.user_id, bob.device_id)
         );
-        let physical:(serde_json::Value,sqlx::types::Uuid,sqlx::types::Uuid)=sqlx::query_as("SELECT to_jsonb(t)-ARRAY['org_id','user_id','device_id','owner_device_id','deleted_at'],user_id,owner_device_id FROM public.\"viewSettings\" t WHERE org_id=$1 AND id='view'")
-            .bind(phone.org_id).fetch_one(&admin.pool).await.unwrap();
-        assert_eq!(physical, (expected, phone.user_id, phone.device_id));
         let other = snapshot::take_for_protocol(&app, &bob, client)
             .await
             .unwrap();
-        assert!(!other
+        let other_rows: Vec<_> = other
             .changes
             .iter()
-            .any(|change| change.table == "viewSettings"));
+            .filter(|change| change.table == "viewSettings")
+            .collect();
+        assert_eq!(other_rows.len(), 1);
+        assert_eq!(other_rows[0].row_id, "view");
+        assert_eq!(other_rows[0].value, Some(bob_expected));
+        let same_user = snapshot::take_for_protocol(&app, &mac, client)
+            .await
+            .unwrap();
+        let same_user_rows: Vec<_> = same_user
+            .changes
+            .iter()
+            .filter(|change| change.table == "viewSettings")
+            .collect();
+        assert_eq!(same_user_rows.len(), 1);
+        assert_eq!(same_user_rows[0].row_id, "view");
+        assert_eq!(same_user_rows[0].value, Some(expected.clone()));
         let before: (i64, bool) =
             sqlx::query_as("SELECT last_value,is_called FROM changes_hub_seq_seq")
                 .fetch_one(&admin.pool)
