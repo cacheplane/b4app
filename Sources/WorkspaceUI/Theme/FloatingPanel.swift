@@ -125,9 +125,19 @@
       var down: NSEvent
       var pointer: CGPoint
       var origin: CGPoint
-      /// The press landed on a field, which gets it back if it does not become a drag.
-      var onField: Bool
+      /// What the press landed on, which gets it back if it does not become a drag.
+      var start: Start
       var moving = false
+    }
+    /// Where a press that can become a drag landed.
+    private enum Start: String {
+      /// A drag area, with nothing over it.
+      case area
+      /// The empty part of a text field.
+      case field
+      /// A drag area with SwiftUI's own content over it (a header's glyph, a footer's label or
+      /// button): SwiftUI answers for that spot, so the hosting view is what the press hits.
+      case hosted
     }
     private var press: Press?
     #if DEBUG
@@ -150,18 +160,16 @@
           trace =
             "down on \(hit.map { String(describing: type(of: $0)) } ?? "nothing")"
             + " text \(text(at: event).map { String(describing: type(of: $0)) } ?? "none")"
-            + " start \(start.map { String($0) } ?? "nil") clicks \(event.clickCount)"
+            + " start \(start?.rawValue ?? "nil") clicks \(event.clickCount)"
             + " at \(Int(event.locationInWindow.x)),\(Int(event.locationInWindow.y)) pointer \(pointer(event))"
           dragEvents = 0
         #endif
-        guard let onField = start else { break }
-        if !onField, event.clickCount == 2 {
+        guard let start else { break }
+        if start != .field, event.clickCount == 2 {
           resetRequested()
           return
         }
-        press = Press(
-          down: event, pointer: pointer(event), origin: frame.origin,
-          onField: onField)
+        press = Press(down: event, pointer: pointer(event), origin: frame.origin, start: start)
         return
       case .leftMouseDragged:
         guard var current = press else { break }
@@ -190,10 +198,15 @@
         #endif
         if current.moving {
           dragEnded()
-        } else if current.onField {
+        } else if current.start == .field {
           // It was a click on the field's empty part: the cursor goes to the end of its text. (Giving
           // the field the press itself now would start its own tracking loop, with no release to end it.)
           clickPastText(current.down)
+        } else if current.start == .hosted {
+          // It was a click on something of SwiftUI's (a button in a footer): it gets the press and
+          // the release it was kept from, one after the other.
+          super.sendEvent(current.down)
+          super.sendEvent(event)
         }
         return
       default:
@@ -212,32 +225,57 @@
       }
     }
 
-    /// The field or the field's editor under a press. The press may land on a view inside either (a
-    /// clip view), depending on the system, so it is the nearest of the few views above the one hit.
+    /// The field's editor, else the field, under a press: found by where they are, not by asking what
+    /// the press hits. SwiftUI answers for a spot its own content covers, and then the hit is the
+    /// hosting view, whatever AppKit view is drawn there (in a palette's header, always).
     private func text(at event: NSEvent) -> NSView? {
-      guard let hit = contentView?.hitTest(event.locationInWindow) else { return nil }
-      return sequence(first: hit, next: \.superview).prefix(4).first { $0 is NSTextView || $0 is NSTextField }
+      guard let contentView else { return nil }
+      return Self.deepest(in: contentView, at: event.locationInWindow) { $0 is NSTextView }
+        ?? Self.deepest(in: contentView, at: event.locationInWindow) { $0 is NSTextField }
     }
 
-    /// Whether a press here can start a drag, and if so whether it is on a field: nil for a press on
-    /// anything else (a row, a button, text in a field).
-    private func dragStart(_ event: NSEvent) -> Bool? {
+    private func dragArea(at event: NSEvent) -> Bool {
+      guard let contentView else { return false }
+      return Self.deepest(in: contentView, at: event.locationInWindow) { $0 is WindowDragArea.Handle } != nil
+    }
+
+    /// The deepest visible view that `matches` and has the point (in the window) inside it.
+    private static func deepest(
+      in view: NSView, at point: CGPoint, matching matches: (NSView) -> Bool
+    ) -> NSView? {
+      guard !view.isHidden else { return nil }
+      for child in view.subviews.reversed() {
+        if let found = deepest(in: child, at: point, matching: matches) { return found }
+      }
+      return matches(view) && view.convert(view.bounds, to: nil).contains(point) ? view : nil
+    }
+
+    /// Whether a press here can start a drag, and from what: nil for a press on anything else (a row,
+    /// text in a field).
+    private func dragStart(_ event: NSEvent) -> Start? {
       guard let hit = contentView?.hitTest(event.locationInWindow) else { return nil }
-      if hit is WindowDragArea.Handle { return false }
-      guard let text = text(at: event) else { return nil }
-      let point = text.convert(event.locationInWindow, from: nil)
-      // The text's width is measured from the text itself, not asked of a layout manager: a field's
-      // editor has one only under TextKit 1, and without it no press on a field ever began a drag.
-      if let editor = text as? NSTextView {
-        let written = editor.attributedString()
-        let width = written.length == 0 ? 0 : written.size().width
-        let end = editor.textContainerOrigin.x + (editor.textContainer?.lineFragmentPadding ?? 0) + width
-        return point.x > end + 6 ? true : nil
+      // Only where nothing of AppKit's own claims the press (a row's list, a scroller): the drag area
+      // itself, a text view, or the hosting view answering for SwiftUI.
+      let hosted = hit === contentView
+      if let text = text(at: event),
+        hosted || hit === text || hit.isDescendant(of: text) || text.isDescendant(of: hit)
+      {
+        let point = text.convert(event.locationInWindow, from: nil)
+        // The text's width is measured from the text itself, not asked of a layout manager: a field's
+        // editor has one only under TextKit 1.
+        if let editor = text as? NSTextView {
+          let written = editor.attributedString()
+          let width = written.length == 0 ? 0 : written.size().width
+          let end = editor.textContainerOrigin.x + (editor.textContainer?.lineFragmentPadding ?? 0) + width
+          return point.x > end + 6 ? .field : nil
+        }
+        if let field = text as? NSTextField {
+          let width = field.stringValue.isEmpty ? 0 : field.attributedStringValue.size().width
+          return point.x > width + 6 ? .field : nil
+        }
       }
-      if let field = text as? NSTextField {
-        let width = field.stringValue.isEmpty ? 0 : field.attributedStringValue.size().width
-        return point.x > width + 6 ? true : nil
-      }
+      if hit is WindowDragArea.Handle { return .area }
+      if hosted, dragArea(at: event) { return .hosted }
       return nil
     }
   }

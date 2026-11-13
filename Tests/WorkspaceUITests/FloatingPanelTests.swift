@@ -24,15 +24,32 @@
   /// The panel's content, a view of its own so it follows the state as a palette follows its model.
   private struct PanelBody: View {
     let state: PanelState
+    @State private var selection: TextSelection?
+    @FocusState private var focused: Bool
+
     var body: some View {
       if state.field {
         @Bindable var state = state
-        TextField("Run a command", text: $state.text)
-          .textFieldStyle(.plain)
-          .padding(.horizontal, 12)
-          .frame(height: 36)
-          .frame(maxHeight: state.height, alignment: .top)
-          .background(Color.white)
+        // A palette's header as the app builds it: a chip, the field with its selection and its
+        // keys, a hint, and the drag area behind them all.
+        HStack(spacing: 8) {
+          Text("Commands").font(.caption)
+          TextField("Run a command", text: $state.text, selection: $selection)
+            .textFieldStyle(.plain)
+            .focused($focused)
+            .onSubmit { focused = true }
+            .onKeyPress(.downArrow) { .handled }
+            .onKeyPress(.escape) { .handled }
+            .onKeyPress(keys: [.tab]) { _ in .handled }
+            .accessibilityIdentifier("palette-field")
+          Text("esc").font(.caption)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 36)
+        .background { WindowDragArea() }
+        .frame(maxHeight: state.height, alignment: .top)
+        .background(Color.white)
+        .onAppear { focused = true }
       } else {
         WindowDragArea().frame(height: state.height).background(Color.white)
       }
@@ -422,6 +439,81 @@
       #expect(abs(panel.frame.origin.y - home.y + 130) < 0.5, "\(what)")
       state.shown = false
       try await settle()
+    }
+
+    /// The real palette, in its panel, is dragged by the empty part of its field, by its header's
+    /// glyph, and by its footer; a click on the field's empty part still puts the cursor in it. In
+    /// the palette's header SwiftUI answers for every spot, so a press there hits the hosting view
+    /// and neither the field nor the drag area behind it: CI's screen test found the palette could
+    /// not be dragged by its field at all.
+    @Test func thePaletteIsDraggedByItsFieldAndItsHeader() async throws {
+      let model = WorkspaceModel(transportProvider: { ScriptedTransport() })
+      model.presentPalette(.commands)
+      let host = SnapshotWindow(
+        rootView: Color.clear.background(
+          FloatingPanel(
+            isPresented: model.showSearch,
+            size: CGSize(width: MacPalette.width, height: MacPalette.fullHeight),
+            placement: .top(40), cornerRadius: MacPalette.radius, continuousCorners: false, draggable: true,
+            dismiss: {}
+          ) { PaletteView(model: model, floating: true) }),
+        untitled: true, size: CGSize(width: 900, height: 300))
+      defer { host.close() }
+      let visible = try #require(host.window.screen ?? NSScreen.main).visibleFrame
+      host.window.setFrameOrigin(NSPoint(x: visible.midX - 450, y: visible.maxY - 320))
+      for _ in 0..<16 {
+        pump()
+        try await Task.sleep(for: .milliseconds(40))
+      }
+      let panel = try #require(host.window.childWindows?.first as? PalettePanel)
+      panel.pointer = { [unowned panel] event in panel.convertPoint(toScreen: event.locationInWindow) }
+      func send(_ type: NSEvent.EventType, _ screen: CGPoint) throws {
+        let inWindow = CGPoint(x: screen.x - panel.frame.minX, y: screen.y - panel.frame.minY)
+        panel.sendEvent(
+          try #require(
+            NSEvent.mouseEvent(
+              with: type, location: inWindow, modifierFlags: [],
+              timestamp: ProcessInfo.processInfo.systemUptime,
+              windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)))
+      }
+      /// Press at a spot in the panel (from its left and its top), drag by `by`, release.
+      func drag(fromLeft x: CGFloat, fromTop y: CGFloat, by: CGSize) throws {
+        let grip = CGPoint(x: panel.frame.minX + x, y: panel.frame.maxY - y)
+        try send(.leftMouseDown, grip)
+        for step in 1...10 {
+          let part = CGFloat(step) / 10
+          try send(.leftMouseDragged, CGPoint(x: grip.x + by.width * part, y: grip.y + by.height * part))
+          pump()
+        }
+        try send(.leftMouseUp, CGPoint(x: grip.x + by.width, y: grip.y + by.height))
+        pump()
+      }
+      var before = panel.frame.origin
+      // 70% along the field, where there is no text: as the screen test presses.
+      try drag(fromLeft: 420, fromTop: 18, by: CGSize(width: 150, height: -100))
+      #expect(abs(panel.frame.origin.x - before.x - 150) < 0.5, "the field's empty part did not drag it")
+      #expect(abs(panel.frame.origin.y - before.y + 100) < 0.5)
+      // The header's leading end, on the purpose's chip.
+      before = panel.frame.origin
+      try drag(fromLeft: 30, fromTop: 18, by: CGSize(width: -80, height: -30))
+      #expect(abs(panel.frame.origin.x - before.x + 80) < 0.5, "the header's leading end did not drag it")
+      // The footer's middle.
+      before = panel.frame.origin
+      try drag(fromLeft: 300, fromTop: panel.frame.height - 20, by: CGSize(width: 60, height: 40))
+      #expect(abs(panel.frame.origin.x - before.x - 60) < 0.5, "the footer did not drag it")
+      // A row is not a handle.
+      before = panel.frame.origin
+      try drag(fromLeft: 300, fromTop: 120, by: CGSize(width: 60, height: 40))
+      #expect(panel.frame.origin == before, "a row dragged it")
+      // A click on the field's empty part is a click: nothing moves, and the cursor is in the field.
+      let grip = CGPoint(x: panel.frame.minX + 420, y: panel.frame.maxY - 18)
+      try send(.leftMouseDown, grip)
+      try send(.leftMouseUp, grip)
+      pump()
+      #expect(panel.frame.origin == before)
+      #expect(panel.firstResponder is NSTextView)
+      model.dismissPalette()
+      for _ in 0..<6 { pump() }
     }
 
     @Test func aPanelLeavesWithTheViewThatPresentsIt() async throws {
