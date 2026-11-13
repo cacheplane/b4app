@@ -348,3 +348,5 @@ The thread list's arrangement, its quiet-thread mode and Show archived are one s
 ### Settings per user (D-213)
 
 Hub migration `0020_user_settings_rows.sql` stores each user's settings row as `view:<userId>`; devices still send and receive `view`, so no Mac or phone build is needed. The hub refuses a `viewSettings` change under any other row id with `invalid_row_id`. Run `migrate` before `serve`. While two hub tasks run side by side during a deploy, an old task can still write a row named `view` after the migration; see D-213.
+
+Hub migration `0021_density.sql`, the Mac's store migration `0014_density.sql` and mirror schema 9 add `density` to the settings row and turn the four-way sidebar value into density plus a three-way sidebar value (D-218). Deploy the hub first: run `migrate` before `serve`. An older Mac or phone build keeps working against an updated hub, because the old values `small`, `tiny`, `collapsed` and `hidden` are understood when read. A Mac store that already holds another build's `0014` refuses this build, so compare the installed app's bundled `SQL/*.sql` with this build's before installing.
