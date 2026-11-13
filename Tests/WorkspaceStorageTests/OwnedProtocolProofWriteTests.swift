@@ -3472,3 +3472,842 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.memoryCalls == 8)
   }
 }
+
+// T11: inherited session settings, clock placement at an actual advisory wait, and native
+// link-before-control contention. Only normal execute-return ACKs are credited. The memory
+// comparison-to-COMMIT gap remains; callback joins do not assert Thread exit or native quiescence.
+extension OwnedProtocolProofWriteTests {
+  private enum OwnedT11Device { case local, nonlocal }
+
+  // Only these fixed primitive facts escape the completed outer fixture teardown.
+  private struct OwnedT11Facts {
+    let rawControls: Int
+    let nativeWaits: Int
+    let writerCalls: Int
+    let redemptionCalls: Int
+    let normalHolders: Int
+    let normalContenders: Int
+    let body: Int
+    let deferred: Int
+    let settingsRestored: Bool
+    let qualified: Bool
+  }
+
+  private struct OwnedT11SessionSettings {
+    let defaultIsolation: String
+    let isolation: String
+    let lock: String
+    let statement: String
+    let hlc: String?
+    let device: String?
+
+    var unset: Bool { (hlc == nil || hlc == "") && (device == nil || device == "") }
+  }
+
+  private static func ownedT11Settings(_ c: PostgresConnection) throws -> OwnedT11SessionSettings {
+    let rows = try c.execute(
+      """
+      SELECT current_setting('default_transaction_isolation') AS default_isolation,
+        current_setting('transaction_isolation') AS isolation,
+        current_setting('lock_timeout') AS lock_budget,
+        current_setting('statement_timeout') AS statement_budget,
+        current_setting('b4app.hlc',true) AS hlc,
+        current_setting('b4app.device_id',true) AS device
+      """
+    ).rows
+    guard rows.count == 1, let row = rows.first,
+      let defaults = row.text("default_isolation"), let isolation = row.text("isolation"),
+      let lock = row.text("lock_budget"), let statement = row.text("statement_budget")
+    else { throw FixtureFailure.nativeShape }
+    return OwnedT11SessionSettings(
+      defaultIsolation: defaults, isolation: isolation, lock: lock, statement: statement,
+      hlc: row.text("hlc"), device: row.text("device"))
+  }
+
+  private static func ownedT11OrdinarySettings(
+    _ database: WorkspaceDatabase, expected: OwnedT11SessionSettings? = nil
+  ) throws -> (settings: OwnedT11SessionSettings, highWater: HLC) {
+    let outside = try database.read { try ownedT11Settings($0) }
+    guard outside.defaultIsolation == "repeatable read", outside.isolation == "repeatable read",
+      outside.unset
+    else { throw FixtureFailure.nativeShape }
+    if let expected {
+      guard equalBytes(outside.lock, expected.lock), equalBytes(outside.statement, expected.statement)
+      else { throw FixtureFailure.nativeShape }
+    }
+    let begun = try database.read { c in
+      var beginAttempted = false
+      var rollbackAcknowledged = false
+      defer {
+        if beginAttempted && !rollbackAcknowledged { _ = try? c.execute("ROLLBACK") }
+      }
+      beginAttempted = true
+      try c.execute("BEGIN READ ONLY")
+      let result = try ownedT11Settings(c)
+      try c.execute("ROLLBACK")
+      rollbackAcknowledged = true
+      return result
+    }
+    // This is the actual ordinary write API. Its body contains only a settings SELECT.
+    let written = try database.write { try ownedT11Settings($0) }
+    let after = try database.read { try ownedT11Settings($0) }
+    for value in [begun, written, after] {
+      guard value.defaultIsolation == "repeatable read", value.isolation == "repeatable read",
+        equalBytes(value.lock, outside.lock), equalBytes(value.statement, outside.statement)
+      else { throw FixtureFailure.nativeShape }
+    }
+    guard begun.unset, after.unset, let text = written.hlc, let stamp = HLC(rawValue: text),
+      equalBytes(stamp.rawValue, text), equalBytes(stamp.deviceId, database.deviceId),
+      equalBytes(database.clock.deviceId, database.deviceId)
+    else { throw FixtureFailure.nativeShape }
+    if equalBytes(database.deviceId, "local") {
+      guard written.device == nil || written.device == "" else { throw FixtureFailure.nativeShape }
+    } else {
+      guard let device = written.device, equalBytes(device, database.deviceId) else {
+        throw FixtureFailure.nativeShape
+      }
+    }
+    return (outside, stamp)
+  }
+
+  private static func ownedT11Catalog(_ c: PostgresConnection, database: String) throws -> [Data] {
+    try c.execute(
+      """
+      SELECT to_jsonb(s)::text AS value FROM pg_catalog.pg_db_role_setting s
+      JOIN pg_catalog.pg_database d ON d.oid=s.setdatabase
+      WHERE d.datname=$1 ORDER BY s.setrole
+      """, [database]
+    ).rows.map { row in
+      guard let text = row.text("value") else { throw FixtureFailure.nativeShape }
+      return try ownedBindJSON(text)
+    }
+  }
+
+  // Remove ONLY the database-wide isolation member from a private comparison image. Removing
+  // its last member removes that comparison row, matching RESET's actual catalog representation.
+  // All role-specific rows, other keys, array order, and native database OIDs remain intact.
+  private static func ownedT11WithoutIsolation(_ image: [Data], count: Int) throws -> [Data] {
+    var found = 0
+    var result: [Data] = []
+    for data in image {
+      var row = try ownedT09Object(data)
+      guard let role = row["setrole"] as? NSNumber, let config = row["setconfig"] as? [String] else {
+        throw FixtureFailure.nativeShape
+      }
+      if role.stringValue == "0" {
+        var retained: [String] = []
+        for entry in config {
+          if entry.split(separator: "=", maxSplits: 1).first == "default_transaction_isolation" {
+            found += 1
+            guard equalBytes(entry, "default_transaction_isolation=repeatable read") else {
+              throw FixtureFailure.nativeShape
+            }
+          } else {
+            retained.append(entry)
+          }
+        }
+        if retained.isEmpty && !config.isEmpty { continue }
+        row["setconfig"] = retained
+      }
+      result.append(try ownedT09Data(row))
+    }
+    guard found == count else { throw FixtureFailure.nativeShape }
+    return result
+  }
+
+  private static func ownedT11WithInheritedDatabase(
+    _ f: Fixture, device: OwnedT11Device,
+    _ body: (WorkspaceDatabase, ProtocolVerificationSnapshot, OwnedT11SessionSettings, HLC) throws -> Void
+  ) throws {
+    let endpoint = f.database.endpoint
+    guard let binDir = endpoint.binDir, !binDir.isEmpty, !binDir.utf8.contains(0),
+      !endpoint.database.isEmpty, !endpoint.database.utf8.contains(0),
+      equalBytes(endpoint.database, f.binding.databaseName)
+    else { throw FixtureFailure.nativeShape }
+    let before = try ownedT11Catalog(f.inspector, database: endpoint.database)
+    let absent = try f.inspector.execute(
+      """
+      SELECT count(*) AS n FROM pg_catalog.pg_db_role_setting s
+      JOIN pg_catalog.pg_database d ON d.oid=s.setdatabase,
+      LATERAL unnest(s.setconfig) AS v(value)
+      WHERE d.datname=$1 AND s.setrole=0
+        AND split_part(v.value,'=',1)='default_transaction_isolation'
+      """, [endpoint.database]
+    ).rows
+    guard absent.count == 1, absent[0].int("n") == 0,
+      try ownedT11WithoutIsolation(before, count: 0) == before
+    else { throw FixtureFailure.nativeShape }
+    let businessBefore = try ownedBindImage(f.inspector)
+    let quoted = Rows.quote(endpoint.database)
+    var alterAttempted = false
+    var extra: WorkspaceDatabase?
+    var settled = false
+    // Registered BEFORE ALTER, including its partial-failure/ACK-uncertain path. This emergency
+    // fallback never supplies positive cleanup credit, and a close error cannot skip RESET.
+    defer {
+      if !settled {
+        if let extra { try? extra.close() }
+        if alterAttempted {
+          _ = try? f.inspector.execute("ALTER DATABASE \(quoted) RESET default_transaction_isolation")
+          _ = try? ownedT11Catalog(f.inspector, database: endpoint.database)
+        }
+      }
+    }
+    let outcome = Result<Void, any Error> {
+      alterAttempted = true
+      try f.inspector.execute(
+        "ALTER DATABASE \(quoted) SET default_transaction_isolation TO 'repeatable read'")
+      let changed = try ownedT11Catalog(f.inspector, database: endpoint.database)
+      guard try ownedT11WithoutIsolation(changed, count: 1) == before else {
+        throw FixtureFailure.nativeShape
+      }
+      // Same actual endpoint and binDir; no original-pool session is changed or replaced.
+      let actual = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir, createIfMissing: false)
+      extra = actual
+      guard try ownedBindImage(f.inspector) == businessBefore,
+        equalBytes(actual.deviceId, "local"), equalBytes(actual.clock.deviceId, "local")
+      else { throw FixtureFailure.nativeShape }
+      switch device {
+      case .local: break
+      case .nonlocal: actual.deviceId = f.link.deviceId
+      }
+      let expectedDevice: String
+      switch device {
+      case .local: expectedDevice = "local"
+      case .nonlocal: expectedDevice = f.link.deviceId
+      }
+      guard !actual.deviceId.isEmpty, !actual.deviceId.utf8.contains(0),
+        equalBytes(actual.deviceId, expectedDevice),
+        equalBytes(actual.deviceId, actual.clock.deviceId)
+      else { throw FixtureFailure.nativeShape }
+      let membership = try ProtocolNativeMembership(
+        canonicalHubBase: f.link.url, deviceID: f.link.deviceId, linkJoinedAt: f.link.joinedAt)
+      // Constructor and setter call no next/observe. This genuine capture calls ordinary write
+      // exactly once; existing control means no business DML. The following ordinary write's
+      // observed stamp bounds that earlier stamp by HybridClock.next's strict monotonicity.
+      let anchor = try actual.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: membership)
+      guard try ownedBindImage(f.inspector) == businessBefore else { throw FixtureFailure.nativeShape }
+      let ordinary = try ownedT11OrdinarySettings(actual)
+      guard try ownedBindImage(f.inspector) == businessBefore else { throw FixtureFailure.nativeShape }
+      try body(actual, anchor, ordinary.settings, ordinary.highWater)
+    }
+    // Evaluate ALL settlements before propagating any error, even the declared close error.
+    let closeOutcome = Result<Void, any Error> { if let extra { try extra.close() } }
+    let restoreOutcome = Result<Void, any Error> {
+      if alterAttempted {
+        try f.inspector.execute("ALTER DATABASE \(quoted) RESET default_transaction_isolation")
+        guard try ownedT11Catalog(f.inspector, database: endpoint.database) == before else {
+          throw FixtureFailure.nativeShape
+        }
+      }
+    }
+    guard case .success = closeOutcome, case .success = restoreOutcome else {
+      throw FixtureFailure.redactedFailure
+    }
+    settled = true
+    guard case .success = outcome else { throw FixtureFailure.redactedFailure }
+  }
+
+  private static func ownedT11Stage(
+    _ stage: OwnedBindStageFixture, database: WorkspaceDatabase
+  ) throws -> OwnedBindStageFixture {
+    let device = database.deviceId
+    guard !device.isEmpty, !device.utf8.contains(0), equalBytes(device, database.clock.deviceId) else {
+      throw FixtureFailure.nativeShape
+    }
+    // Adapt only the expected transaction device; retain the independent full S0/S1 and binding.
+    return OwnedBindStageFixture(
+      before: stage.before, expected: stage.expected, controlJSON: stage.controlJSON,
+      originalReference: stage.originalReference, replacement: stage.replacement,
+      device: device, lowerWall: stage.lowerWall)
+  }
+
+  private static func ownedT11SetupStamps(_ image: OwnedBindImage) throws -> [HLC] {
+    var stamps: [HLC] = []
+    // These are the schema's actual stamp columns. User-content strings are never parsed as HLCs.
+    for table in ["changes", "columnClocks"] {
+      guard let rows = image.rows[table] else { throw FixtureFailure.nativeShape }
+      for data in rows {
+        let row = try ownedT09Object(data)
+        guard let text = row["hlc"] as? String, let stamp = HLC(rawValue: text),
+          equalBytes(stamp.rawValue, text)
+        else { throw FixtureFailure.nativeShape }
+        stamps.append(stamp)
+      }
+    }
+    return stamps
+  }
+
+  private static func ownedT11MarkerObserved(
+    _ c: PostgresConnection, stage: OwnedBindStageFixture, expected: HLC, marker: UInt64
+  ) throws {
+    let rows = try c.execute(
+      "SELECT isolation,lock_budget,statement_budget,hlc,device FROM \"owned_bind_stage\".\"observed\""
+    ).rows
+    // Caller has joined EVERY operation before this independent native wall sample or body read.
+    let upper = try ownedBindWall(c)
+    guard upper < marker, expected.millis == marker, expected.counter == 1,
+      rows.count == 1, let row = rows.first, let text = row.text("hlc"),
+      let actual = HLC(rawValue: text), equalBytes(actual.rawValue, text),
+      equalBytes(actual.rawValue, expected.rawValue), equalBytes(actual.deviceId, stage.device),
+      equalBytes(expected.deviceId, stage.device), actual.millis >= stage.lowerWall,
+      row.text("isolation") == "read committed", row.text("lock_budget") == "2s",
+      row.text("statement_budget") == "2s"
+    else { throw FixtureFailure.nativeShape }
+    if equalBytes(stage.device, "local") {
+      guard row.text("device") == nil || row.text("device") == "" else {
+        throw FixtureFailure.nativeShape
+      }
+    } else {
+      guard let device = row.text("device"), equalBytes(device, stage.device) else {
+        throw FixtureFailure.nativeShape
+      }
+    }
+  }
+
+  private static func ownedT11Current(
+    _ receipt: ProtocolOwnedProofWriteReceipt, database: WorkspaceDatabase,
+    anchor: ProtocolVerificationSnapshot, binding: ProtocolMembershipBinding, reference: String,
+    inspector: PostgresConnection, stage: OwnedBindStageFixture,
+    admission: ProtocolProofMemoryAdmission, memory: OwnedBindMemory,
+    body: OwnedBindProbe, commit: OwnedBindProbe
+  ) throws -> (calls: Int, redemption: Int) {
+    let beforeRedemption = memory.calls()
+    guard receipt.operation == .bind, receipt.disposition == .committedCurrent,
+      beforeRedemption == 4, equalBytes(reference, stage.originalReference),
+      try ownedBindImage(inspector) == stage.expected,
+      try ownedBindProbe(inspector, "body_probe").advanced(from: body, by: 1),
+      try ownedBindProbe(inspector, "commit_probe").advanced(from: commit, by: 1)
+    else { throw FixtureFailure.nativeShape }
+    try ownedT09Recipe(inspector, stage: stage)
+    // Redemption is sealed-context plus memory only. The following actual-object API calls
+    // independently validate native facts; redemption itself makes no native-currentness claim.
+    let successor = try receipt.currentSuccessor(
+      expectedSnapshot: anchor, expectedTokenRef: reference, memoryAdmission: admission)
+    let afterRedemption = memory.calls()
+    guard afterRedemption - beforeRedemption == 1, successor.observation == nil else {
+      throw FixtureFailure.nativeShape
+    }
+    try database.validateProtocolVerification(expectedSnapshot: successor)
+    try database.compareOriginalLinkedCaptureOwner(
+      expectedSnapshot: successor, accountID: binding.accountID,
+      databaseName: binding.databaseName, hubBase: base)
+    try database.compareOriginalLinkedCredentialReference(
+      expectedSnapshot: successor, expectedTokenRef: reference)
+    guard try ownedBindImage(inspector) == stage.expected else { throw FixtureFailure.nativeShape }
+    try ownedT09Recipe(inspector, stage: stage)
+    return (beforeRedemption, afterRedemption - beforeRedemption)
+  }
+
+  private static func ownedT11RawControls() throws -> Int {
+    let rows = try ownedBindRawStageControls()
+    guard rows.count == 4 else { throw FixtureFailure.nativeShape }
+    for (index, row) in rows.enumerated() {
+      guard row.row == index, row.qualified else { throw FixtureFailure.nativeShape }
+    }
+    return rows.count
+  }
+
+  private static func ownedT11Identity(_ f: Fixture) throws -> (pid: Int, user: String, binDir: String) {
+    let endpoint = f.database.endpoint
+    let rows = try f.inspector.execute(
+      "SELECT pg_catalog.pg_backend_pid() AS pid,current_database() AS database,current_user AS username"
+    ).rows
+    guard rows.count == 1, let pid = rows[0].int("pid"), pid > 0,
+      let database = rows[0].text("database"), equalBytes(database, endpoint.database),
+      let user = rows[0].text("username"), equalBytes(user, NSUserName()),
+      let binDir = endpoint.binDir, !binDir.isEmpty, !binDir.utf8.contains(0), endpoint.port > 0,
+      [endpoint.socketDir, endpoint.database, user].allSatisfy({ value in
+        !value.isEmpty && !value.utf8.contains(0) && !value.contains(where: { $0.isWhitespace })
+          && !value.contains("'") && !value.contains("\\")
+      })
+    else { throw FixtureFailure.nativeShape }
+    return (pid, user, binDir)
+  }
+
+  private static func ownedT11SettingsUnit(_ device: OwnedT11Device) throws -> OwnedT11Facts {
+    // No prerequisite borrowing: all four fresh raw fixtures finish teardown BEFORE this target.
+    let raw = try ownedT11RawControls()
+    var facts: OwnedT11Facts?
+    try withFixture { f in
+      let predecessor = try validateFixture(f)
+      let frozen = try ownedBindFreeze(f, predecessor: predecessor, replacement: f.link.tokenRef)
+      let setupStamps = try ownedT11SetupStamps(frozen.before)
+      let identity = try ownedT11Identity(f)
+      let endpoint = f.database.endpoint
+      var completed: (calls: Int, redemption: Int)?
+      try ownedT11WithInheritedDatabase(f, device: device) { database, anchor, ordinary, highWater in
+        let stage = try ownedT11Stage(frozen, database: database)
+        try ownedBindInstall(f, stage: stage, rawBodyFault: false)
+        let body = try ownedBindProbe(f.inspector, "body_probe")
+        let commit = try ownedBindProbe(f.inspector, "commit_probe")
+        guard body == OwnedBindProbe(last: 1, called: false),
+          commit == OwnedBindProbe(last: 1, called: false)
+        else { throw FixtureFailure.nativeShape }
+        try ownedT09Recipe(f.inspector, stage: stage)
+        try ownedBindWriterReady(
+          f, stage: stage, replacement: stage.originalReference, body: body, commit: commit)
+        let memory = OwnedBindMemory(selected: nil)
+        let admission = ProtocolProofMemoryAdmission { [memory] in
+          let allowed = memory.compare()
+          if !allowed { throw FixtureFailure.redactedFailure }
+        }
+        let hold = OwnedProofHold()
+        let state = OwnedBindHolderState()
+        let finished = OwnedBindFinished()
+        var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+        var writer: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+        // Installed before the first start. All holds release before EVERY retained join.
+        defer {
+          hold.release()
+          if let holder { _ = holder.join() }
+          if let writer { _ = writer.join() }
+        }
+        let application = "owned-t11-advisory-\(UUID().uuidString)"
+        let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        holder = ownedBindHolder(
+          binDir: identity.binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+          database: endpoint.database, user: identity.user, application: application,
+          kind: .advisory, hold: hold, state: state)
+        let holderPID = try ownedBindHolderReady(state, hold: hold, deadline: readiness)
+        guard memory.calls() == 0 else { throw FixtureFailure.nativeShape }
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        writer = ownedBindWriter(
+          database: database, anchor: anchor, binding: f.binding, reference: stage.originalReference,
+          admission: admission, finished: finished)
+        try ownedBindObserveWait(
+          f.inspector, database: endpoint.database, holderPID: holderPID,
+          knownOwnedPIDs: [identity.pid, holderPID], kind: .advisory, hold: hold,
+          finished: finished, memory: memory, invocationStart: 0, deadline: deadline)
+        let now = try ownedBindWall(f.inspector)
+        let sampleEnd = DispatchTime.now().uptimeNanoseconds
+        let (markerMillis, overflow) = now.addingReportingOverflow(10_000)
+        guard sampleEnd <= deadline, !overflow, markerMillis <= 0xffff_ffff_ffff,
+          markerMillis > highWater.millis, markerMillis > stage.lowerWall,
+          setupStamps.allSatisfy({ $0.millis < markerMillis }),
+          equalBytes(highWater.deviceId, stage.device), memory.calls() == 0,
+          finished.pending(), hold.heldUnexpired()
+        else { throw FixtureFailure.nativeShape }
+        let marker = HLC(millis: markerMillis, counter: 0, deviceId: stage.device)
+        let expectedBody = HLC(millis: markerMillis, counter: 1, deviceId: stage.device)
+        // All prior ACTUAL extra stamps are capture's one next and the later SELECT-only
+        // ordinary write's observed high water. No other extra next/observe occurs before here.
+        database.clock.observe(marker)
+        // No SQL, next, write, or scheduling between injection and prompt original-deadline release.
+        try ownedBindReleaseObservedHold(
+          hold, finished: finished, memory: memory, invocationStart: 0, retiring: false,
+          deadline: deadline)
+        let held = holder!.join()
+        let receipt = writer!.join()
+        guard held.normal else { throw FixtureFailure.nativeShape }
+        try ownedT11MarkerObserved(
+          f.inspector, stage: stage, expected: expectedBody, marker: markerMillis)
+        let current = try ownedT11Current(
+          receipt, database: database, anchor: anchor, binding: f.binding,
+          reference: stage.originalReference, inspector: f.inspector, stage: stage,
+          admission: admission, memory: memory, body: body, commit: commit)
+        // This new ordinary next is strictly AFTER body-marker read and genuine redemption.
+        _ = try ownedT11OrdinarySettings(database, expected: ordinary)
+        guard try ownedBindImage(f.inspector) == stage.expected,
+          try ownedBindProbe(f.inspector, "body_probe").advanced(from: body, by: 1),
+          try ownedBindProbe(f.inspector, "commit_probe").advanced(from: commit, by: 1)
+        else { throw FixtureFailure.nativeShape }
+        try ownedT09Recipe(f.inspector, stage: stage)
+        completed = current
+      }
+      // The helper has checked extra-close AND exact complete catalog restoration before here.
+      guard let completed else { throw FixtureFailure.nativeShape }
+      facts = OwnedT11Facts(
+        rawControls: raw, nativeWaits: 1, writerCalls: completed.calls,
+        redemptionCalls: completed.redemption, normalHolders: 1, normalContenders: 0,
+        body: 1, deferred: 1, settingsRestored: true, qualified: true)
+    }
+    guard let facts else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  private final class OwnedT11ContenderState: Sendable {
+    struct Facts: Sendable {
+      var pid = 0
+      var started = false
+      var returned = false
+    }
+    private let facts = Mutex(Facts())
+    func publish(pid: Int) {
+      facts.withLock {
+        $0.pid = pid
+        $0.started = true
+      }
+    }
+    func markReturned() { facts.withLock { $0.returned = true } }
+    func snapshot() -> Facts { facts.withLock { $0 } }
+  }
+
+  private struct OwnedT11ContenderResult: Sendable {
+    let acquired: Bool
+    let rollbackAcknowledged: Bool
+    var normal: Bool { acquired && rollbackAcknowledged }
+    static let invalid = Self(acquired: false, rollbackAcknowledged: false)
+  }
+
+  private static func ownedT11ControlHolder(
+    binDir: String, socketDir: String, port: Int, database: String, user: String,
+    application: String, controlKey: String, hold: OwnedProofHold, state: OwnedBindHolderState
+  ) -> OwnedProofNativeWork<OwnedBindHolderResult> {
+    OwnedProofNativeWork {
+      [binDir, socketDir, port, database, user, application, controlKey, hold, state] in
+      do {
+        let c = try PostgresConnection(
+          lib: LibPQ.load(binDir: binDir),
+          connectionString:
+            "host=\(socketDir) port=\(port) user=\(user) dbname=\(database) application_name=\(application)")
+        var beginAttempted = false
+        var rollbackAcknowledged = false
+        defer {
+          if beginAttempted && !rollbackAcknowledged { _ = try? c.execute("ROLLBACK") }
+        }
+        beginAttempted = true
+        try c.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+        try c.execute("SET LOCAL lock_timeout='2s'")
+        try c.execute("SET LOCAL statement_timeout='2s'")
+        let identity = try c.execute("SELECT pg_catalog.pg_backend_pid() AS pid").rows
+        guard identity.count == 1, let pid = identity[0].int("pid"), pid > 0 else {
+          return .invalid
+        }
+        // ONLY the exact settings tuple. This holder takes neither advisory nor link locks.
+        let rows = try c.execute(
+          "SELECT key FROM public.settings WHERE key=$1 FOR UPDATE", [controlKey]
+        ).rows
+        guard rows.count == 1, let actual = rows[0].text("key"), equalBytes(actual, controlKey) else {
+          return .invalid
+        }
+        state.acquired(pid: pid)
+        let released = hold.wait()
+        try c.execute("ROLLBACK")
+        rollbackAcknowledged = true
+        let final = hold.snapshot()
+        return OwnedBindHolderResult(
+          acquired: true, released: released && final.released, expired: final.expired,
+          rollbackAcknowledged: rollbackAcknowledged)
+      } catch {
+        return .invalid
+      }
+    }
+  }
+
+  private static func ownedT11LinkContender(
+    binDir: String, socketDir: String, port: Int, database: String, user: String,
+    application: String, state: OwnedT11ContenderState
+  ) -> OwnedProofNativeWork<OwnedT11ContenderResult> {
+    OwnedProofNativeWork { [binDir, socketDir, port, database, user, application, state] in
+      defer { state.markReturned() }
+      do {
+        // This actual connection never leaves its worker or enters a captured value.
+        let c = try PostgresConnection(
+          lib: LibPQ.load(binDir: binDir),
+          connectionString:
+            "host=\(socketDir) port=\(port) user=\(user) dbname=\(database) application_name=\(application)")
+        var beginAttempted = false
+        var rollbackAcknowledged = false
+        defer {
+          if beginAttempted && !rollbackAcknowledged { _ = try? c.execute("ROLLBACK") }
+        }
+        beginAttempted = true
+        try c.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+        try c.execute("SET LOCAL lock_timeout='2s'")
+        try c.execute("SET LOCAL statement_timeout='2s'")
+        let identity = try c.execute("SELECT pg_catalog.pg_backend_pid() AS pid").rows
+        guard identity.count == 1, let pid = identity[0].int("pid"), pid > 0 else {
+          return .invalid
+        }
+        // Publish the real identity AFTER BEGIN+budgets, BEFORE the exact blocking SELECT.
+        state.publish(pid: pid)
+        let rows = try c.execute("SELECT id FROM public.\"hubLink\" WHERE id=1 FOR UPDATE").rows
+        guard rows.count == 1, rows[0].int("id") == 1 else { return .invalid }
+        try c.execute("ROLLBACK")
+        rollbackAcknowledged = true
+        return OwnedT11ContenderResult(acquired: true, rollbackAcknowledged: rollbackAcknowledged)
+      } catch {
+        return .invalid
+      }
+    }
+  }
+
+  // Exact composed production query after Swift multiline indentation stripping, including the
+  // scalar control FOR UPDATE. Compare full equality in pg_stat_activity, never LIKE/contains.
+  private static let ownedT11ControlQuery = """
+    SELECT current_database() AS database,
+      (SELECT value::text FROM public.settings WHERE key=$1 FOR UPDATE) AS control,
+      l.id AS native_link_id, l.url, l."deviceId" AS device, l."joinedAt" AS joined,
+      l."tokenRef" AS native_token_ref
+    FROM (SELECT 1) singleton LEFT JOIN public."hubLink" l ON l.id=1
+    """
+
+  private static let ownedT11ControlWait = """
+    SELECT a.pid::text AS pid FROM pg_catalog.pg_stat_activity a
+    WHERE a.datname=$1 AND a.usename=current_user AND a.application_name='b4app'
+      AND a.backend_type='client backend' AND a.pid<>pg_backend_pid()
+      AND a.pid<>$2::int AND NOT(a.pid=ANY($5::int[]))
+      AND a.state='active' AND a.wait_event_type='Lock' AND a.query=$4
+      AND $2::int=ANY(pg_catalog.pg_blocking_pids(a.pid))
+      AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks g WHERE g.pid=a.pid
+        AND g.database=(SELECT oid FROM pg_catalog.pg_database WHERE datname=$1)
+        AND g.locktype='advisory' AND g.mode='ExclusiveLock' AND g.granted
+        AND g.classid=0::oid AND g.objid=$3::oid AND g.objsubid=1)
+      AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks w WHERE w.pid=a.pid AND NOT w.granted
+        AND ((w.locktype='transactionid' AND w.mode='ShareLock'
+          AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks h WHERE h.pid=$2::int
+            AND h.locktype='transactionid' AND h.mode='ExclusiveLock' AND h.granted
+            AND h.transactionid=w.transactionid))
+        OR (w.locktype='tuple' AND w.relation='public.settings'::pg_catalog.regclass
+          AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks h WHERE h.pid=$2::int
+            AND h.locktype='tuple' AND h.granted AND h.database=w.database
+            AND h.relation=w.relation AND h.page=w.page AND h.tuple=w.tuple))))
+    """
+
+  private static let ownedT11ContenderWait = """
+    SELECT a.pid::text AS pid FROM pg_catalog.pg_stat_activity a
+    WHERE a.pid=$1::int AND a.datname=$2 AND a.usename=current_user
+      AND a.application_name=$3 AND a.backend_type='client backend'
+      AND a.state='active' AND a.wait_event_type='Lock' AND a.query=$4
+      AND $5::int=ANY(pg_catalog.pg_blocking_pids(a.pid))
+      AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks w WHERE w.pid=a.pid AND NOT w.granted
+        AND ((w.locktype='transactionid' AND w.mode='ShareLock'
+          AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks h WHERE h.pid=$5::int
+            AND h.locktype='transactionid' AND h.mode='ExclusiveLock' AND h.granted
+            AND h.transactionid=w.transactionid))
+        OR (w.locktype='tuple' AND w.relation='public."hubLink"'::pg_catalog.regclass
+          AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks h WHERE h.pid=$5::int
+            AND h.locktype='tuple' AND h.granted AND h.database=w.database
+            AND h.relation=w.relation AND h.page=w.page AND h.tuple=w.tuple))))
+      AND EXISTS(SELECT 1 FROM pg_catalog.pg_stat_activity wa
+        WHERE wa.pid=$5::int AND wa.datname=$2 AND wa.usename=current_user
+          AND wa.application_name='b4app' AND wa.backend_type='client backend'
+          AND wa.pid<>pg_backend_pid() AND wa.pid<>$6::int
+          AND NOT(wa.pid=ANY($9::int[]))
+          AND wa.state='active' AND wa.wait_event_type='Lock' AND wa.query=$8
+          AND $6::int=ANY(pg_catalog.pg_blocking_pids(wa.pid))
+          AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks wg WHERE wg.pid=wa.pid
+            AND wg.database=(SELECT oid FROM pg_catalog.pg_database WHERE datname=$2)
+            AND wg.locktype='advisory' AND wg.mode='ExclusiveLock' AND wg.granted
+            AND wg.classid=0::oid AND wg.objid=$7::oid AND wg.objsubid=1)
+          AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks ww WHERE ww.pid=wa.pid AND NOT ww.granted
+            AND ((ww.locktype='transactionid' AND ww.mode='ShareLock'
+              AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks wh WHERE wh.pid=$6::int
+                AND wh.locktype='transactionid' AND wh.mode='ExclusiveLock' AND wh.granted
+                AND wh.transactionid=ww.transactionid))
+            OR (ww.locktype='tuple' AND ww.relation='public.settings'::pg_catalog.regclass
+              AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks wh WHERE wh.pid=$6::int
+                AND wh.locktype='tuple' AND wh.granted AND wh.database=ww.database
+                AND wh.relation=ww.relation AND wh.page=ww.page AND wh.tuple=ww.tuple)))))
+    """
+
+  private static func ownedT11ObserveControl(
+    _ c: PostgresConnection, database: String, holderPID: Int, knownOwnedPIDs: [Int],
+    hold: OwnedProofHold, finished: OwnedBindFinished, memory: OwnedBindMemory, deadline: UInt64
+  ) throws -> Int {
+    guard holderPID > 0, knownOwnedPIDs.contains(holderPID),
+      !knownOwnedPIDs.isEmpty, knownOwnedPIDs.allSatisfy({ $0 > 0 })
+    else { throw FixtureFailure.nativeShape }
+    let excluded = "{" + knownOwnedPIDs.map(String.init).joined(separator: ",") + "}"
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      guard finished.pending(), hold.heldUnexpired(), memory.calls() == 0 else {
+        throw FixtureFailure.nativeShape
+      }
+      let rows = try c.execute(
+        ownedT11ControlWait,
+        [
+          database, String(holderPID), String(WorkspaceDatabase.remoteApplyLockKey),
+          ownedT11ControlQuery, excluded,
+        ]
+      ).rows
+      let queryEnd = DispatchTime.now().uptimeNanoseconds
+      guard queryEnd <= deadline, rows.count <= 1, finished.pending(),
+        hold.heldUnexpired(), memory.calls() == 0
+      else { throw FixtureFailure.nativeShape }
+      if rows.count == 1 {
+        guard let text = rows[0].text("pid"), let pid = Int(text), pid > 0,
+          !knownOwnedPIDs.contains(pid)
+        else { throw FixtureFailure.nativeShape }
+        return pid
+      }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedT11ContenderReady(
+    _ state: OwnedT11ContenderState, hold: OwnedProofHold, finished: OwnedBindFinished,
+    memory: OwnedBindMemory, deadline: UInt64
+  ) throws -> Int {
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      let value = state.snapshot()
+      let held = hold.heldUnexpired()
+      let pending = finished.pending()
+      let calls = memory.calls()
+      let end = DispatchTime.now().uptimeNanoseconds
+      guard end <= deadline, held, pending, calls == 0, !value.returned else {
+        throw FixtureFailure.nativeShape
+      }
+      if value.started && value.pid > 0 { return value.pid }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedT11ObserveContender(
+    _ c: PostgresConnection, database: String, application: String, contenderPID: Int,
+    writerPID: Int, holderPID: Int, knownOwnedPIDs: [Int], hold: OwnedProofHold,
+    finished: OwnedBindFinished, contender: OwnedT11ContenderState,
+    memory: OwnedBindMemory, deadline: UInt64
+  ) throws {
+    guard contenderPID > 0, writerPID > 0, holderPID > 0, writerPID != contenderPID,
+      knownOwnedPIDs.contains(contenderPID), knownOwnedPIDs.contains(holderPID),
+      !knownOwnedPIDs.contains(writerPID), knownOwnedPIDs.allSatisfy({ $0 > 0 })
+    else { throw FixtureFailure.nativeShape }
+    let excluded = "{" + knownOwnedPIDs.map(String.init).joined(separator: ",") + "}"
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      let before = contender.snapshot()
+      guard before.started, before.pid == contenderPID, !before.returned,
+        finished.pending(), hold.heldUnexpired(), memory.calls() == 0
+      else { throw FixtureFailure.nativeShape }
+      // All nine bindings match the two predicates IN THIS SAME native statement:
+      // 1 contender; 2 DB; 3 private app; 4 link query; 5 actual writer; 6 holder;
+      // 7 actual advisory key; 8 composed control query; 9 all known raw/inspector PIDs.
+      let rows = try c.execute(
+        ownedT11ContenderWait,
+        [
+          String(contenderPID), database, application,
+          "SELECT id FROM public.\"hubLink\" WHERE id=1 FOR UPDATE", String(writerPID),
+          String(holderPID), String(WorkspaceDatabase.remoteApplyLockKey),
+          ownedT11ControlQuery, excluded,
+        ]
+      ).rows
+      let queryEnd = DispatchTime.now().uptimeNanoseconds
+      let after = contender.snapshot()
+      guard queryEnd <= deadline, rows.count <= 1, finished.pending(), hold.heldUnexpired(),
+        memory.calls() == 0, after.started, after.pid == contenderPID, !after.returned
+      else { throw FixtureFailure.nativeShape }
+      if rows.count == 1 {
+        guard let text = rows[0].text("pid"), Int(text) == contenderPID else {
+          throw FixtureFailure.nativeShape
+        }
+        return
+      }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedT11OrderUnit() throws -> OwnedT11Facts {
+    let raw = try ownedT11RawControls()
+    var facts: OwnedT11Facts?
+    try withFixture { f in
+      let predecessor = try validateFixture(f)
+      let stage = try ownedBindFreeze(f, predecessor: predecessor, replacement: f.link.tokenRef)
+      try ownedBindInstall(f, stage: stage, rawBodyFault: false)
+      let body = try ownedBindProbe(f.inspector, "body_probe")
+      let commit = try ownedBindProbe(f.inspector, "commit_probe")
+      guard body == OwnedBindProbe(last: 1, called: false),
+        commit == OwnedBindProbe(last: 1, called: false)
+      else { throw FixtureFailure.nativeShape }
+      try ownedT09Recipe(f.inspector, stage: stage)
+      try ownedBindWriterReady(
+        f, stage: stage, replacement: stage.originalReference, body: body, commit: commit)
+      let identity = try ownedT11Identity(f)
+      let endpoint = f.database.endpoint
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        let allowed = memory.compare()
+        if !allowed { throw FixtureFailure.redactedFailure }
+      }
+      let hold = OwnedProofHold()
+      let state = OwnedBindHolderState()
+      let finished = OwnedBindFinished()
+      let contenderState = OwnedT11ContenderState()
+      var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+      var writer: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+      var contender: OwnedProofNativeWork<OwnedT11ContenderResult>?
+      // Every partial start is covered before the first start. Release ALL holds, then join ALL.
+      defer {
+        hold.release()
+        if let holder { _ = holder.join() }
+        if let writer { _ = writer.join() }
+        if let contender { _ = contender.join() }
+      }
+      let holderApplication = "owned-t11-control-\(UUID().uuidString)"
+      let contenderApplication = "owned-t11-link-\(UUID().uuidString)"
+      let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+      holder = ownedT11ControlHolder(
+        binDir: identity.binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+        database: endpoint.database, user: identity.user, application: holderApplication,
+        controlKey: key, hold: hold, state: state)
+      let holderPID = try ownedBindHolderReady(state, hold: hold, deadline: readiness)
+      guard memory.calls() == 0 else { throw FixtureFailure.nativeShape }
+      // ONE original writer window covers both observations, contender startup and release.
+      let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+      writer = ownedBindWriter(
+        database: f.database, anchor: f.anchor, binding: f.binding, reference: stage.originalReference,
+        admission: admission, finished: finished)
+      let writerPID = try ownedT11ObserveControl(
+        f.inspector, database: endpoint.database, holderPID: holderPID,
+        knownOwnedPIDs: [identity.pid, holderPID], hold: hold,
+        finished: finished, memory: memory, deadline: deadline)
+      contender = ownedT11LinkContender(
+        binDir: identity.binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+        database: endpoint.database, user: identity.user, application: contenderApplication,
+        state: contenderState)
+      let contenderPID = try ownedT11ContenderReady(
+        contenderState, hold: hold, finished: finished, memory: memory, deadline: deadline)
+      guard contenderPID != identity.pid, contenderPID != holderPID, contenderPID != writerPID else {
+        throw FixtureFailure.nativeShape
+      }
+      try ownedT11ObserveContender(
+        f.inspector, database: endpoint.database, application: contenderApplication,
+        contenderPID: contenderPID, writerPID: writerPID, holderPID: holderPID,
+        knownOwnedPIDs: [identity.pid, holderPID, contenderPID], hold: hold,
+        finished: finished, contender: contenderState, memory: memory, deadline: deadline)
+      try ownedBindReleaseObservedHold(
+        hold, finished: finished, memory: memory, invocationStart: 0, retiring: false,
+        deadline: deadline)
+      // Join EVERY operation before inspecting even the first result or any native image.
+      let held = holder!.join()
+      let receipt = writer!.join()
+      let contended = contender!.join()
+      guard held.normal, contended.normal else { throw FixtureFailure.nativeShape }
+      try ownedBindWriterObserved(f.inspector, stage: stage, actualDevice: f.database.deviceId)
+      let current = try ownedT11Current(
+        receipt, database: f.database, anchor: f.anchor, binding: f.binding,
+        reference: stage.originalReference, inspector: f.inspector, stage: stage,
+        admission: admission, memory: memory, body: body, commit: commit)
+      facts = OwnedT11Facts(
+        rawControls: raw, nativeWaits: 2, writerCalls: current.calls,
+        redemptionCalls: current.redemption, normalHolders: 1, normalContenders: 1,
+        body: 1, deferred: 1, settingsRestored: true, qualified: true)
+    }
+    guard let facts else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  @Test func ownedBindOverridesInheritedIsolationAndSamplesClockAfterAdvisoryWait() throws {
+    // Explicit local and nonlocal units, each with its own rawfour and NEW unique target DB.
+    for device in [OwnedT11Device.local, .nonlocal] {
+      let facts = try Self.ownedT11SettingsUnit(device)
+      #expect(facts.rawControls == 4 && facts.nativeWaits == 1)
+      #expect(facts.writerCalls == 4 && facts.redemptionCalls == 1)
+      #expect(facts.normalHolders == 1 && facts.normalContenders == 0)
+      #expect(facts.body == 1 && facts.deferred == 1)
+      #expect(facts.settingsRestored && facts.qualified)
+    }
+  }
+
+  @Test func ownedBindLocksLinkBeforeControlWithNativeWaitEvidence() throws {
+    let facts = try Self.ownedT11OrderUnit()
+    #expect(facts.rawControls == 4 && facts.nativeWaits == 2)
+    #expect(facts.writerCalls == 4 && facts.redemptionCalls == 1)
+    #expect(facts.normalHolders == 1 && facts.normalContenders == 1)
+    #expect(facts.body == 1 && facts.deferred == 1)
+    #expect(facts.settingsRestored && facts.qualified)
+  }
+}
