@@ -171,6 +171,39 @@ extension ConnectionPool {
     onSlotWait: (DispatchTime, DispatchTime) -> Void = { _, _ in },
     _ body: (PostgresConnection) -> ProtocolOwnedProofWriteReceipt
   ) throws -> ProtocolOwnedProofWriteReceipt {
-    throw WorkspaceError(.endpointUnavailable, "The owned proof checkout is not implemented.")
+    if closed.withLock({ $0 }) {
+      throw WorkspaceError(.endpointUnavailable, "The store is closed.")
+    }
+    let start = DispatchTime.now()
+    let deadline = start + .seconds(5)
+    onSlotWait(start, deadline)
+    guard slots.wait(timeout: deadline) == .success else {
+      throw WorkspaceError(
+        .endpointUnavailable, "Timed out waiting for a proof-write connection.")
+    }
+    defer { slots.signal() }
+    try admitOwnedProofCheckout()
+    defer { leases.leave() }
+    return try freshOwnedProofReceipt(body)
+  }
+
+  private func admitOwnedProofCheckout() throws {
+    var displaced: PostgresConnection? = try closed.withLock { isClosed in
+      guard !isClosed else {
+        throw WorkspaceError(.endpointUnavailable, "The store is closed.")
+      }
+      leases.enter()
+      return idle.withLock { $0.popLast() }
+    }
+    // Both pool mutex cells have been left before relinquishing this path's old reference.
+    withExtendedLifetime(displaced) {}
+    displaced = nil
+  }
+
+  private func freshOwnedProofReceipt(
+    _ body: (PostgresConnection) -> ProtocolOwnedProofWriteReceipt
+  ) throws -> ProtocolOwnedProofWriteReceipt {
+    let connection = try PostgresConnection(lib: lib, connectionString: connectionString)
+    return body(connection)
   }
 }

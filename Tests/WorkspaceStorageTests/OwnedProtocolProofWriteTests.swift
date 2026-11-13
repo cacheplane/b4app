@@ -374,3 +374,624 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 }
+
+// Retain the actual native operation, not a Task that merely schedules blocking work. The group
+// makes join repeatable: unconditional cleanup never consumes a completion semaphore twice.
+private final class OwnedProofNativeWork<Value: Sendable> {
+  private final class State: Sendable {
+    let value = Mutex<Value?>(nil)
+    let completion = DispatchGroup()
+  }
+  private let state: State
+  private let thread: Thread
+
+  init(_ operation: @escaping @Sendable () -> Value) {
+    let state = State()
+    self.state = state
+    state.completion.enter()
+    thread = Thread {
+      let value = operation()
+      state.value.withLock { $0 = value }
+      state.completion.leave()
+    }
+    thread.start()
+  }
+
+  func join() -> Value {
+    state.completion.wait()
+    return state.value.withLock { $0! }
+  }
+}
+
+private final class OwnedProofHold: Sendable {
+  struct Facts: Sendable {
+    var entered = false
+    var held = false
+    var expired = false
+    var released = false
+    var expiry: UInt64 = 0
+  }
+  private let facts = Mutex(Facts())
+  private let gate = DispatchSemaphore(value: 0)
+
+  // This is the holder's original eight-second guard. No observation extends it.
+  func wait() -> Bool {
+    let deadline = DispatchTime.now() + .seconds(8)
+    facts.withLock {
+      $0.entered = true
+      $0.held = true
+      $0.expiry = deadline.uptimeNanoseconds
+    }
+    let completed = gate.wait(timeout: deadline) == .success
+    facts.withLock {
+      $0.held = false
+      $0.expired = !completed
+    }
+    return completed
+  }
+
+  func snapshot() -> Facts { facts.withLock { $0 } }
+
+  func heldUnexpired() -> Bool {
+    let value = snapshot()
+    return value.entered && value.held && !value.expired && !value.released
+      && DispatchTime.now().uptimeNanoseconds < value.expiry
+  }
+
+  func release() {
+    let signal = facts.withLock { value in
+      if value.released { return false }
+      value.released = true
+      return true
+    }
+    if signal { gate.signal() }
+  }
+}
+
+private final class OwnedProofSlotObservation: Sendable {
+  struct Facts: Sendable {
+    let start: UInt64
+    let deadline: UInt64
+    let observed: UInt64
+    let hold: OwnedProofHold.Facts
+  }
+  private let facts = Mutex<Facts?>(nil)
+
+  // Passive fixed-size memory facts only; this callback performs no scheduling or native work.
+  func record(_ start: DispatchTime, _ deadline: DispatchTime, _ hold: OwnedProofHold) {
+    let value = Facts(
+      start: start.uptimeNanoseconds, deadline: deadline.uptimeNanoseconds,
+      observed: DispatchTime.now().uptimeNanoseconds, hold: hold.snapshot())
+    facts.withLock { $0 = value }
+  }
+
+  func snapshot() -> Facts? { facts.withLock { $0 } }
+}
+
+extension OwnedProtocolProofWriteTests {
+  private enum OwnedProofOutcome: Sendable, Equatable {
+    case receipt, closed, slotTimeout, roleLimit, other
+  }
+
+  private struct OwnedProofDrainFacts: Sendable {
+    let drained: Bool
+    let returnedWhileBodyHeld: Bool
+  }
+
+  private static func ownedOutcome(
+    _ operation: () throws -> ProtocolOwnedProofWriteReceipt
+  ) -> OwnedProofOutcome {
+    do {
+      let receipt = try operation()
+      return receipt.operation == .bind && receipt.disposition == .confirmedNoncommit
+        ? .receipt : .other
+    } catch let error as WorkspaceError {
+      guard error.code == .endpointUnavailable else { return .other }
+      if error.message == "The store is closed." { return .closed }
+      if error.message == "Timed out waiting for a proof-write connection." { return .slotTimeout }
+      // Native constructor evidence, classified to a fixed enum before leaving this operation.
+      if error.message.contains("too many connections for role") { return .roleLimit }
+      return .other
+    } catch {
+      return .other
+    }
+  }
+
+  private static func poolObserved(_ signal: () -> Bool) -> Bool {
+    let deadline = ContinuousClock.now + .seconds(2)
+    while !signal(), ContinuousClock.now < deadline { Thread.sleep(forTimeInterval: 0.005) }
+    return signal()
+  }
+
+  // The six new cases share only the existing validated native fixture and genuine B1 receipt
+  // acquisition. P05 above, including its receipt operands and assertions, remains byte-exact.
+  private static func withPoolReceipt(
+    _ body: (Fixture, ProtocolOwnedProofWriteReceipt) throws -> Void
+  ) throws {
+    try withFixture { f in
+      _ = try validateFixture(f)
+      let calls = Mutex(0)
+      let admission = ProtocolProofMemoryAdmission { calls.withLock { $0 += 1 } }
+      let receipt = f.database.prepareProtocolVerification(
+        expectedSnapshot: f.anchor, expectedBinding: f.binding, expectedTokenRef: f.link.tokenRef,
+        memoryAdmission: admission)
+      guard receipt.operation == .bind, receipt.disposition == .confirmedNoncommit,
+        calls.withLock({ $0 }) == 0
+      else { throw FixtureFailure.nativeShape }
+      let result = Result { try body(f, receipt) }
+      guard calls.withLock({ $0 }) == 0 else { throw FixtureFailure.nativeShape }
+      try result.get()
+    }
+  }
+
+  private static func proofPool(_ f: Fixture, size: Int) throws -> ConnectionPool {
+    let endpoint = f.database.endpoint
+    let application = "b4_owned_control_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    return try ConnectionPool(
+      lib: LibPQ.load(binDir: endpoint.binDir!),
+      connectionString:
+        "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database) application_name=\(application)",
+      size: size)
+  }
+
+  private static func nativeOne(_ connection: PostgresConnection) throws {
+    let rows = try connection.execute("SELECT 1 AS n").rows
+    guard rows.count == 1, rows.first?.int("n") == 1 else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ordinaryHolder(
+    _ pool: ConnectionPool, _ hold: OwnedProofHold
+  ) -> OwnedProofNativeWork<Bool> {
+    OwnedProofNativeWork {
+      validates {
+        try pool.withConnection { connection in
+          try nativeOne(connection)
+          guard hold.wait() else { throw FixtureFailure.nativeShape }
+        }
+      }
+    }
+  }
+
+  private static func roleSessionPresent(_ f: Fixture, role: String, application: String) throws -> Bool {
+    try f.inspector.execute(
+      "SELECT count(*) AS n FROM pg_stat_activity WHERE datname=$1 AND usename=$2 AND application_name=$3",
+      [f.database.endpoint.database, role, application]
+    ).rows.first?.int("n") == 1
+  }
+
+  private static func withLimitedProofRole(
+    _ f: Fixture, size: Int, _ body: (ConnectionPool, String, String) throws -> Void
+  ) throws {
+    let role = "b4_owned_role_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    let application = "b4_owned_limited_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    try f.inspector.execute("CREATE ROLE \(Rows.quote(role)) LOGIN NOSUPERUSER CONNECTION LIMIT 1")
+    var roleExists = true
+    var pool: ConnectionPool?
+    func cleanup() throws {
+      pool?.close()
+      pool = nil
+      let absent = poolObserved {
+        (try? f.inspector.execute(
+          "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name=$2",
+          [f.database.endpoint.database, application]
+        ).rows.isEmpty) == true
+      }
+      guard absent else { throw FixtureFailure.nativeShape }
+      if roleExists {
+        try f.inspector.execute("DROP ROLE \(Rows.quote(role))")
+        roleExists = false
+      }
+      guard try f.inspector.execute("SELECT 1 FROM pg_roles WHERE rolname=$1", [role]).rows.isEmpty else {
+        throw FixtureFailure.nativeShape
+      }
+    }
+    // Register native cleanup immediately after CREATE, including catalog/probe/setup failure.
+    defer { if roleExists { try? cleanup() } }
+    let result = Result {
+      let rows = try f.inspector.execute(
+        "SELECT rolcanlogin, rolsuper, rolconnlimit FROM pg_roles WHERE rolname=$1", [role]
+      ).rows
+      guard rows.count == 1, rows.first?.text("rolcanlogin") == "t",
+        rows.first?.text("rolsuper") == "f", rows.first?.int("rolconnlimit") == 1
+      else { throw FixtureFailure.nativeShape }
+      let endpoint = f.database.endpoint
+      // A real successful constructor probe is required before any refusal can earn credit.
+      let limited = try ConnectionPool(
+        lib: LibPQ.load(binDir: endpoint.binDir!),
+        connectionString:
+          "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(role) dbname=\(endpoint.database) application_name=\(application)",
+        size: size)
+      pool = limited
+      try body(limited, role, application)
+    }
+    let cleaned = Result { try cleanup() }
+    try cleaned.get()
+    try result.get()
+  }
+
+  @Test func ownedProofClosedBeforeAdmissionDoesNotWaitOrRunBody() throws {
+    var exactClosed = false
+    var observerAbsent = false
+    var bodyAbsent = false
+    var finalDrain = false
+    try Self.withPoolReceipt { f, receipt in
+      let pool = try Self.proofPool(f, size: 1)
+      defer { pool.close() }
+      pool.close()
+      var observerCalls = 0
+      var bodyCalls = 0
+      let outcome = Self.ownedOutcome {
+        try pool.withOwnedProofConnection(onSlotWait: { _, _ in observerCalls += 1 }) { _ in
+          bodyCalls += 1
+          return receipt
+        }
+      }
+      exactClosed = outcome == .closed
+      observerAbsent = observerCalls == 0
+      bodyAbsent = bodyCalls == 0
+      finalDrain = pool.closeForMigration(timeout: .zero)
+    }
+    #expect(exactClosed)
+    #expect(observerAbsent)
+    #expect(bodyAbsent)
+    #expect(finalDrain)
+  }
+
+  @Test func ownedProofTimesOutAtActualFiveSecondSlotDeadlineWithoutExtraLease() throws {
+    var actualFiveSeconds = false
+    var validGuardMargin = false
+    var heldThroughTimeout = false
+    var exactTimeout = false
+    var bodyAbsent = false
+    var boundedRecoveryAbsent = false
+    var recoverySucceeded = false
+    var finalDrain = false
+    try Self.withPoolReceipt { f, receipt in
+      let pool = try Self.proofPool(f, size: 1)
+      defer { pool.close() }
+      let hold = OwnedProofHold()
+      let holder = Self.ordinaryHolder(pool, hold)
+      var waiter: OwnedProofNativeWork<OwnedProofOutcome>?
+      var recovery: OwnedProofNativeWork<Bool>?
+      defer {
+        hold.release()
+        _ = holder.join()
+        _ = waiter?.join()
+        _ = recovery?.join()
+      }
+      guard Self.poolObserved({ hold.snapshot().entered }), hold.heldUnexpired() else {
+        throw FixtureFailure.nativeShape
+      }
+      let slot = OwnedProofSlotObservation()
+      let bodyCalls = Mutex(0)
+      let owned = OwnedProofNativeWork {
+        Self.ownedOutcome {
+          try pool.withOwnedProofConnection(onSlotWait: { start, deadline in
+            slot.record(start, deadline, hold)
+          }) { _ in
+            bodyCalls.withLock { $0 += 1 }
+            return receipt
+          }
+        }
+      }
+      waiter = owned
+      let outcome = owned.join()
+      let ended = DispatchTime.now().uptimeNanoseconds
+      guard let timing = slot.snapshot() else { throw FixtureFailure.nativeShape }
+      let (budget, budgetUnderflow) = timing.deadline.subtractingReportingOverflow(timing.start)
+      let (margin, marginUnderflow) = timing.hold.expiry.subtractingReportingOverflow(timing.deadline)
+      actualFiveSeconds =
+        !budgetUnderflow && budget == 5_000_000_000
+        && timing.observed >= timing.start && timing.observed < timing.deadline
+        && ended >= timing.deadline
+      validGuardMargin =
+        !marginUnderflow && margin >= 2_000_000_000
+        && timing.hold.held && !timing.hold.expired && !timing.hold.released
+      heldThroughTimeout = hold.heldUnexpired()
+      guard actualFiveSeconds, validGuardMargin, heldThroughTimeout else {
+        throw FixtureFailure.nativeShape
+      }
+      exactTimeout = outcome == .slotTimeout
+      bodyAbsent = bodyCalls.withLock { $0 } == 0
+      let beforeWaiting = Mutex(false)
+      let recoveryBody = Mutex(false)
+      let overlapsHolder = Mutex(false)
+      let recoveryWorker = OwnedProofNativeWork {
+        Self.validates {
+          try pool.withConnection(beforeWaiting: { beforeWaiting.withLock { $0 = true } }) { connection in
+            overlapsHolder.withLock { $0 = hold.snapshot().held }
+            recoveryBody.withLock { $0 = true }
+            try Self.nativeOne(connection)
+          }
+        }
+      }
+      recovery = recoveryWorker
+      guard Self.poolObserved({ beforeWaiting.withLock { $0 } }), hold.heldUnexpired() else {
+        throw FixtureFailure.nativeShape
+      }
+      // A bounded inverse observation after the actual ordinary wait marker. Source review is
+      // also required: this does not claim a universal permit count or a kernel-wait theorem.
+      Thread.sleep(forTimeInterval: 0.075)
+      boundedRecoveryAbsent = !recoveryBody.withLock({ $0 }) && hold.heldUnexpired()
+      guard boundedRecoveryAbsent else { throw FixtureFailure.nativeShape }
+      hold.release()
+      let holderSucceeded = holder.join()
+      recoverySucceeded =
+        recoveryWorker.join() && holderSucceeded
+        && recoveryBody.withLock({ $0 }) && !overlapsHolder.withLock({ $0 })
+      guard !hold.snapshot().expired else { throw FixtureFailure.nativeShape }
+      finalDrain = pool.closeForMigration(timeout: .zero)
+    }
+    #expect(actualFiveSeconds)
+    #expect(validGuardMargin)
+    #expect(heldThroughTimeout)
+    #expect(exactTimeout)
+    #expect(bodyAbsent)
+    #expect(boundedRecoveryAbsent)
+    #expect(recoverySucceeded)
+    #expect(finalDrain)
+  }
+
+  @Test func ownedProofQueuedAdmissionRefusesAfterConcurrentClose() throws {
+    var closedBeforeDeadline = false
+    var exactClosed = false
+    var bodyAbsent = false
+    var holderSucceeded = false
+    var finalDrain = false
+    try Self.withPoolReceipt { f, receipt in
+      let pool = try Self.proofPool(f, size: 1)
+      defer { pool.close() }
+      let hold = OwnedProofHold()
+      let holder = Self.ordinaryHolder(pool, hold)
+      var waiter: OwnedProofNativeWork<OwnedProofOutcome>?
+      defer {
+        hold.release()
+        _ = holder.join()
+        _ = waiter?.join()
+      }
+      guard Self.poolObserved({ hold.snapshot().entered }), hold.heldUnexpired() else {
+        throw FixtureFailure.nativeShape
+      }
+      let slot = OwnedProofSlotObservation()
+      let calls = Mutex(0)
+      let owned = OwnedProofNativeWork {
+        Self.ownedOutcome {
+          try pool.withOwnedProofConnection(onSlotWait: { start, deadline in
+            slot.record(start, deadline, hold)
+          }) { _ in
+            calls.withLock { $0 += 1 }
+            return receipt
+          }
+        }
+      }
+      waiter = owned
+      guard Self.poolObserved({ slot.snapshot() != nil }), let timing = slot.snapshot(),
+        hold.heldUnexpired(), DispatchTime.now().uptimeNanoseconds < timing.deadline
+      else { throw FixtureFailure.nativeShape }
+      pool.close()
+      closedBeforeDeadline = DispatchTime.now().uptimeNanoseconds < timing.deadline
+      guard closedBeforeDeadline, hold.heldUnexpired() else { throw FixtureFailure.nativeShape }
+      hold.release()
+      holderSucceeded = holder.join()
+      exactClosed = owned.join() == .closed
+      bodyAbsent = calls.withLock { $0 } == 0
+      guard !hold.snapshot().expired else { throw FixtureFailure.nativeShape }
+      finalDrain = pool.closeForMigration(timeout: .zero)
+    }
+    #expect(closedBeforeDeadline)
+    #expect(exactClosed)
+    #expect(bodyAbsent)
+    #expect(holderSucceeded)
+    #expect(finalDrain)
+  }
+
+  @Test func ownedProofBodyKeepsLogicalLeaseAndSlotThroughWork() throws {
+    var drainRefusedWhileHeld = false
+    var secondBodyAbsent = false
+    var firstReturnedReceipt = false
+    var secondClosed = false
+    var finalDrain = false
+    var openSerialResults = false
+    try Self.withPoolReceipt { f, receipt in
+      let pool = try Self.proofPool(f, size: 1)
+      defer { pool.close() }
+      let hold = OwnedProofHold()
+      let first = OwnedProofNativeWork {
+        Self.ownedOutcome {
+          try pool.withOwnedProofConnection { _ in
+            // The body is nonthrowing. Guard expiry is an INVALID fixture even though the
+            // required genuine receipt is still returned; it never becomes success credit.
+            _ = hold.wait()
+            return receipt
+          }
+        }
+      }
+      var second: OwnedProofNativeWork<OwnedProofOutcome>?
+      var drainer: OwnedProofNativeWork<OwnedProofDrainFacts>?
+      defer {
+        hold.release()
+        _ = first.join()
+        _ = second?.join()
+        _ = drainer?.join()
+      }
+      guard Self.poolObserved({ hold.snapshot().entered }), hold.heldUnexpired() else {
+        throw FixtureFailure.nativeShape
+      }
+      let slot = OwnedProofSlotObservation()
+      let calls = Mutex(0)
+      let waiting = OwnedProofNativeWork {
+        Self.ownedOutcome {
+          try pool.withOwnedProofConnection(onSlotWait: { start, deadline in
+            slot.record(start, deadline, hold)
+          }) { _ in
+            calls.withLock { $0 += 1 }
+            return receipt
+          }
+        }
+      }
+      second = waiting
+      guard Self.poolObserved({ slot.snapshot() != nil }), hold.heldUnexpired() else {
+        throw FixtureFailure.nativeShape
+      }
+      let drainWorker = OwnedProofNativeWork {
+        let drained = pool.closeForMigration(timeout: .milliseconds(100))
+        return OwnedProofDrainFacts(drained: drained, returnedWhileBodyHeld: hold.heldUnexpired())
+      }
+      drainer = drainWorker
+      let drained = drainWorker.join()
+      drainRefusedWhileHeld =
+        !drained.drained && drained.returnedWhileBodyHeld
+        && hold.heldUnexpired()
+      secondBodyAbsent = calls.withLock { $0 } == 0
+      guard drainRefusedWhileHeld else { throw FixtureFailure.nativeShape }
+      hold.release()
+      firstReturnedReceipt = first.join() == .receipt
+      secondClosed = waiting.join() == .closed
+      secondBodyAbsent = secondBodyAbsent && calls.withLock { $0 } == 0
+      guard !hold.snapshot().expired else { throw FixtureFailure.nativeShape }
+      finalDrain = pool.closeForMigration(timeout: .zero)
+
+      // A separate OPEN size-one pool supplies the two-success positive control.
+      let open = try Self.proofPool(f, size: 1)
+      defer { open.close() }
+      let serial = OwnedProofNativeWork {
+        var calls = 0
+        let first = Self.ownedOutcome {
+          try open.withOwnedProofConnection { _ in
+            calls += 1; return receipt
+          }
+        }
+        let second = Self.ownedOutcome {
+          try open.withOwnedProofConnection { _ in
+            calls += 1; return receipt
+          }
+        }
+        return first == .receipt && second == .receipt && calls == 2
+      }
+      defer { _ = serial.join() }
+      openSerialResults = serial.join()
+      guard open.closeForMigration(timeout: .zero) else { throw FixtureFailure.nativeShape }
+    }
+    #expect(drainRefusedWhileHeld)
+    #expect(secondBodyAbsent)
+    #expect(firstReturnedReceipt)
+    #expect(secondClosed)
+    #expect(finalDrain)
+    #expect(openSerialResults)
+  }
+
+  @Test func ownedProofFreshConstructorRefusalReleasesLeaseAndSlotWithoutBody() throws {
+    var nativeSession = false
+    var bothNativeRefusals = false
+    var heldThroughBoth = false
+    var bodyAbsent = false
+    var holderSucceeded = false
+    var finalDrain = false
+    try Self.withPoolReceipt { f, receipt in
+      try Self.withLimitedProofRole(f, size: 2) { pool, role, application in
+        let hold = OwnedProofHold()
+        let holder = Self.ordinaryHolder(pool, hold)
+        var first: OwnedProofNativeWork<OwnedProofOutcome>?
+        var second: OwnedProofNativeWork<OwnedProofOutcome>?
+        defer {
+          hold.release()
+          _ = holder.join()
+          _ = first?.join()
+          _ = second?.join()
+        }
+        guard Self.poolObserved({ hold.snapshot().entered }), hold.heldUnexpired() else {
+          throw FixtureFailure.nativeShape
+        }
+        nativeSession = try Self.roleSessionPresent(f, role: role, application: application)
+        guard nativeSession else { throw FixtureFailure.nativeShape }
+        let calls = Mutex(0)
+        let one = OwnedProofNativeWork {
+          Self.ownedOutcome {
+            try pool.withOwnedProofConnection { _ in
+              calls.withLock { $0 += 1 }
+              return receipt
+            }
+          }
+        }
+        first = one
+        let firstOutcome = one.join()
+        let stillHeldAfterFirst = hold.heldUnexpired()
+        guard stillHeldAfterFirst else { throw FixtureFailure.nativeShape }
+        let two = OwnedProofNativeWork {
+          Self.ownedOutcome {
+            try pool.withOwnedProofConnection { _ in
+              calls.withLock { $0 += 1 }
+              return receipt
+            }
+          }
+        }
+        second = two
+        let secondOutcome = two.join()
+        heldThroughBoth = stillHeldAfterFirst && hold.heldUnexpired()
+        bothNativeRefusals = firstOutcome == .roleLimit && secondOutcome == .roleLimit
+        bodyAbsent = calls.withLock { $0 } == 0
+        guard heldThroughBoth else { throw FixtureFailure.nativeShape }
+        hold.release()
+        holderSucceeded = holder.join()
+        guard !hold.snapshot().expired else { throw FixtureFailure.nativeShape }
+        finalDrain = pool.closeForMigration(timeout: .zero)
+      }
+    }
+    #expect(nativeSession)
+    #expect(bothNativeRefusals)
+    #expect(heldThroughBoth)
+    #expect(bodyAbsent)
+    #expect(holderSucceeded)
+    #expect(finalDrain)
+  }
+
+  @Test func ownedProofDoesNotReuseLiveOrdinaryIdleProbeWhenFreshConnectMustFail() throws {
+    var nativeSessionBefore = false
+    var nativeSessionAfter = false
+    var liveBefore = false
+    var liveAfter = false
+    var nativeRefusal = false
+    var bodyAbsent = false
+    var finalDrain = false
+    try Self.withPoolReceipt { f, receipt in
+      try Self.withLimitedProofRole(f, size: 1) { pool, role, application in
+        // The probe has returned to ordinary idle, but this caller retains a live strong alias.
+        // It is never exported from an OWNED body, and no second startup competes with it.
+        let old = try pool.withConnection { connection in
+          try Self.nativeOne(connection)
+          return connection
+        }
+        try withExtendedLifetime(old) {
+          liveBefore = Self.validates { try Self.nativeOne(old) }
+          nativeSessionBefore = try Self.roleSessionPresent(f, role: role, application: application)
+          guard liveBefore, nativeSessionBefore else { throw FixtureFailure.nativeShape }
+          let calls = Mutex(0)
+          let worker = OwnedProofNativeWork {
+            Self.ownedOutcome {
+              try pool.withOwnedProofConnection { _ in
+                calls.withLock { $0 += 1 }
+                return receipt
+              }
+            }
+          }
+          defer { _ = worker.join() }
+          nativeRefusal = worker.join() == .roleLimit
+          bodyAbsent = calls.withLock { $0 } == 0
+          liveAfter = Self.validates { try Self.nativeOne(old) }
+          nativeSessionAfter = try Self.roleSessionPresent(f, role: role, application: application)
+          guard liveAfter, nativeSessionAfter else { throw FixtureFailure.nativeShape }
+        }
+        finalDrain = pool.closeForMigration(timeout: .zero)
+        // withLimitedProofRole closes the pool and proves bounded named-backend absence after
+        // this scope relinquishes the old alias, before DROP ROLE and catalog absence checks.
+      }
+    }
+    #expect(nativeSessionBefore)
+    #expect(nativeSessionAfter)
+    #expect(liveBefore)
+    #expect(liveAfter)
+    #expect(nativeRefusal)
+    #expect(bodyAbsent)
+    #expect(finalDrain)
+  }
+}
