@@ -1,6 +1,22 @@
 import SwiftUI
 import WorkspaceProtocol
 
+/// Which turns' lines are open, by group key. Owned by the transcript as `@State`, so it is forgotten
+/// with the view and never stored.
+@Observable final class TranscriptFolds {
+  var open: Set<String>
+
+  init(open: Set<String> = []) { self.open = open }
+
+  func toggle(_ group: String) {
+    if open.contains(group) { open.remove(group) } else { open.insert(group) }
+  }
+
+  func reset() {
+    if !open.isEmpty { open = [] }
+  }
+}
+
 /// Cached items plus live streaming text. Agent output is rendered as text, never executed.
 struct TranscriptView: View {
   let detail: ThreadDetail
@@ -8,39 +24,26 @@ struct TranscriptView: View {
   /// turn's own message arrives (M8c). Always nil on the Mac.
   var pending: PendingSend? = nil
   var pendingStatus: String? = nil
+  /// Dense draws each turn as the message, one line for the work, and the answer.
+  var dense = false
+  @State private var folds: TranscriptFolds
+
+  init(
+    detail: ThreadDetail, pending: PendingSend? = nil, pendingStatus: String? = nil, dense: Bool = false,
+    folds: TranscriptFolds = TranscriptFolds()
+  ) {
+    self.detail = detail
+    self.pending = pending
+    self.pendingStatus = pendingStatus
+    self.dense = dense
+    _folds = State(initialValue: folds)
+  }
 
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
-        LazyVStack(alignment: .leading, spacing: LLA.Space.l) {
-          if detail.items.isEmpty && pending == nil {
-            Text("No messages yet. Say something below.").llaMuted()
-          }
-          ForEach(detail.items) { item in
-            TranscriptRow(item: item, liveText: item.nativeItemId.flatMap { detail.liveText[$0] })
-              .id(item.id)
-          }
-          ForEach(detail.turns.filter { $0.status == .terminal && $0.outcome != .completed }) { turn in
-            TurnNoteRow(turn: turn)
-          }
-          if let pending {
-            PendingMessageRow(send: pending, status: pendingStatus).id("pending-\(pending.id)")
-          }
-          if let turn = detail.activeTurn, turn.status == .reconciling {
-            HStack(alignment: .top, spacing: LLA.Space.s) {
-              LLAStateDot(state: .unknown).padding(.top, 2)
-              Text(
-                "The runtime stopped before this turn finished. Its outcome is unknown; check again below, or abandon the turn to continue."
-              )
-              .llaSmall().fixedSize(horizontal: false, vertical: true)
-            }
-          }
-          Color.clear.frame(height: 1).id("bottom")
-        }
-        .padding(.horizontal, LLA.Metrics.margin)
-        .padding(.vertical, LLA.Metrics.margin)
-        .frame(maxWidth: LLA.Metrics.column, alignment: .leading)
-        .frame(maxWidth: .infinity)
+        TranscriptContent(
+          detail: detail, pending: pending, pendingStatus: pendingStatus, dense: dense, folds: folds)
       }
       .accessibilityIdentifier("transcript")
       #if os(iOS)
@@ -58,6 +61,133 @@ struct TranscriptView: View {
       }
       .onChange(of: pending?.id) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
       .onChange(of: detail.liveText) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+      .onChange(of: detail.thread.id) { _, _ in folds.reset() }
+    }
+  }
+}
+
+/// The transcript's rows, without the scroll view around them (so a test can measure them).
+struct TranscriptContent: View {
+  let detail: ThreadDetail
+  var pending: PendingSend? = nil
+  var pendingStatus: String? = nil
+  var dense = false
+  let folds: TranscriptFolds
+  /// The transcript scrolls, so its stack is lazy. A test measuring the content outside a scroll view
+  /// turns this off: a lazy stack there estimates the height of rows it has not laid out.
+  var lazy = true
+
+  var body: some View {
+    Group {
+      if lazy {
+        LazyVStack(alignment: .leading, spacing: LLA.Space.l) { rows }
+      } else {
+        VStack(alignment: .leading, spacing: LLA.Space.l) { rows }
+      }
+    }
+    .padding(.horizontal, LLA.Metrics.margin)
+    .padding(.vertical, LLA.Metrics.margin)
+    .frame(maxWidth: LLA.Metrics.column, alignment: .leading)
+    .frame(maxWidth: .infinity)
+  }
+
+  @ViewBuilder private var rows: some View {
+    if detail.items.isEmpty && pending == nil {
+      Text("No messages yet. Say something below.").llaMuted()
+    }
+    if dense {
+      ForEach(DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open)) {
+        entry in
+        switch entry {
+        case .item(let item):
+          TranscriptRow(item: item, liveText: item.nativeItemId.flatMap { detail.liveText[$0] })
+            .id(item.id)
+        case .line(let line):
+          StepsLineRow(line: line, open: folds.open.contains(line.group)) {
+            folds.toggle(line.group)
+          }
+          .id(entry.id)
+        case .note(let turn):
+          TurnNoteRow(turn: turn)
+        }
+      }
+    } else {
+      ForEach(detail.items) { item in
+        TranscriptRow(item: item, liveText: item.nativeItemId.flatMap { detail.liveText[$0] })
+          .id(item.id)
+      }
+      ForEach(detail.turns.filter { $0.status == .terminal && $0.outcome != .completed }) { turn in
+        TurnNoteRow(turn: turn)
+      }
+    }
+    if let pending {
+      PendingMessageRow(send: pending, status: pendingStatus).id("pending-\(pending.id)")
+    }
+    if let turn = detail.activeTurn, turn.status == .reconciling {
+      HStack(alignment: .top, spacing: LLA.Space.s) {
+        LLAStateDot(state: .unknown).padding(.top, 2)
+        Text(
+          "The runtime stopped before this turn finished. Its outcome is unknown; check again below, or abandon the turn to continue."
+        )
+        .llaSmall().fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    Color.clear.frame(height: 1).id("bottom")
+  }
+}
+
+/// A turn's line: what the turn did, or is doing, and the word that shows or hides it. One muted line,
+/// cut at its tail; at accessibility sizes it wraps under the action word.
+struct StepsLineRow: View {
+  let line: DenseTranscript.StepsLine
+  let open: Bool
+  let toggle: () -> Void
+  @Environment(\.dynamicTypeSize) private var typeSize
+
+  /// The line read as one element: "4 steps, 1 failed, Show".
+  var label: String { line.spoken(open: open) }
+
+  var body: some View {
+    Button {
+      withAnimation(.none) { toggle() }
+    } label: {
+      let stacked = typeSize.isAccessibilitySize
+      let layout =
+        stacked
+        ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
+        : AnyLayout(HStackLayout(spacing: LLA.Space.xs))
+      layout {
+        if line.text != nil || line.failedText != nil || line.declinedText != nil { parts }
+        Text(line.action(open: open))
+          .foregroundStyle(LLA.Color.muted)
+          .lineLimit(1)
+          .fixedSize()
+      }
+      .font(LLAFont.small)
+      .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row, alignment: .leading)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(label)
+    .accessibilityIdentifier("steps-line")
+  }
+
+  /// The text (the only part that shrinks, cut at its tail), "N failed" in danger and "N declined",
+  /// with ", " between the parts that are present.
+  private var parts: some View {
+    let stacked = typeSize.isAccessibilitySize
+    return HStack(spacing: 0) {
+      if let text = line.text {
+        Text(text).foregroundStyle(LLA.Color.muted).lineLimit(stacked ? nil : 1).truncationMode(.tail)
+      }
+      if let failed = line.failedText {
+        Text((line.text == nil ? "" : ", ") + failed).foregroundStyle(LLA.Color.danger).fixedSize()
+      }
+      if let declined = line.declinedText {
+        Text((line.text == nil && line.failedText == nil ? "" : ", ") + declined)
+          .foregroundStyle(LLA.Color.muted).fixedSize()
+      }
     }
   }
 }
@@ -258,8 +388,10 @@ struct CollapsibleCard<Content: View>: View {
 struct TurnNoteRow: View {
   let turn: Turn
 
+  var text: String { turn.outcome == .cancelled ? "Turn stopped." : "Turn failed." }
+
   var body: some View {
-    Text(turn.outcome == .cancelled ? "Turn stopped." : "Turn failed.")
+    Text(text)
       .font(LLAFont.caption)
       .foregroundStyle(turn.outcome == .cancelled ? LLA.Color.muted : LLA.Color.danger)
   }

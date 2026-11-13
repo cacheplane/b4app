@@ -227,6 +227,17 @@ import WorkspaceProtocol
     #expect(try name(command("c2", status: "inProgress", command: "echo one\necho two")) == "echo one")
   }
 
+  @Test func aBlankStepNameReadsWorking() throws {
+    let running = turn("t1", .running, nil)
+    for blank in ["", "\n  second line", "   "] {
+      let result = entries(
+        [user("u1"), command("c1", status: "inProgress", command: blank)], turns: [running])
+      let steps = try #require(line(result))
+      #expect(steps.runningName == nil)
+      #expect(steps.text == "Working")
+    }
+  }
+
   @Test func aRunningTurnBetweenStepsReadsWorking() throws {
     let running = turn("t1", .running, nil)
     let quiet = try #require(line(entries([user("u1"), tool("k1"), tool("k2")], turns: [running])))

@@ -215,6 +215,7 @@ enum DenseTranscript {
     let firstLine =
       source.split(separator: "\n", omittingEmptySubsequences: false).first.map(String.init) ?? ""
     let name = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty else { return nil }
     guard name.count > nameLimit else { return name }
     return String(name.prefix(nameLimit - 1)) + "…"
   }

@@ -1201,6 +1201,9 @@ public final class WorkspaceModel {
   /// Mac. The phone (which relays through the hub) keeps its 44 pt rows at either density.
   var tightQuietRows: Bool { viewSettings.density == .dense && !relaysThroughHub }
 
+  /// Dense draws a thread as message, line, answer. Both platforms.
+  var denseThread: Bool { viewSettings.density == .dense }
+
   /// One setting, written optimistically (decision 12): shown at once, then sent with only that field.
   /// The answer's row may predate a later set or a change from elsewhere, so only this field is taken
   /// from it, and only while the field still shows this write's value; the other fields are left to
