@@ -9,7 +9,7 @@ public struct NodeExecutable: Sendable, Equatable {
 /// Bounded facts from the explicit Node probe after its CommandRunner operation has returned.
 /// Parent elapsed time includes scheduling, capture, group cleanup and resumption, not process time.
 package struct NodeVersionProbeObservation: Sendable {
-  /// Classifies raw stdout independently of the resolver's trimmed version predicates.
+  /// Classifies returned wrapper stdout independently of the resolver's trimmed version predicates.
   package enum StdoutShape: String, Sendable {
     case unavailable, empty, exactFake24, vPrefixOther, other
   }
@@ -25,8 +25,9 @@ package struct NodeVersionProbeObservation: Sendable {
   package let resolveAccepted: Bool
   package let callerCancelledAtReturn: Bool
   package let probeParentElapsedMilliseconds: UInt64
+  package let selectedOutcomeOrigin: CommandRunner.SelectedOutcomeOrigin?
 
-  /// Projects raw command output to a closed value; stderr and error-shaped text are never retained.
+  /// Projects returned wrapper stdout to a closed value; stderr and error-shaped text are never retained.
   static func classifyStdout(of result: CommandResult?) -> StdoutShape {
     guard let result else { return .unavailable }
     if result.stdout.isEmpty { return .empty }
@@ -38,7 +39,8 @@ package struct NodeVersionProbeObservation: Sendable {
     commandThrew: Bool, returnedTimedOut: Bool?, returnedExitCode: Int32?, returnedSignal: Int32?,
     returnedSucceeded: Bool?, stdoutShape: StdoutShape, versionPrefixAccepted: Bool?,
     minimumAccepted: Bool?, resolveAccepted: Bool, callerCancelledAtReturn: Bool,
-    probeParentElapsedMilliseconds: UInt64
+    probeParentElapsedMilliseconds: UInt64,
+    selectedOutcomeOrigin: CommandRunner.SelectedOutcomeOrigin? = nil
   ) {
     self.commandThrew = commandThrew
     self.returnedTimedOut = returnedTimedOut
@@ -51,6 +53,7 @@ package struct NodeVersionProbeObservation: Sendable {
     self.resolveAccepted = resolveAccepted
     self.callerCancelledAtReturn = callerCancelledAtReturn
     self.probeParentElapsedMilliseconds = probeParentElapsedMilliseconds
+    self.selectedOutcomeOrigin = selectedOutcomeOrigin
   }
 }
 
@@ -81,12 +84,13 @@ public enum NodeLocator {
   ) async -> NodeExecutable? {
     guard let explicit = env["B4APP_NODE_PATH"] else { return await resolve(environment: env) }
     let started = ContinuousClock.now
-    let result = try? await CommandRunner.run(
+    let observed = try? await CommandRunner.runObservingSelectedOutcome(
       explicit, ["--version"], options: CommandOptions(timeout: .seconds(5)))
     // Sample the parent boundary before predicates or callback work. timedOut does not identify
     // whether the existing timer or work cancellation won CommandRunner's race.
     let elapsed = started.duration(to: ContinuousClock.now)
     let callerCancelledAtReturn = Task.isCancelled
+    let result = observed?.result
     var versionPrefixAccepted: Bool? = nil
     var minimumAccepted: Bool? = nil
     var executable: NodeExecutable? = nil
@@ -110,7 +114,8 @@ public enum NodeLocator {
         returnedSucceeded: result?.succeeded, stdoutShape: shape,
         versionPrefixAccepted: versionPrefixAccepted, minimumAccepted: minimumAccepted,
         resolveAccepted: executable != nil, callerCancelledAtReturn: callerCancelledAtReturn,
-        probeParentElapsedMilliseconds: boundedProbeMilliseconds(elapsed)))
+        probeParentElapsedMilliseconds: boundedProbeMilliseconds(elapsed),
+        selectedOutcomeOrigin: observed?.selectedOutcomeOrigin))
     return executable
   }
 
