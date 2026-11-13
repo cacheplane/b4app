@@ -358,13 +358,13 @@ private actor EventRecorder {
       }
       #expect(
         try h.db.viewSettings()
-          == ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny, showArchived: true))
+          == ViewSettings(arrangement: .byEnvironment, showArchived: true, density: .dense))
       // One event for the feed's insert and one for the snapshot; none for the echo.
       let published = await recorder.viewSettingsChanges()
       #expect(published.count == 2)
       #expect(
         try published.last?.event.payload["settings"]?.decode(ViewSettings.self)
-          == ViewSettings(arrangement: .byEnvironment, quietThreads: .tiny, showArchived: true))
+          == ViewSettings(arrangement: .byEnvironment, showArchived: true, density: .dense))
     }
   }
 

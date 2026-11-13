@@ -131,7 +131,7 @@ public enum SyncColumns {
     "threads": ["title", "pinned", "archived", "readTurnId", "userDeletedAt", "model", "permission"],
     "environments": ["name"],
     "drafts": ["threadId", "text", "updatedAt"],
-    "viewSettings": ["id", "arrangement", "quietThreads", "showArchived", "updatedAt"],
+    "viewSettings": ["id", "arrangement", "quietThreads", "showArchived", "updatedAt", "density"],
   ]
 
   /// Phone-writable columns plus `threads.environmentId`, which only the Mac writes but which merges by

@@ -64,8 +64,8 @@ import WorkspaceProtocol
     }
     #expect(top.map(\.id) == ["asks", "failed", "unread"])
     // The pinned working thread leads the working threads; it is not lifted above the top list.
-    guard case .rows(let rows, tiny: false) = lower else {
-      Issue.record("Small: \(lower)")
+    guard case .rows(let rows) = lower else {
+      Issue.record("Shown: \(lower)")
       return
     }
     #expect(rows.map(\.id) == ["pinned", "busy", "quiet", "copy", "loose"])
@@ -75,7 +75,7 @@ import WorkspaceProtocol
     model.connectionFilter = "c2"
     #expect(
       model.listLayout.body
-        == .needsYouFirst(top: [], lower: .rows(rows.filter { $0.connectionId == "c2" }, tiny: false)))
+        == .needsYouFirst(top: [], lower: .rows(rows.filter { $0.connectionId == "c2" })))
   }
 
   @Test func theStowedRowSpeaksItsTextAndWhatItDoes() {

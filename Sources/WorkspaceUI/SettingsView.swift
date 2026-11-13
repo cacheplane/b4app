@@ -48,6 +48,8 @@ extension SettingsPage {
   @MainActor @ViewBuilder func view(model: WorkspaceModel) -> some View {
     switch self {
     case .account: AccountSettingsView(model: model)
+    // The Mac's page; not in the phone's `allCases`, so never reached there.
+    case .display: DisplaySettingsView(model: model)
     case .connections: ConnectionsView(model: model)
     case .servers: B4ProjectsView(model: model)
     case .remoteAccess:
@@ -142,7 +144,7 @@ public struct WorkspaceSettingsView: View {
         Button("Attach B4 project…") { attachingProject = true }
           .buttonStyle(.llaSecondary)
           .disabled(model.link != .ready || model.busy)
-      case .account, .remoteAccess:
+      case .account, .display, .remoteAccess:
         EmptyView()
       }
     }

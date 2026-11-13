@@ -209,6 +209,16 @@ extension MirrorStore {
       return .skipped
     }
     let clocked = (SyncColumns.clocked[table] ?? []).filter { declared[$0] != nil }
+    // What a stored old `quietThreads` implies, when this change may replace it (see the end).
+    let carriesQuietThreads =
+      change.op == "update" ? change.column == "quietThreads" : change.value?["quietThreads"] != nil
+    let implied =
+      table == "viewSettings" && carriesQuietThreads
+      ? try storedSidebar().flatMap {
+        // Any stored density, even one this build cannot read, is kept.
+        $0.density == .null
+          ? ViewSettings.impliedDensity(storedQuietThreads: $0.quietThreads, storedDensity: nil) : nil
+      } : nil
     do {
       switch change.op {
       case "insert":
@@ -284,7 +294,29 @@ extension MirrorStore {
     } catch let error as SQLiteError where error.isConstraint {
       return .skipped
     }
+    // Replacing a stored `tiny` with no density keeps the density it implied, as the local write does:
+    // the hub's log may still end in a `tiny` no migration rewrote. It is a local reading of the old
+    // value, so it claims no clock (any real density change still wins) and queues nothing.
+    if let implied, let after = try storedSidebar(), after.density == .null,
+      ViewSettings.impliedDensity(storedQuietThreads: after.quietThreads, storedDensity: nil) == nil
+    {
+      try run(
+        #"UPDATE "viewSettings" SET "density" = ? WHERE "id" = ?"#,
+        [.text(implied.rawValue), .text(ViewSettings.rowId)])
+    }
     return .applied
+  }
+
+  /// The view settings row's stored `quietThreads` (as text, nil otherwise) and `density` cell; nil
+  /// when there is no row.
+  private func storedSidebar() throws -> (quietThreads: String?, density: Cell)? {
+    guard
+      let row = try query(
+        #"SELECT "quietThreads", "density" FROM "viewSettings" WHERE "id" = ?"#, [.text(ViewSettings.rowId)]
+      ).first
+    else { return nil }
+    let quietThreads: String? = if case .text(let text)? = row["quietThreads"] { text } else { nil }
+    return (quietThreads, row["density"] ?? .null)
   }
 
   func exists(_ table: String, key: String, _ rowId: String) throws -> Bool {

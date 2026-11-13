@@ -123,7 +123,7 @@ public enum LLA {
     public static let sidebarWidth: CGFloat = 240
     /// The box a thread's state mark is drawn in, at the default text size (`ThreadMark`).
     public static let mark: CGFloat = 12
-    /// A tiny thread row (the Mac's lower list under "Tiny"): an 11 pt line in a 20 pt row.
+    /// A tiny thread row (the Mac's lower list under Dense): an 11 pt line in a 20 pt row.
     public static let threadRowTiny: CGFloat = 20
     /// The space between consecutive rows in the sidebar's lists: a hairline of space, not a drawn
     /// line. A section gap above a list's first row replaces it (D-208, the owner's changes).

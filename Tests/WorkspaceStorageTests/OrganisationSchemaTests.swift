@@ -100,7 +100,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
         "INSERT INTO \"drafts\" (\"threadId\", \"text\", \"updatedAt\") VALUES ('t1', 'hello', 'now')")
       // Every column set: a view settings insert clocks only the columns it sets (ViewSettingsStoreTests).
       try c.execute(
-        "INSERT INTO \"viewSettings\" VALUES ('view', 'needsYouFirst', 'small', false, 'now')")
+        "INSERT INTO \"viewSettings\" VALUES ('view', 'needsYouFirst', 'shown', false, 'now', 'normal')")
     }
     let rows = ["threads": "t1", "environments": "p1", "drafts": "t1", "viewSettings": "view"]
     // Insert records every clocked column and nothing else.
@@ -119,8 +119,9 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       "environments": ["name": "'Renamed'"],
       "drafts": ["threadId": "'t2'", "text": "'again'", "updatedAt": "'later'"],
       "viewSettings": [
-        "id": "'view'", "arrangement": "'byEnvironment'", "quietThreads": "'tiny'", "showArchived": "true",
-        "updatedAt": "'later'",
+        "id": "'view'", "arrangement": "'byEnvironment'", "quietThreads": "'collapsed'",
+        "showArchived": "true",
+        "updatedAt": "'later'", "density": "'dense'",
       ],
     ]
     let keys = ["threads": "id", "environments": "id", "drafts": "threadId", "viewSettings": "id"]

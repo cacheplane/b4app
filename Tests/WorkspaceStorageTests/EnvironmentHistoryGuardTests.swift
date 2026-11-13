@@ -220,7 +220,7 @@ struct EnvironmentHistoryGuardTests {
       (name: $0.deletingPathExtension().lastPathComponent, bytes: try Data(contentsOf: $0))
     }
     let files = try Migrator.files()
-    #expect(raw.count == 14)
+    #expect(raw.count == 15)
     #expect(files.map(\.name) == raw.map(\.name))
     #expect(try files.map(\.sql) == raw.map { try #require(String(data: $0.bytes, encoding: .utf8)) })
     let eleven = try #require(raw.first { $0.name == "0011_environments" })
@@ -242,7 +242,7 @@ struct EnvironmentHistoryGuardTests {
     #expect(throws: WorkspaceError.self) {
       try StoreMigrationResource(name: eleven.name, bytes: Data([0xff])).sql()
     }
-    #expect(files.last?.name == "0014_connection_commands")
+    #expect(files.last?.name == "0015_density")
   }
 
   @Test func opaqueAndStructuralHistoryStayDistinct() throws {
@@ -847,6 +847,7 @@ extension EnvironmentHistoryGuardTests {
       #expect(
         try Migrator.migrate(owner) == [
           "0011_environments", "0012_app_folders", "0013_view_settings", "0014_connection_commands",
+          "0015_density",
         ])
       #expect(try historyPreserved(owner))
     }

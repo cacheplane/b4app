@@ -491,8 +491,8 @@ private final class BackgroundWindow: NSWindow {
     }
   }
 
-  /// "Needs you first" with each way of drawing the threads that do not need you: Small, Tiny,
-  /// Collapsed (closed, then open), and Hidden (closed, then open: its row above the profile footer, the
+  /// "Needs you first" with each way of drawing the threads that do not need you: Shown (normal, then
+  /// dense), Collapsed (closed, then open), and Hidden (closed, then open: its row above the profile footer, the
   /// working threads it opens last in the scrolling list); then Hidden with nothing but quiet threads,
   /// which draws an empty list. Then the phone's list with Collapsed open and with Hidden.
   @Test func quietThreadsInEachMode() async throws {
@@ -508,6 +508,9 @@ private final class BackgroundWindow: NSWindow {
       try await show(mode)
       try await render("macQuietThreads-\(mode.rawValue)", size: size) { SidebarView(model: model) }
     }
+    transport.emit(try .viewSettingsChanged(ViewSettings(density: .dense)))
+    try await waitUntil("dense") { model.viewSettings == ViewSettings(density: .dense) }
+    try await render("macQuietThreads-shown-dense", size: size) { SidebarView(model: model) }
     try await show(.collapsed)
     try await render("macQuietThreads-collapsed-open", size: size) {
       ScrollView {
@@ -565,6 +568,92 @@ private final class BackgroundWindow: NSWindow {
     }
     #expect(model.listLayout.body.drawsNothing)
     try await render("macQuietThreads-hidden-onlyQuiet", size: size) { SidebarView(model: model) }
+  }
+
+  /// Dense on the Mac, rendered at Shown, Collapsed opened with a quiet thread selected, Hidden opened,
+  /// and "By environment", with the rows each place holds and the size `ThreadListView.tiny` gives it.
+  /// The drawn heights themselves are measured by `ThreadListHeightTests`.
+  @Test func denseSidebarDrawsQuietRowsTight() async throws {
+    let transport = ScriptedTransport()
+    var archived = ListFixture.thread(
+      "old", "Old spike", environment: ListFixture.docs, turn: "t10", status: .terminal, outcome: .completed,
+      read: "t10", at: 5)
+    archived.archived = true
+    let model = try await ListFixture.model(transport, extra: [ListFixture.approving, archived])
+    model.account = WorkspaceAccount(username: "blove", displayName: "Brian Love")
+    func show(_ settings: ViewSettings) async throws {
+      transport.emit(try .viewSettingsChanged(settings))
+      try await waitUntil("\(settings)") { model.viewSettings == settings }
+    }
+    func height(_ place: ThreadListView.RowPlace) -> CGFloat {
+      ThreadListView.tiny(place, tight: model.tightQuietRows)
+        ? LLA.Metrics.threadRowTiny : LLA.Metrics.threadRow
+    }
+    func list(open: Bool) -> some View {
+      ScrollView {
+        ThreadListView(model: model, showsStowed: .constant(open))
+          .padding(.horizontal, 10).padding(.top, LLA.Space.s)
+      }
+    }
+    let size = CGSize(width: LLA.Metrics.sidebarWidth, height: 640)
+
+    try await show(ViewSettings(showArchived: true, density: .dense))
+    #expect(model.tightQuietRows)
+    try await render("macSidebarDense-shown", size: size) { SidebarView(model: model) }
+    guard case .needsYouFirst(let top, .rows(let lower)) = model.listLayout.body else {
+      Issue.record("Shown: \(model.listLayout.body)")
+      return
+    }
+    #expect(top.map(\.id) == ["approving", "asks", "failed", "unread"])
+    #expect(lower.map(\.id) == ["pinned", "busy", "quiet", "copy", "loose"])
+    #expect(model.listLayout.archived.map(\.id) == ["old"])
+    #expect(height(.top) == 28)
+    #expect(height(.lower) == 20)
+    #expect(height(.archived) == 28)
+
+    // Collapsed opened, a quiet thread selected: kept out of the stow and tight, as are the opened rows.
+    try await show(ViewSettings(quietThreads: .collapsed, showArchived: true, density: .dense))
+    model.selectedThreadId = "quiet"
+    try await render("macSidebarDense-collapsed-open", size: size) { list(open: true) }
+    guard case .needsYouFirst(_, .collapsed(_, _, let stowed, let selected)) = model.listLayout.body else {
+      Issue.record("Collapsed: \(model.listLayout.body)")
+      return
+    }
+    #expect(selected?.id == "quiet")
+    #expect(stowed.map(\.id) == ["pinned", "busy", "copy", "loose"])
+    #expect(height(.selected) == 20)
+    #expect(height(.collapsedOpened) == 20)
+    #expect(height(.top) == 28)
+
+    // Hidden opened: the selected quiet row and the working rows it opens, tight.
+    try await show(ViewSettings(quietThreads: .hidden, showArchived: true, density: .dense))
+    try await render("macSidebarDense-hidden-open", size: size) { list(open: true) }
+    guard case .needsYouFirst(_, .hidden(let working, let kept)) = model.listLayout.body else {
+      Issue.record("Hidden: \(model.listLayout.body)")
+      return
+    }
+    #expect(kept?.id == "quiet")
+    #expect(working.map(\.id) == ["pinned", "busy"])
+    #expect(height(.hiddenOpened) == 20)
+    #expect(height(.selected) == 20)
+    model.selectedThreadId = nil
+
+    // By environment, rendered only; `ThreadListHeightTests` measures that its rows keep their height.
+    try await show(ViewSettings(arrangement: .byEnvironment, density: .dense))
+    try await render("macSidebarDense-byEnvironment", size: size) { list(open: false) }
+
+    // Normal: nothing is tight.
+    try await show(ViewSettings(quietThreads: .collapsed))
+    #expect(!model.tightQuietRows)
+    #expect(ThreadListView.RowPlace.allCases.allSatisfy { height($0) == 28 })
+  }
+
+  /// Settings, Display: the Dense switch and its description.
+  @Test func displaySettingsPage() async throws {
+    let model = try await ListFixture.model()
+    try await render("displaySettings", size: CGSize(width: 560, height: 200)) {
+      DisplaySettingsView(model: model)
+    }
   }
 
   /// The iPhone list (new-thread composer spec, "The iPhone"; mockup screen 1): the header's avatar,
