@@ -119,7 +119,6 @@ struct ComposerView: View {
     if slash.isShowing {
       // While completions show, Return picks one: a typed slash is never sent, and never stops a turn.
       Button(slash.selected?.primary ?? "Choose", systemImage: "return") { chooseSlash() }
-        .returnSends()
         .buttonStyle(ComposerCircleStyle(diameter: controlSize, glyph: 13 * scale))
         .disabled(slash.selected?.isAvailable != true)
         .accessibilityIdentifier("slash-choose")
@@ -133,7 +132,6 @@ struct ComposerView: View {
         .accessibilityIdentifier("stop")
     } else {
       Button("Send", systemImage: "arrow.up", action: send)
-        .returnSends()
         .buttonStyle(ComposerCircleStyle(diameter: controlSize, glyph: 15 * scale))
         .disabled(!canSend)
         .accessibilityIdentifier("send")
