@@ -2538,3 +2538,937 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.nativeWaits == 0 && facts.normalHolders == 0)
   }
 }
+
+// Prospective T09 source only: each ordered unit owns its four raw controls and new target.
+// Redemption compares captured lineage and fresh memory; separate native validation follows it.
+extension OwnedProtocolProofWriteTests {
+  private enum OwnedT09Unit {
+    case object, fact, account, database, hubBase, device, joined, unlinked, callerUserOrg
+    case boundUser, boundOrg, expected(String)
+    case store, member, revision, missingControl, extraKey, version, noncanonicalRevision
+    case nativeBase, nativeDevice, nativeJoined, missingLink, nativeReference(String), observation
+    case opaque(String, mismatch: String?), maximum
+  }
+
+  private enum OwnedT09LinkColumn: String {
+    case url, deviceId, joinedAt, tokenRef
+  }
+
+  // Fixed primitive facts only; no database, receipt, snapshot, image, or connection escapes.
+  private struct OwnedT09Facts {
+    let rawControls: Int
+    let negativeCalls: Int
+    let positiveCalls: Int
+    let successRedemptions: Int
+    let refusalRedemptions: Int
+    let memoryCalls: Int
+    let mutating: Bool
+    let qualified: Bool
+  }
+
+  private static func ownedT09Data(_ object: [String: Any]) throws -> Data {
+    try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+  }
+
+  private static func ownedT09Object(_ data: Data) throws -> [String: Any] {
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      throw FixtureFailure.nativeShape
+    }
+    return object
+  }
+
+  private static func ownedT09Binding(_ binding: ProtocolMembershipBinding) -> [String: Any] {
+    [
+      "accountID": binding.accountID, "canonicalHubBase": binding.canonicalHubBase,
+      "hubUserID": binding.hubUserID, "hubOrgID": binding.hubOrgID,
+      "deviceID": binding.deviceID, "databaseName": binding.databaseName,
+      "linkJoinedAt": binding.linkJoinedAt,
+    ]
+  }
+
+  private static func ownedT09OtherBinding(
+    _ binding: ProtocolMembershipBinding, unit: OwnedT09Unit
+  ) throws -> ProtocolMembershipBinding {
+    var account = binding.accountID
+    var database = binding.databaseName
+    var hubBase = binding.canonicalHubBase
+    var device = binding.deviceID
+    var joined = binding.linkJoinedAt
+    var user = binding.hubUserID
+    var org = binding.hubOrgID
+    switch unit {
+    case .account: account = "OWNED_PROOF_ACCOUNT_OTHER"
+    case .database: database += "_other"
+    case .hubBase: hubBase = "https://example.invalid/OwnedProofOther"
+    case .device: device = "OWNED_PROOF_DEVICE_OTHER"
+    case .joined: joined = "2026-11-13T00:00:00.001Z"
+    case .callerUserOrg:
+      user = "OWNED_PROOF_USER_OTHER"
+      org = "OWNED_PROOF_ORG_OTHER"
+    case .boundUser: user += "_OTHER"
+    case .boundOrg: org += "_OTHER"
+    default: throw FixtureFailure.nativeShape
+    }
+    return try ProtocolMembershipBinding(
+      accountID: account, canonicalHubBase: hubBase, hubUserID: user, hubOrgID: org,
+      deviceID: device, databaseName: database, linkJoinedAt: joined)
+  }
+
+  private static func ownedT09Next(_ object: [String: Any]) throws -> String {
+    guard let text = object["revision"] as? String, let revision = Int64(text),
+      revision >= 0, equalBytes(text, String(revision))
+    else { throw FixtureFailure.nativeShape }
+    let (next, overflow) = revision.addingReportingOverflow(1)
+    guard !overflow else { throw FixtureFailure.nativeShape }
+    return String(next)
+  }
+
+  // Replace only one complete, checked settings key/value row, retaining every other row,
+  // empty public table, database identity, and all three public sequence fields.
+  private static func ownedT09ControlImage(
+    _ image: OwnedBindImage, old: [String: Any]?, new: [String: Any]?
+  ) throws -> OwnedBindImage {
+    guard let settings = image.rows["settings"] else { throw FixtureFailure.nativeShape }
+    var next: [Data] = []
+    var found = 0
+    for data in settings {
+      let row = try ownedT09Object(data)
+      guard Set(row.keys) == Set(["key", "value"]), let rowKey = row["key"] as? String else {
+        throw FixtureFailure.nativeShape
+      }
+      if equalBytes(rowKey, key) {
+        guard let old, data == (try ownedT09Data(["key": key, "value": old])) else {
+          throw FixtureFailure.nativeShape
+        }
+        found += 1
+      } else {
+        next.append(data)
+      }
+    }
+    guard found == (old == nil ? 0 : 1) else { throw FixtureFailure.nativeShape }
+    if let new { next.append(try ownedT09Data(["key": key, "value": new])) }
+    var rows = image.rows
+    rows["settings"] = next.sorted { $0.lexicographicallyPrecedes($1) }
+    return OwnedBindImage(database: image.database, rows: rows, sequence: image.sequence)
+  }
+
+  private static func ownedT09Bound(
+    _ image: OwnedBindImage, inactive: NativeControl, binding: ProtocolMembershipBinding
+  ) throws -> (image: OwnedBindImage, control: [String: Any]) {
+    guard
+      Set(inactive.object.keys)
+        == Set([
+          "version", "storeIncarnation", "membershipIncarnation", "revision",
+        ]), inactive.revision == 0, equalBytes(image.database, binding.databaseName)
+    else {
+      throw FixtureFailure.nativeShape
+    }
+    var expected = inactive.object
+    expected["revision"] = try ownedT09Next(inactive.object)
+    expected["binding"] = ownedT09Binding(binding)
+    return (try ownedT09ControlImage(image, old: inactive.object, new: expected), expected)
+  }
+
+  private static func ownedT09Link(_ image: OwnedBindImage) throws -> Data {
+    guard let rows = image.rows["hubLink"], rows.count == 1 else { throw FixtureFailure.nativeShape }
+    let row = try ownedT09Object(rows[0])
+    guard
+      Set(row.keys)
+        == Set([
+          "id", "url", "deviceId", "deviceName", "tokenRef", "orgSlug", "username", "cursor",
+          "lastPushAt", "lastError", "joinedAt", "ownedAs",
+        ]), let id = row["id"] as? NSNumber, CFGetTypeID(id) != CFBooleanGetTypeID(),
+      id.stringValue == "1"
+    else { throw FixtureFailure.nativeShape }
+    for value in row.values {
+      if let text = value as? String, text.utf8.contains(0) { throw FixtureFailure.nativeShape }
+    }
+    return rows[0]
+  }
+
+  private static func ownedT09LinkImage(
+    _ image: OwnedBindImage, old: Data?, new: Data?
+  ) throws -> OwnedBindImage {
+    guard let links = image.rows["hubLink"], links == (old.map({ [$0] }) ?? []) else {
+      throw FixtureFailure.nativeShape
+    }
+    var rows = image.rows
+    rows["hubLink"] = new.map { [$0] } ?? []
+    let result = OwnedBindImage(database: image.database, rows: rows, sequence: image.sequence)
+    if new != nil { _ = try ownedT09Link(result) }
+    return result
+  }
+
+  private static func ownedT09ChangedLink(
+    _ image: OwnedBindImage, column: OwnedT09LinkColumn, value: String
+  ) throws -> OwnedBindImage {
+    guard !value.utf8.contains(0) else { throw FixtureFailure.nativeShape }
+    let old = try ownedT09Link(image)
+    var row = try ownedT09Object(old)
+    guard row[column.rawValue] is String else { throw FixtureFailure.nativeShape }
+    row[column.rawValue] = value
+    return try ownedT09LinkImage(image, old: old, new: ownedT09Data(row))
+  }
+
+  // This adapted freezer truthfully supports chosen native A, caller binding, and bound/no-op
+  // images. The seed was validated before customization, and the catalog guard precedes install.
+  private static func ownedT09Freeze(
+    _ f: Fixture, before: OwnedBindImage, expected: OwnedBindImage,
+    expectedControl: [String: Any], reference: String
+  ) throws -> OwnedBindStageFixture {
+    try ownedBindCatalogGuard(f.inspector)
+    let link = try ownedT09Object(ownedT09Link(before))
+    guard let actualA = link["tokenRef"] as? String, equalBytes(actualA, reference),
+      ProtocolCredentialReference(actualA) != nil, !actualA.utf8.contains(0),
+      equalBytes(before.database, f.database.endpoint.database),
+      try ownedBindImage(f.inspector) == before,
+      let expectedRows = expected.rows["settings"],
+      expectedRows.filter({ data in
+        guard let row = try? ownedT09Object(data), let rowKey = row["key"] as? String else { return false }
+        return equalBytes(rowKey, key)
+      }) == [try ownedT09Data(["key": key, "value": expectedControl])],
+      try ownedT09Link(expected) == ownedT09Link(before)
+    else { throw FixtureFailure.nativeShape }
+    let device = f.database.deviceId
+    guard !device.isEmpty, !device.utf8.contains(0) else { throw FixtureFailure.nativeShape }
+    return OwnedBindStageFixture(
+      before: before, expected: expected,
+      controlJSON: try ownedBindText(ownedT09Data(expectedControl)),
+      originalReference: actualA, replacement: actualA, device: device,
+      lowerWall: try ownedBindWall(f.inspector))
+  }
+
+  // Check the entire immutable private recipe before every actual writer and on both sides
+  // of every post-install fixture transaction. Never rerun the zero-trigger preinstall guard.
+  private static func ownedT09Recipe(_ c: PostgresConnection, stage: OwnedBindStageFixture) throws {
+    try ownedBindMode(c, replacement: stage.originalReference)
+    let names = try c.execute("SELECT name FROM \"owned_bind_stage\".\"names\"").rows
+    var expectedRows = Dictionary(uniqueKeysWithValues: stage.expected.rows.keys.map { ($0, [Data]()) })
+    var actualNames = Set<Data>()
+    for row in names {
+      guard let name = row.text("name"), actualNames.insert(Data(name.utf8)).inserted else {
+        throw FixtureFailure.nativeShape
+      }
+    }
+    guard actualNames == Set(stage.expected.rows.keys.map { Data($0.utf8) }) else {
+      throw FixtureFailure.nativeShape
+    }
+    for row in try c.execute(
+      "SELECT name,value::text AS value FROM \"owned_bind_stage\".\"expected\""
+    ).rows {
+      guard let name = row.text("name"), let value = row.text("value"), expectedRows[name] != nil else {
+        throw FixtureFailure.nativeShape
+      }
+      expectedRows[name]!.append(try ownedBindJSON(value))
+    }
+    for name in Array(expectedRows.keys) { expectedRows[name]!.sort { $0.lexicographicallyPrecedes($1) } }
+    guard expectedRows == stage.expected.rows else { throw FixtureFailure.nativeShape }
+    let meta = try c.execute(
+      "SELECT to_jsonb(m)::text AS value FROM \"owned_bind_stage\".\"meta\" m"
+    ).rows
+    let expectedMeta: [String: Any] = [
+      "singleton": 1, "database": stage.before.database, "original_ref": stage.originalReference,
+      "expected_control": try ownedT09Object(Data(stage.controlJSON.utf8)),
+      "expected_sequence": try ownedT09Object(stage.before.sequence),
+      "expected_device": stage.device, "lower_wall": stage.lowerWall,
+    ]
+    guard meta.count == 1, let text = meta[0].text("value"),
+      try ownedBindJSON(text) == ownedT09Data(expectedMeta)
+    else { throw FixtureFailure.nativeShape }
+    let triggers = try c.execute(
+      """
+      SELECT t.tgname AS name,t.tgtype::text AS kind,t.tgenabled::text AS enabled,
+        t.tgdeferrable::text AS deferrable,t.tginitdeferred::text AS deferred,
+        p.proname AS function,n.nspname AS schema
+      FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
+      JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+      WHERE t.tgrelid='public.settings'::pg_catalog.regclass AND NOT t.tgisinternal
+      """
+    ).rows
+    guard triggers.count == 2 else { throw FixtureFailure.nativeShape }
+    for row in triggers {
+      let commit = row.text("name") == "owned_bind_commit_normal"
+      guard commit || row.text("name") == "owned_bind_body",
+        row.text("kind") == "17", row.text("enabled") == "O",
+        row.text("schema") == "owned_bind_stage",
+        row.text("function") == (commit ? "commit_normal" : "body"),
+        row.text("deferrable") == (commit ? "true" : "false"),
+        row.text("deferred") == (commit ? "true" : "false")
+      else { throw FixtureFailure.nativeShape }
+    }
+    let linkTriggers = try c.execute(
+      """
+      SELECT count(*) AS n FROM pg_catalog.pg_trigger
+      WHERE tgrelid='public."hubLink"'::pg_catalog.regclass AND NOT tgisinternal
+      """
+    ).rows
+    guard linkTriggers.count == 1, linkTriggers[0].int("n") == 0 else {
+      throw FixtureFailure.nativeShape
+    }
+  }
+
+  private static func ownedT09Checkpoint(
+    _ f: Fixture, stage: OwnedBindStageFixture, image: OwnedBindImage,
+    body: OwnedBindProbe, commit: OwnedBindProbe, allocations: Int64
+  ) throws {
+    try ownedT09Recipe(f.inspector, stage: stage)
+    guard try ownedBindImage(f.inspector) == image,
+      try ownedBindProbe(f.inspector, "body_probe").advanced(from: body, by: allocations),
+      try ownedBindProbe(f.inspector, "commit_probe").advanced(from: commit, by: allocations)
+    else { throw FixtureFailure.nativeShape }
+    if allocations == 0 {
+      try ownedBindObservedEmpty(f.inspector)
+    } else {
+      guard allocations == 1 else { throw FixtureFailure.nativeShape }
+      try ownedBindWriterObserved(f.inspector, stage: stage, actualDevice: f.database.deviceId)
+    }
+  }
+
+  // Q01: both directions use DELETE+INSERT, never UPDATE/UPSERT. Missing control has a
+  // distinct delete-only forward / insert-only restoration path. Cleanup is in place BEFORE BEGIN.
+  private static func ownedT09ControlSwap(
+    _ f: Fixture, stage: OwnedBindStageFixture, from: OwnedBindImage, to: OwnedBindImage,
+    old: [String: Any]?, new: [String: Any]?, body: OwnedBindProbe, commit: OwnedBindProbe
+  ) throws {
+    guard try ownedT09ControlImage(from, old: old, new: new) == to else {
+      throw FixtureFailure.nativeShape
+    }
+    try ownedT09Checkpoint(f, stage: stage, image: from, body: body, commit: commit, allocations: 0)
+    var committed = false
+    defer { if !committed { try? f.inspector.execute("ROLLBACK") } }
+    try f.inspector.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+    try f.inspector.execute("SET LOCAL lock_timeout='2s'")
+    try f.inspector.execute("SET LOCAL statement_timeout='2s'")
+    if let old {
+      guard
+        try f.inspector.execute(
+          "DELETE FROM public.settings WHERE key=$1 AND value=$2::jsonb",
+          [key, try ownedBindText(ownedT09Data(old))]
+        ).affected == 1
+      else { throw FixtureFailure.nativeShape }
+    }
+    if let new {
+      guard
+        try f.inspector.execute(
+          "INSERT INTO public.settings(key,value) VALUES($1,$2::jsonb)",
+          [key, try ownedBindText(ownedT09Data(new))]
+        ).affected == 1
+      else { throw FixtureFailure.nativeShape }
+    }
+    try f.inspector.execute("COMMIT")
+    committed = true
+    try ownedT09Checkpoint(f, stage: stage, image: to, body: body, commit: commit, allocations: 0)
+  }
+
+  // Only fixed quoted link columns are permitted; absent link restoration supplies all twelve
+  // retained columns through the actual native row type. No schema or NOT NULL relaxation.
+  private static func ownedT09LinkSwap(
+    _ f: Fixture, from: OwnedBindImage, to: OwnedBindImage, column: OwnedT09LinkColumn?,
+    stage: OwnedBindStageFixture?, body: OwnedBindProbe?, commit: OwnedBindProbe?
+  ) throws {
+    guard let oldRows = from.rows["hubLink"], let newRows = to.rows["hubLink"] else {
+      throw FixtureFailure.nativeShape
+    }
+    let old: Data?
+    let new: Data?
+    if oldRows.isEmpty { old = nil } else { old = try ownedT09Link(from) }
+    if newRows.isEmpty { new = nil } else { new = try ownedT09Link(to) }
+    guard try ownedT09LinkImage(from, old: old, new: new) == to else {
+      throw FixtureFailure.nativeShape
+    }
+    if let stage, let body, let commit {
+      try ownedT09Checkpoint(f, stage: stage, image: from, body: body, commit: commit, allocations: 0)
+    } else {
+      guard stage == nil, body == nil, commit == nil,
+        try ownedBindImage(f.inspector) == from
+      else { throw FixtureFailure.nativeShape }
+      try ownedBindCatalogGuard(f.inspector)
+    }
+    var committed = false
+    defer { if !committed { try? f.inspector.execute("ROLLBACK") } }
+    try f.inspector.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+    try f.inspector.execute("SET LOCAL lock_timeout='2s'")
+    try f.inspector.execute("SET LOCAL statement_timeout='2s'")
+    switch (old, new) {
+    case (.some(let old), .some(let new)):
+      guard let column,
+        let value = try ownedT09Object(new)[column.rawValue] as? String,
+        !value.utf8.contains(0),
+        try ownedT09ChangedLink(from, column: column, value: value) == to,
+        try f.inspector.execute(
+          "UPDATE public.\"hubLink\" AS l SET \(Rows.quote(column.rawValue))=$1 WHERE id=1 AND to_jsonb(l)=$2::jsonb",
+          [value, try ownedBindText(old)]
+        ).affected == 1
+      else { throw FixtureFailure.nativeShape }
+    case (.some(let old), nil):
+      guard column == nil,
+        try f.inspector.execute(
+          "DELETE FROM public.\"hubLink\" AS l WHERE id=1 AND to_jsonb(l)=$1::jsonb",
+          [try ownedBindText(old)]
+        ).affected == 1
+      else { throw FixtureFailure.nativeShape }
+    case (nil, .some(let new)):
+      guard column == nil,
+        try f.inspector.execute(
+          "INSERT INTO public.\"hubLink\" SELECT (jsonb_populate_record(NULL::public.\"hubLink\",$1::jsonb)).*",
+          [try ownedBindText(new)]
+        ).affected == 1
+      else { throw FixtureFailure.nativeShape }
+    default: throw FixtureFailure.nativeShape
+    }
+    try f.inspector.execute("COMMIT")
+    committed = true
+    if let stage, let body, let commit {
+      try ownedT09Checkpoint(f, stage: stage, image: to, body: body, commit: commit, allocations: 0)
+    } else {
+      guard try ownedBindImage(f.inspector) == to else { throw FixtureFailure.nativeShape }
+      try ownedBindCatalogGuard(f.inspector)
+    }
+  }
+
+  private static func ownedT09NativeValidate(
+    _ f: Fixture, successor: ProtocolVerificationSnapshot, binding: ProtocolMembershipBinding,
+    reference: String, observation: ProtocolVerificationObservation?
+  ) throws {
+    guard successor.observation == observation else { throw FixtureFailure.nativeShape }
+    try f.database.validateProtocolVerification(expectedSnapshot: successor)
+    try f.database.compareOriginalLinkedCaptureOwner(
+      expectedSnapshot: successor, accountID: binding.accountID,
+      databaseName: binding.databaseName, hubBase: binding.canonicalHubBase)
+    try f.database.compareOriginalLinkedCredentialReference(
+      expectedSnapshot: successor, expectedTokenRef: reference)
+  }
+
+  private static func ownedT09Refused(
+    _ receipt: ProtocolOwnedProofWriteReceipt, fixture f: Fixture, stage: OwnedBindStageFixture,
+    image: OwnedBindImage, anchor: ProtocolVerificationSnapshot, reference: String,
+    admission: ProtocolProofMemoryAdmission, memory: OwnedBindMemory, start: Int, calls: Int,
+    body: OwnedBindProbe, commit: OwnedBindProbe
+  ) throws -> Int {
+    let before = memory.calls()
+    guard receipt.operation == .bind, receipt.disposition == .confirmedNoncommit,
+      before - start == calls
+    else { throw FixtureFailure.nativeShape }
+    let successor = try? receipt.currentSuccessor(
+      expectedSnapshot: anchor, expectedTokenRef: reference, memoryAdmission: admission)
+    guard successor == nil, memory.calls() == before else { throw FixtureFailure.nativeShape }
+    try ownedT09Checkpoint(f, stage: stage, image: image, body: body, commit: commit, allocations: 0)
+    return before - start
+  }
+
+  private static func ownedT09Committed(
+    _ receipt: ProtocolOwnedProofWriteReceipt, fixture f: Fixture, stage: OwnedBindStageFixture,
+    memory: OwnedBindMemory, start: Int, body: OwnedBindProbe, commit: OwnedBindProbe, mutating: Bool
+  ) throws {
+    guard receipt.operation == .bind, receipt.disposition == .committedCurrent,
+      memory.calls() - start == 4
+    else { throw FixtureFailure.nativeShape }
+    try ownedT09Checkpoint(
+      f, stage: stage, image: stage.expected, body: body, commit: commit,
+      allocations: mutating ? 1 : 0)
+  }
+
+  private static func ownedT09Redeem(
+    _ receipt: ProtocolOwnedProofWriteReceipt, fixture f: Fixture, stage: OwnedBindStageFixture,
+    anchor: ProtocolVerificationSnapshot, binding: ProtocolMembershipBinding, reference: String,
+    observation: ProtocolVerificationObservation?, admission: ProtocolProofMemoryAdmission,
+    memory: OwnedBindMemory, allowed: Bool, body: OwnedBindProbe, commit: OwnedBindProbe, mutating: Bool
+  ) throws {
+    let before = memory.calls()
+    if allowed {
+      let successor = try receipt.currentSuccessor(
+        expectedSnapshot: anchor, expectedTokenRef: reference, memoryAdmission: admission)
+      guard memory.calls() == before + 1 else { throw FixtureFailure.nativeShape }
+      // currentSuccessor performs no native read. These are separate, honest native comparisons.
+      try ownedT09NativeValidate(
+        f, successor: successor, binding: binding, reference: reference, observation: observation)
+    } else {
+      let successor = try? receipt.currentSuccessor(
+        expectedSnapshot: anchor, expectedTokenRef: reference, memoryAdmission: admission)
+      guard successor == nil, memory.calls() == before else { throw FixtureFailure.nativeShape }
+    }
+    guard receipt.operation == .bind, receipt.disposition == .committedCurrent else {
+      throw FixtureFailure.nativeShape
+    }
+    try ownedT09Checkpoint(
+      f, stage: stage, image: stage.expected, body: body, commit: commit,
+      allocations: mutating ? 1 : 0)
+  }
+
+  private static func ownedT09Unit(_ unit: OwnedT09Unit) throws -> OwnedT09Facts {
+    // A fresh sequencer runs here for EVERY loop element. All four fixtures have torn down
+    // before withFixture constructs this unit's target; no cache or other fixture image is used.
+    let raw = try ownedBindRawStageControls()
+    guard raw.count == 4, raw.enumerated().allSatisfy({ $0.element.row == $0.offset && $0.element.qualified })
+    else { throw FixtureFailure.nativeShape }
+    var facts: OwnedT09Facts?
+    try withFixture { f in
+      let inactive = try validateFixture(f)
+      let seed = try ownedBindImage(f.inspector)
+      let originalLink = try ownedT09Link(seed)
+      let originalControl = inactive.object
+      let originalA = f.link.tokenRef
+      guard ProtocolCredentialReference(originalA) != nil,
+        !originalA.utf8.contains(0), equalBytes(seed.database, f.binding.databaseName)
+      else { throw FixtureFailure.nativeShape }
+
+      // I01's extra real object uses the exact endpoint and validated binDir. Its defer is
+      // installed immediately after construction, before any writer defer or later query.
+      var extra: WorkspaceDatabase?
+      if case .object = unit {
+        guard let binDir = f.database.endpoint.binDir, !binDir.isEmpty,
+          !binDir.utf8.contains(0), try ownedBindImage(f.inspector) == seed
+        else { throw FixtureFailure.nativeShape }
+        extra = try WorkspaceDatabase(
+          endpoint: f.database.endpoint, binDir: binDir, createIfMissing: false)
+      }
+      defer { if let extra { try? extra.close() } }
+      guard try ownedBindImage(f.inspector) == seed else { throw FixtureFailure.nativeShape }
+
+      var negativeAnchor = f.anchor
+      var positiveAnchor = f.anchor
+      var negativeBinding = f.binding
+      var positiveBinding = f.binding
+      var referenceA = originalA
+      var negativeReference = originalA
+      var before = seed
+      var success = try ownedT09Bound(seed, inactive: inactive, binding: f.binding)
+      var expectedObservation: ProtocolVerificationObservation?
+      var mutating = true
+      var single = false
+      var changesControl = false
+      var mutatedControl: [String: Any]?
+      var changesLink = false
+      var linkColumn: OwnedT09LinkColumn?
+      var negativeImage: OwnedBindImage?
+      var maximum = false
+      var negativeDatabase = f.database
+
+      switch unit {
+      case .object:
+        guard let extra else { throw FixtureFailure.nativeShape }
+        negativeDatabase = extra
+      case .fact, .boundUser, .boundOrg, .observation:
+        // Compute B0 from retained S0 BEFORE ordinary setup, then require exact native B0.
+        let bound = try f.database.prepareProtocolVerification(
+          expectedSnapshot: f.anchor, expectedBinding: f.binding)
+        guard try ownedBindImage(f.inspector) == success.image else { throw FixtureFailure.nativeShape }
+        before = success.image
+        positiveAnchor = bound
+        negativeAnchor = bound
+        mutating = false
+        switch unit {
+        case .fact:
+          guard let contextFree = try f.database.readProtocolFact(expectedBinding: f.binding),
+            try ownedBindImage(f.inspector) == before
+          else { throw FixtureFailure.nativeShape }
+          negativeAnchor = contextFree
+        case .boundUser, .boundOrg:
+          negativeBinding = try ownedT09OtherBinding(f.binding, unit: unit)
+        case .observation:
+          let observation = try ProtocolVerificationObservation(
+            binding: f.binding, reportedMinimum: 2, reportedVersion: 2, healthy: true)
+          var observedControl = success.control
+          observedControl["revision"] = try ownedT09Next(success.control)
+          observedControl["observation"] =
+            [
+              "binding": ownedT09Binding(f.binding), "reportedMinimum": 2,
+              "reportedVersion": 2, "healthy": true,
+            ] as [String: Any]
+          let observedImage = try ownedT09ControlImage(
+            before, old: success.control, new: observedControl)
+          let observedAnchor = try f.database.commitObservedProtocolFact(
+            expectedSnapshot: bound, observation: observation)
+          guard observedAnchor.observation == observation,
+            try ownedBindImage(f.inspector) == observedImage
+          else { throw FixtureFailure.nativeShape }
+          before = observedImage
+          success = (observedImage, observedControl)
+          positiveAnchor = observedAnchor
+          negativeAnchor = observedAnchor
+          expectedObservation = observation
+          changesControl = true
+          var changedObservation: [String: Any] = [
+            "binding": ownedT09Binding(f.binding), "reportedMinimum": 2,
+            "reportedVersion": 2, "healthy": true,
+          ]
+          changedObservation["reportedVersion"] = 3
+          var drift = observedControl
+          drift["observation"] = changedObservation
+          mutatedControl = drift
+        default: throw FixtureFailure.nativeShape
+        }
+        // A no-op's entire bound or observed native state is both before and expected.
+        success = (before, success.control)
+      case .account, .database, .hubBase, .device, .joined:
+        negativeBinding = try ownedT09OtherBinding(f.binding, unit: unit)
+      case .unlinked:
+        let missing = try ownedT09LinkImage(seed, old: originalLink, new: nil)
+        try ownedT09LinkSwap(
+          f, from: seed, to: missing, column: nil, stage: nil, body: nil, commit: nil)
+        negativeAnchor = try f.database.captureProtocolVerification(
+          accountID: f.binding.accountID, expectedMembership: nil)
+        guard try ownedBindImage(f.inspector) == missing else { throw FixtureFailure.nativeShape }
+        try ownedT09LinkSwap(
+          f, from: missing, to: seed, column: nil, stage: nil, body: nil, commit: nil)
+      case .callerUserOrg:
+        positiveBinding = try ownedT09OtherBinding(f.binding, unit: unit)
+        success = try ownedT09Bound(seed, inactive: inactive, binding: positiveBinding)
+        single = true
+      case .expected(let value):
+        // Includes NUL only in the Swift expected argument and failed receipt comparison.
+        // It never enters native SQL, JSON/meta, mode, or an error message.
+        guard ProtocolCredentialReference(value) == nil else { throw FixtureFailure.nativeShape }
+        negativeReference = value
+      case .store, .member:
+        let replacement = UUID().uuidString
+        guard UUID(uuidString: replacement)?.uuidString == replacement,
+          !equalBytes(replacement, inactive.store), !equalBytes(replacement, inactive.member)
+        else { throw FixtureFailure.nativeShape }
+        var drift = originalControl
+        if case .store = unit {
+          drift["storeIncarnation"] = replacement
+        } else {
+          drift["membershipIncarnation"] = replacement
+        }
+        changesControl = true
+        mutatedControl = drift
+      case .revision:
+        var drift = originalControl
+        drift["revision"] = try ownedT09Next(originalControl)
+        changesControl = true
+        mutatedControl = drift
+      case .missingControl:
+        changesControl = true
+        mutatedControl = nil
+      case .extraKey:
+        var drift = originalControl
+        guard drift["OWNED_T09_EXTRA"] == nil else { throw FixtureFailure.nativeShape }
+        drift["OWNED_T09_EXTRA"] = true
+        changesControl = true
+        mutatedControl = drift
+      case .version:
+        guard let version = originalControl["version"] as? NSNumber,
+          CFGetTypeID(version) != CFBooleanGetTypeID(), version.stringValue == "1"
+        else { throw FixtureFailure.nativeShape }
+        var drift = originalControl
+        drift["version"] = 2
+        changesControl = true
+        mutatedControl = drift
+      case .noncanonicalRevision:
+        guard let revision = originalControl["revision"] as? String,
+          equalBytes(revision, "0"), inactive.revision == 0
+        else { throw FixtureFailure.nativeShape }
+        var drift = originalControl
+        drift["revision"] = "0" + revision
+        changesControl = true
+        mutatedControl = drift
+      case .nativeBase:
+        changesLink = true
+        linkColumn = .url
+        negativeImage = try ownedT09ChangedLink(
+          seed, column: .url, value: "https://example.invalid/OwnedProofOther")
+      case .nativeDevice:
+        changesLink = true
+        linkColumn = .deviceId
+        negativeImage = try ownedT09ChangedLink(seed, column: .deviceId, value: "OWNED_PROOF_DEVICE_OTHER")
+      case .nativeJoined:
+        changesLink = true
+        linkColumn = .joinedAt
+        negativeImage = try ownedT09ChangedLink(
+          seed, column: .joinedAt, value: "2026-11-13T00:00:00.001Z")
+      case .missingLink:
+        changesLink = true
+        negativeImage = try ownedT09LinkImage(seed, old: originalLink, new: nil)
+      case .nativeReference(let value):
+        // N10 and the six non-NUL N11 values are native fixture literals only.
+        guard !value.utf8.contains(0), !equalBytes(value, originalA) else {
+          throw FixtureFailure.nativeShape
+        }
+        changesLink = true
+        linkColumn = .tokenRef
+        negativeImage = try ownedT09ChangedLink(seed, column: .tokenRef, value: value)
+      case .opaque(let value, let mismatch):
+        guard ProtocolCredentialReference(value) != nil, !value.utf8.contains(0) else {
+          throw FixtureFailure.nativeShape
+        }
+        let chosen = try ownedT09ChangedLink(seed, column: .tokenRef, value: value)
+        try ownedT09LinkSwap(
+          f, from: seed, to: chosen, column: .tokenRef, stage: nil, body: nil, commit: nil)
+        before = chosen
+        referenceA = value
+        negativeReference = value
+        success = try ownedT09Bound(chosen, inactive: inactive, binding: f.binding)
+        if let mismatch {
+          // Swift canonical equivalence is deliberately insufficient for the byte contract.
+          guard value == mismatch, !equalBytes(value, mismatch),
+            ProtocolCredentialReference(mismatch) != nil, !mismatch.utf8.contains(0)
+          else { throw FixtureFailure.nativeShape }
+          negativeReference = mismatch
+        } else {
+          single = true
+        }
+      case .maximum:
+        // success was derived from original S0 at ordinary revision, never from MAX.
+        var drift = originalControl
+        drift["revision"] = String(Int64.max)
+        changesControl = true
+        mutatedControl = drift
+        maximum = true
+      // N12 alone changes the inverse anchor from genuine MAX back to retained f.anchor.
+      // positiveAnchor still holds that original capture; no recapture repairs the drift.
+      }
+
+      // Retain B0/O0's actual control independently; malformed controls are never decoded
+      // to construct a passing expectation. For inactive cases this remains original S0.
+      let beforeControl: [String: Any]
+      if mutating { beforeControl = originalControl } else { beforeControl = success.control }
+      if changesControl {
+        negativeImage = try ownedT09ControlImage(before, old: beforeControl, new: mutatedControl)
+      }
+      let refusedImage = negativeImage ?? before
+      guard try ownedBindImage(f.inspector) == before else { throw FixtureFailure.nativeShape }
+      // Exactly one freeze, one installer, original A->A mode, and no later recapture/repair.
+      let stage = try ownedT09Freeze(
+        f, before: before, expected: success.image, expectedControl: success.control, reference: referenceA)
+      try ownedBindInstall(f, stage: stage, rawBodyFault: false)
+      let body = try ownedBindProbe(f.inspector, "body_probe")
+      let commit = try ownedBindProbe(f.inspector, "commit_probe")
+      guard body == OwnedBindProbe(last: 1, called: false),
+        commit == OwnedBindProbe(last: 1, called: false)
+      else { throw FixtureFailure.nativeShape }
+      try ownedT09Checkpoint(f, stage: stage, image: before, body: body, commit: commit, allocations: 0)
+      if changesControl {
+        try ownedT09ControlSwap(
+          f, stage: stage, from: before, to: refusedImage,
+          old: beforeControl, new: mutatedControl, body: body, commit: commit)
+      } else if changesLink {
+        try ownedT09LinkSwap(
+          f, from: before, to: refusedImage, column: linkColumn,
+          stage: stage, body: body, commit: commit)
+      }
+      if maximum {
+        let membership = try ProtocolNativeMembership(
+          canonicalHubBase: f.link.url, deviceID: f.link.deviceId, linkJoinedAt: f.link.joinedAt)
+        negativeAnchor = try f.database.captureProtocolVerification(
+          accountID: f.binding.accountID, expectedMembership: membership)
+        // This is the genuine actual MAX capture; no unchecked MAX+1 expectation is formed.
+        try ownedT09Checkpoint(
+          f, stage: stage, image: refusedImage, body: body, commit: commit, allocations: 0)
+      }
+
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        let allowed = memory.compare()
+        if !allowed { throw FixtureFailure.redactedFailure }
+      }
+      let firstFinished = OwnedBindFinished()
+      let inverseFinished = OwnedBindFinished()
+      var first: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+      var inverse: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+      // Existence is the sole cleanup predicate. Every assigned started handle is joined on
+      // every throw, including a partially started inverse and native-validation failures.
+      defer {
+        if let first { _ = first.join() }
+        if let inverse { _ = inverse.join() }
+      }
+      var negativeCalls = 0
+      if !single {
+        try ownedT09Checkpoint(
+          f, stage: stage, image: refusedImage, body: body, commit: commit, allocations: 0)
+        let start = memory.calls()
+        guard start == 0 else { throw FixtureFailure.nativeShape }
+        first = ownedBindWriter(
+          database: negativeDatabase, anchor: negativeAnchor, binding: negativeBinding,
+          reference: negativeReference, admission: admission, finished: firstFinished)
+        let receipt = first!.join()
+        negativeCalls = try ownedT09Refused(
+          receipt, fixture: f, stage: stage, image: refusedImage,
+          anchor: negativeAnchor, reference: negativeReference, admission: admission,
+          memory: memory, start: start, calls: maximum ? 1 : 0, body: body, commit: commit)
+        // Normal worker join precedes ALL durable reads/restoration. Only the declared
+        // fixture drift is restored; retained genuine positive input stays unchanged.
+        if changesControl {
+          try ownedT09ControlSwap(
+            f, stage: stage, from: refusedImage, to: before,
+            old: mutatedControl, new: beforeControl, body: body, commit: commit)
+        } else if changesLink {
+          try ownedT09LinkSwap(
+            f, from: refusedImage, to: before, column: linkColumn,
+            stage: stage, body: body, commit: commit)
+        }
+      }
+      try ownedT09Checkpoint(f, stage: stage, image: before, body: body, commit: commit, allocations: 0)
+      let start = memory.calls()
+      guard start == negativeCalls else { throw FixtureFailure.nativeShape }
+      let receipt: ProtocolOwnedProofWriteReceipt
+      if single {
+        first = ownedBindWriter(
+          database: f.database, anchor: positiveAnchor, binding: positiveBinding,
+          reference: referenceA, admission: admission, finished: firstFinished)
+        receipt = first!.join()
+      } else {
+        inverse = ownedBindWriter(
+          database: f.database, anchor: positiveAnchor, binding: positiveBinding,
+          reference: referenceA, admission: admission, finished: inverseFinished)
+        receipt = inverse!.join()
+      }
+      try ownedT09Committed(
+        receipt, fixture: f, stage: stage, memory: memory, start: start,
+        body: body, commit: commit, mutating: mutating)
+      try ownedT09Redeem(
+        receipt, fixture: f, stage: stage, anchor: positiveAnchor, binding: positiveBinding,
+        reference: referenceA, observation: expectedObservation, admission: admission,
+        memory: memory, allowed: true, body: body, commit: commit, mutating: mutating)
+      guard memory.calls() == negativeCalls + 5 else { throw FixtureFailure.nativeShape }
+      if let extra { try extra.close() }
+      facts = OwnedT09Facts(
+        rawControls: raw.count, negativeCalls: negativeCalls, positiveCalls: 4,
+        successRedemptions: 1, refusalRedemptions: single ? 0 : 1,
+        memoryCalls: memory.calls(), mutating: mutating, qualified: true)
+    }
+    // The primary pool, inspector, and physical root have torn down before facts escape.
+    guard let facts else { throw FixtureFailure.nativeShape }
+    return facts
+  }
+
+  @Test func ownedBindPrecheckoutRejectsOnlyExactContextAndMalformedExpectedReference() throws {
+    let units: [OwnedT09Unit] = [
+      .object, .fact, .account, .database, .hubBase, .device, .joined, .unlinked, .callerUserOrg,
+      .boundUser, .boundOrg,
+      .expected(""), .expected("secret:"), .expected("Secret:x"), .expected("other:x"),
+      .expected(" secret:x"), .expected("secret:\u{0301}"),
+      .expected("secret:x\u{0}y"), .expected("secret:x\u{0}"),
+    ]
+    for (index, unit) in units.enumerated() {
+      let facts = try Self.ownedT09Unit(unit)
+      #expect(facts.qualified && facts.rawControls == 4)
+      #expect(facts.negativeCalls == 0 && facts.positiveCalls == 4)
+      #expect(facts.successRedemptions == 1 && facts.refusalRedemptions == (index == 8 ? 0 : 1))
+      #expect(facts.memoryCalls == 5)
+      #expect(facts.mutating == !(index == 1 || index == 9 || index == 10))
+    }
+  }
+
+  @Test func ownedBindNativePreRejectsExactEpochTupleAndReferenceDrift() throws {
+    let units: [OwnedT09Unit] = [
+      .store, .member, .revision, .missingControl, .extraKey, .version, .noncanonicalRevision,
+      .nativeBase, .nativeDevice, .nativeJoined, .missingLink,
+      .nativeReference("secret:OWNED_T09_NATIVE_B"),
+      .nativeReference(""), .nativeReference("secret:"), .nativeReference("Secret:x"),
+      .nativeReference("other:x"), .nativeReference(" secret:x"), .nativeReference("secret:\u{0301}"),
+      .observation,
+    ]
+    for (index, unit) in units.enumerated() {
+      let facts = try Self.ownedT09Unit(unit)
+      #expect(facts.qualified && facts.rawControls == 4)
+      #expect(facts.negativeCalls == 0 && facts.positiveCalls == 4)
+      #expect(facts.successRedemptions == 1 && facts.refusalRedemptions == 1)
+      #expect(facts.memoryCalls == 5 && facts.mutating == (index != 18))
+    }
+  }
+
+  @Test func ownedBindUsesOriginalOpaqueReferenceBytesThroughOwnedWriter() throws {
+    let units: [OwnedT09Unit] = [
+      .opaque("secret:x", mismatch: nil), .opaque("secret:not-a-uuid", mismatch: nil),
+      .opaque("secret:x ", mismatch: nil), .opaque("secret:\u{96EA}", mismatch: nil),
+      .opaque("secret:\u{00E9}", mismatch: nil), .opaque("secret:e\u{0301}", mismatch: nil),
+      .opaque("secret:\u{00E9}", mismatch: "secret:e\u{0301}"),
+      .opaque("secret:e\u{0301}", mismatch: "secret:\u{00E9}"),
+    ]
+    for (index, unit) in units.enumerated() {
+      let facts = try Self.ownedT09Unit(unit)
+      #expect(facts.qualified && facts.rawControls == 4 && facts.mutating)
+      #expect(facts.negativeCalls == 0 && facts.positiveCalls == 4)
+      #expect(facts.successRedemptions == 1 && facts.refusalRedemptions == (index < 6 ? 0 : 1))
+      #expect(facts.memoryCalls == 5)
+    }
+  }
+
+  @Test func ownedBindNativeMaximumRevisionRefusesBeforeBodyWithoutRepair() throws {
+    let facts = try Self.ownedT09Unit(.maximum)
+    #expect(facts.qualified && facts.rawControls == 4 && facts.mutating)
+    #expect(facts.negativeCalls == 1 && facts.positiveCalls == 4)
+    #expect(facts.successRedemptions == 1 && facts.refusalRedemptions == 1)
+    #expect(facts.memoryCalls == 6)
+  }
+
+  @Test func ownedBindRedemptionRetainsCapturedContextWithoutSnapshotInstanceIdentity() throws {
+    let raw = try Self.ownedBindRawStageControls()
+    guard raw.count == 4, raw.enumerated().allSatisfy({ $0.element.row == $0.offset && $0.element.qualified })
+    else { throw FixtureFailure.nativeShape }
+    var facts: OwnedT09Facts?
+    try Self.withFixture { f in
+      let inactive = try Self.validateFixture(f)
+      let seed = try Self.ownedBindImage(f.inspector)
+      let expected = try Self.ownedT09Bound(seed, inactive: inactive, binding: f.binding)
+      let membership = try ProtocolNativeMembership(
+        canonicalHubBase: f.link.url, deviceID: f.link.deviceId, linkJoinedAt: f.link.joinedAt)
+      let equalAnchor = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: membership)
+      guard try Self.ownedBindImage(f.inspector) == seed else { throw FixtureFailure.nativeShape }
+      let otherAccountAnchor = try f.database.captureProtocolVerification(
+        accountID: "OWNED_PROOF_ACCOUNT_OTHER", expectedMembership: membership)
+      guard try Self.ownedBindImage(f.inspector) == seed,
+        let binDir = f.database.endpoint.binDir, !binDir.isEmpty, !binDir.utf8.contains(0)
+      else { throw FixtureFailure.nativeShape }
+      let extra = try WorkspaceDatabase(
+        endpoint: f.database.endpoint, binDir: binDir, createIfMissing: false)
+      defer { try? extra.close() }
+      guard try Self.ownedBindImage(f.inspector) == seed else { throw FixtureFailure.nativeShape }
+      let otherObjectAnchor = try extra.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: membership)
+      guard try Self.ownedBindImage(f.inspector) == seed else { throw FixtureFailure.nativeShape }
+      let stage = try Self.ownedT09Freeze(
+        f, before: seed, expected: expected.image, expectedControl: expected.control,
+        reference: f.link.tokenRef)
+      try Self.ownedBindInstall(f, stage: stage, rawBodyFault: false)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      guard body == OwnedBindProbe(last: 1, called: false),
+        commit == OwnedBindProbe(last: 1, called: false)
+      else { throw FixtureFailure.nativeShape }
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        let allowed = memory.compare()
+        if !allowed { throw FixtureFailure.redactedFailure }
+      }
+      let finished = OwnedBindFinished()
+      var writer: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+      // Installed before first start, and runs before extra.close() on every early error.
+      defer { if let writer { _ = writer.join() } }
+      try Self.ownedT09Checkpoint(
+        f, stage: stage, image: seed, body: body, commit: commit, allocations: 0)
+      guard memory.calls() == 0 else { throw FixtureFailure.nativeShape }
+      writer = Self.ownedBindWriter(
+        database: f.database, anchor: f.anchor, binding: f.binding, reference: f.link.tokenRef,
+        admission: admission, finished: finished)
+      let receipt = writer!.join()
+      try Self.ownedT09Committed(
+        receipt, fixture: f, stage: stage, memory: memory, start: 0,
+        body: body, commit: commit, mutating: true)
+      // All three additional genuine captures preceded the one writer. Equal capture values
+      // redeem regardless of struct-instance identity; account/object mismatches add no memory.
+      let attempts: [(ProtocolVerificationSnapshot, Bool)] = [
+        (f.anchor, true), (equalAnchor, true), (otherAccountAnchor, false),
+        (f.anchor, true), (otherObjectAnchor, false), (equalAnchor, true),
+      ]
+      for (anchor, allowed) in attempts {
+        try Self.ownedT09Redeem(
+          receipt, fixture: f, stage: stage, anchor: anchor, binding: f.binding,
+          reference: f.link.tokenRef, observation: nil, admission: admission,
+          memory: memory, allowed: allowed, body: body, commit: commit, mutating: true)
+      }
+      guard memory.calls() == 8 else { throw FixtureFailure.nativeShape }
+      try extra.close()
+      facts = OwnedT09Facts(
+        rawControls: raw.count, negativeCalls: 0, positiveCalls: 4, successRedemptions: 4,
+        refusalRedemptions: 2, memoryCalls: memory.calls(), mutating: true, qualified: true)
+    }
+    guard let facts else { throw FixtureFailure.nativeShape }
+    #expect(facts.qualified && facts.rawControls == 4 && facts.mutating)
+    #expect(facts.negativeCalls == 0 && facts.positiveCalls == 4)
+    #expect(facts.successRedemptions == 4 && facts.refusalRedemptions == 2)
+    #expect(facts.memoryCalls == 8)
+  }
+}
