@@ -568,6 +568,34 @@ try:
             file_name, line_text, col_text, severity, message = header
             line_number, column = int(line_text), int(col_text)
             if index == 0:
+                if BUNDLE == "receipt" and ordinal == 2 and not (
+                    file_name == str(path) and line_number == error_line and column in columns
+                    and severity == "error" and message in messages
+                ):
+                    primary_forms = {
+                        "'init(payload:)' is inaccessible due to 'private' protection level": "payload_member_private",
+                        "'init(payload:)' is inaccessible due to 'fileprivate' protection level": "payload_member_fileprivate",
+                        "'init(payload:)' is inaccessible due to 'internal' protection level": "payload_member_internal",
+                        "'init(payload:)' is inaccessible due to 'package' protection level": "payload_member_package",
+                        "'init' is inaccessible due to 'private' protection level": "init_member_private",
+                        "'init' is inaccessible due to 'fileprivate' protection level": "init_member_fileprivate",
+                        "'init' is inaccessible due to 'internal' protection level": "init_member_internal",
+                        "'init' is inaccessible due to 'package' protection level": "init_member_package",
+                        "'ProtocolOwnedProofWriteReceipt' initializer is inaccessible due to 'private' protection level": "short_type_private",
+                        "'ProtocolOwnedProofWriteReceipt' initializer is inaccessible due to 'fileprivate' protection level": "short_type_fileprivate",
+                        "'ProtocolOwnedProofWriteReceipt' initializer is inaccessible due to 'internal' protection level": "short_type_internal",
+                        "'ProtocolOwnedProofWriteReceipt' initializer is inaccessible due to 'package' protection level": "short_type_package",
+                        "'WorkspaceStorage.ProtocolOwnedProofWriteReceipt' initializer is inaccessible due to 'private' protection level": "qualified_type_private",
+                        "'WorkspaceStorage.ProtocolOwnedProofWriteReceipt' initializer is inaccessible due to 'fileprivate' protection level": "qualified_type_fileprivate",
+                        "'WorkspaceStorage.ProtocolOwnedProofWriteReceipt' initializer is inaccessible due to 'internal' protection level": "qualified_type_internal",
+                        "'WorkspaceStorage.ProtocolOwnedProofWriteReceipt' initializer is inaccessible due to 'package' protection level": "qualified_type_package",
+                    }
+                    emit("owner_carrier_receipt_primary_mismatch", bundle="receipt", ordinal=2,
+                         path_expected=file_name == str(path), line_expected=line_number == error_line,
+                         column_expected=column in columns, message_expected=message in messages,
+                         severity=severity, known_primary_form=primary_forms.get(message, "unknown"),
+                         line_fixture_index=line_number if file_name == str(path) and line_number in (1, 2, 3) else 0,
+                         column_fixture_index=column if file_name == str(path) and 1 <= column <= 61 else 0)
                 require(file_name == str(path) and line_number == error_line and column in columns
                         and severity == "error" and message in messages, "intended_error")
                 allowed, width = source, 1
