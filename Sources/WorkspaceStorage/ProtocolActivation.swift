@@ -924,3 +924,197 @@ enum ProtocolActivationControl {
     guard stored.count == 1, stored.first?.text("matches") == "true" else { throw failure }
   }
 }
+
+/// A memory-only comparison supplied by the caller. It must return without holding a mutex and
+/// must not perform SQL, actor hops, scheduling, or other effects. It grants no owner authority.
+package final class ProtocolProofMemoryAdmission: Sendable, CustomStringConvertible,
+  CustomDebugStringConvertible, CustomReflectable
+{
+  private let check: @Sendable () throws -> Void
+
+  package init(_ check: @escaping @Sendable () throws -> Void) {
+    self.check = check
+  }
+
+  fileprivate func requireCurrent() throws { try check() }
+  package var description: String { "ProtocolProofMemoryAdmission(redacted)" }
+  package var debugDescription: String { description }
+  package var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+}
+
+package enum ProtocolProofWriteOperation: Sendable, Equatable { case bind, positive, fence }
+package enum ProtocolProofWriteDisposition: Sendable, Equatable {
+  case committedCurrent, committedStale, confirmedNoncommit, unknown
+}
+
+/// Sealed comparison evidence only. A receipt neither authenticates HTTP nor grants a current
+/// owner, lease, runtime admission, or proof that a native backend has become quiescent.
+package struct ProtocolOwnedProofWriteReceipt: Sendable, CustomStringConvertible,
+  CustomDebugStringConvertible, CustomReflectable
+{
+  private let payload: ProtocolOwnedProofReceiptPayload
+
+  // Explicitly suppress the synthesized memberwise initializer. Even @testable callers in this
+  // package cannot manufacture payloads or turn comparison snapshots into committed evidence.
+  fileprivate init(payload: ProtocolOwnedProofReceiptPayload) {
+    self.payload = payload
+  }
+
+  package var operation: ProtocolProofWriteOperation {
+    switch payload {
+    case .noContinuation(let evidence): return evidence.operation
+    case .committed(let evidence): return evidence.lineage.operation
+    }
+  }
+
+  package var disposition: ProtocolProofWriteDisposition {
+    switch payload {
+    case .noContinuation(let evidence):
+      switch evidence.outcome {
+      case .confirmedNoncommit: return .confirmedNoncommit
+      case .unknown: return .unknown
+      }
+    case .committed(let evidence):
+      switch evidence.currentness {
+      case .current: return .committedCurrent
+      case .stale: return .committedStale
+      }
+    }
+  }
+
+  /// Redeem only the exact caller anchor, original parsed reference and same admission object.
+  /// The final callback is a fresh memory comparison; this method performs no native read.
+  package func currentSuccessor(
+    expectedSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String,
+    memoryAdmission: ProtocolProofMemoryAdmission
+  ) throws -> ProtocolVerificationSnapshot {
+    do {
+      guard case .committed(let evidence) = payload, evidence.currentness == .current,
+        expectedSnapshot.database === evidence.actualDatabase,
+        ProtocolProofSnapshotComparison.same(expectedSnapshot, evidence.callerAnchor),
+        let reference = ProtocolCredentialReference(expectedTokenRef),
+        reference == evidence.originalParsedReference, memoryAdmission === evidence.memoryAdmission
+      else { throw ProtocolActivationControl.failure }
+      try memoryAdmission.requireCurrent()
+      return evidence.successor
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
+  package var description: String { "ProtocolOwnedProofWriteReceipt(redacted)" }
+  package var debugDescription: String { description }
+  package var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+}
+
+fileprivate enum ProtocolOwnedProofReceiptPayload: Sendable {
+  case noContinuation(ProtocolProofNoContinuation)
+  case committed(ProtocolProofCommittedEvidence)
+}
+
+/// Source-created object identity distinguishes one invocation. No caller-provided UUID or
+/// receipt reconstruction can stand in for this identity.
+fileprivate final class ProtocolProofInvocation: Sendable {}
+
+fileprivate enum ProtocolProofReachedStage: Sendable {
+  // This is the only stage actually reached by B1. Later stages require the real writer grant.
+  case reviewedStubNoBegin
+}
+fileprivate enum ProtocolProofNoncontinuationOutcome: Sendable {
+  case confirmedNoncommit, unknown
+}
+fileprivate struct ProtocolProofNoContinuation: Sendable {
+  let operation: ProtocolProofWriteOperation
+  let invocation: ProtocolProofInvocation
+  let lastReachedStage: ProtocolProofReachedStage
+  let outcome: ProtocolProofNoncontinuationOutcome
+  // Deliberately no parsed reference, native predecessor, candidate, successor or continuation.
+}
+
+/// Mandatory composed native facts, for the later fixed writer's actual locked PRE only.
+/// B1 never initializes this type, and never fills absent native facts with caller assumptions.
+fileprivate struct ProtocolProofNativePredecessor: Sendable {
+  let databaseName: String
+  let record: ProtocolActivationControl.Record
+  let membership: ProtocolNativeMembership
+  let credentialReference: ProtocolCredentialReference
+}
+fileprivate struct ProtocolProofLinkedContext: Sendable {
+  let accountID: String
+  let membership: ProtocolNativeMembership
+}
+
+/// Finite provenance retained only after a later positive writer validates a genuine current
+/// owned bind receipt and its exact S1. This private record is not a substitute caller token.
+fileprivate struct ProtocolProofBindLineage: Sendable {
+  let invocation: ProtocolProofInvocation
+  let originalAnchor: ProtocolVerificationSnapshot
+  let boundSuccessor: ProtocolVerificationSnapshot
+  let expectedBinding: ProtocolMembershipBinding
+  let originalParsedReference: ProtocolCredentialReference
+  let memoryAdmission: ProtocolProofMemoryAdmission
+}
+fileprivate enum ProtocolProofOperationLineage: Sendable {
+  case bind(ProtocolProofBindLineage)
+  case positive(parent: ProtocolProofBindLineage, observation: ProtocolVerificationObservation)
+  case fence(
+    originalAnchor: ProtocolVerificationSnapshot, latestPredecessor: ProtocolProofNativePredecessor,
+    suppliedBinding: ProtocolMembershipBinding)
+
+  var operation: ProtocolProofWriteOperation {
+    switch self {
+    case .bind: return .bind
+    case .positive: return .positive
+    case .fence: return .fence
+    }
+  }
+}
+fileprivate enum ProtocolProofCommittedCurrentness: Sendable, Equatable { case current, stale }
+fileprivate struct ProtocolProofCommittedEvidence: Sendable {
+  let actualDatabase: WorkspaceDatabase
+  let callerAnchor: ProtocolVerificationSnapshot
+  let actualNativePredecessor: ProtocolProofNativePredecessor
+  let predecessorContext: ProtocolProofLinkedContext
+  let successor: ProtocolVerificationSnapshot
+  let successorContext: ProtocolProofLinkedContext
+  let originalParsedReference: ProtocolCredentialReference
+  let memoryAdmission: ProtocolProofMemoryAdmission
+  let invocation: ProtocolProofInvocation
+  let lineage: ProtocolProofOperationLineage
+  let currentness: ProtocolProofCommittedCurrentness
+  // No B1 code constructs this variant. Only a later fixed writer, after an actual checked
+  // acknowledged COMMIT, may construct current or stale evidence from its real native facts.
+}
+
+private enum ProtocolProofSnapshotComparison {
+  static func same(_ a: ProtocolVerificationSnapshot, _ b: ProtocolVerificationSnapshot) -> Bool {
+    guard a.database === b.database, a.record == b.record else { return false }
+    switch (a.capturedContext, b.capturedContext) {
+    case (nil, nil): return true
+    case (.some(let left), .some(let right)):
+      return ProtocolActivationControl.bytesEqual(left.accountID, right.accountID)
+        && left.membership == right.membership
+    default: return false
+    }
+  }
+}
+
+private enum ProtocolOwnedProofWriter {
+  static func reviewedStubNoBegin() -> ProtocolOwnedProofWriteReceipt {
+    // No checkout, SQL, parsing, native observation or memory callback occurs. Therefore no BEGIN
+    // was sent, and confirmedNoncommit is truthful without invented predecessor/successor facts.
+    ProtocolOwnedProofWriteReceipt(
+      payload: .noContinuation(
+        ProtocolProofNoContinuation(
+          operation: .bind, invocation: ProtocolProofInvocation(),
+          lastReachedStage: .reviewedStubNoBegin, outcome: .confirmedNoncommit)))
+  }
+}
+
+extension WorkspaceDatabase {
+  /// Dormant B1 bind shape. The reviewed stub reaches no BEGIN and cannot issue a continuation.
+  package func prepareProtocolVerification(
+    expectedSnapshot: ProtocolVerificationSnapshot, expectedBinding: ProtocolMembershipBinding,
+    expectedTokenRef: String, memoryAdmission: ProtocolProofMemoryAdmission
+  ) -> ProtocolOwnedProofWriteReceipt {
+    ProtocolOwnedProofWriter.reviewedStubNoBegin()
+  }
+}

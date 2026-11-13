@@ -144,6 +144,11 @@ private final class WriteCounter: Sendable {
       received.append(envelope.event)
       if received.count == 5 { break }
     }
+    guard received.count == 5 else {
+      Issue.record("Expected all five transport events before checking their order and payloads.")
+      await client.close()
+      return
+    }
     // Rename, update, and mark-read each announce themselves (a draft is not part of the thread row),
     // in the order the writes were made, before the pulled batch's.
     #expect(received.prefix(3).map(\.kind) == [.environmentChanged, .threadUpdated, .threadUpdated])
