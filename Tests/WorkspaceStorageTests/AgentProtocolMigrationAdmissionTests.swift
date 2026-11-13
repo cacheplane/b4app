@@ -466,7 +466,8 @@ private struct AdmissionOwnedCluster: Sendable {
       observation?.primaryStage = .body
       observation?.primaryOutcome = .returned
     } catch {
-      observation?.primaryStage = observation?.lastBoundary
+      let primaryBoundary = observation?.lastBoundary
+      observation?.primaryStage = primaryBoundary
       observation?.primaryOutcome = .threw
       observation?.selectedPrimary = .original
       primary = error
@@ -476,10 +477,12 @@ private struct AdmissionOwnedCluster: Sendable {
     observation?.lastBoundary = .finishCall
     do {
       try await owner.finish(started: started, startAttempted: startAttempted, observation: &observation)
-      observation?.finishStage = observation?.lastBoundary
+      let finishBoundary = observation?.lastBoundary
+      observation?.finishStage = finishBoundary
       observation?.finishOutcome = .returned
     } catch {
-      observation?.finishStage = observation?.lastBoundary
+      let finishBoundary = observation?.lastBoundary
+      observation?.finishStage = finishBoundary
       observation?.finishOutcome = .threw
       Issue.record(error)
       if primary == nil {
