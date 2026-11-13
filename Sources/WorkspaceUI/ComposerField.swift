@@ -14,9 +14,9 @@ struct ComposerField<Trailing: View>: View {
   @Binding var text: String
   let placeholder: String
   var focused: FocusState<Bool>.Binding
-  /// What Return does on the Mac (D-219): the caller sends when it can and otherwise does nothing.
-  /// Shift-, Option- and Control-Return add a line there. The phone's on-screen Return adds a line,
-  /// as in Messages, and its round control sends.
+  /// What Return does (D-219): the caller sends when it can and otherwise does nothing. On the Mac,
+  /// Shift-, Option- and Control-Return add a line. On the phone this is a hardware keyboard's
+  /// Return; the on-screen Return adds a line, as in Messages, and the round control sends.
   let onReturn: () -> Void
   /// Opt-in: the keys the `/` completions take while they show (the arrows, Escape, and Return to
   /// pick), offered to the caller before the editor or `onReturn` has them. False leaves the key
@@ -148,7 +148,13 @@ struct ComposerField<Trailing: View>: View {
 
   #if os(iOS)
     /// A vertical text field: it grows a line at a time to three, then scrolls, with no inner inset,
-    /// so its text sits exactly at the padding above. Return adds a line and the control sends.
+    /// so its text sits exactly at the padding above. The on-screen Return adds a line. A hardware
+    /// keyboard's Return submits the field instead, which SwiftUI follows by ending editing; the
+    /// field picks the `/` completion while they show, or else asks the caller to send, and takes focus
+    /// back, so Return with nothing to send leaves the caret where it was (D-220). A Return shortcut on
+    /// the round control would take the key first, but only while the control is on, and before an
+    /// input method could commit a candidate with it. (`onKeyPress` never sees a hardware Return
+    /// before the submit; the arrows and Escape reach it.)
     private var editor: some View {
       TextField(
         "", text: $text,
@@ -158,6 +164,10 @@ struct ComposerField<Trailing: View>: View {
       .font(LLAFont.composer)
       .foregroundStyle(LLA.Color.ink)
       .lineLimit(1...3)
+      .onSubmit {
+        if onSlashKey?(.choose) != true { onReturn() }
+        focused.wrappedValue = true
+      }
       .focused(focused)
       .onKeyPress(keys: [.upArrow, .downArrow, .escape, .return]) { press in
         guard let onSlashKey, let key = SlashKey(press) else { return .ignored }
@@ -189,17 +199,4 @@ struct ComposerField<Trailing: View>: View {
       }
     }
   #endif
-}
-
-extension View {
-  /// Return on a hardware keyboard sends from the phone and iPad, through the round control. The Mac
-  /// leaves Return to its text view (D-219): a shortcut would take the key before an input method
-  /// could commit a candidate with it, and Return would add lines whenever the control was off.
-  @ViewBuilder func returnSends() -> some View {
-    #if os(iOS)
-      keyboardShortcut(.return, modifiers: [])
-    #else
-      self
-    #endif
-  }
 }
