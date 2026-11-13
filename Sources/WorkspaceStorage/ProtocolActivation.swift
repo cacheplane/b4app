@@ -1015,8 +1015,10 @@ fileprivate enum ProtocolOwnedProofReceiptPayload: Sendable {
 fileprivate final class ProtocolProofInvocation: Sendable {}
 
 fileprivate enum ProtocolProofReachedStage: Sendable {
-  // This is the only stage actually reached by B1. Later stages require the real writer grant.
-  case reviewedStubNoBegin
+  case invocationStarted, inputValidated, checkoutEntered, beginSent, beginAcknowledged
+  case budgetsInstalled, advisoryAndClockInstalled, nativePreValidated, memoryPreAccepted
+  case successorStoredOrNoop, nativePostValidated, memoryPostAccepted, preCommitMemoryAccepted
+  case commitSent, commitAcknowledged, rollbackSent, rollbackAcknowledged
 }
 fileprivate enum ProtocolProofNoncontinuationOutcome: Sendable {
   case confirmedNoncommit, unknown
@@ -1029,8 +1031,8 @@ fileprivate struct ProtocolProofNoContinuation: Sendable {
   // Deliberately no parsed reference, native predecessor, candidate, successor or continuation.
 }
 
-/// Mandatory composed native facts, for the later fixed writer's actual locked PRE only.
-/// B1 never initializes this type, and never fills absent native facts with caller assumptions.
+/// Mandatory composed facts from the fixed writer's actual locked PRE only.
+/// Absent native facts are never filled with caller assumptions.
 fileprivate struct ProtocolProofNativePredecessor: Sendable {
   let databaseName: String
   let record: ProtocolActivationControl.Record
@@ -1042,8 +1044,8 @@ fileprivate struct ProtocolProofLinkedContext: Sendable {
   let membership: ProtocolNativeMembership
 }
 
-/// Finite provenance retained only after a later positive writer validates a genuine current
-/// owned bind receipt and its exact S1. This private record is not a substitute caller token.
+/// Finite provenance created by the acknowledged bind writer for its exact S1. A later positive
+/// writer must validate a genuine current bind receipt; this private record is no caller token.
 fileprivate struct ProtocolProofBindLineage: Sendable {
   let invocation: ProtocolProofInvocation
   let originalAnchor: ProtocolVerificationSnapshot
@@ -1080,8 +1082,8 @@ fileprivate struct ProtocolProofCommittedEvidence: Sendable {
   let invocation: ProtocolProofInvocation
   let lineage: ProtocolProofOperationLineage
   let currentness: ProtocolProofCommittedCurrentness
-  // No B1 code constructs this variant. Only a later fixed writer, after an actual checked
-  // acknowledged COMMIT, may construct current or stale evidence from its real native facts.
+  // Only the fixed writer, after an actual checked acknowledged COMMIT, constructs current
+  // or stale evidence from its real native facts.
 }
 
 private enum ProtocolProofSnapshotComparison {
@@ -1097,24 +1099,199 @@ private enum ProtocolProofSnapshotComparison {
   }
 }
 
+// Pure settlement decisions are internally testable; this type cannot create receipt evidence.
+enum ProtocolProofSettlementDecision: Equatable { case confirmedNoncommit, unknown, committed }
+enum ProtocolProofSettlementClassifier {
+  static func classify(
+    beginSent: Bool, rollbackAcknowledged: Bool, commitSent: Bool, commitAcknowledged: Bool
+  ) -> ProtocolProofSettlementDecision {
+    guard beginSent else {
+      return !rollbackAcknowledged && !commitSent && !commitAcknowledged ? .confirmedNoncommit : .unknown
+    }
+    if commitSent {
+      guard !rollbackAcknowledged else { return .unknown }
+      return commitAcknowledged ? .committed : .unknown
+    }
+    guard !commitAcknowledged else { return .unknown }
+    return rollbackAcknowledged ? .confirmedNoncommit : .unknown
+  }
+}
+
 private enum ProtocolOwnedProofWriter {
-  static func reviewedStubNoBegin() -> ProtocolOwnedProofWriteReceipt {
-    // No checkout, SQL, parsing, native observation or memory callback occurs. Therefore no BEGIN
-    // was sent, and confirmedNoncommit is truthful without invented predecessor/successor facts.
-    ProtocolOwnedProofWriteReceipt(
+  private struct BindWork {
+    let predecessor: ProtocolProofNativePredecessor
+    let context: ProtocolProofLinkedContext
+    let successor: ProtocolVerificationSnapshot
+  }
+
+  private static func refusal(
+    invocation: ProtocolProofInvocation, stage: ProtocolProofReachedStage,
+    beginSent: Bool = false, rollbackAcknowledged: Bool = false,
+    commitSent: Bool = false, commitAcknowledged: Bool = false
+  ) -> ProtocolOwnedProofWriteReceipt {
+    let decision = ProtocolProofSettlementClassifier.classify(
+      beginSent: beginSent, rollbackAcknowledged: rollbackAcknowledged,
+      commitSent: commitSent, commitAcknowledged: commitAcknowledged)
+    // A refusal carries no native or candidate facts. Even an impossible committed decision
+    // here fails closed; only the actual acknowledged path below constructs committed evidence.
+    return ProtocolOwnedProofWriteReceipt(
       payload: .noContinuation(
         ProtocolProofNoContinuation(
-          operation: .bind, invocation: ProtocolProofInvocation(),
-          lastReachedStage: .reviewedStubNoBegin, outcome: .confirmedNoncommit)))
+          operation: .bind, invocation: invocation, lastReachedStage: stage,
+          outcome: decision == .confirmedNoncommit ? .confirmedNoncommit : .unknown)))
+  }
+
+  static func bind(
+    database: WorkspaceDatabase, anchor: ProtocolVerificationSnapshot,
+    binding: ProtocolMembershipBinding, expectedTokenRef: String,
+    memoryAdmission: ProtocolProofMemoryAdmission
+  ) -> ProtocolOwnedProofWriteReceipt {
+    let invocation = ProtocolProofInvocation()
+    guard anchor.database === database, let context = anchor.capturedContext,
+      let membership = context.membership,
+      ProtocolActivationControl.bytesEqual(context.accountID, binding.accountID),
+      ProtocolActivationControl.bytesEqual(database.endpoint.database, binding.databaseName),
+      ProtocolActivationControl.bytesEqual(membership.canonicalHubBase, binding.canonicalHubBase),
+      ProtocolActivationControl.bytesEqual(membership.deviceID, binding.deviceID),
+      ProtocolActivationControl.bytesEqual(membership.linkJoinedAt, binding.linkJoinedAt),
+      anchor.record.binding == nil || anchor.record.binding == binding,
+      let reference = ProtocolCredentialReference(expectedTokenRef)
+    else { return refusal(invocation: invocation, stage: .invocationStarted) }
+    let device = database.deviceId
+    do {
+      // This fixed, nonthrowing callback owns all SQL; no connection enters a result or field.
+      return try database.withOwnedProtocolProofConnection { connection in
+        performBind(
+          connection, database: database, anchor: anchor, binding: binding,
+          context: context, membership: membership, reference: reference, device: device,
+          memoryAdmission: memoryAdmission, invocation: invocation)
+      }
+    } catch {
+      // Only checkout/fresh connection creation can throw across the nonthrowing callback.
+      return refusal(invocation: invocation, stage: .inputValidated)
+    }
+  }
+
+  private static func performBind(
+    _ c: PostgresConnection, database: WorkspaceDatabase, anchor: ProtocolVerificationSnapshot,
+    binding: ProtocolMembershipBinding, context: ProtocolActivationControl.CapturedContext,
+    membership: ProtocolNativeMembership, reference: ProtocolCredentialReference, device: String,
+    memoryAdmission: ProtocolProofMemoryAdmission, invocation: ProtocolProofInvocation
+  ) -> ProtocolOwnedProofWriteReceipt {
+    var stage = ProtocolProofReachedStage.checkoutEntered
+    var beginSent = false
+    var rollbackAcknowledged = false
+    var commitSent = false
+    var commitAcknowledged = false
+    let work: BindWork
+    do {
+      beginSent = true
+      stage = .beginSent
+      try c.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+      stage = .beginAcknowledged
+      try c.execute("SET LOCAL lock_timeout='2s'")
+      try c.execute("SET LOCAL statement_timeout='2s'")
+      stage = .budgetsInstalled
+      try c.execute(
+        "SELECT pg_advisory_xact_lock($1::bigint)", [String(WorkspaceDatabase.remoteApplyLockKey)])
+      try c.execute("SELECT set_config('b4app.hlc', $1, true)", [database.clock.next().rawValue])
+      if device != "local" {
+        try c.execute("SELECT set_config('b4app.device_id', $1, true)", [device])
+      }
+      stage = .advisoryAndClockInstalled
+      let pre = try ProtocolActivationControl.state(c, locking: true)
+      let predecessor = try ProtocolActivationControl.capturedRecord(
+        database, state: pre, snapshot: anchor, allowingLaterRevision: false)
+      try ProtocolActivationControl.requireMembership(
+        pre, binding: binding, endpoint: database.endpoint.database)
+      guard let nativeMembership = try ProtocolActivationControl.nativeMembership(pre),
+        nativeMembership == membership, let nativeReference = pre.credentialReference,
+        nativeReference == reference
+      else { throw ProtocolActivationControl.failure }
+      let nativePredecessor = ProtocolProofNativePredecessor(
+        databaseName: pre.database, record: predecessor, membership: nativeMembership,
+        credentialReference: nativeReference)
+      let linkedContext = ProtocolProofLinkedContext(
+        accountID: context.accountID, membership: nativeMembership)
+      stage = .nativePreValidated
+      try memoryAdmission.requireCurrent()
+      stage = .memoryPreAccepted
+      var candidate = predecessor
+      if let knownBinding = candidate.binding {
+        guard knownBinding == binding else { throw ProtocolActivationControl.failure }
+      } else {
+        candidate.revision = try ProtocolActivationControl.next(candidate.revision)
+        candidate.binding = binding
+        try ProtocolActivationControl.store(c, candidate)
+      }
+      stage = .successorStoredOrNoop
+      let successor = ProtocolVerificationSnapshot(
+        database: database, record: candidate, capturedContext: context)
+      let post = try ProtocolActivationControl.state(c, locking: false)
+      _ = try ProtocolActivationControl.capturedRecord(
+        database, state: post, snapshot: successor, allowingLaterRevision: false)
+      try ProtocolActivationControl.requireMembership(
+        post, binding: binding, endpoint: database.endpoint.database)
+      guard post.credentialReference == reference,
+        try ProtocolActivationControl.nativeMembership(post) == nativeMembership
+      else { throw ProtocolActivationControl.failure }
+      stage = .nativePostValidated
+      work = BindWork(predecessor: nativePredecessor, context: linkedContext, successor: successor)
+      try memoryAdmission.requireCurrent()
+      stage = .memoryPostAccepted
+      // A distinct final pre-COMMIT memory comparison, with no SQL or other callback afterward.
+      try memoryAdmission.requireCurrent()
+      stage = .preCommitMemoryAccepted
+      commitSent = true
+      stage = .commitSent
+      try c.execute("COMMIT")
+      commitAcknowledged = true
+      stage = .commitAcknowledged
+    } catch {
+      if beginSent && !commitSent {
+        stage = .rollbackSent
+        do {
+          try c.execute("ROLLBACK")
+          rollbackAcknowledged = true
+          stage = .rollbackAcknowledged
+        } catch {
+          // An unacknowledged rollback remains unknown. Never retry or inspect SQL here.
+        }
+      }
+      return refusal(
+        invocation: invocation, stage: stage, beginSent: beginSent,
+        rollbackAcknowledged: rollbackAcknowledged, commitSent: commitSent,
+        commitAcknowledged: commitAcknowledged)
+    }
+    // This memory-only check is OUTSIDE the SQL catch: an acknowledged commit never rolls back.
+    let currentness: ProtocolProofCommittedCurrentness
+    do {
+      try memoryAdmission.requireCurrent()
+      currentness = .current
+    } catch {
+      currentness = .stale
+    }
+    let lineage = ProtocolProofBindLineage(
+      invocation: invocation, originalAnchor: anchor, boundSuccessor: work.successor,
+      expectedBinding: binding, originalParsedReference: reference, memoryAdmission: memoryAdmission)
+    return ProtocolOwnedProofWriteReceipt(
+      payload: .committed(
+        ProtocolProofCommittedEvidence(
+          actualDatabase: database, callerAnchor: anchor, actualNativePredecessor: work.predecessor,
+          predecessorContext: work.context, successor: work.successor, successorContext: work.context,
+          originalParsedReference: reference, memoryAdmission: memoryAdmission,
+          invocation: invocation, lineage: .bind(lineage), currentness: currentness)))
   }
 }
 
 extension WorkspaceDatabase {
-  /// Dormant B1 bind shape. The reviewed stub reaches no BEGIN and cannot issue a continuation.
+  /// Dormant fixed bind: continuation evidence requires this invocation's actual COMMIT ACK.
   package func prepareProtocolVerification(
     expectedSnapshot: ProtocolVerificationSnapshot, expectedBinding: ProtocolMembershipBinding,
     expectedTokenRef: String, memoryAdmission: ProtocolProofMemoryAdmission
   ) -> ProtocolOwnedProofWriteReceipt {
-    ProtocolOwnedProofWriter.reviewedStubNoBegin()
+    ProtocolOwnedProofWriter.bind(
+      database: self, anchor: expectedSnapshot, binding: expectedBinding,
+      expectedTokenRef: expectedTokenRef, memoryAdmission: memoryAdmission)
   }
 }

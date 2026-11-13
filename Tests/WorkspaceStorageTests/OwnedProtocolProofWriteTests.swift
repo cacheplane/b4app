@@ -292,12 +292,17 @@ extension OwnedProtocolProofWriteTests {
       let admission = ProtocolProofMemoryAdmission {
         memoryAdmissionCalls.withLock { $0 += 1 }
       }
-      // Mint genuine B1 evidence before entering the subject pool's nonthrowing body.
+      // Obtain genuine malformed-reference refusal before the subject pool's nonthrowing body.
+      let receiptControl = try Self.control(f).object as NSDictionary
+      let receiptState = try Self.preserved(f)
       let receipt = f.database.prepareProtocolVerification(
-        expectedSnapshot: f.anchor, expectedBinding: f.binding, expectedTokenRef: f.link.tokenRef,
+        expectedSnapshot: f.anchor, expectedBinding: f.binding,
+        expectedTokenRef: "owned-proof-invalid-reference",
         memoryAdmission: admission)
+      let receiptControlUnchanged = try (Self.control(f).object as NSDictionary) == receiptControl
+      let receiptStateUnchanged = try Self.preserved(f) == receiptState
       guard receipt.operation == .bind, receipt.disposition == .confirmedNoncommit,
-        memoryAdmissionCalls.withLock({ $0 }) == 0
+        memoryAdmissionCalls.withLock({ $0 }) == 0, receiptControlUnchanged, receiptStateUnchanged
       else { throw FixtureFailure.nativeShape }
 
       let endpoint = f.database.endpoint
@@ -503,8 +508,8 @@ extension OwnedProtocolProofWriteTests {
     return signal()
   }
 
-  // The six new cases share only the existing validated native fixture and genuine B1 receipt
-  // acquisition. P05 above, including its receipt operands and assertions, remains byte-exact.
+  // Both pool fixtures obtain genuine malformed-reference refusal outside their callbacks.
+  // All pool controls and assertions otherwise retain the qualified behavior.
   private static func withPoolReceipt(
     _ body: (Fixture, ProtocolOwnedProofWriteReceipt) throws -> Void
   ) throws {
@@ -512,11 +517,16 @@ extension OwnedProtocolProofWriteTests {
       _ = try validateFixture(f)
       let calls = Mutex(0)
       let admission = ProtocolProofMemoryAdmission { calls.withLock { $0 += 1 } }
+      let receiptControl = try control(f).object as NSDictionary
+      let receiptState = try preserved(f)
       let receipt = f.database.prepareProtocolVerification(
-        expectedSnapshot: f.anchor, expectedBinding: f.binding, expectedTokenRef: f.link.tokenRef,
+        expectedSnapshot: f.anchor, expectedBinding: f.binding,
+        expectedTokenRef: "owned-proof-invalid-reference",
         memoryAdmission: admission)
+      let receiptControlUnchanged = try (control(f).object as NSDictionary) == receiptControl
+      let receiptStateUnchanged = try preserved(f) == receiptState
       guard receipt.operation == .bind, receipt.disposition == .confirmedNoncommit,
-        calls.withLock({ $0 }) == 0
+        calls.withLock({ $0 }) == 0, receiptControlUnchanged, receiptStateUnchanged
       else { throw FixtureFailure.nativeShape }
       let result = Result { try body(f, receipt) }
       guard calls.withLock({ $0 }) == 0 else { throw FixtureFailure.nativeShape }
@@ -1062,5 +1072,191 @@ extension OwnedProtocolProofWriteTests {
     // No DML means no deferred probe: a committed receipt requires the writer's actual COMMIT ACK.
     #expect(committedCurrent)
     #expect(redeemed)
+  }
+}
+
+extension OwnedProtocolProofWriteTests {
+  @Test func ownedBindSettlementClassifierPreservesUnknownForInvalidAndUnacknowledgedStates() {
+    // All sixteen inputs, including impossible histories. This is a pure decision test only;
+    // it neither manufactures a receipt nor simulates a native missing acknowledgement.
+    let cases: [(Bool, Bool, Bool, Bool, ProtocolProofSettlementDecision)] = [
+      (false, false, false, false, .confirmedNoncommit),
+      (false, false, false, true, .unknown),
+      (false, false, true, false, .unknown),
+      (false, false, true, true, .unknown),
+      (false, true, false, false, .unknown),
+      (false, true, false, true, .unknown),
+      (false, true, true, false, .unknown),
+      (false, true, true, true, .unknown),
+      (true, false, false, false, .unknown),
+      (true, false, false, true, .unknown),
+      (true, false, true, false, .unknown),
+      (true, false, true, true, .committed),
+      (true, true, false, false, .confirmedNoncommit),
+      (true, true, false, true, .unknown),
+      (true, true, true, false, .unknown),
+      (true, true, true, true, .unknown),
+    ]
+    for (begin, rollbackACK, commit, commitACK, expected) in cases {
+      let actual = ProtocolProofSettlementClassifier.classify(
+        beginSent: begin, rollbackAcknowledged: rollbackACK,
+        commitSent: commit, commitAcknowledged: commitACK)
+      #expect(actual == expected)
+    }
+  }
+
+  private static func controlData(_ f: Fixture) throws -> Data {
+    try JSONSerialization.data(withJSONObject: control(f).object, options: [.sortedKeys])
+  }
+
+  private static func expectedBoundControl(_ f: Fixture, predecessor: NativeControl) throws -> Data {
+    var expected = predecessor.object
+    expected["revision"] = String(predecessor.revision + 1)
+    expected["binding"] = [
+      "accountID": f.binding.accountID, "canonicalHubBase": f.binding.canonicalHubBase,
+      "hubUserID": f.binding.hubUserID, "hubOrgID": f.binding.hubOrgID,
+      "deviceID": f.binding.deviceID, "databaseName": f.binding.databaseName,
+      "linkJoinedAt": f.binding.linkJoinedAt,
+    ]
+    return try JSONSerialization.data(withJSONObject: expected, options: [.sortedKeys])
+  }
+
+  private static func validateSuccessor(_ f: Fixture, _ successor: ProtocolVerificationSnapshot) throws {
+    guard successor.observation == nil else { throw FixtureFailure.nativeShape }
+    try f.database.validateProtocolVerification(expectedSnapshot: successor)
+    try f.database.compareOriginalLinkedCaptureOwner(
+      expectedSnapshot: successor, accountID: f.binding.accountID,
+      databaseName: f.binding.databaseName, hubBase: base)
+    try f.database.compareOriginalLinkedCredentialReference(
+      expectedSnapshot: successor, expectedTokenRef: f.link.tokenRef)
+  }
+
+  @Test func ownedBindLegacyOnlyStoreCommitsWithoutHealthyProtocolTwoObservation() throws {
+    var committedCurrent = false
+    var redeemed = false
+    var exactSuccessor = false
+    var preserved = false
+    try Self.withFixture { f in
+      let predecessor = try Self.validateFixture(f)
+      let originalControl = try Self.controlData(f)
+      let originalLink = try Self.preserved(f).rows["hubLink"]
+      // Only this fixture's modern profile and its retained witnesses are removed. Sequence
+      // allocations from legitimate setup remain consumed; baseline is captured AFTER setup.
+      try f.inspector.execute("DELETE FROM public.connections WHERE id='owned-proof-modern'")
+      try f.inspector.execute(
+        "DELETE FROM public.changes WHERE \"table\"='connections' AND \"rowId\"='owned-proof-modern'")
+      try f.inspector.execute(
+        "DELETE FROM public.\"columnClocks\" WHERE \"table\"='connections' AND \"rowId\"='owned-proof-modern'"
+      )
+      _ = try f.database.insertConnection(
+        Connection(
+          id: "owned-proof-legacy", kind: .codex, label: "Legacy owned bind fixture",
+          target: "/fixture/codex"))
+      let nativeLegacy =
+        try f.inspector.execute(
+          """
+          SELECT count(*) AS n FROM public.connections
+          WHERE id='owned-proof-legacy' AND kind='codex'
+            AND "peerProfile" IS NULL AND "agentId" IS NULL AND "authMode" IS NULL
+            AND "authHeaderName" IS NULL AND "protocolRetiredAt" IS NULL
+            AND "protocolRetiredReason" IS NULL
+          """
+        ).rows.first?.int("n") == 1
+      let nativeModernAbsent =
+        try f.inspector.execute(
+          "SELECT count(*) AS n FROM public.connections WHERE id='owned-proof-modern'"
+        ).rows.first?.int("n") == 0
+      let legacyOnly = try f.database.protocolSyncRequirement() == .legacyOnly
+      let controlUnchanged = try Self.controlData(f) == originalControl
+      let linkUnchanged = try Self.preserved(f).rows["hubLink"] == originalLink
+      guard nativeLegacy, nativeModernAbsent, legacyOnly, controlUnchanged, linkUnchanged,
+        f.anchor.observation == nil
+      else { throw FixtureFailure.nativeShape }
+      try Self.validateSuccessor(f, f.anchor)
+      let before = try Self.preserved(f)
+      let expected = try Self.expectedBoundControl(f, predecessor: predecessor)
+      let admission = ProtocolProofMemoryAdmission {}
+      let receipt = f.database.prepareProtocolVerification(
+        expectedSnapshot: f.anchor, expectedBinding: f.binding, expectedTokenRef: f.link.tokenRef,
+        memoryAdmission: admission)
+      guard receipt.operation == .bind else { throw FixtureFailure.nativeShape }
+      committedCurrent = receipt.disposition == .committedCurrent
+      exactSuccessor = try Self.controlData(f) == expected
+      preserved = try Self.preserved(f) == before
+      if let successor = try? receipt.currentSuccessor(
+        expectedSnapshot: f.anchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+      {
+        try Self.validateSuccessor(f, successor)
+        redeemed = true
+      }
+    }
+    #expect(committedCurrent)
+    #expect(exactSuccessor)
+    #expect(preserved)
+    #expect(redeemed)
+  }
+
+  @Test func ownedBindCurrentReceiptRequiresOriginalAnchorReferenceAdmissionAndFreshMemory() throws {
+    var committedCurrent = false
+    var positive = false
+    var wrongAnchorRefused = false
+    var wrongReferenceRefused = false
+    var differentAdmissionRefused = false
+    var laterMemoryRefused = false
+    var dispositionRetained = false
+    var unchanged = false
+    try Self.withFixture { f in
+      let predecessor = try Self.validateFixture(f)
+      let before = try Self.preserved(f)
+      let expected = try Self.expectedBoundControl(f, predecessor: predecessor)
+      let current = Mutex(true)
+      let admission = ProtocolProofMemoryAdmission {
+        let accepted = current.withLock { $0 }
+        guard accepted else { throw FixtureFailure.nativeShape }
+      }
+      let receipt = f.database.prepareProtocolVerification(
+        expectedSnapshot: f.anchor, expectedBinding: f.binding, expectedTokenRef: f.link.tokenRef,
+        memoryAdmission: admission)
+      committedCurrent = receipt.operation == .bind && receipt.disposition == .committedCurrent
+      guard committedCurrent, try Self.controlData(f) == expected,
+        try Self.preserved(f) == before
+      else { throw FixtureFailure.nativeShape }
+      let successor = try receipt.currentSuccessor(
+        expectedSnapshot: f.anchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+      try Self.validateSuccessor(f, successor)
+      positive = true
+      let committedControl = try Self.controlData(f)
+      let committedState = try Self.preserved(f)
+      wrongAnchorRefused = !Self.validates {
+        _ = try receipt.currentSuccessor(
+          expectedSnapshot: successor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+      }
+      wrongReferenceRefused = !Self.validates {
+        _ = try receipt.currentSuccessor(
+          expectedSnapshot: f.anchor, expectedTokenRef: "secret:OWNED_PROOF_CHANGED_REFERENCE",
+          memoryAdmission: admission)
+      }
+      differentAdmissionRefused = !Self.validates {
+        _ = try receipt.currentSuccessor(
+          expectedSnapshot: f.anchor, expectedTokenRef: f.link.tokenRef,
+          memoryAdmission: ProtocolProofMemoryAdmission {})
+      }
+      current.withLock { $0 = false }
+      laterMemoryRefused = !Self.validates {
+        _ = try receipt.currentSuccessor(
+          expectedSnapshot: f.anchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+      }
+      // Retirement after return affects redemption; it does not reclassify the COMMIT receipt.
+      dispositionRetained = receipt.disposition == .committedCurrent
+      unchanged = try Self.controlData(f) == committedControl && Self.preserved(f) == committedState
+    }
+    #expect(committedCurrent)
+    #expect(positive)
+    #expect(wrongAnchorRefused)
+    #expect(wrongReferenceRefused)
+    #expect(differentAdmissionRefused)
+    #expect(laterMemoryRefused)
+    #expect(dispositionRetained)
+    #expect(unchanged)
   }
 }

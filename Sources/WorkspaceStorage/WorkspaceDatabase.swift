@@ -1211,3 +1211,11 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 }
+
+extension WorkspaceDatabase {
+  func withOwnedProtocolProofConnection(
+    _ body: (PostgresConnection) -> ProtocolOwnedProofWriteReceipt
+  ) throws -> ProtocolOwnedProofWriteReceipt {
+    try pool.withOwnedProofConnection(body)
+  }
+}
