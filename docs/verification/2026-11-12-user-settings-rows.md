@@ -1,16 +1,21 @@
 ## 2026-11-12: per-user settings rows
 
-D-213: the hub keeps one `viewSettings` row per user, stored as `view:<userId>`, and devices still send and receive `view`; any other row id is refused with `invalid_row_id`; migration `0021` moves the rows a hub already holds. Branch `blove/user-settings-rows`, from `main` 0b17646.
+D-213: the hub keeps one `viewSettings` row per user, stored as `view:<userId>`, and devices still send and receive `view`; any other row id is refused with `invalid_row_id`; migration `0020` moves the rows a hub already holds. Branch `blove/user-settings-rows`, from `main` 0b17646.
 
 ### Gates
 
-Hub, as run during the build (reported by the task implementers, not run again for this record):
+Hub, run on the finished tree (from `Hub/`, after `source <(./scripts/test-db.sh)`):
 
-- `cargo test -p b4hub-core --locked`: 35 passed, including `the_users_settings_row_is_stored_under_the_user` and `only_view_is_accepted_as_a_settings_row_id`.
-- `cargo test -p b4hub-db --locked --test changes --test rls`: changes 51 passed, rls 7 passed. New or changed: `each_user_of_the_org_has_their_own_settings_row` (replaces the test that two users shared one key), `a_settings_change_with_another_row_id_is_refused`, a snapshot that leaves out a stray `viewSettings` row and its clocks and returns the reader's own as `view`.
-- `cargo test -p b4hub-db --locked --test migrate settings_rows`: `settings_rows_move_to_their_users` passed (a seeded `view` row and a stray row; after the migration only `view:<user>` is left, with its values and clocks).
-- `cargo test --workspace --locked` (after the push and snapshot change, and again after the migration): every suite ok, none failed, including `migrations_frozen` with the new file's hash, the lower-numbered-migration test and the non-superuser owner rerun.
+- `cargo test --workspace --locked --no-fail-fast`: 30 suites, 543 passed, 0 failed. New or changed tests: `the_users_settings_row_is_stored_under_the_user` and `only_view_is_accepted_as_a_settings_row_id` (`b4hub-core`); `each_user_of_the_org_has_their_own_settings_row` (replaces the test that two users shared one key; it also shows a snapshot leaving out a stray row and its clocks) and `a_settings_change_with_another_row_id_is_refused` (`tests/changes.rs`); `settings_rows_move_to_their_users` (`tests/migrate.rs`: run as the non-superuser owner over three organisations, one with a row and a stray row, one with its own row, one with only a leftover clock; a clock carried over still beats an older write).
 - `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings`: clean.
+
+Three things failed on the way and were fixed before that run:
+
+- The migration was first numbered 0021, leaving 0020 to draft pull request 180. `environment_history_controls` needs the applied numbers to be consecutive, so six of its tests failed; the migration is 0020.
+- The migration first forced row-level security on both tables when it finished. Four `environment_history_controls` tests failed ("per-table RLS flags changed or were swapped"): a migration must leave each table's flag as it found it. It now reads the two flags first and restores them.
+- `migrate_is_idempotent_and_provisions_the_app_role` counted 19 migrations; it counts 20.
+
+The implementers' reports during the build said the whole suite passed while the first two of these were failing, so the hub results here are from this run only.
 
 Swift, run for this record:
 

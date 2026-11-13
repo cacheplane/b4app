@@ -18,7 +18,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(status.pending, 0);
-    assert_eq!(status.applied, (1..=19).collect::<Vec<i64>>());
+    assert_eq!(status.applied, (1..=20).collect::<Vec<i64>>());
 
     let app = Db::connect(&app_url).await.unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")
@@ -30,7 +30,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(migrations, 19);
+    assert_eq!(migrations, 20);
     app.pool.close().await;
 
     let row =
@@ -548,7 +548,7 @@ async fn migrate_to_0017(pool: &PgPool) {
 }
 
 /// Applies every migration whose file name sorts before `first_excluded` (a version prefix such as
-/// `0021`) to `pool`, as the ledger of a hub from before that migration.
+/// `0020`) to `pool`, as the ledger of a hub from before that migration.
 async fn migrate_before(pool: &PgPool, first_excluded: &str) {
     use sqlx::migrate::Migrator;
 
@@ -840,7 +840,7 @@ END $$;
     outcome.unwrap();
 }
 
-/// `0021_user_settings_rows.sql` moves each settings row, with its clocks, to the id that names
+/// `0020_user_settings_rows.sql` moves each settings row, with its clocks, to the id that names
 /// its user, drops rows no device can reach, and leaves the log alone; a change pushed afterwards
 /// lands on the moved row and still merges against the clock that came with it.
 #[sqlx::test(migrations = false)]
@@ -865,7 +865,7 @@ async fn settings_rows_move_to_their_users(pool: PgPool) {
     }
     let owner_url = url_as(&pool, "b4hub_test_owner", "owner-pw");
     let owner_pool = PgPool::connect(&owner_url).await.unwrap();
-    migrate_before(&owner_pool, "0021").await;
+    migrate_before(&owner_pool, "0020").await;
     owner_pool.close().await;
 
     async fn seed_org(pool: &PgPool, slug: &str) -> (orgs::SeedOutcome, sqlx::types::Uuid) {
@@ -946,7 +946,7 @@ async fn settings_rows_move_to_their_users(pool: PgPool) {
     .await
     .unwrap();
 
-    // The full migrator, as the owner, applies 0021 (and provisions the application role).
+    // The full migrator, as the owner, applies 0020 (and provisions the application role).
     let app_url = app_url(&pool, "pw-test");
     b4hub_db::migrate::run(&owner_url, &app_url).await.unwrap();
 

@@ -1303,7 +1303,7 @@ device does not know reads as the default on that device, and the stored value i
 
 The change log keeps the id `view`, as pushed, so a device that replays the feed sees the same
 settings. A snapshot leaves out any `viewSettings` row that is not the reader's own, and returns
-the reader's as `view`. Migration 0021 moved the rows a hub already held to `view:<userId>`,
+the reader's as `view`. Migration 0020 moved the rows a hub already held to `view:<userId>`,
 with their column clocks.
 
 ### `StoredChange` (the feed shape)

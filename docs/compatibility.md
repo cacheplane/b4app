@@ -347,4 +347,4 @@ The thread list's arrangement, its quiet-thread mode and Show archived are one s
 
 ### Settings per user (D-213)
 
-Hub migration `0021_user_settings_rows.sql` stores each user's settings row as `view:<userId>`; devices still send and receive `view`, so no Mac or phone build is needed. The hub refuses a `viewSettings` change under any other row id with `invalid_row_id`. Migration 0020 is held by another branch, so the numbering skips it. Run `migrate` before `serve`. While two hub tasks run side by side during a deploy, an old task can still write a row named `view` after the migration; see D-213.
+Hub migration `0020_user_settings_rows.sql` stores each user's settings row as `view:<userId>`; devices still send and receive `view`, so no Mac or phone build is needed. The hub refuses a `viewSettings` change under any other row id with `invalid_row_id`. Run `migrate` before `serve`. While two hub tasks run side by side during a deploy, an old task can still write a row named `view` after the migration; see D-213.
