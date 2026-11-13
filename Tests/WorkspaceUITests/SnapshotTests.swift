@@ -139,6 +139,14 @@ struct SnapshotShell: View {
 
 /// An offscreen window hosting a SwiftUI view; `capture` lets the run loop settle and draws the
 /// content view into a bitmap (no screen recording permission needed).
+/// A window for a render nobody sees. It never counts as the app's key or main window, so code under
+/// test that looks for a window to present in (the sign-in sheets) still finds none while a snapshot
+/// in another suite has one open.
+private final class BackgroundWindow: NSWindow {
+  override var canBecomeKey: Bool { false }
+  override var canBecomeMain: Bool { false }
+}
+
 @MainActor final class SnapshotWindow<Content: View> {
   let window: NSWindow
   let host: NSHostingView<Content>
@@ -154,7 +162,7 @@ struct SnapshotShell: View {
     // drawn across the content (the first row cut by a hairline). The root render keeps it, as the
     // app does.
     if !onScreen { host.sceneBridgingOptions = [] }
-    window = NSWindow(
+    window = (onScreen ? NSWindow.self : BackgroundWindow.self).init(
       contentRect: NSRect(origin: .zero, size: size),
       styleMask: untitled ? [.borderless] : [.titled, .closable, .resizable, .fullSizeContentView],
       backing: .buffered, defer: false)

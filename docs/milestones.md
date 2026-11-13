@@ -243,7 +243,7 @@ Exit gate status: the fixture gates pass (design exit items 4 to 6, locally: a c
 
 - [x] Where a new thread starts is chosen in a palette over the veiled new-thread view on the Mac (filter, environments and their folders with paths, sliding highlight, "Choose folder… ⌘O" and "No folder") and a "Start in" sheet on the phone; the picker row has no chevrons and a hover fill; the heading is "Let's get started". `fixture-tested` (`PlacePaletteTests`, `NewThreadDraftTests.paletteRowsChooseTheirPlace`, the rendered `placePalette` and `newThreadComposer` snapshots, and the iOS layout journey `testHealthyComposerJourney`, which opens the sheet on the Simulator and chooses an environment). `implemented` only on the Mac's screen: the palette was not driven with a pointer or keys in the running app, so its motion, hover, arrow keys, Return, Escape, ⌘O and the folder panel are unchecked (`docs/verification/2026-11-12-place-palette.md`).
 - [x] The palette gives way to New thread and search; the composer under it takes no keys; the no-environments line; the fixed top; hover after keys; Reduce Motion; VoiceOver labels (D-210). `implemented`, `fixture-tested` for the list rules; the rest seen in part in the Local app, see the verification record.
-
+- [x] Follow-ups (D-211): an overtaken view-settings read is made again; the palette's highlight keeps its row; folder rows name their environment to VoiceOver; the phone's sheet closes when its draft finishes; offscreen snapshot windows never count as the app's window. `implemented`, `fixture-tested`; not run in an app.
 
 ## Arrangements and view settings (D-208)
 
