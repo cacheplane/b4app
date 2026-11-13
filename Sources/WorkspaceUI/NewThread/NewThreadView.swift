@@ -153,7 +153,10 @@ struct NewThreadView: View {
         .frame(maxWidth: .infinity, alignment: compact ? .leading : .center)
         .padding(.horizontal, LLA.Space.xs)
         .padding(.bottom, LLA.Space.l)
-      ComposerField(text: Bindable(draft).text, placeholder: placeholder(draft), focused: $focused) {
+      ComposerField(
+        text: Bindable(draft).text, placeholder: placeholder(draft), focused: $focused,
+        onReturn: { if draft.canSend { Task { await draft.send() } } }
+      ) {
         send(draft)
       }
       ComposerPickerRow(model: model, .draft(draft), openPlaces: openPlaces)
@@ -176,7 +179,7 @@ struct NewThreadView: View {
   private func send(_ draft: NewThreadDraft) -> some View {
     let scale = ComposerField<EmptyView>.scale(growth)
     return Button("Send", systemImage: "arrow.up") { Task { await draft.send() } }
-      .keyboardShortcut(.return, modifiers: [])
+      .returnSends()
       .buttonStyle(
         ComposerCircleStyle(diameter: ComposerField<EmptyView>.control * scale, glyph: 15 * scale)
       )

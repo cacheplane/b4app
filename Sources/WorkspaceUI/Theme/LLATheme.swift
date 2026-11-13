@@ -24,13 +24,7 @@ public enum LLA {
 
     public var color: SwiftUI.Color {
       #if canImport(AppKit)
-        let light = self.light
-        let dark = self.dark
-        return SwiftUI.Color(
-          nsColor: NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            return NSColor(hex: isDark ? dark : light)
-          })
+        return SwiftUI.Color(nsColor: nsColor)
       #else
         let light = self.light
         let dark = self.dark
@@ -40,6 +34,18 @@ public enum LLA {
           })
       #endif
     }
+
+    #if canImport(AppKit)
+      /// The pair as an AppKit colour, for the AppKit views the app hosts (the Mac composer, D-219).
+      public var nsColor: NSColor {
+        let light = self.light
+        let dark = self.dark
+        return NSColor(name: nil) { appearance in
+          let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+          return NSColor(hex: isDark ? dark : light)
+        }
+      }
+    #endif
   }
 
   public nonisolated enum Palette {

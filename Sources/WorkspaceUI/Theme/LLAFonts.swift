@@ -3,6 +3,8 @@ import SwiftUI
 
 #if os(iOS)
   import UIKit
+#elseif os(macOS)
+  import AppKit
 #endif
 
 /// Hanken Grotesk (400, 500, 600) and JetBrains Mono (variable), bundled under the SIL Open Font License
@@ -192,6 +194,15 @@ public enum LLAFont {
   /// The composer's draft text: body on the Mac, a step under body on the phone (16 pt, `.callout`),
   /// so a draft reads lighter than the replies above it (D-061).
   public static var composer: Font { sans(scale.composer, relativeTo: scale.composerStyle) }
+  #if os(macOS)
+    /// The composer's face as an AppKit font, for the Mac's `NSTextView` editor (D-219); the Mac has
+    /// no Dynamic Type, so it is the fixed composer size.
+    static var composerNSFont: NSFont {
+      let size = scale.composer
+      if LLAFonts.register(), let font = NSFont(name: LLAFonts.sansRegular, size: size) { return font }
+      return .systemFont(ofSize: size)
+    }
+  #endif
   /// Pill button titles.
   public static var button: Font { sans(scale.button, weight: .semibold, relativeTo: scale.buttonStyle) }
 
