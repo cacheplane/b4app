@@ -146,7 +146,7 @@ import WorkspaceProtocol
   }
 
   @Test func pendingPreflightReadsOldSchemaWithoutMutation() async throws {
-    try await AdmissionOwnedCluster.withCluster { cluster in
+    try await AdmissionOwnedCluster.withCluster(observation: .pendingPreflight) { cluster in
       let fixture = try Self.fixture(cluster)
       let before = try Self.snapshot(fixture.raw)
       let files = Self.backupFiles(fixture.endpoint)
@@ -326,6 +326,54 @@ import WorkspaceProtocol
   }
 }
 
+private struct AdmissionObservation {
+  enum Case: String { case pendingPreflight }
+  enum Stage: String {
+    case initializer, initialStatus, serverStart, startedStatus, startedIdentity, body, finishCall
+    case startAttemptRequired, initialPaths, finishInitialStatus, currentIdentity, retainedIdentityCheck
+    case clientDrain, finishBeforeStopStatus, beforeStopIdentity, serverStop, finishAfterStopStatus
+    case afterStopAlive, stoppedBranch, uninitializedBranch, savedClientDrainError
+    case startedIdentityRequired, finalPaths, removeSocket, removeRoot
+  }
+  enum Outcome: String { case notAttempted, returned, threw }
+  enum Primary: String { case none, original, cleanup, initializer }
+  private let testCase: Case
+  var lastBoundary: Stage = .initializer
+  var initializerOutcome: Outcome = .notAttempted
+  var primaryStage: Stage?
+  var primaryOutcome: Outcome = .notAttempted
+  var finishStage: Stage?
+  var finishOutcome: Outcome = .notAttempted
+  var savedClientDrainOrigin: Stage?
+  var bodyEntered = false
+  var selectedPrimary: Primary = .none
+  var cleanupRecordedAndRethrown = false
+
+  init(_ testCase: Case) { self.testCase = testCase }
+
+  static func observe<T>(
+    _ stage: Stage, observation: inout AdmissionObservation?, _ operation: () throws -> T
+  ) rethrows -> T {
+    observation?.lastBoundary = stage
+    return try operation()
+  }
+
+  static func observeAsync<T>(
+    _ stage: Stage, observation: inout AdmissionObservation?, _ operation: () async throws -> T
+  ) async rethrows -> T {
+    observation?.lastBoundary = stage
+    return try await operation()
+  }
+
+  func emitAfterCleanupDecisions() {
+    // Stages are test call boundaries. An outer throw can also be a failed guard AFTER a call
+    // returned; neither this cursor nor bodyEntered proves a native operand or assertion ran.
+    print(
+      "A3_NATIVE_OBSERVATION case=\(testCase.rawValue) initializerOutcome=\(initializerOutcome.rawValue) primaryStage=\(primaryStage?.rawValue ?? "none") primaryOuterOutcome=\(primaryOutcome.rawValue) bodyEntered=\(bodyEntered) finishStage=\(finishStage?.rawValue ?? "none") finishOuterOutcome=\(finishOutcome.rawValue) savedClientDrainOrigin=\(savedClientDrainOrigin?.rawValue ?? "none") selectedPrimary=\(selectedPrimary.rawValue) cleanupRecordedAndRethrown=\(cleanupRecordedAndRethrown)"
+    )
+  }
+}
+
 /// This method owns an isolated catalog, so complete pg_database equality is meaningful.
 /// Deliberately not compatible with the old shared-cluster private intent/ACK profile.
 private struct AdmissionOwnedCluster: Sendable {
@@ -370,23 +418,75 @@ private struct AdmissionOwnedCluster: Sendable {
         binDir: bin, dataDir: rootPath + "/data", socketDir: socket, logPath: rootPath + "/postgres.log"))
   }
 
-  static func withCluster(_ body: (Self) async throws -> Void) async throws {
-    let owner = try Self()
+  static func withCluster(
+    observation testCase: AdmissionObservation.Case? = nil, _ body: (Self) async throws -> Void
+  ) async throws {
+    var observation = testCase.map(AdmissionObservation.init)
+    defer { observation?.emitAfterCleanupDecisions() }
+    let owner: Self
+    do {
+      owner = try Self()
+      observation?.initializerOutcome = .returned
+    } catch {
+      observation?.initializerOutcome = .threw
+      observation?.primaryStage = .initializer
+      observation?.primaryOutcome = .threw
+      observation?.selectedPrimary = .initializer
+      throw error
+    }
     var primary: (any Error)?
     var started: ProcessIdentity?
     var startAttempted = false
     do {
-      guard try await owner.server.status() == .uninitialized else { throw Failure.processOwnership }
+      guard
+        try await AdmissionObservation.observeAsync(
+          .initialStatus, observation: &observation,
+          {
+            try await owner.server.status()
+          }) == .uninitialized
+      else { throw Failure.processOwnership }
       startAttempted = true
-      let pid = try await owner.server.start()
-      guard try await owner.server.status() == .running(pid: pid) else { throw Failure.processOwnership }
-      started = try owner.identity(pid)
-      try await body(owner)
-    } catch { primary = error }
+      let pid = try await AdmissionObservation.observeAsync(.serverStart, observation: &observation) {
+        try await owner.server.start()
+      }
+      guard
+        try await AdmissionObservation.observeAsync(
+          .startedStatus, observation: &observation,
+          {
+            try await owner.server.status()
+          }) == .running(pid: pid)
+      else { throw Failure.processOwnership }
+      started = try AdmissionObservation.observe(.startedIdentity, observation: &observation) {
+        try owner.identity(pid)
+      }
+      observation?.bodyEntered = true
+      try await AdmissionObservation.observeAsync(.body, observation: &observation) {
+        try await body(owner)
+      }
+      observation?.primaryStage = .body
+      observation?.primaryOutcome = .returned
+    } catch {
+      observation?.primaryStage = observation?.lastBoundary
+      observation?.primaryOutcome = .threw
+      observation?.selectedPrimary = .original
+      primary = error
+    }
     // body returns only after its release/join/close scope and all raw handles have ended.
-    do { try await owner.finish(started: started, startAttempted: startAttempted) } catch {
+    // Pass the cursor directly: an outer forwarding borrow would overlap finish's inout borrow.
+    observation?.lastBoundary = .finishCall
+    do {
+      try await owner.finish(started: started, startAttempted: startAttempted, observation: &observation)
+      observation?.finishStage = observation?.lastBoundary
+      observation?.finishOutcome = .returned
+    } catch {
+      observation?.finishStage = observation?.lastBoundary
+      observation?.finishOutcome = .threw
       Issue.record(error)
-      if primary == nil { primary = error }
+      if primary == nil {
+        primary = error
+        observation?.selectedPrimary = .cleanup
+        observation?.cleanupRecordedAndRethrown = true
+      }
     }
     if let primary { throw primary }
   }
@@ -447,38 +547,205 @@ private struct AdmissionOwnedCluster: Sendable {
     else { throw Failure.pathOwnership }
   }
 
-  private func finish(started: ProcessIdentity?, startAttempted: Bool) async throws {
+  private func finish(
+    started: ProcessIdentity?, startAttempted: Bool, observation: inout AdmissionObservation?
+  ) async throws {
     // A refused initial status cannot authorize SQL or stop against a discovered process.
+    observation?.lastBoundary = .startAttemptRequired
     guard startAttempted else { throw Failure.processOwnership }
-    try pathsUnchanged()
+    try AdmissionObservation.observe(.initialPaths, observation: &observation) { try pathsUnchanged() }
     var cleanupFailure: (any Error)?
-    switch try await server.status() {
+    switch try await AdmissionObservation.observeAsync(
+      .finishInitialStatus, observation: &observation,
+      {
+        try await server.status()
+      })
+    {
     case .running(let pid):
-      let current = try identity(pid)  // PID0 or unknown/changed executable never reaches stop.
+      let current = try AdmissionObservation.observe(.currentIdentity, observation: &observation) {
+        try identity(pid)
+      }  // PID0 or unknown/changed executable never reaches stop.
       if let started {
+        observation?.lastBoundary = .retainedIdentityCheck
         guard current.pid == started.pid, current.startedAt == started.startedAt else {
           throw Failure.processOwnership
         }
       }
-      do { try await noOtherClients() } catch { cleanupFailure = error }
-      // Even failed client-drain proof stays failed after this owned FAST stop.
-      guard try await server.status() == .running(pid: pid),
-        try identity(pid) == current
-      else { throw Failure.processOwnership }
-      try await server.stop()
-      guard try await server.status() == .stopped, !ProcessInspector.isAlive(pid: pid) else {
-        throw Failure.shutdown
+      do {
+        try await AdmissionObservation.observeAsync(.clientDrain, observation: &observation) {
+          try await noOtherClients()
+        }
+      } catch {
+        observation?.savedClientDrainOrigin = .clientDrain
+        cleanupFailure = error
       }
+      // Even failed client-drain proof stays failed after this owned FAST stop.
+      guard
+        try await AdmissionObservation.observeAsync(
+          .finishBeforeStopStatus, observation: &observation,
+          {
+            try await server.status()
+          }) == .running(pid: pid),
+        try AdmissionObservation.observe(
+          .beforeStopIdentity, observation: &observation,
+          {
+            try identity(pid)
+          }) == current
+      else { throw Failure.processOwnership }
+      try await AdmissionObservation.observeAsync(.serverStop, observation: &observation) {
+        try await server.stop()
+      }
+      guard
+        try await AdmissionObservation.observeAsync(
+          .finishAfterStopStatus, observation: &observation,
+          {
+            try await server.status()
+          }) == .stopped,
+        AdmissionObservation.observe(
+          .afterStopAlive, observation: &observation,
+          {
+            !ProcessInspector.isAlive(pid: pid)
+          })
+      else { throw Failure.shutdown }
     case .stopped:
       // Bodies never stop this actor. Do not skip the required client/awaited-stop proof.
+      observation?.lastBoundary = .stoppedBranch
       throw Failure.shutdown
     case .uninitialized:
+      observation?.lastBoundary = .uninitializedBranch
       throw Failure.partialStart  // Preserve uncertain/partial startup evidence.
     }
-    if let cleanupFailure { throw cleanupFailure }  // Retain evidence; never normalize a drain failure.
+    if let cleanupFailure {
+      observation?.lastBoundary = .savedClientDrainError
+      throw cleanupFailure
+    }  // Retain evidence; never normalize a drain failure.
+    observation?.lastBoundary = .startedIdentityRequired
     guard started != nil else { throw Failure.partialStart }  // Keep failed-start logs even after owned stop.
-    try pathsUnchanged()
-    try FileManager.default.removeItem(atPath: server.cluster.socketDir)
-    try FileManager.default.removeItem(atPath: root)
+    try AdmissionObservation.observe(.finalPaths, observation: &observation) { try pathsUnchanged() }
+    try AdmissionObservation.observe(.removeSocket, observation: &observation) {
+      try FileManager.default.removeItem(atPath: server.cluster.socketDir)
+    }
+    try AdmissionObservation.observe(.removeRoot, observation: &observation) {
+      try FileManager.default.removeItem(atPath: root)
+    }
+  }
+}
+
+private final class AdmissionObservationSentinel: Error {}
+
+@Suite private struct AgentProtocolAdmissionObservationMechanicalTests {
+  @Test func forwardingPreservesGuardShortCircuitAndReferenceIdentity() async throws {
+    let sentinel = AdmissionObservationSentinel()
+    var observation: AdmissionObservation? = AdmissionObservation(.pendingPreflight)
+    var firstCalls = 0
+    var secondCalls = 0
+    var accepted = false
+    if AdmissionObservation.observe(
+      .finishBeforeStopStatus, observation: &observation,
+      {
+        firstCalls += 1
+        return false
+      }),
+      AdmissionObservation.observe(
+        .beforeStopIdentity, observation: &observation,
+        {
+          secondCalls += 1
+          return true
+        })
+    {
+      accepted = true
+    }
+    #expect(!accepted)
+    #expect(firstCalls == 1)
+    #expect(secondCalls == 0)
+    #expect(observation?.lastBoundary == .finishBeforeStopStatus)
+    do {
+      if try AdmissionObservation.observe(
+        .finishBeforeStopStatus, observation: &observation,
+        { () throws -> Bool in
+          firstCalls += 1
+          throw sentinel
+        }),
+        AdmissionObservation.observe(
+          .beforeStopIdentity, observation: &observation,
+          {
+            secondCalls += 1
+            return true
+          })
+      {
+        accepted = true
+      }
+      Issue.record("Expected the identical first-operand sentinel.")
+    } catch {
+      #expect((error as? AdmissionObservationSentinel) === sentinel)
+    }
+    #expect(!accepted)
+    #expect(firstCalls == 2)
+    #expect(secondCalls == 0)
+    #expect(observation?.lastBoundary == .finishBeforeStopStatus)
+
+    if await AdmissionObservation.observeAsync(
+      .finishAfterStopStatus, observation: &observation,
+      {
+        firstCalls += 1
+        return false
+      }),
+      AdmissionObservation.observe(
+        .afterStopAlive, observation: &observation,
+        {
+          secondCalls += 1
+          return true
+        })
+    {
+      accepted = true
+    }
+    #expect(!accepted)
+    #expect(firstCalls == 3)
+    #expect(secondCalls == 0)
+    #expect(observation?.lastBoundary == .finishAfterStopStatus)
+    do {
+      if try await AdmissionObservation.observeAsync(
+        .finishAfterStopStatus, observation: &observation,
+        { () async throws -> Bool in
+          firstCalls += 1
+          throw sentinel
+        }),
+        AdmissionObservation.observe(
+          .afterStopAlive, observation: &observation,
+          {
+            secondCalls += 1
+            return true
+          })
+      {
+        accepted = true
+      }
+      Issue.record("Expected the identical async first-operand sentinel.")
+    } catch {
+      #expect((error as? AdmissionObservationSentinel) === sentinel)
+    }
+    #expect(!accepted)
+    #expect(firstCalls == 4)
+    #expect(secondCalls == 0)
+    #expect(observation?.lastBoundary == .finishAfterStopStatus)
+
+    let forwarded = AdmissionObservation.observe(.currentIdentity, observation: &observation) { sentinel }
+    #expect(forwarded === sentinel)
+    let asyncForwarded = await AdmissionObservation.observeAsync(.startedIdentity, observation: &observation)
+    {
+      sentinel
+    }
+    #expect(asyncForwarded === sentinel)
+    #expect(observation?.lastBoundary == .startedIdentity)
+    // Nil is the default path: forwarding still invokes exactly once without creating observation state.
+    var absent: AdmissionObservation?
+    let withoutObservation = AdmissionObservation.observe(.currentIdentity, observation: &absent) {
+      firstCalls += 1
+      return sentinel
+    }
+    #expect(withoutObservation === sentinel)
+    #expect(firstCalls == 5)
+    #expect(absent == nil)
+    // lastBoundary is a call boundary, not proof that a native operand threw. The original
+    // withCluster/finish error-selection algorithm remains literal and is audited as source.
   }
 }

@@ -10,6 +10,105 @@ import WorkspaceSync
 
 private typealias H = AgentProtocolAccountMigrationTests
 
+private final class L2Observation: Sendable {
+  enum Case: String { case explicitRetry, retainedCurrent, oldCallbacks }
+  enum Stage: String {
+    case retryLeaseReady, retryFirstSignInCompletion, retrySecondSignInCompletion
+    case retryReleasedSignInCompletion, currentLeaseReady, currentFirstSignInCompletion
+    case currentAfterUpgradeSignInCompletion, currentReleasedSignInCompletion
+    case callbacksMigrationLockObservation, callbacksReplacementSignInCompletion
+    case callbacksDisposeEnteredObservation, callbacksNilSlotProfileObservation
+    case callbacksDisposalSignInCompletion, callbacksDisposeCompletedObservation
+  }
+  private enum Outcome: String { case returned, observationTimeout, threw, returnedTrue, returnedFalse }
+  private struct Record: Sendable {
+    let stage: Stage
+    let outcome: Outcome
+  }
+  private struct State: Sendable {
+    var count = 0
+    var overflow = false
+    var first: Record?, second: Record?, third: Record?, fourth: Record?
+    var fifth: Record?, sixth: Record?, seventh: Record?, eighth: Record?
+  }
+  private let testCase: Case
+  private let state = Mutex(State())
+  private let dropped = Atomic<Bool>(false)
+
+  init(_ testCase: Case) { self.testCase = testCase }
+
+  func call<T: Sendable>(
+    _ stage: Stage, _ operation: () async throws -> T
+  ) async rethrows -> T {
+    do {
+      let result = try await operation()
+      capture(stage, .returned)
+      return result
+    } catch {
+      if let failure = error as? H.SetupFailure, case .observationTimeout = failure {
+        capture(stage, .observationTimeout)
+      } else {
+        capture(stage, .threw)
+      }
+      throw error
+    }
+  }
+
+  func observed(_ stage: Stage, _ operation: () async -> Bool) async -> Bool {
+    let result = await operation()
+    capture(stage, result ? .returnedTrue : .returnedFalse)
+    return result
+  }
+
+  private func capture(_ stage: Stage, _ outcome: Outcome) {
+    let captured = state.withLockIfAvailable { state in
+      guard state.count < 8 else {
+        state.overflow = true
+        return true
+      }
+      let record = Record(stage: stage, outcome: outcome)
+      switch state.count {
+      case 0: state.first = record
+      case 1: state.second = record
+      case 2: state.third = record
+      case 3: state.fourth = record
+      case 4: state.fifth = record
+      case 5: state.sixth = record
+      case 6: state.seventh = record
+      default: state.eighth = record
+      }
+      state.count += 1
+      return true
+    }
+    if captured == nil { dropped.store(true, ordering: .relaxed) }
+  }
+
+  func emitAfterFixtureCleanup(to sink: (String) -> Void = { print($0) }) {
+    // Copy bounded primitive state out of the single try-lock before formatting or invoking a sink.
+    let snapshot = state.withLockIfAvailable { $0 }
+    let drop = dropped.load(ordering: .relaxed)
+    let unavailable = snapshot == nil
+    let overflow = snapshot?.overflow ?? false
+    let partial = unavailable || overflow || drop
+    if let snapshot {
+      let records = [
+        snapshot.first, snapshot.second, snapshot.third, snapshot.fourth,
+        snapshot.fifth, snapshot.sixth, snapshot.seventh, snapshot.eighth,
+      ]
+      for record in records {
+        if let record {
+          sink(
+            "A3_NATIVE_OBSERVATION case=\(testCase.rawValue) stage=\(record.stage.rawValue) outcome=\(record.outcome.rawValue)"
+          )
+        }
+      }
+    }
+    sink(
+      "A3_NATIVE_OBSERVATION case=\(testCase.rawValue) partial=\(partial) unavailable=\(unavailable) overflow=\(overflow) drop=\(drop)"
+    )
+  }
+}
+
 /// Test continuation deliberately ignores cancellation. Every caller is released and actually joined.
 private final class L2Delay: Sendable {
   private struct State {
@@ -233,18 +332,31 @@ private struct L2AccountAPI: HubAPI {
 
 @Suite(.serialized) struct AgentProtocolAccountMigrationRetentionTests {
   @Test func explicitRetryMustRedrainHeldIdentity() async throws {
+    let observation = L2Observation(.explicitRetry)
+    defer { observation.emitAfterFixtureCleanup() }
     try await H.withFixture { fixture, cleanup in
       let lease = L2Lease.hold(fixture.scope.database, cleanup: cleanup)
-      try await lease.ready()
-      #expect(H.refused(try await H.completed(H.begin(fixture, cleanup)), code: .endpointUnavailable))
+      try await observation.call(.retryLeaseReady) { try await lease.ready() }
+      #expect(
+        H.refused(
+          (try await observation.call(.retryFirstSignInCompletion) {
+            try await H.completed(H.begin(fixture, cleanup))
+          }), code: .endpointUnavailable))
       try await L2.snapshotUnchanged(fixture)
       #expect(fixture.manager.current == nil)
-      #expect(H.refused(try await H.completed(H.begin(fixture, cleanup)), code: .endpointUnavailable))
+      #expect(
+        H.refused(
+          (try await observation.call(.retrySecondSignInCompletion) {
+            try await H.completed(H.begin(fixture, cleanup))
+          }), code: .endpointUnavailable))
       try await L2.snapshotUnchanged(fixture)
       try await lease.finish()
       try await L2.noAutomaticOpen(
         fixture, expected: fixture.before, registry: fixture.registryBefore, operations: fixture.secretBefore)
-      _ = try await H.completed(H.begin(fixture, cleanup)).get()
+      _ = try
+        (await observation.call(.retryReleasedSignInCompletion) {
+          try await H.completed(H.begin(fixture, cleanup))
+        }).get()
       try H.assertArchive(fixture, expected: fixture.before)
       try H.assertHistory(fixture.before, after: H.snapshot(fixture.raw))
       #expect(fixture.manager.current != nil)
@@ -252,18 +364,31 @@ private struct L2AccountAPI: HubAPI {
   }
 
   @Test func retainedDrainStillRequiredWhenPreflightCurrent() async throws {
+    let observation = L2Observation(.retainedCurrent)
+    defer { observation.emitAfterFixtureCleanup() }
     try await H.withFixture { fixture, cleanup in
       let lease = L2Lease.hold(fixture.scope.database, cleanup: cleanup)
-      try await lease.ready()
-      #expect(H.refused(try await H.completed(H.begin(fixture, cleanup)), code: .endpointUnavailable))
+      try await observation.call(.currentLeaseReady) { try await lease.ready() }
+      #expect(
+        H.refused(
+          (try await observation.call(.currentFirstSignInCompletion) {
+            try await H.completed(H.begin(fixture, cleanup))
+          }), code: .endpointUnavailable))
       try await L2.snapshotUnchanged(fixture)
       let current = try L2.externalUpgrade(fixture)
-      #expect(H.refused(try await H.completed(H.begin(fixture, cleanup)), code: .endpointUnavailable))
+      #expect(
+        H.refused(
+          (try await observation.call(.currentAfterUpgradeSignInCompletion) {
+            try await H.completed(H.begin(fixture, cleanup))
+          }), code: .endpointUnavailable))
       try await L2.snapshotUnchanged(fixture, expected: current)
       try await lease.finish()
       try await L2.noAutomaticOpen(
         fixture, expected: current, registry: fixture.registryBefore, operations: fixture.secretBefore)
-      _ = try await H.completed(H.begin(fixture, cleanup)).get()
+      _ = try
+        (await observation.call(.currentReleasedSignInCompletion) {
+          try await H.completed(H.begin(fixture, cleanup))
+        }).get()
       #expect(fixture.manager.current != nil)
       #expect(!FileManager.default.fileExists(atPath: H.directory(fixture)))
       try H.assertHistory(current, after: H.snapshot(fixture.raw))
@@ -615,6 +740,8 @@ private final class L2LifetimeOwner: Sendable {
   }
 
   @Test func oldInstanceCallbacksCannotMutateReplacement() async throws {
+    let observation = L2Observation(.oldCallbacks)
+    defer { observation.emitAfterFixtureCleanup() }
     try await H.withFixture { fixture, cleanup in
       let writer = try H.connection(fixture.endpoint)
       let pid = try #require(writer.execute("SELECT pg_backend_pid() AS pid").rows.first?.text("pid"))
@@ -624,12 +751,16 @@ private final class L2LifetimeOwner: Sendable {
         "SELECT pg_advisory_xact_lock_shared($1::bigint)", [String(WorkspaceDatabase.remoteApplyLockKey)])
       let run = H.begin(fixture, cleanup)
       guard
-        await H.observed({
-          (try? fixture.raw.execute(
-            "SELECT 1 FROM pg_stat_activity a JOIN pg_locks l ON a.pid=l.pid WHERE a.datname=$1 AND l.locktype='advisory' AND l.mode='ExclusiveLock' AND NOT l.granted AND $2::int=ANY(pg_blocking_pids(a.pid))",
-            [fixture.endpoint.database, pid]
-          ).rows.count == 1) == true
-        })
+        await observation.observed(
+          .callbacksMigrationLockObservation,
+          {
+            await H.observed({
+              (try? fixture.raw.execute(
+                "SELECT 1 FROM pg_stat_activity a JOIN pg_locks l ON a.pid=l.pid WHERE a.datname=$1 AND l.locktype='advisory' AND l.mode='ExclusiveLock' AND NOT l.granted AND $2::int=ANY(pg_blocking_pids(a.pid))",
+                [fixture.endpoint.database, pid]
+              ).rows.count == 1) == true
+            })
+          })
       else { throw H.SetupFailure.observationTimeout }
       #expect(fixture.manager.current == nil && L2.poolClosed(fixture.scope))
       let oldInstance = fixture.scope.instance
@@ -658,7 +789,8 @@ private final class L2LifetimeOwner: Sendable {
       #expect(await fixture.secrets.operations() == fixture.secretBefore)
       rejectionDelay.release()  // It waits on transitions; join ONLY after migration is released.
       try writer.execute("COMMIT"); rollback.run()
-      _ = try await H.completed(run).get()
+      _ = try (await observation.call(.callbacksReplacementSignInCompletion) { try await H.completed(run) })
+        .get()
       await profile.value; await rejected.value
       #expect(fixture.manager.current != nil)
       let currentScope = try #require(fixture.manager.current)
@@ -695,7 +827,10 @@ private final class L2LifetimeOwner: Sendable {
       cleanup.release { for pump in pumps { pump.cancel() } }
       cleanup.join { for pump in pumps { await pump.value } }
       let run = H.begin(fixture, cleanup)
-      guard await H.observed({ adapters.disposes == 1 }) else { throw H.SetupFailure.observationTimeout }
+      guard
+        await observation.observed(
+          .callbacksDisposeEnteredObservation, { await H.observed({ adapters.disposes == 1 }) })
+      else { throw H.SetupFailure.observationTimeout }
       // AccountManager is suspended in bounded Self.close while disposal is held, so its actor
       // can actually run profileArrived with slot nil BEFORE any storage admission/capture.
       #expect(fixture.manager.current == nil && fixture.scope.isClosing)
@@ -711,7 +846,10 @@ private final class L2LifetimeOwner: Sendable {
         await fixture.manager.profileArrived(me, instance: instance)
       }
       cleanup.join { await profile.value }
-      guard await H.observed({ finished.finished.withLock { $0 } }) else {
+      guard
+        await observation.observed(
+          .callbacksNilSlotProfileObservation, { await H.observed({ finished.finished.withLock { $0 } }) })
+      else {
         throw H.SetupFailure.observationTimeout
       }
       await profile.value
@@ -719,8 +857,12 @@ private final class L2LifetimeOwner: Sendable {
       #expect(adapters.completedDisposes == 0)  // Genuine held close, not a raced after-install check.
       try await H.unchanged(fixture)
       adapters.release()
-      _ = try await H.completed(run).get()
-      guard await H.observed({ adapters.completedDisposes == 1 }) else {
+      _ = try (await observation.call(.callbacksDisposalSignInCompletion) { try await H.completed(run) })
+        .get()
+      guard
+        await observation.observed(
+          .callbacksDisposeCompletedObservation, { await H.observed({ adapters.completedDisposes == 1 }) })
+      else {
         throw H.SetupFailure.observationTimeout
       }
       for pump in pumps { await pump.value }
@@ -851,5 +993,98 @@ private final class L2LifetimeOwner: Sendable {
       _ = try await H.completed(run).get()
       try H.assertArchive(fixture, expected: expected)
     }
+  }
+}
+
+private final class L2ObservationSentinel: Error {}
+
+@Suite private struct AgentProtocolL2ObservationMechanicalTests {
+  @Test func forwardingPreservesValuesErrorsAndDefersBoundedReporting() async throws {
+    let sentinel = L2ObservationSentinel()
+    let observation = L2Observation(.explicitRetry)
+    var calls = 0
+    var reports: [String] = []
+    var cleanupFinished = false
+    let result: Result<Int, any Error> = await observation.call(.retryFirstSignInCompletion) {
+      calls += 1
+      return .failure(sentinel)
+    }
+    #expect(calls == 1)
+    // Result.failure is a returned VALUE. Its domain error is unwrapped outside call.
+    do {
+      _ = try result.get()
+      Issue.record("Expected the identical returned domain sentinel.")
+    } catch {
+      #expect((error as? L2ObservationSentinel) === sentinel)
+    }
+    do {
+      let _: Int = try await observation.call(.retryLeaseReady) {
+        calls += 1
+        throw H.SetupFailure.observationTimeout
+      }
+      Issue.record("Expected the genuine observation timeout enum.")
+    } catch {
+      guard let failure = error as? H.SetupFailure,
+        case .observationTimeout = failure
+      else {
+        Issue.record("Expected the genuine observation timeout enum.")
+        return
+      }
+    }
+    #expect(calls == 2)
+    do {
+      let _: Int = try await observation.call(.retrySecondSignInCompletion) {
+        calls += 1
+        throw sentinel
+      }
+      Issue.record("Expected the identical observation sentinel.")
+    } catch {
+      #expect((error as? L2ObservationSentinel) === sentinel)
+    }
+    #expect(calls == 3)
+    let returnedFalse = await observation.observed(.callbacksDisposeEnteredObservation) {
+      calls += 1
+      return false
+    }
+    let returnedTrue = await observation.observed(.callbacksDisposeCompletedObservation) {
+      calls += 1
+      return true
+    }
+    #expect(!returnedFalse)
+    #expect(returnedTrue)
+    #expect(calls == 5)
+    #expect(reports.isEmpty)
+    cleanupFinished = true
+    observation.emitAfterFixtureCleanup { line in
+      #expect(cleanupFinished)
+      reports.append(line)
+    }
+    #expect(reports.contains { $0.contains("stage=retryFirstSignInCompletion outcome=returned") })
+    #expect(reports.contains { $0.contains("stage=retryLeaseReady outcome=observationTimeout") })
+    #expect(reports.contains { $0.contains("stage=retrySecondSignInCompletion outcome=threw") })
+    #expect(
+      reports.contains { $0.contains("stage=callbacksDisposeEnteredObservation outcome=returnedFalse") })
+    #expect(
+      reports.contains { $0.contains("stage=callbacksDisposeCompletedObservation outcome=returnedTrue") })
+
+    // Capacity is eight. Exercise overflow sequentially, without manufacturing lock contention.
+    let bounded = L2Observation(.retainedCurrent)
+    var boundedReports: [String] = []
+    var boundedCalls = 0
+    for value in 0..<9 {
+      let returned = await bounded.call(.currentFirstSignInCompletion) {
+        boundedCalls += 1
+        return value
+      }
+      #expect(returned == value)
+    }
+    #expect(boundedCalls == 9)
+    #expect(boundedReports.isEmpty)
+    bounded.emitAfterFixtureCleanup { boundedReports.append($0) }
+    let records = boundedReports.filter { $0.contains("stage=") }
+    #expect(records.count == 8)
+    #expect(records.allSatisfy { $0.contains("outcome=returned") })
+    #expect(boundedReports.contains { $0.contains("partial=true") && $0.contains("overflow=true") })
+    #expect(boundedReports.count <= 9)
   }
 }

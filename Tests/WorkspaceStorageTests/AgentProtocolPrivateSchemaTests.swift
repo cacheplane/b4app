@@ -7,6 +7,46 @@ import WorkspaceProtocol
 
 /// Schema and metadata only. No private authority value or account/runtime/service/API starts.
 @Suite(.serialized) struct AgentProtocolPrivateSchemaTests {
+  private struct CleanupObservation {
+    enum Case: String { case opaqueProtocolFacts }
+    enum CloseOutcome: String { case notAttempted, returned, threw }
+    enum QueryOutcome: String { case notAttempted, empty, nonempty, threw }
+    private let testCase: Case
+    private(set) var closeOutcome: CloseOutcome = .notAttempted
+    private(set) var queryOutcome: QueryOutcome = .notAttempted
+
+    init(_ testCase: Case) { self.testCase = testCase }
+
+    mutating func close(_ operation: () throws -> Void) rethrows {
+      do {
+        try operation()
+        closeOutcome = .returned
+      } catch {
+        closeOutcome = .threw
+        throw error
+      }
+    }
+
+    mutating func query(
+      _ operation: () throws -> (rows: [Row], affected: Int)
+    ) rethrows -> (rows: [Row], affected: Int) {
+      do {
+        let result = try operation()
+        queryOutcome = result.rows.isEmpty ? .empty : .nonempty
+        return result
+      } catch {
+        queryOutcome = .threw
+        throw error
+      }
+    }
+
+    func emitAfterQueryAssertion() {
+      print(
+        "A3_NATIVE_OBSERVATION case=\(testCase.rawValue) close=\(closeOutcome.rawValue) query=\(queryOutcome.rawValue) instantaneous=true"
+      )
+    }
+  }
+
   private struct Table: Sendable {
     let name: String
     let columns: [String]
@@ -101,7 +141,10 @@ import WorkspaceProtocol
       connectionString:
         "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
   }
-  private static func withFixture(_ body: (Fixture) throws -> Void) throws {
+  private static func withFixture(
+    observation testCase: CleanupObservation.Case? = nil, _ body: (Fixture) throws -> Void
+  ) throws {
+    var observation = testCase.map(CleanupObservation.init)
     // Strict owned startup intent, actual helper/kernel identity and independent ACK before fixture rows.
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir = nil
@@ -114,15 +157,32 @@ import WorkspaceProtocol
     }
     let raw = try connection(endpoint)
     defer {
-      #expect(
-        (try? raw.execute(
-          "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
-          [endpoint.database]
-        ).rows.isEmpty) == true)
+      if var cleanup = observation {
+        #expect(
+          (try? cleanup.query {
+            try raw.execute(
+              "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
+              [endpoint.database])
+          }.rows.isEmpty) == true)
+        cleanup.emitAfterQueryAssertion()
+      } else {
+        #expect(
+          (try? raw.execute(
+            "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
+            [endpoint.database]
+          ).rows.isEmpty) == true)
+      }
     }
     let database = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
-    defer { try? database.close() }
+    defer {
+      if var cleanup = observation {
+        try? cleanup.close { try database.close() }
+        observation = cleanup
+      } else {
+        try? database.close()
+      }
+    }
     for suffix in ["a", "b"] {
       let profile = Connection(
         id: "connection-" + suffix, kind: .agentProtocol, label: "Fixture " + suffix,
@@ -381,7 +441,7 @@ import WorkspaceProtocol
   }
 
   @Test func privateJsonAndScalarValidityMatchesOpaqueProtocolFacts() throws {
-    try Self.withFixture { fixture in
+    try Self.withFixture(observation: .opaqueProtocolFacts) { fixture in
       let c = fixture.raw
       try Self.seedMetadata(c)
       // Every required text field rejects SQL NULL (23502) and empty string (23514).
@@ -442,5 +502,88 @@ import WorkspaceProtocol
         try Self.change(c, table: Self.answers, column: "answer", value: answer)
       }
     }
+  }
+}
+
+private final class SchemaObservationSentinel: Error {}
+
+extension AgentProtocolPrivateSchemaTests {
+  @Test func cleanupObservationForwardsOnceAndPreservesOptionalQueryOracle() throws {
+    let sentinel = SchemaObservationSentinel()
+    var observation = CleanupObservation(.opaqueProtocolFacts)
+    #expect(observation.closeOutcome == .notAttempted)
+    #expect(observation.queryOutcome == .notAttempted)
+    var closeCalls = 0
+    observation.close { closeCalls += 1 }
+    #expect(closeCalls == 1)
+    #expect(observation.closeOutcome == .returned)
+    do {
+      try observation.close {
+        closeCalls += 1
+        throw sentinel
+      }
+      Issue.record("Expected the identical close sentinel.")
+    } catch {
+      #expect((error as? SchemaObservationSentinel) === sentinel)
+    }
+    #expect(closeCalls == 2)
+    #expect(observation.closeOutcome == .threw)
+
+    // Actual Row/execute tuple types; no connection or SQL is involved.
+    let row = Row(cells: [
+      "value": Row.Cell(text: "retained", typeOID: 25),
+      "null": Row.Cell(text: nil, typeOID: 23),
+    ])
+    var queryCalls = 0
+    let forwarded = observation.query {
+      queryCalls += 1
+      return (rows: [row], affected: 7)
+    }
+    #expect(queryCalls == 1)
+    #expect(forwarded.affected == 7)
+    #expect(forwarded.rows.count == 1)
+    #expect(forwarded.rows.first?.cells.count == 2)
+    #expect(forwarded.rows.first?.cells["value"]?.text == "retained")
+    #expect(forwarded.rows.first?.cells["value"]?.typeOID == 25)
+    #expect(forwarded.rows.first?.cells["null"]?.text == nil)
+    #expect(forwarded.rows.first?.cells["null"]?.typeOID == 23)
+    #expect(observation.queryOutcome == .nonempty)
+
+    let emptyOracle: Bool? = try? observation.query { () throws -> (rows: [Row], affected: Int) in
+      queryCalls += 1
+      return (rows: [], affected: 0)
+    }.rows.isEmpty
+    #expect(queryCalls == 2)
+    #expect(emptyOracle == true)
+    #expect(observation.queryOutcome == .empty)
+    let nonemptyOracle: Bool? = try? observation.query { () throws -> (rows: [Row], affected: Int) in
+      queryCalls += 1
+      return (rows: [row], affected: 7)
+    }.rows.isEmpty
+    #expect(queryCalls == 3)
+    #expect(nonemptyOracle == false)
+    #expect(observation.queryOutcome == .nonempty)
+    do {
+      _ = try observation.query { () throws -> (rows: [Row], affected: Int) in
+        queryCalls += 1
+        throw sentinel
+      }
+      Issue.record("Expected the identical query sentinel.")
+    } catch {
+      #expect((error as? SchemaObservationSentinel) === sentinel)
+    }
+    #expect(queryCalls == 4)
+    #expect(observation.queryOutcome == .threw)
+    let thrownOracle: Bool? = try? observation.query { () throws -> (rows: [Row], affected: Int) in
+      queryCalls += 1
+      throw sentinel
+    }.rows.isEmpty
+    #expect(queryCalls == 5)
+    #expect(thrownOracle == nil)
+    #expect(observation.queryOutcome == .threw)
+    // Preserve the literal optional-try oracle's true/false/nil distinction.
+    #expect((emptyOracle == true) == true)
+    #expect((nonemptyOracle == true) == false)
+    #expect((thrownOracle == true) == false)
   }
 }
