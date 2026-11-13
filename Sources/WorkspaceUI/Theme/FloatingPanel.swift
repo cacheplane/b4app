@@ -115,6 +115,11 @@
     var snap: (CGPoint) -> CGPoint = { $0 }
     /// A double click on a drag area: go home.
     var resetRequested: () -> Void = {}
+    /// Where the pointer is on the screen during a press or a drag. The pointer itself, not the
+    /// event's place in the window: the window is moving under it, and on CI's screen a dragged
+    /// event's place in a panel that had just moved did not follow the pointer, so the panel never
+    /// left. A test that replays events gives their places instead.
+    var pointer: (NSEvent) -> CGPoint = { _ in NSEvent.mouseLocation }
 
     private struct Press {
       var down: NSEvent
@@ -139,12 +144,12 @@
           return
         }
         press = Press(
-          down: event, pointer: convertPoint(toScreen: event.locationInWindow), origin: frame.origin,
+          down: event, pointer: pointer(event), origin: frame.origin,
           onField: onField)
         return
       case .leftMouseDragged:
         guard var current = press else { break }
-        let pointer = convertPoint(toScreen: event.locationInWindow)
+        let pointer = pointer(event)
         let travel = CGSize(width: pointer.x - current.pointer.x, height: pointer.y - current.pointer.y)
         if !current.moving, hypot(travel.width, travel.height) > FloatingPanelGeometry.dragThreshold {
           current.moving = true

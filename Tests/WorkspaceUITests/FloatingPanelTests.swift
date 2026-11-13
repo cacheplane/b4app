@@ -337,6 +337,8 @@
 
     /// A press, a drag, and a release, as the window server sends them, with the pointer at `screen`.
     private func send(_ type: NSEvent.EventType, at screen: CGPoint, to panel: PalettePanel) throws {
+      // The replayed events say where the pointer is; the real pointer is wherever the owner left it.
+      panel.pointer = { [unowned panel] event in panel.convertPoint(toScreen: event.locationInWindow) }
       let inWindow = CGPoint(x: screen.x - panel.frame.minX, y: screen.y - panel.frame.minY)
       let event = try #require(
         NSEvent.mouseEvent(
