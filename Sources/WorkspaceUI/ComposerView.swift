@@ -34,7 +34,10 @@ struct ComposerView: View {
       }
       relayLines
       if let turn = activeTurn { turnRow(turn) }
-      ComposerField(text: $model.composerText, placeholder: placeholder, focused: $focused) {
+      ComposerField(
+        text: $model.composerText, placeholder: placeholder, focused: $focused,
+        onReturn: { if canSend { send() } }
+      ) {
         sendOrStop
       }
       .disabled(unreachable != nil)
@@ -83,13 +86,15 @@ struct ComposerView: View {
         )
         .accessibilityIdentifier("stop")
     } else {
-      Button("Send", systemImage: "arrow.up") { Task { await model.send() } }
-        .keyboardShortcut(.return, modifiers: [])
+      Button("Send", systemImage: "arrow.up", action: send)
+        .returnSends()
         .buttonStyle(ComposerCircleStyle(diameter: controlSize, glyph: 15 * scale))
         .disabled(!canSend)
         .accessibilityIdentifier("send")
     }
   }
+
+  private func send() { Task { await model.send() } }
 
   // MARK: Above the field
 
