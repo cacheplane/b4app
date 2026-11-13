@@ -96,6 +96,10 @@ const PINNED: &[(&str, &str)] = &[
         "0021_connection_commands.sql",
         "a0ed9144dafcb5f0243e9d03166e5ab6ecbf1f92f2d80433d0d16608189ba99a",
     ),
+    (
+        "0022_density.sql",
+        "8837d9fbfb7f8d68fb52e2b9855480b0b06ff3648d87fcd6140c55f47d2a1141",
+    ),
 ];
 
 #[test]

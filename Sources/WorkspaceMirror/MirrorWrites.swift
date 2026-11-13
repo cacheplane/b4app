@@ -168,16 +168,20 @@ extension MirrorStore {
   /// known to this build or not) and return the result. With the row missing, one insert of the key and
   /// the given fields is queued, and claims no clock for a field it does not set, so it never overrides
   /// another device's first write of that field; otherwise an update per changed field, and of
-  /// `updatedAt` when anything changed. A write that changes nothing queues nothing.
+  /// `updatedAt` when anything changed. A write that changes nothing queues nothing. Setting
+  /// `quietThreads` without `density` over a stored value that implies one (`tiny` with a null density:
+  /// `ViewSettings.impliedDensity`) also writes that density, so the rows keep their size when the old
+  /// value is replaced; a stored density, even one this build does not know, is never replaced.
   @discardableResult
   public func setViewSettings(
     arrangement: ViewSettings.Arrangement? = nil, quietThreads: ViewSettings.QuietThreads? = nil,
-    showArchived: Bool? = nil
+    showArchived: Bool? = nil, density: ViewSettings.Density? = nil
   ) throws -> ViewSettings {
     var fields: [(column: String, value: JSONValue)] = []
     if let arrangement { fields.append(("arrangement", .string(arrangement.rawValue))) }
     if let quietThreads { fields.append(("quietThreads", .string(quietThreads.rawValue))) }
     if let showArchived { fields.append(("showArchived", .bool(showArchived))) }
+    if let density { fields.append(("density", .string(density.rawValue))) }
     let rowId = ViewSettings.rowId
     return try locked {
       try transaction {
@@ -195,6 +199,14 @@ extension MirrorStore {
           for (column, value) in row { object[column] = value }
           try record([LocalChange(table: "viewSettings", rowId: rowId, op: "insert", value: .object(object))])
           return try viewSettingsLocked()
+        }
+        var fields = fields
+        if quietThreads != nil, density == nil, stored["density"] == .null,
+          case .text(let storedQuietThreads)? = stored["quietThreads"],
+          let implied = ViewSettings.impliedDensity(
+            storedQuietThreads: storedQuietThreads, storedDensity: nil)
+        {
+          fields.append(("density", .string(implied.rawValue)))
         }
         var changes = fields.filter { field in
           stored[field.column] != cell(bindable(field.value, table: "viewSettings", column: field.column))

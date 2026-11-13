@@ -193,6 +193,7 @@ const TABLES: [TableSpec; 10] = [
             "quietThreads",
             "showArchived",
             "updatedAt",
+            "density",
         ],
         parent: None,
     },
@@ -565,7 +566,8 @@ mod tests {
                 "arrangement",
                 "quietThreads",
                 "showArchived",
-                "updatedAt"
+                "updatedAt",
+                "density"
             ]
         );
         assert_eq!(SYNCED_TABLES.last(), Some(&"viewSettings"));

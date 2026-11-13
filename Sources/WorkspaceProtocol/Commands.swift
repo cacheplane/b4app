@@ -216,13 +216,15 @@ public enum ViewSettingsSet: WorkspaceCommand {
     public var arrangement: ViewSettings.Arrangement?
     public var quietThreads: ViewSettings.QuietThreads?
     public var showArchived: Bool?
+    public var density: ViewSettings.Density?
     public init(
       arrangement: ViewSettings.Arrangement? = nil, quietThreads: ViewSettings.QuietThreads? = nil,
-      showArchived: Bool? = nil
+      showArchived: Bool? = nil, density: ViewSettings.Density? = nil
     ) {
       self.arrangement = arrangement
       self.quietThreads = quietThreads
       self.showArchived = showArchived
+      self.density = density
     }
   }
   public typealias Result = ViewSettings

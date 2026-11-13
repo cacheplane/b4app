@@ -515,7 +515,8 @@ public final class MirrorTransport: WorkspaceTransport {
       let params = try command.params(for: ViewSettingsSet.self)
       let before = try store.viewSettings()
       let settings = try store.setViewSettings(
-        arrangement: params.arrangement, quietThreads: params.quietThreads, showArchived: params.showArchived)
+        arrangement: params.arrangement, quietThreads: params.quietThreads, showArchived: params.showArchived,
+        density: params.density)
       state.wrote = true
       // Viewers hear about a change only, as they do from the Mac.
       if settings != before { emit([try AdapterEvent.viewSettingsChanged(settings)], state: &state) }

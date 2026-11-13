@@ -106,17 +106,16 @@ import WorkspaceProtocol
     let built = try #require(parts(layout(threads)))
     // A pin never lifts a thread above a more urgent state, and there is no Pinned group.
     #expect(built.top == ["approve", "finished-pinned", "finished"])
-    #expect(built.lower == .rows([threads[4], threads[3], threads[5]], tiny: false))
+    #expect(built.lower == .rows([threads[4], threads[3], threads[5]]))
   }
 
   @Test func theLowerListIsWorkingThenQuiet() throws {
     let built = try #require(parts(layout(mixed)))
-    guard case .rows(let lower, let tiny) = built.lower else {
-      Issue.record("Small draws rows: \(built.lower)")
+    guard case .rows(let lower) = built.lower else {
+      Issue.record("Shown draws rows: \(built.lower)")
       return
     }
     #expect(lower.map(\.id) == ["working-new", "working-old", "quiet-new", "quiet-old"])
-    #expect(!tiny)
   }
 
   @Test func collapsedStowsWorkingAndQuietAndCountsBoth() throws {
@@ -180,14 +179,14 @@ import WorkspaceProtocol
     ]
     let hiddenArchive = layout(threads)
     #expect(hiddenArchive.archived.isEmpty)
-    #expect(try #require(parts(hiddenArchive)).lower == .rows([threads[0]], tiny: false))
+    #expect(try #require(parts(hiddenArchive)).lower == .rows([threads[0]]))
 
     // Shown: a final block, newest first whatever their state, and never in the arrangement's body.
     let shown = layout(threads, ViewSettings(showArchived: true))
     #expect(shown.archived.map(\.id) == ["archived-new", "archived-old"])
     let body = try #require(parts(shown))
     #expect(body.top.isEmpty)
-    #expect(body.lower == .rows([threads[0]], tiny: false))
+    #expect(body.lower == .rows([threads[0]]))
 
     // In both arrangements.
     let grouped = layout(threads, ViewSettings(arrangement: .byEnvironment, showArchived: true))
@@ -205,7 +204,7 @@ import WorkspaceProtocol
     #expect(built.body == .needsYouFirst(top: [], lower: .hidden(working: [])))
     #expect(built.archived.isEmpty)
     #expect(built.body.drawsNothing)
-    // Collapsed still offers the quiet threads; Small draws them.
+    // Collapsed still offers the quiet threads; Shown draws them.
     #expect(!layout(threads, ViewSettings(quietThreads: .collapsed)).body.drawsNothing)
     #expect(!layout(threads).body.drawsNothing)
     #expect(layout([]).body.drawsNothing)
@@ -231,7 +230,7 @@ import WorkspaceProtocol
     #expect(layout([quiet], ViewSettings(quietThreads: .hidden)).stowing == nil)
     // Rows, or another arrangement, stow nothing.
     #expect(layout(both).stowing == nil)
-    #expect(layout(both, ViewSettings(quietThreads: .tiny)).stowing == nil)
+    #expect(layout(both, ViewSettings(density: .dense)).stowing == nil)
     #expect(
       layout(both, ViewSettings(arrangement: .byEnvironment, quietThreads: .collapsed)).stowing == nil)
 
@@ -250,7 +249,7 @@ import WorkspaceProtocol
       !staysOpen(collapsed, layout(both, ViewSettings(arrangement: .byEnvironment, quietThreads: .collapsed)))
     )
     #expect(!staysOpen(collapsed, layout(both, ViewSettings(quietThreads: .hidden))))
-    #expect(!staysOpen(collapsed, layout(both, ViewSettings(quietThreads: .small))))
+    #expect(!staysOpen(collapsed, layout(both, ViewSettings(quietThreads: .shown))))
     #expect(
       !staysOpen(
         layout(both, ViewSettings(quietThreads: .hidden)),
@@ -270,17 +269,22 @@ import WorkspaceProtocol
     #expect(!layout([thread("q", .quiet, at: 1)]).saysNoThreadsYet(hasLiveThreads: true))
   }
 
-  @Test func tinyAppliesOnlyToTheLowerList() throws {
-    let built = try #require(parts(layout(mixed, ViewSettings(quietThreads: .tiny))))
+  /// The layout does not know row size: Shown builds the same rows at either density, and Collapsed
+  /// and Hidden are unchanged by it. The Mac's views draw the quiet rows tight (`tightQuietRows`).
+  @Test func densityDoesNotChangeTheLayout() throws {
+    let built = try #require(parts(layout(mixed, ViewSettings(density: .dense))))
     #expect(built.top.count == 5)
-    guard case .rows(let lower, let tiny) = built.lower else {
-      Issue.record("Tiny draws rows: \(built.lower)")
+    guard case .rows(let lower) = built.lower else {
+      Issue.record("Dense draws rows: \(built.lower)")
       return
     }
-    #expect(tiny)
-    #expect(lower.count == 4)
-    // Small is the same rows at their own size.
-    #expect(try #require(parts(layout(mixed))).lower == .rows(lower, tiny: false))
+    #expect(lower.map(\.id) == ["working-new", "working-old", "quiet-new", "quiet-old"])
+    #expect(try #require(parts(layout(mixed))).lower == .rows(lower))
+    for mode in ViewSettings.QuietThreads.allCases {
+      #expect(
+        layout(mixed, ViewSettings(quietThreads: mode, density: .dense))
+          == layout(mixed, ViewSettings(quietThreads: mode)))
+    }
   }
 
   // MARK: By environment
@@ -417,11 +421,11 @@ import WorkspaceProtocol
       try #require(parts(layout(threads, ViewSettings(quietThreads: .collapsed), selection: onTop))).lower
         == .collapsed(count: 3, working: 1, threads: Array(threads[1...]), selected: nil))
 
-    // Small and Tiny draw every row already: a selection changes nothing.
-    for mode in [ViewSettings.QuietThreads.small, .tiny] {
+    // Shown draws every row already, at either density: a selection changes nothing.
+    for density in ViewSettings.Density.allCases {
       #expect(
-        layout(threads, ViewSettings(quietThreads: mode), selection: onQuiet)
-          == layout(threads, ViewSettings(quietThreads: mode)))
+        layout(threads, ViewSettings(density: density), selection: onQuiet)
+          == layout(threads, ViewSettings(density: density)))
     }
   }
 
@@ -439,12 +443,12 @@ import WorkspaceProtocol
     ]
     let released = try #require(parts(layout(threads)))
     #expect(released.top == ["a", "f"])
-    #expect(released.lower == .rows([threads[3], threads[1]], tiny: false))
+    #expect(released.lower == .rows([threads[3], threads[1]]))
 
     let held = ListLayout.Selection(threadId: "t", held: .finished)
     let holding = try #require(parts(layout(threads, selection: held)))
     #expect(holding.top == ["a", "t", "f"])
-    #expect(holding.lower == .rows([threads[3]], tiny: false))
+    #expect(holding.lower == .rows([threads[3]]))
     #expect(Attention.state(of: threads[1]) == .quiet)
 
     // Under Collapsed it stays in the top list, not stowed and not the selected row; released, it is stowed.

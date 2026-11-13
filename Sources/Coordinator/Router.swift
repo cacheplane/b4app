@@ -237,7 +237,8 @@ public actor Router {
       let params = try command.params(for: ViewSettingsSet.self)
       let before = try db.viewSettings()
       let settings = try db.setViewSettings(
-        arrangement: params.arrangement, quietThreads: params.quietThreads, showArchived: params.showArchived)
+        arrangement: params.arrangement, quietThreads: params.quietThreads, showArchived: params.showArchived,
+        density: params.density)
       if settings != before { await events.publish(try .viewSettingsChanged(settings)) }
       return try JSONValue(encoding: settings)
     case .eventsSnapshot:
