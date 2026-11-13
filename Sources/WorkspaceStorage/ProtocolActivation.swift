@@ -370,6 +370,24 @@ extension WorkspaceDatabase {
     } catch { throw ProtocolActivationControl.failure }
   }
 
+  /// Compare only the opaque capture's original owner. No native read or membership export.
+  package func compareOriginalLinkedCaptureOwner(
+    expectedSnapshot: ProtocolVerificationSnapshot, accountID: String,
+    databaseName: String, hubBase: String
+  ) throws {
+    do {
+      try ProtocolActivationControl.requireIdentity(accountID)
+      try ProtocolActivationControl.requireIdentity(databaseName)
+      guard expectedSnapshot.database === self,
+        let context = expectedSnapshot.capturedContext, let membership = context.membership,
+        ProtocolActivationControl.bytesEqual(context.accountID, accountID),
+        ProtocolActivationControl.bytesEqual(endpoint.database, databaseName),
+        ProtocolActivationControl.bytesEqual(
+          membership.canonicalHubBase, try ProtocolActivationControl.canonicalBase(hubBase))
+      else { throw ProtocolActivationControl.failure }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
   /// Compare the original linked DATA snapshot and current opaque reference in one native view.
   /// Success grants no credential-presence proof, owner admission, or authority for a later effect.
   package func compareOriginalLinkedCredentialReference(
