@@ -101,7 +101,9 @@ public final class WorkspaceModel {
   public private(set) var link: LinkState = .connecting
   public private(set) var linkMessage: String?
   public private(set) var connections: [Connection] = []
-  public private(set) var threads: [ConversationThread] = [] {
+  /// Set only by the model itself; open to the module so a test can give a model a large list
+  /// without sending it through a transport.
+  public internal(set) var threads: [ConversationThread] = [] {
     didSet { holdSelectedState() }
   }
   public private(set) var diagnostics: DiagnosticsReport?

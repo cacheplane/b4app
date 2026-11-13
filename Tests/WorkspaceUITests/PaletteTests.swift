@@ -371,25 +371,31 @@ private func connected(
         "t\(n)", "\(words[n % words.count].capitalized) \(words[(n / 8) % words.count]) number \(n)",
         minute: n % 60, environment: n % 2 == 0 ? "e1" : "e2")
     }
-    let (model, _) = try await connected(threads: many)
+    // The threads are put straight into a model that never connects: three thousand of them through
+    // a transport is most of a second of the main actor's time, which every other suite running
+    // beside this one waits behind (on CI that pushed held requests past the client's timeout).
+    let model = WorkspaceModel(transportProvider: { ScriptedTransport() })
+    model.threads = many
     let palette = PaletteModel(workspace: model, purpose: .find)
     palette.setQuery("p")
     _ = palette.items  // builds the index once, as opening the palette does
+    #expect(palette.items.count > 1)
     let clock = ContinuousClock()
     var slowest = Duration.zero
     for query in ["pr", "pri", "pric led", "migration 29", "zzz"] {
-      // The best of several tries, stopping at the first inside the budget, so the suites running
-      // beside this one (the whole package, on a loaded machine) do not decide the result.
+      // The best of a few tries, stopping at the first inside the budget, so the suites running
+      // beside this one (the whole package, on a loaded machine) do not decide the result; and the
+      // main actor is given up between tries, so they are not kept waiting either.
       var best = Duration.seconds(1)
-      for _ in 0..<25 where best >= .milliseconds(50) {
+      for _ in 0..<8 where best >= .milliseconds(50) {
         palette.setQuery("")
         palette.setQuery(query)
         best = min(best, clock.measure { _ = palette.items })
+        await Task.yield()
       }
       slowest = max(slowest, best)
     }
     #expect(slowest < .milliseconds(250), "slowest keystroke took \(slowest)")
-    await model.disconnect()
   }
 }
 
