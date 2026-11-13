@@ -109,6 +109,107 @@ private final class L2Observation: Sendable {
   }
 }
 
+private final class L2RetryTiming: Sendable {
+  enum Stage: String, Sendable {
+    case leaseGuardDeadlineConstructed, leaseWaitReturned, leaseReadUnwound
+    case firstRunIssued, firstCompletion, secondRunIssued, secondCompletion
+  }
+  enum Kind: String, Sendable {
+    case none, released, timedOut, returned, threw
+    case returnedSuccess, returnedFailure, observationTimeout
+  }
+  private struct Record: Sendable {
+    let stage: Stage
+    let kind: Kind
+    let elapsedMilliseconds: Int64
+  }
+  private struct State: Sendable {
+    var count = 0
+    var overflow = false
+    var first: Record?, second: Record?, third: Record?, fourth: Record?
+    var fifth: Record?, sixth: Record?, seventh: Record?, eighth: Record?
+  }
+  private let start = ContinuousClock.now
+  private let state = Mutex(State())
+  private let dropped = Atomic<Bool>(false)
+
+  private func elapsedMilliseconds() -> Int64 {
+    let elapsed = start.duration(to: ContinuousClock.now)
+    guard elapsed > .zero else { return 0 }
+    let components = elapsed.components
+    let seconds = components.seconds.multipliedReportingOverflow(by: 1_000)
+    guard !seconds.overflow else { return .max }
+    let milliseconds = seconds.partialValue.addingReportingOverflow(
+      components.attoseconds / 1_000_000_000_000_000)
+    guard !milliseconds.overflow else { return .max }
+    return max(0, milliseconds.partialValue)
+  }
+
+  func record(_ stage: Stage, _ kind: Kind = .none) {
+    // Sample before the single try-lock; insertion order need not be sample order.
+    let elapsed = elapsedMilliseconds()
+    let captured = state.withLockIfAvailable { state in
+      guard state.count < 8 else {
+        state.overflow = true
+        return true
+      }
+      let record = Record(stage: stage, kind: kind, elapsedMilliseconds: elapsed)
+      switch state.count {
+      case 0: state.first = record
+      case 1: state.second = record
+      case 2: state.third = record
+      case 3: state.fourth = record
+      case 4: state.fifth = record
+      case 5: state.sixth = record
+      case 6: state.seventh = record
+      default: state.eighth = record
+      }
+      state.count += 1
+      return true
+    }
+    if captured == nil { dropped.store(true, ordering: .relaxed) }
+  }
+
+  func returned(_ stage: Stage, _ result: Result<AccountStatus.Result, any Error>) {
+    switch result {
+    case .success: record(stage, .returnedSuccess)
+    case .failure: record(stage, .returnedFailure)
+    }
+  }
+
+  func failed(_ stage: Stage, _ error: any Error) {
+    if let failure = error as? H.SetupFailure, case .observationTimeout = failure {
+      record(stage, .observationTimeout)
+    } else {
+      record(stage, .threw)
+    }
+  }
+
+  func emitAfterFixtureCleanup(to sink: (String) -> Void = { print($0) }) {
+    // Copy fixed primitive state, then release the try-lock before formatting or output.
+    let snapshot = state.withLockIfAvailable { $0 }
+    let drop = dropped.load(ordering: .relaxed)
+    let unavailable = snapshot == nil
+    let overflow = snapshot?.overflow ?? false
+    if let snapshot {
+      let records = [
+        snapshot.first, snapshot.second, snapshot.third, snapshot.fourth,
+        snapshot.fifth, snapshot.sixth, snapshot.seventh, snapshot.eighth,
+      ]
+      for record in records {
+        if let record {
+          sink(
+            "A3_RETRY_TIMING stage=\(record.stage.rawValue) resultKind=\(record.kind.rawValue) elapsedMilliseconds=\(record.elapsedMilliseconds)"
+          )
+        }
+      }
+    }
+    sink(
+      "A3_RETRY_TIMING partialSnapshot=true unavailable=\(unavailable) overflow=\(overflow) drop=\(drop)"
+    )
+  }
+}
+
 /// Test continuation deliberately ignores cancellation. Every caller is released and actually joined.
 private final class L2Delay: Sendable {
   private struct State {
@@ -166,17 +267,29 @@ private struct L2Lease: Sendable {
   let entered: L1RunState
   let release: L1Release
 
-  static func hold(_ database: WorkspaceDatabase, cleanup: L1Cleanup, seconds: Int = 60) -> Self {
+  static func hold(
+    _ database: WorkspaceDatabase, cleanup: L1Cleanup, seconds: Int = 60,
+    retryTiming: L2RetryTiming? = nil
+  ) -> Self {
     let semaphore = DispatchSemaphore(value: 0)
     let release = cleanup.release { semaphore.signal() }
     let entered = L1RunState()
     let task = Task.detached { [database] in
       try await H.onDedicatedLeaseThread {
-        try database.read { _ in
-          entered.finished.withLock { $0 = true }
-          guard semaphore.wait(timeout: .now() + .seconds(seconds)) == .success else {
-            throw H.SetupFailure.leaseGuardTimeout
+        do {
+          try database.read { _ in
+            entered.finished.withLock { $0 = true }
+            let deadline = DispatchTime.now() + .seconds(seconds)
+            retryTiming?.record(.leaseGuardDeadlineConstructed)
+            let released = semaphore.wait(timeout: deadline) == .success
+            retryTiming?.record(.leaseWaitReturned, released ? .released : .timedOut)
+            guard released else { throw H.SetupFailure.leaseGuardTimeout }
           }
+          // The synchronous read has unwound; this does not mark native Thread exit.
+          retryTiming?.record(.leaseReadUnwound, .returned)
+        } catch {
+          retryTiming?.record(.leaseReadUnwound, .threw)
+          throw error
         }
       }
     }
@@ -217,13 +330,15 @@ private enum L2 {
     if let observationFailure { throw observationFailure }
     return result
   }
-  static func snapshotUnchanged(_ fixture: H.Fixture, expected: H.Snapshot? = nil) async throws {
-    #expect(try H.snapshot(fixture.raw) == (expected ?? fixture.before))
-    #expect(try H.snapshot(fixture.registryRaw) == fixture.registryBefore)
-    #expect(await fixture.secrets.operations() == fixture.secretBefore)
-    #expect(try await fixture.secrets.read(fixture.accountRef) == H.accountValue)
-    #expect(try await fixture.secrets.read(fixture.endpointRef) == H.endpointValue)
-    #expect(!FileManager.default.fileExists(atPath: H.directory(fixture)))
+  static func snapshotUnchanged(
+    _ fixture: H.Fixture, expected: H.Snapshot? = nil, comment: Comment? = nil
+  ) async throws {
+    #expect(try H.snapshot(fixture.raw) == (expected ?? fixture.before), comment)
+    #expect(try H.snapshot(fixture.registryRaw) == fixture.registryBefore, comment)
+    #expect(await fixture.secrets.operations() == fixture.secretBefore, comment)
+    #expect(try await fixture.secrets.read(fixture.accountRef) == H.accountValue, comment)
+    #expect(try await fixture.secrets.read(fixture.endpointRef) == H.endpointValue, comment)
+    #expect(!FileManager.default.fileExists(atPath: H.directory(fixture)), comment)
   }
   static func poolClosed(_ scope: AccountScope) -> Bool {
     H.refused(Result { try scope.database.read { try $0.execute("SELECT 1") } }, code: .endpointUnavailable)
@@ -333,23 +448,43 @@ private struct L2AccountAPI: HubAPI {
 @Suite(.serialized) struct AgentProtocolAccountMigrationRetentionTests {
   @Test func explicitRetryMustRedrainHeldIdentity() async throws {
     let observation = L2Observation(.explicitRetry)
-    defer { observation.emitAfterFixtureCleanup() }
+    let retryTiming = L2RetryTiming()
+    defer {
+      observation.emitAfterFixtureCleanup()
+      retryTiming.emitAfterFixtureCleanup()
+    }
     try await H.withFixture { fixture, cleanup in
-      let lease = L2Lease.hold(fixture.scope.database, cleanup: cleanup)
+      let lease = L2Lease.hold(fixture.scope.database, cleanup: cleanup, retryTiming: retryTiming)
       try await observation.call(.retryLeaseReady) { try await lease.ready() }
       #expect(
         H.refused(
           (try await observation.call(.retryFirstSignInCompletion) {
-            try await H.completed(H.begin(fixture, cleanup))
+            retryTiming.record(.firstRunIssued)
+            do {
+              let result = try await H.completed(H.begin(fixture, cleanup))
+              retryTiming.returned(.firstCompletion, result)
+              return result
+            } catch {
+              retryTiming.failed(.firstCompletion, error)
+              throw error
+            }
           }), code: .endpointUnavailable))
-      try await L2.snapshotUnchanged(fixture)
+      try await L2.snapshotUnchanged(fixture, comment: Comment(rawValue: "retrySnapshotFirst"))
       #expect(fixture.manager.current == nil)
       #expect(
         H.refused(
           (try await observation.call(.retrySecondSignInCompletion) {
-            try await H.completed(H.begin(fixture, cleanup))
+            retryTiming.record(.secondRunIssued)
+            do {
+              let result = try await H.completed(H.begin(fixture, cleanup))
+              retryTiming.returned(.secondCompletion, result)
+              return result
+            } catch {
+              retryTiming.failed(.secondCompletion, error)
+              throw error
+            }
           }), code: .endpointUnavailable))
-      try await L2.snapshotUnchanged(fixture)
+      try await L2.snapshotUnchanged(fixture, comment: Comment(rawValue: "retrySnapshotSecond"))
       try await lease.finish()
       try await L2.noAutomaticOpen(
         fixture, expected: fixture.before, registry: fixture.registryBefore, operations: fixture.secretBefore)
