@@ -92,6 +92,10 @@ const PINNED: &[(&str, &str)] = &[
         "0020_user_settings_rows.sql",
         "ccf5c0b4cb0ef3230f138887c74df30c25e3756e3ba5245e6e02535b107aff8b",
     ),
+    (
+        "0021_density.sql",
+        "8837d9fbfb7f8d68fb52e2b9855480b0b06ff3648d87fcd6140c55f47d2a1141",
+    ),
 ];
 
 #[test]

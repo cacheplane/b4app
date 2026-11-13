@@ -2898,6 +2898,67 @@ async fn two_partial_view_inserts_keep_both_columns_whatever_their_order(pool: P
     assert!(stored["showArchived"].is_null());
 }
 
+/// `density` is one of the row's columns: a phone may insert and update it, and a Mac's insert
+/// of another column leaves it in place.
+#[sqlx::test(migrations = false)]
+async fn a_phone_may_write_density(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let (mac, phone) = mac_and_phone(&admin, &app).await;
+    push_through(
+        &app,
+        &phone,
+        &[at(
+            insert(
+                1,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "density": "dense"}),
+            ),
+            200,
+            PHONE_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    push_through(
+        &app,
+        &mac,
+        &[at(
+            insert(
+                3,
+                "viewSettings",
+                "view",
+                json!({"id": "view", "quietThreads": "collapsed"}),
+            ),
+            300,
+            MAC_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    assert_eq!(count(&app, &mac, "viewSettings").await, 1);
+    let stored = view(&app, &mac).await;
+    assert_eq!(stored["density"], "dense");
+    assert_eq!(stored["quietThreads"], "collapsed");
+
+    let outcome = changes::push(
+        &app,
+        &phone,
+        &[at(
+            update(2, "viewSettings", "view", "density", Some(json!("normal"))),
+            400,
+            PHONE_CLOCK,
+        )],
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.accepted_through, 2);
+    assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+    let stored = view(&app, &mac).await;
+    assert_eq!(stored["density"], "normal");
+    assert_eq!(stored["quietThreads"], "collapsed");
+}
+
 #[sqlx::test(migrations = false)]
 async fn view_settings_are_pulled_by_the_users_other_devices(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
