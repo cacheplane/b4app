@@ -6,7 +6,7 @@ D-218: the settings row's four-way "Small, Tiny, Collapsed, Hidden" is split int
 
 Run on the merged tree, each log saved and the counts read from it:
 
-- `swift test`: 1731 tests in 206 suites passed.
+- `swift test`: 1737 tests in 206 suites passed (run again after the last fix below; 1731 before it).
 - `swift format lint --strict --recursive Sources Tests Apps Package.swift`: clean.
 - Hub, from `Hub/` after `source <(./scripts/test-db.sh)`: `cargo test --workspace --locked --no-fail-fast`, 30 suites, 545 passed, 0 failed; `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets --locked -- -D warnings` clean.
 - `xcodebuild build` for `B4App-macOS` (`platform=macOS`) and `B4App-iOS` (`generic/platform=iOS Simulator`), after `./Scripts/generate-project.sh`: both `BUILD SUCCEEDED`.
@@ -27,6 +27,7 @@ Failed on the way, and what was done:
 - During the hub task, `pull_pages_and_long_polls` failed once on a timing bound (woke after 1.14 s against 1 s) and passed on the rerun.
 - Review of the Mac store found that replacing `tiny` would overwrite a stored density this build does not know; both stores now apply the rule only when no density is stored.
 - Review of the UI found that no test was tied to what the views draw; `ThreadListHeightTests` was added.
+- The whole-branch review found that a device replaying the hub's change log applied an old `tiny` and then a later sidebar change, and ended at normal density while the hub held dense. Both pull paths (`RemoteApply`, `MirrorApply`) now keep the density the replaced `tiny` implied, logging nothing and claiming no clock (`aPulledSidebarChangeKeepsTheDensityTinyImplied`, `aPulledDensityBeforeTheSidebarChangeIsKept`, `aPulledSidebarChangeKeepsAnUnknownDensity`, in both suites). The same review corrected the records on mixed versions: the hub goes first for each flavour, and an older build's choice between Small and Tiny is not taken up once a density is stored. The hub was not changed after its gates above.
 
 ### Not checked
 
