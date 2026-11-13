@@ -146,6 +146,14 @@ struct HintKeyTests {
   }
 }
 
+/// D-222: every list's highlight moves with one animation, and not at all under Reduce Motion.
+struct SelectionMotionTests {
+  @Test func theGlideIsOneAnimationAndReduceMotionTurnsItOff() {
+    #expect(SelectionMotion.animation(reduceMotion: false) == SelectionMotion.glide)
+    #expect(SelectionMotion.animation(reduceMotion: true) == nil)
+  }
+}
+
 @Suite @MainActor struct CommandCatalogTests {
   @Test func identifiersShortcutsAndSlashNamesAreUnambiguous() {
     let all = CommandCatalog.all

@@ -96,12 +96,16 @@ import WorkspaceProtocol
         .onSubmit { if rows.indices.contains(highlighted) { choose(rows[highlighted]) } }
         .onKeyPress(.downArrow) {
           keysMoved = true
-          highlighted = PlacePalette.step(highlighted, by: 1, count: rows.count)
+          withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) {
+            highlighted = PlacePalette.step(highlighted, by: 1, count: rows.count)
+          }
           return .handled
         }
         .onKeyPress(.upArrow) {
           keysMoved = true
-          highlighted = PlacePalette.step(highlighted, by: -1, count: rows.count)
+          withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) {
+            highlighted = PlacePalette.step(highlighted, by: -1, count: rows.count)
+          }
           return .handled
         }
         .onKeyPress(.escape) {
@@ -137,12 +141,13 @@ import WorkspaceProtocol
                     pointer = location
                     guard moved else { return }
                     keysMoved = false
-                    highlighted = index
+                    withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) {
+                      highlighted = index
+                    }
                   }
               }
             }
             .padding(Self.listInset)
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: highlighted)
           }
           .frame(height: min(CGFloat(rows.count) * Self.rowHeight + Self.listInset * 2, Self.listMaxHeight))
           .onChange(of: highlighted) { _, index in
@@ -181,13 +186,7 @@ import WorkspaceProtocol
         .padding(.leading, row.indented ? 10 + 20 : 10)
         .padding(.trailing, 10)
         .frame(height: Self.rowHeight)
-        .background {
-          if highlighted {
-            RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
-              .fill(LLA.Color.surfaceRaised)
-              .matchedGeometryEffect(id: "highlight", in: highlight)
-          }
-        }
+        .selectionHighlight(highlighted, in: highlight)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)

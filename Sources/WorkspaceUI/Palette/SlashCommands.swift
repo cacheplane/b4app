@@ -285,6 +285,7 @@ struct SlashCompletions: View {
   /// Runs a pick and applies what it does to the draft's text.
   let choose: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Namespace private var highlight
 
   var body: some View {
     let items = slash.items
@@ -390,10 +391,7 @@ struct SlashCompletions: View {
     }
     .padding(.horizontal, LLA.Space.s)
     .frame(height: Self.rowHeight)
-    .background(
-      RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
-        .fill(selected ? LLA.Color.surfaceRaised : .clear)
-    )
+    .selectionHighlight(selected, in: highlight)
     .contentShape(Rectangle())
   }
 }
@@ -506,8 +504,8 @@ extension SlashController {
     guard isShowing else { return false }
     switch key {
     case .choose: choose()
-    case .up: move(by: -1)
-    case .down: move(by: 1)
+    case .up: withAnimation(SelectionMotion.current) { move(by: -1) }
+    case .down: withAnimation(SelectionMotion.current) { move(by: 1) }
     case .escape:
       if let change = dismiss() { text.wrappedValue = change }
     }
