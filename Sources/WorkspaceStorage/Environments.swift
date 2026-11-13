@@ -109,11 +109,6 @@ extension WorkspaceDatabase {
       .protocolInvalid, "Folder \(path) belongs to no environment.", details: ["folder": .string(path)])
   }
 
-  /// Delete an environment. Its folders go with it and its threads become unassigned.
-  public func deleteEnvironment(id: String) throws {
-    try write { _ = try $0.execute("DELETE FROM \"environments\" WHERE \"id\" = $1", [id]) }
-  }
-
   /// Assign threads to an environment, or unassign them with nil. Does not move the threads' `updatedAt`.
   /// An environment that does not exist is `protocolInvalid`.
   public func setThreadEnvironment(threadIds: [String], environmentId: String?) throws {
@@ -178,7 +173,7 @@ extension WorkspaceDatabase {
   /// transaction: a failure leaves everything as it was.
   ///
   /// Placing a folder makes the environment manual (a person curated it) and may take the folder from
-  /// another environment; an automatic environment left with no folders is deleted, a manual one is kept.
+  /// any other environment, which is deleted when that leaves it with no folders (D-212).
   /// Releasing a folder the environment does not own is `protocolInvalid`. Unknown environment: `notFound`.
   public func updateEnvironment(
     id: String, name: String?, placing: [FolderPlacement], releasing: [FolderRelease]
@@ -192,30 +187,15 @@ extension WorkspaceDatabase {
     }
   }
 
-  /// Delete a manual environment (anything else is `protocolInvalid`). Each release gives a folder back to a
-  /// new automatic environment with the threads that use it; folders without a release are dropped.
-  public func deleteManualEnvironment(id: String, releasing: [FolderRelease]) throws -> EnvironmentEditResult
-  {
+  /// Delete an environment, automatic or manual. Its folders go with it (cascade) and its threads become
+  /// unassigned (`ON DELETE SET NULL`, which the change log records as each thread's `environmentId`
+  /// update): they show under "No folder". Nothing on disk is touched. Unknown environment: `notFound`.
+  @discardableResult
+  public func deleteEnvironment(id: String) throws -> EnvironmentEditResult {
     try write { c in
-      guard
-        let environment = try one(
-          c, WorkEnvironment.self, "SELECT * FROM \"environments\" WHERE \"id\" = $1", [id])
-      else { throw WorkspaceError(.notFound, "Environment \(id) does not exist.") }
-      guard environment.manual else {
-        throw WorkspaceError(
-          .protocolInvalid, "Environment \(id) is automatic; only manual environments can be deleted.")
-      }
-      // The environment's folders go with it (cascade) and its threads become unassigned, which frees each
-      // released folder's unique path for its replacement.
-      try c.execute("DELETE FROM \"environments\" WHERE \"id\" = $1", [id])
-      var changed = [id]
-      for release in releasing {
-        guard let replacement = release.replacement else { continue }
-        try placeReplacement(c, replacement, release)
-        changed.append(replacement.id)
-      }
-      return EnvironmentEditResult(
-        environment: nil, changedEnvironmentIds: changed, deletedEnvironmentIds: [id])
+      let deleted = try c.execute("DELETE FROM \"environments\" WHERE \"id\" = $1", [id]).affected
+      guard deleted > 0 else { throw WorkspaceError(.notFound, "Environment \(id) does not exist.") }
+      return EnvironmentEditResult(environment: nil, changedEnvironmentIds: [id], deletedEnvironmentIds: [id])
     }
   }
 
@@ -276,10 +256,7 @@ extension WorkspaceDatabase {
       let remaining = try c.execute(
         "SELECT 1 FROM \"environmentFolders\" WHERE \"environmentId\" = $1 LIMIT 1", [owner]
       ).rows.count
-      let manual = try one(
-        c, WorkEnvironment.self, "SELECT * FROM \"environments\" WHERE \"id\" = $1", [owner])?
-        .manual
-      if remaining == 0, manual == false {
+      if remaining == 0 {
         try c.execute("DELETE FROM \"environments\" WHERE \"id\" = $1", [owner])
         deleted.append(owner)
       } else {

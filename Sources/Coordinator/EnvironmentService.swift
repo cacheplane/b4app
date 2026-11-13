@@ -122,12 +122,14 @@ public actor EnvironmentService {
 
   /// Give every thread with no environment the environment of its folder. Idempotent: it looks only at threads
   /// with `environmentId IS NULL`, so a second run (or the next coordinator start) assigns nothing new; a
-  /// remote B4 thread has no folder and stays unassigned, and is cheaply re-examined each time. Returns
-  /// how many threads it assigned. It publishes nothing: it runs before any client connects.
+  /// remote B4 thread has no folder and stays unassigned, and is cheaply re-examined each time. A thread a
+  /// deleted environment left under "No folder" (`detachedKey`) stays there. Returns how many threads it
+  /// assigned. It publishes nothing: it runs before any client connects.
   @discardableResult
   public func backfill() throws -> Int {
+    let detached = try detachedThreadIds()
     let unassigned = try db.listThreads(ThreadFilter(includeArchived: true)).filter {
-      $0.environmentId == nil
+      $0.environmentId == nil && !detached.contains($0.id)
     }
     guard !unassigned.isEmpty else { return 0 }
     let connections = Dictionary(
@@ -199,7 +201,7 @@ public actor EnvironmentService {
       return EnvironmentCreate.Result(environment: existing)
     }
     let name = params.name.trimmingCharacters(in: .whitespacesAndNewlines)
-    let folders = try validatedFolders(params.folders, into: nil)
+    let folders = try validatedFolders(params.folders)
     guard !folders.isEmpty else {
       throw WorkspaceError(.protocolInvalid, "An environment needs at least one folder.")
     }
@@ -218,7 +220,7 @@ public actor EnvironmentService {
     }
     // Validate every folder first; nothing changes when any of them is bad. The edit itself is one
     // transaction (folders, threads, and rename together).
-    let adds = try validatedFolders(params.addFolders ?? [], into: environment).filter { path in
+    let adds = try validatedFolders(params.addFolders ?? []).filter { path in
       !environment.folders.contains { $0.path == path }
     }
     var removes: [String] = []
@@ -236,11 +238,10 @@ public actor EnvironmentService {
       }
       if !removes.contains(path) { removes.append(path) }
     }
-    if !removes.isEmpty, !environment.manual, adds.isEmpty {
+    if !removes.isEmpty, adds.isEmpty, removes.count >= environment.folders.count {
       throw WorkspaceError(
         .protocolInvalid,
-        "Environment \(environment.displayName) is automatic; add a folder first or create an environment instead."
-      )
+        "Environment \(environment.displayName) needs at least one folder; delete it instead.")
     }
     let threadsByFolder = try threadIdsByFolder()
     let placing = adds.map { FolderPlacement(path: $0, threadIds: threadsByFolder[$0] ?? []) }
@@ -268,32 +269,23 @@ public actor EnvironmentService {
     return EnvironmentRename.Result(environment: renamed)
   }
 
-  /// Delete a manual environment. Each of its folders that threads work in returns to a new automatic
-  /// environment, and those threads follow; folders no thread uses are dropped (they get an environment again
-  /// the next time a thread uses them).
+  /// Delete an environment, automatic or manual (D-212). Its threads move to "No folder" and stay there: they
+  /// are recorded (`detachedKey`) before the delete, so the backfill at the next start leaves them; a later
+  /// edit that places their folder in an environment takes them in again. Nothing on disk is touched.
   public func delete(_ params: EnvironmentDelete.Params) async throws -> EnvironmentDelete.Result {
     guard let environment = try db.environment(id: params.environmentId) else {
       throw WorkspaceError(.notFound, "Environment \(params.environmentId) does not exist.")
     }
-    guard environment.manual else {
-      throw WorkspaceError(
-        .protocolInvalid,
-        "Environment \(environment.displayName) is automatic; only manual environments can be deleted.")
+    let threadIds = try db.listThreads(ThreadFilter(includeArchived: true, environmentId: environment.id))
+      .map(
+        \.id)
+    if !threadIds.isEmpty {
+      let detached = try detachedThreadIds().union(threadIds)
+      try db.setSetting(key: Self.detachedKey, value: .array(detached.sorted().map { .string($0) }))
     }
-    let threadsByFolder = try threadIdsByFolder()
-    let releasing = environment.folders.compactMap { folder -> FolderRelease? in
-      let threadIds = threadsByFolder[folder.path] ?? []
-      return threadIds.isEmpty
-        ? nil
-        : FolderRelease(
-          path: folder.path, threadIds: threadIds, replacement: WorkEnvironment(id: Self.newId()))
-    }
-    // Threads that pointed here with no folder behind them become unassigned; tell viewers too.
-    let orphaned = try db.listThreads(ThreadFilter(includeArchived: true, environmentId: environment.id)).map(
-      \.id)
-    let edit = try db.deleteManualEnvironment(id: environment.id, releasing: releasing)
+    let edit = try db.deleteEnvironment(id: environment.id)
     try await alignConnections()
-    await publish(edit, threadIds: orphaned + releasing.flatMap(\.threadIds))
+    await publish(edit, threadIds: threadIds)
     return EnvironmentDelete.Result(environmentId: environment.id)
   }
 
@@ -301,14 +293,22 @@ public actor EnvironmentService {
 
   private static func newId() -> String { UUID().uuidString.lowercased() }
 
+  /// This Mac's setting (never synced) listing the threads a deleted environment left under "No folder".
+  static let detachedKey = "environments.detachedThreads"
+
+  private func detachedThreadIds() throws -> Set<String> {
+    guard case .array(let values) = try db.settings(key: Self.detachedKey) else { return [] }
+    return Set(values.compactMap(\.stringValue))
+  }
+
   private func require(_ environment: WorkEnvironment?) throws -> WorkEnvironment {
     guard let environment else { throw WorkspaceError(.internalError, "The edited environment disappeared.") }
     return environment
   }
 
-  /// Canonical, de-duplicated, existing folders. A folder another manual environment owns is refused (move
-  /// it by removing it there first); one an automatic environment owns is fair game.
-  private func validatedFolders(_ raw: [String], into target: WorkEnvironment?) throws -> [String] {
+  /// Canonical, de-duplicated, existing folders. A folder another environment owns is fair game: placing it
+  /// moves it, with its threads, and an environment it leaves empty is deleted (D-212).
+  private func validatedFolders(_ raw: [String]) throws -> [String] {
     var folders: [String] = []
     for path in raw {
       guard !path.isEmpty else { throw WorkspaceError(.protocolInvalid, "A folder path must not be empty.") }
@@ -322,11 +322,6 @@ public actor EnvironmentService {
           .protocolInvalid, "Folder \(path) does not exist.", details: ["folder": .string(path)])
       }
       let canonical = SessionService.canonicalDirectory(path)
-      if let owner = try db.environment(folderPath: canonical), owner.manual, owner.id != target?.id {
-        throw WorkspaceError(
-          .protocolInvalid, "Folder \(path) already belongs to environment \(owner.displayName).",
-          details: ["folder": .string(path), "environmentId": .string(owner.id)])
-      }
       if !folders.contains(canonical) { folders.append(canonical) }
     }
     return folders

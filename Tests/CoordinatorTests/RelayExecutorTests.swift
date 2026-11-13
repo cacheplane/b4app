@@ -916,10 +916,12 @@ private func failure(
     let gone = try await run(
       h.executor, .environmentDelete, EnvironmentDelete.Params(environmentId: environment.id))
     #expect(failure(gone)?.code == ErrorCode.notFound.rawValue)
-    // An automatic environment is the Mac's own: it cannot be deleted from anywhere.
-    let automatic = try await run(
-      h.executor, .environmentDelete, EnvironmentDelete.Params(environmentId: moved))
-    #expect(failure(automatic)?.code == ErrorCode.protocolInvalid.rawValue)
+    // An automatic environment can be deleted from the phone too; its thread moves to "No folder".
+    let automatic = try result(
+      try await run(h.executor, .environmentDelete, EnvironmentDelete.Params(environmentId: moved)),
+      as: EnvironmentDelete.Result.self)
+    #expect(automatic.environmentId == moved)
+    #expect(try h.db.thread(id: thread.id)?.environmentId == nil)
   }
 
   @Test func wireErrorKeepsTheCodeAndTurnIdAndReplacesUnsafeText() {

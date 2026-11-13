@@ -216,11 +216,11 @@ public final class WorkspaceModel {
   public var connectionFilter: String? {
     didSet { if connectionFilter != oldValue { rebaseArrivals() } }
   }
-  /// The phone's environment sheet: a new environment, or one environment's name and folders.
+  /// The phone's environment sheet: one environment's name and folders.
   public var environmentSheet: EnvironmentSheetRequest?
-  /// The Mac's environment action, asked for by a heading's context menu or the view-options menu's
-  /// "Environments" submenu and shown by the sidebar (`EnvironmentActionPresenter`), which clears it.
-  var environmentAction: EnvironmentAction?
+  /// The environment the Mac's form shows in the main view (`EnvironmentForm`, D-212), over whatever was
+  /// there; nil shows that again. Opening a thread or the new-thread view closes it.
+  public internal(set) var editingEnvironmentId: String?
   /// The iPhone's "Other ways to sign in" sheet, over the signed-out screen. On the model, like the
   /// sheets above, so the app holds a pairing link back until it closes.
   public var showSignInOptions = false
@@ -622,6 +622,7 @@ public final class WorkspaceModel {
       guard let self else { return }
       if let current = detail, current.thread.id != id { await saveDraft(threadId: current.thread.id) }
       guard !Task.isCancelled, pendingThreadOpen == id, generation == accountGeneration else { return }
+      editingEnvironmentId = nil
       selectedThreadId = id
       unreadHold.remove(id)
       let deadline = clock.now.advanced(by: Self.threadOpenWait)
@@ -980,6 +981,7 @@ public final class WorkspaceModel {
 
   private func openNewThread(preselect: (NewThreadDraft) -> Void) async {
     stopThreadOpen()
+    editingEnvironmentId = nil
     let open = detail.map { (threadId: $0.thread.id, text: composerText) }
     selectedThreadId = nil
     preselect(newThreadDraft)
@@ -990,6 +992,7 @@ public final class WorkspaceModel {
 
   public func openThread(id: String) async {
     stopThreadOpen()
+    editingEnvironmentId = nil
     if let current = detail, current.thread.id != id { await saveDraft(threadId: current.thread.id) }
     selectedThreadId = id
     unreadHold.remove(id)
@@ -1240,53 +1243,84 @@ public final class WorkspaceModel {
       generation == accountGeneration
     else { return }
     environments = list.environments
+    // The form's environment went (deleted here or from the phone, or emptied by a move): show what was there.
+    if let editing = editingEnvironmentId, !environments.contains(where: { $0.id == editing }) {
+      editingEnvironmentId = nil
+    }
     // A thread whose environment went is now under "No folder": regrouped, not arrived.
     noteThreadList(asBaseline: true)
   }
 
+  /// Open the Mac's environment form in the main view; Done (`closeEnvironmentForm`) shows what was there.
+  public func openEnvironmentForm(id: String) {
+    editingEnvironmentId = id
+  }
+
+  public func closeEnvironmentForm() {
+    editingEnvironmentId = nil
+  }
+
+  /// Save an edit of `environment`, the Mac's form or the phone's sheet. A name alone is a rename (on the
+  /// phone written to the mirror at once and queued for the hub, so it works with the Mac offline); a
+  /// folder change goes to the Mac with the name in one update, which the Mac validates. The failure is
+  /// the caller's to show, never `lastError`.
+  func editEnvironment(
+    _ environment: WorkEnvironment, name: String, addFolders: [String] = [], removeFolders: [String] = []
+  ) async -> Result<WorkEnvironment, WorkspaceError> {
+    if addFolders.isEmpty, removeFolders.isEmpty {
+      guard name != environment.name else { return .success(environment) }
+      return await environmentEdit(.environmentRename) {
+        try await $0.request(
+          EnvironmentRename.self, EnvironmentRename.Params(environmentId: environment.id, name: name),
+          options: $1
+        ).environment
+      }
+    }
+    return await environmentEdit(.environmentUpdate) {
+      try await $0.request(
+        EnvironmentUpdate.self,
+        EnvironmentUpdate.Params(
+          environmentId: environment.id, name: name == environment.name ? nil : name,
+          addFolders: addFolders.isEmpty ? nil : addFolders,
+          removeFolders: removeFolders.isEmpty ? nil : removeFolders),
+        options: $1
+      ).environment
+    }
+  }
+
+  /// Delete an environment on its Mac (from the phone, through the hub): its threads move to "No folder".
+  /// Nil when it went; otherwise why not, for the caller to show.
   @discardableResult
-  public func createEnvironment(name: String, folders: [String]) async -> WorkEnvironment? {
-    let created: WorkEnvironment? = await perform {
-      try await $0.request(
-        EnvironmentCreate.self, EnvironmentCreate.Params(name: name, folders: folders),
-        options: Self.mutation()
-      ).environment
+  func deleteEnvironment(id: String) async -> WorkspaceError? {
+    guard let client else { return WorkspaceError(.endpointUnavailable, "Coordinator is not connected.") }
+    do {
+      _ = try await client.request(
+        EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: id),
+        options: Self.mutation(timeout: Self.relayTimeout(for: .environmentDelete)))
+    } catch {
+      return WorkspaceError.from(error)
     }
-    if let created { merge(created) }
-    return created
+    environments.removeAll { $0.id == id }
+    if editingEnvironmentId == id { editingEnvironmentId = nil }
+    return nil
   }
 
-  /// Rename an environment; the empty string restores the folder-name display.
-  public func renameEnvironment(id: String, name: String) async {
-    let renamed: WorkEnvironment? = await perform {
-      try await $0.request(
-        EnvironmentRename.self, EnvironmentRename.Params(environmentId: id, name: name),
-        options: Self.mutation()
-      ).environment
+  /// One environment command whose failure the caller shows itself; the environment it returns joins the
+  /// list until the synced rows (or `environment.changed`) replace it.
+  private func environmentEdit(
+    _ method: WorkspaceProtocol.Method,
+    _ body: (WorkspaceClient, RequestOptions) async throws -> WorkEnvironment
+  ) async -> Result<WorkEnvironment, WorkspaceError> {
+    guard let client else {
+      return .failure(WorkspaceError(.endpointUnavailable, "Coordinator is not connected."))
     }
-    if let renamed { merge(renamed) }
-  }
-
-  public func addFolder(environmentId: String, path: String) async {
-    let updated: WorkEnvironment? = await perform {
-      try await $0.request(
-        EnvironmentUpdate.self, EnvironmentUpdate.Params(environmentId: environmentId, addFolders: [path]),
-        options: Self.mutation()
-      ).environment
+    do {
+      let environment = try await body(client, Self.mutation(timeout: Self.relayTimeout(for: method)))
+      merge(environment)
+      return .success(environment)
+    } catch {
+      return .failure(WorkspaceError.from(error))
     }
-    if let updated { merge(updated) }
-    // Threads whose folder moved arrive as `thread.updated`; the list follows `environment.changed`.
-  }
-
-  public func deleteEnvironment(id: String) async {
-    let deleted: String? = await perform {
-      try await $0.request(
-        EnvironmentDelete.self, EnvironmentDelete.Params(environmentId: id), options: Self.mutation()
-      )
-      .environmentId
-    }
-    guard let deleted else { return }
-    environments.removeAll { $0.id == deleted }
   }
 
   func merge(_ environment: WorkEnvironment) {
@@ -1794,7 +1828,7 @@ public final class WorkspaceModel {
     hubLink = nil
     diagnostics = nil
     environmentSheet = nil
-    environmentAction = nil
+    editingEnvironmentId = nil
     showSearch = false
     showProfileMenu = false
     lastError = nil
