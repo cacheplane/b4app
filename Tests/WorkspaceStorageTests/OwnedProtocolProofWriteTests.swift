@@ -1,5 +1,6 @@
 import CoreFoundation
 import Foundation
+import Synchronization
 import Testing
 import WorkspaceProtocol
 
@@ -269,6 +270,107 @@ import WorkspaceProtocol
         && String(reflecting: receipt) == "ProtocolOwnedProofWriteReceipt(redacted)"
         && Mirror(reflecting: receipt).children.isEmpty
       #expect(redacted)
+    }
+  }
+}
+
+extension OwnedProtocolProofWriteTests {
+  private struct OwnedProofPoolFacts {
+    let bodyCalled: Bool
+    let attemptReturned: Bool
+    let returnedReceiptMatches: Bool
+    let freshDiffersFromRetainedOld: Bool?
+    let freshReleasedAfterReturn: Bool?
+    let laterOrdinarySucceeded: Bool
+  }
+
+  @Test func ownedProofFreshCheckoutNeverReturnsFreshToIdle() throws {
+    var observed: OwnedProofPoolFacts?
+    try Self.withFixture { f in
+      _ = try Self.validateFixture(f)
+      let memoryAdmissionCalls = Mutex(0)
+      let admission = ProtocolProofMemoryAdmission {
+        memoryAdmissionCalls.withLock { $0 += 1 }
+      }
+      // Mint genuine B1 evidence before entering the subject pool's nonthrowing body.
+      let receipt = f.database.prepareProtocolVerification(
+        expectedSnapshot: f.anchor, expectedBinding: f.binding, expectedTokenRef: f.link.tokenRef,
+        memoryAdmission: admission)
+      guard receipt.operation == .bind, receipt.disposition == .confirmedNoncommit,
+        memoryAdmissionCalls.withLock({ $0 }) == 0
+      else { throw FixtureFailure.nativeShape }
+
+      let endpoint = f.database.endpoint
+      let application = "b4_owned_proof_pool_" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+      let pool = try ConnectionPool(
+        lib: LibPQ.load(binDir: endpoint.binDir!),
+        connectionString:
+          "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database) application_name=\(application)",
+        size: 1)
+      defer { pool.close() }
+      let old = try pool.withConnection { connection in
+        let rows = try connection.execute("SELECT 1 AS n, current_database() AS name").rows
+        guard rows.count == 1, rows.first?.int("n") == 1,
+          rows.first?.text("name") == endpoint.database
+        else { throw FixtureFailure.nativeShape }
+        return connection
+      }
+      observed = try withExtendedLifetime(old) {
+        var bodyCalled = false
+        var attemptReturned = false
+        var returnedReceiptMatches = false
+        var freshDiffersFromRetainedOld: Bool?
+        weak var freshConnection: PostgresConnection?
+        do {
+          let returned = try pool.withOwnedProofConnection { fresh in
+            bodyCalled = true
+            freshDiffersFromRetainedOld = fresh !== old
+            freshConnection = fresh
+            return receipt
+          }
+          attemptReturned = true
+          returnedReceiptMatches =
+            returned.operation == .bind && returned.disposition == .confirmedNoncommit
+        } catch {
+          // Only facts leave the attempt; native errors never reach assertion rendering.
+        }
+        let freshReleasedAfterReturn: Bool?
+        if bodyCalled && attemptReturned {
+          let deadline = ContinuousClock.now + .seconds(2)
+          while freshConnection != nil, ContinuousClock.now < deadline {
+            Thread.sleep(forTimeInterval: 0.005)
+          }
+          freshReleasedAfterReturn = freshConnection == nil
+        } else {
+          freshReleasedAfterReturn = nil
+        }
+        let laterOrdinarySucceeded = Self.validates {
+          try pool.withConnection { connection in
+            let rows = try connection.execute("SELECT 1 AS n").rows
+            guard rows.count == 1, rows.first?.int("n") == 1 else {
+              throw FixtureFailure.nativeShape
+            }
+          }
+        }
+        guard laterOrdinarySucceeded, memoryAdmissionCalls.withLock({ $0 }) == 0 else {
+          throw FixtureFailure.nativeShape
+        }
+        return OwnedProofPoolFacts(
+          bodyCalled: bodyCalled, attemptReturned: attemptReturned,
+          returnedReceiptMatches: returnedReceiptMatches,
+          freshDiffersFromRetainedOld: freshDiffersFromRetainedOld,
+          freshReleasedAfterReturn: freshReleasedAfterReturn,
+          laterOrdinarySucceeded: laterOrdinarySucceeded)
+      }
+    }
+    // The retained alias, separate pool and existing native fixture have all ended before issues.
+    guard let facts = observed else { throw FixtureFailure.nativeShape }
+    #expect(facts.bodyCalled)
+    #expect(facts.returnedReceiptMatches)
+    if facts.bodyCalled && facts.attemptReturned {
+      #expect(facts.freshDiffersFromRetainedOld == true)
+      #expect(facts.freshReleasedAfterReturn == true)
+      #expect(facts.laterOrdinarySucceeded)
     }
   }
 }

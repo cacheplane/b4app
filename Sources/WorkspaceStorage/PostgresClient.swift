@@ -166,3 +166,11 @@ final class ConnectionPool: @unchecked Sendable {
     return leases.wait(timeout: deadline) == .success
   }
 }
+extension ConnectionPool {
+  func withOwnedProofConnection(
+    onSlotWait: (DispatchTime, DispatchTime) -> Void = { _, _ in },
+    _ body: (PostgresConnection) -> ProtocolOwnedProofWriteReceipt
+  ) throws -> ProtocolOwnedProofWriteReceipt {
+    throw WorkspaceError(.endpointUnavailable, "The owned proof checkout is not implemented.")
+  }
+}
