@@ -5,8 +5,12 @@
 -- a write that arrives after the upgrade still merges against the clock that came with the row.
 --
 -- A row whose id is not `view` was never reachable by a device (the id was fixed), and the clocks
--- of such a row go with it, as do clocks left under `view` with no row (an update for a missing row
--- can have claimed one). `changes` is left alone: the log keeps `view`, the id devices use.
+-- of such a row go with it, as does any clock left under `view` with no row to move it to.
+-- `changes` is left alone: the log keeps `view`, the id devices use.
+--
+-- This runs once, by the migration ledger. Run a second time on a migrated hub it would delete
+-- every user's settings (they are all `view:<userId>` by then), so it is never renumbered once any
+-- database has applied it.
 --
 -- The rewrites touch rows under forced row-level security without a tenant, so forcing is lifted
 -- for those two tables and then put back as it was found: a table that was not forced before

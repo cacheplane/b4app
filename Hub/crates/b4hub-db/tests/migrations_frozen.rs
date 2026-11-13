@@ -90,7 +90,7 @@ const PINNED: &[(&str, &str)] = &[
     ),
     (
         "0020_user_settings_rows.sql",
-        "bebecd9806e341ca9e27590ae4df7053d24fd1dfc36bd26608cce23cabbec239",
+        "ccf5c0b4cb0ef3230f138887c74df30c25e3756e3ba5245e6e02535b107aff8b",
     ),
 ];
 

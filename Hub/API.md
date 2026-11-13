@@ -1268,7 +1268,7 @@ other fourteen applied; do not paste it whole.
 | `deviceSeq` | integer | The change's sequence on the device that wrote it: unique per device, increasing. The idempotency key together with the authenticated device. |
 | `wall` | integer | Milliseconds since the epoch on the origin device. |
 | `table` | string | One of `connections`, `environments`, `environmentFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`, `connectionUsage`, `viewSettings`. Any other name (including `localServers`, which never syncs) is recorded and skipped. `connectionUsage` (migration 0010) holds a connection's latest plan reading and B4 token totals as JSON documents (`reading`, `tokens`); only a Mac writes it. `viewSettings` (migration 0019) holds how the user's thread list is arranged, one row per user; see *View settings* below. |
-| `rowId` | string | The row's key: its `id`, `threadId` for `drafts`, or `connectionId` for `connectionUsage`. Client-chosen text; unique per org within a table. |
+| `rowId` | string | The row's key: its `id`, `threadId` for `drafts`, or `connectionId` for `connectionUsage`. Client-chosen text; unique per org within a table (`viewSettings`: always `view`, one row per user). |
 | `op` | `"insert"`, `"update"`, or `"delete"` | |
 | `column` | string or `null` | For `update`, the column being set; otherwise absent or `null`. |
 | `hlc` | string, optional | The hybrid logical clock the device stamped on the change (see *Clocks and the write rule*). Omit it and the hub derives one from `wall`. A value not in the clock form gets that change rejected with `invalid_clock`. |

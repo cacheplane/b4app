@@ -1063,4 +1063,9 @@ async fn settings_rows_move_to_their_users(pool: PgPool) {
         .map(|change| (change.table.as_str(), change.row_id.as_str()))
         .collect();
     assert_eq!(ids, vec![("viewSettings", "view"); 3]);
+    // The replay ends on the value the migrated row holds.
+    assert_eq!(
+        pulled.changes.last().unwrap().value,
+        Some(serde_json::json!("hidden"))
+    );
 }

@@ -494,7 +494,7 @@ mod tests {
             .columns
             .contains(&"environmentId"));
         assert!(!is_scrubbed("connections", "environmentId"));
-        // The account's view settings: the `view` row inserted, then one column changed.
+        // The user's settings: the `view` row inserted, then one column changed.
         let view: Vec<(&str, ChangeOp, Option<&str>)> = changes
             .iter()
             .filter(|c| c.table == "viewSettings")

@@ -3160,6 +3160,8 @@ async fn each_user_of_the_org_has_their_own_settings_row(pool: PgPool) {
             .filter(|c| c.table == "viewSettings")
             .collect();
         assert!(mine.iter().all(|c| c.row_id == "view"));
+        // Alice pushed one change and Bob two; neither feed holds the other's.
+        assert_eq!(mine.len(), if who.user_id == bob.user_id { 2 } else { 1 });
         assert_eq!(mine[0].value.as_ref().unwrap()["arrangement"], arrangement);
         let snapshot = b4hub_db::snapshot::take(&app, who).await.unwrap();
         let rows: Vec<_> = snapshot
@@ -3241,4 +3243,5 @@ async fn a_settings_change_with_another_row_id_is_refused(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(outcome.rejected[0].code, changes::INVALID_ROW_ID);
+    assert_eq!(count(&app, &mac, "changes").await, before);
 }
