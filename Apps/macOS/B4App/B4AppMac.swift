@@ -40,15 +40,21 @@ struct B4AppMac: App {
     }
     .defaultSize(width: 1200, height: 800)
     .commands {
-      // Nothing that needs an account is reachable from the menus while nobody is signed in. ⌘N and ⌘K
+      // Nothing that needs an account is reachable from the menus while nobody is signed in. ⌘N, ⌘K, and ⇧⌘P
       // are declared here only, so they work with the sidebar (and its top bar) hidden.
       CommandGroup(replacing: .newItem) {
-        Button("New Thread") { Task { await sharedModel.openNewThread() } }
-          .keyboardShortcut(TopBarButton.newThread.shortcut)
-          .disabled(sharedModel.accountState != .signedIn || sharedModel.newThreadEntryReason != nil)
-        Button("Search\u{2026}") { sharedModel.showSearch = true }
-          .keyboardShortcut(TopBarButton.search.shortcut)
-          .disabled(sharedModel.rootScreen != .workspace)
+        // The catalog's commands, with the catalog's shortcuts: the menu, the palette, and the toolbar
+        // name and run the same three.
+        ForEach([CommandID.newThread, .find, .commands], id: \.self) { id in
+          let command = CommandCatalog.definition(id)
+          Button(id == .newThread ? "New Thread" : "\(command.title)\u{2026}") {
+            Task { _ = await sharedModel.run(id, target: .workspace) }
+          }
+          .keyboardShortcut(command.shortcut)
+          .disabled(
+            sharedModel.rootScreen != .workspace
+              || sharedModel.availability(of: id, target: .workspace) != .available)
+        }
       }
       CommandGroup(replacing: .appSettings) {
         SettingsLink { Text("Settings…") }

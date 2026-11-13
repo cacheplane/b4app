@@ -97,8 +97,8 @@ private func writeVersion1File(_ path: String) throws {
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
-    #expect(MirrorSchema.version == 8)
-    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7, 8])
+    #expect(MirrorSchema.version == 9)
+    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7, 8, 9])
     for table in ["environments", "environmentFolders", "devices", "outbox", "columnClocks"] {
       #expect(try raw.integer("SELECT count(*) FROM sqlite_master WHERE name = '\(table)'") == 1, "\(table)")
     }
@@ -337,7 +337,7 @@ private func writeVersion1File(_ path: String) throws {
       try raw.exec("PRAGMA user_version = 7")
       try raw.exec("COMMIT")
     }
-    #expect(MirrorSchema.version == 8)
+    #expect(MirrorSchema.version == 9)
 
     let store = try MirrorStore(path: path)
     #expect(try store.thread(id: "thread-1")?.title == "Kept")
@@ -356,7 +356,7 @@ private func writeVersion1File(_ path: String) throws {
 
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 8)
+    #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
   }
 
   /// The index the relay's per-delta lookup uses: on `displayItems`, by thread then native item id.

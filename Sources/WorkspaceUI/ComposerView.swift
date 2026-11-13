@@ -8,8 +8,17 @@ struct ComposerView: View {
   @Bindable var model: WorkspaceModel
   let detail: ThreadDetail
   @FocusState private var focused: Bool
+  /// The `/` completions for this thread.
+  @State private var slash: SlashController
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// How far Dynamic Type has grown the draft text; the button follows it like the field does.
   @ScaledMetric(relativeTo: .callout) private var growth: CGFloat = 1
+
+  init(model: WorkspaceModel, detail: ThreadDetail) {
+    self.model = model
+    self.detail = detail
+    _slash = State(initialValue: SlashController(workspace: model, target: .thread(detail.thread.id)))
+  }
 
   private var activeTurn: Turn? { detail.activeTurn }
   private var canSend: Bool {
@@ -36,10 +45,12 @@ struct ComposerView: View {
       if let turn = activeTurn { turnRow(turn) }
       ComposerField(
         text: $model.composerText, placeholder: placeholder, focused: $focused,
+        onSlashKey: { slash.handle($0, text: $model.composerText) { chooseSlash() } },
         onReturn: { if canSend { send() } }
       ) {
         sendOrStop
       }
+      .slashCompletions(slash, placement: .above) { chooseSlash() }
       .disabled(unreachable != nil)
       // Where the thread runs, and the permission and model its next turn uses.
       ComposerPickerRow(model: model, .thread(detail.thread))
@@ -49,6 +60,34 @@ struct ComposerView: View {
     .padding(.bottom, Self.bottomPadding)
     .frame(maxWidth: LLA.Metrics.column)
     .frame(maxWidth: .infinity)
+    .onChange(of: model.composerText) { old, new in slash.textChanged(from: old, to: new) }
+    .onChange(of: detail.thread.id, initial: true) { _, id in slash.target = .thread(id) }
+    // The palette closed, or a command finished: writing resumes where it was.
+    .task(id: model.composerFocusRequest) {
+      // Also on appearing: the request may be older than this view (the palette opened this thread).
+      guard model.answeredComposerFocusRequest != model.composerFocusRequest else { return }
+      model.answeredComposerFocusRequest = model.composerFocusRequest
+      // The field may not take the cursor yet: it is still being laid out, or the closing palette's
+      // field still has it. Ask until it does, for a third of a second at most.
+      for _ in 0..<7 where !focused {
+        focused = true
+        try? await Task.sleep(for: .milliseconds(50))
+      }
+    }
+  }
+
+  /// Pick the selected completion; a pick may clear the token from the draft or put the slash back.
+  private func chooseSlash() {
+    Task {
+      switch await slash.choose() {
+      case .text(let text): model.composerText = text
+      case .send(let text):
+        // A runtime command is a message. While a turn runs it waits in the draft, never a stop.
+        model.composerText = text
+        if canSend { await model.send() } else { model.composerText = text + " " }
+      case nil: break
+      }
+    }
   }
 
   // MARK: Metrics
@@ -77,7 +116,14 @@ struct ComposerView: View {
 
   /// Send, or Stop while a turn runs: one round button in the same place, as in ChatGPT.
   @ViewBuilder private var sendOrStop: some View {
-    if let turn = activeTurn {
+    if slash.isShowing {
+      // While completions show, Return picks one: a typed slash is never sent, and never stops a turn.
+      Button(slash.selected?.primary ?? "Choose", systemImage: "return") { chooseSlash() }
+        .returnSends()
+        .buttonStyle(ComposerCircleStyle(diameter: controlSize, glyph: 13 * scale))
+        .disabled(slash.selected?.isAvailable != true)
+        .accessibilityIdentifier("slash-choose")
+    } else if let turn = activeTurn {
       Button("Stop", systemImage: "stop.fill") { Task { await model.stop() } }
         .buttonStyle(ComposerCircleStyle(diameter: controlSize, glyph: 11 * scale))
         .disabled(

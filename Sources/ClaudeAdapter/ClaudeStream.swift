@@ -54,6 +54,19 @@ public enum ClaudeStream {
     return env
   }
 
+  /// The `commands` of an `initialize` answer (Claude Code 2.1: `name`, `description`,
+  /// `argumentHint`, `aliases`), as the app keeps them. Anything else in an entry is ignored.
+  public static func commands(initialize answer: JSONValue) -> [RuntimeCommand] {
+    let listed = (answer["commands"]?.arrayValue ?? []).compactMap { entry -> RuntimeCommand? in
+      guard let name = entry["name"]?.stringValue else { return nil }
+      return RuntimeCommand(
+        name: name, description: entry["description"]?.stringValue ?? "",
+        argumentHint: entry["argumentHint"]?.stringValue,
+        aliases: entry["aliases"]?.arrayValue?.compactMap(\.stringValue))
+    }
+    return RuntimeCommand.normalized(listed)
+  }
+
   // MARK: - Outbound frames
 
   public static func initializeRequest(requestId: String) throws -> Data {

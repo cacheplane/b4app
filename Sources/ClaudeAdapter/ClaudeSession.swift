@@ -41,6 +41,10 @@ actor ClaudeSession {
     (inbound, continuation) = AsyncStream<Inbound>.makeStream()
   }
 
+  /// The commands the handshake reported; empty when it named none. Claude Code can answer before
+  /// its plugins have loaded, so the list may be short of what a later session reports.
+  private(set) var commands: [RuntimeCommand] = []
+
   var isRunning: Bool { process?.isRunning ?? false }
   var processIdentifier: Int32? { process?.processIdentifier }
 
@@ -66,7 +70,8 @@ actor ClaudeSession {
       "started pid \(child.processIdentifier, privacy: .public) session \(self.sessionId, privacy: .public)")
     Task { await self.readLoop(child) }
     do {
-      _ = try await control("initialize", ["hooks": [:]], timeout: options.handshakeTimeout)
+      let answer = try await control("initialize", ["hooks": [:]], timeout: options.handshakeTimeout)
+      commands = ClaudeStream.commands(initialize: answer)
     } catch {
       child.terminate()
       let failure = WorkspaceError.from(error)

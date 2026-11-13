@@ -41,6 +41,9 @@ enum ComposerKey: Equatable {
     @Binding var text: String
     let label: String
     let maxLines: Int
+    /// The keys the `/` completions take while they show, before the text view or `onReturn` has
+    /// them; false leaves the key where it was going. Never while an input method is composing.
+    var onSlashKey: ((SlashKey) -> Bool)?
     let onReturn: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -131,6 +134,11 @@ enum ComposerKey: Equatable {
         let event = (textView as? ComposerNSTextView)?.keyEvent
         let flags = event?.modifierFlags ?? []
         let returnKey = event?.type == .keyDown && (event?.keyCode == 36 || event?.keyCode == 76)
+        if !textView.hasMarkedText(), let key = SlashKey(command: NSStringFromSelector(selector)),
+          parent.onSlashKey?(key) == true
+        {
+          return true
+        }
         switch ComposerKey.action(
           for: NSStringFromSelector(selector), shift: flags.contains(.shift),
           command: flags.contains(.command), returnKey: returnKey, composing: textView.hasMarkedText())
@@ -141,7 +149,8 @@ enum ComposerKey: Equatable {
           textView.insertNewlineIgnoringFieldEditor(nil)
           return true
         case .send:
-          parent.onReturn()
+          // The completions take Return first: with them showing it picks one and never sends.
+          if parent.onSlashKey?(.choose) != true { parent.onReturn() }
           return true
         }
       }

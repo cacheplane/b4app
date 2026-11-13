@@ -24,6 +24,7 @@ private func thread(
         "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay", "0006_usage",
         "0007_connection_usage", "0008_thread_delete", "0009_thread_runtime_choice", "0010_owned_rows",
         "0011_environments", "0012_app_folders", "0013_view_settings",
+        "0014_connection_commands",
       ])
     // Reopening the same database applies nothing further and keeps the data.
     _ = try db.insertConnection(connection("c1"))
@@ -34,6 +35,7 @@ private func thread(
         "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay", "0006_usage",
         "0007_connection_usage", "0008_thread_delete", "0009_thread_runtime_choice", "0010_owned_rows",
         "0011_environments", "0012_app_folders", "0013_view_settings",
+        "0014_connection_commands",
       ])
     #expect(try again.connection(id: "c1")?.label == "c1")
     try again.close()

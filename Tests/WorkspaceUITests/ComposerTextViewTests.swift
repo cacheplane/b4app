@@ -40,6 +40,9 @@ struct ComposerKeyTests {
   @Observable final class Draft {
     var text = ""
     var returns = 0
+    /// The `/` completions are showing: they take the keys offered to them, which are kept here.
+    var completions = false
+    var slashKeys: [SlashKey] = []
   }
 
   struct Harness: View {
@@ -49,6 +52,11 @@ struct ComposerKeyTests {
     var body: some View {
       ComposerField(
         text: $draft.text, placeholder: "Message Codex", focused: $focused,
+        onSlashKey: { key in
+          guard draft.completions else { return false }
+          draft.slashKeys.append(key)
+          return true
+        },
         onReturn: { draft.returns += 1 }
       ) {
         Circle().fill(LLA.Color.ink).frame(width: ComposerField<EmptyView>.control)
@@ -161,6 +169,39 @@ struct ComposerKeyTests {
     #expect(draft.returns == 1)
     // A plain line feed both times, never the U+2028 separator Control-Return would insert.
     #expect(draft.text == "hello\n\n")
+  }
+
+  /// While the `/` completions show, the arrows, Escape and Return are theirs: Return picks a row
+  /// and never sends, and the arrows never move the caret. Without them every key is the editor's.
+  @Test func theSlashCompletionsTakeTheirKeysBeforeTheEditorOrASend() async throws {
+    let draft = Draft()
+    let window = host(draft)
+    defer { window.window.close() }
+    await settle(window)
+    let textView = try #require(editor(in: window.host))
+    textView.insertText("/co", replacementRange: textView.selectedRange())
+
+    draft.completions = true
+    textView.doCommand(by: #selector(NSTextView.moveUp(_:)))
+    textView.doCommand(by: #selector(NSTextView.moveDown(_:)))
+    textView.doCommand(by: #selector(NSTextView.cancelOperation(_:)))
+    textView.doCommand(by: #selector(NSTextView.insertNewline(_:)))
+    #expect(draft.slashKeys == [.up, .down, .escape, .choose])
+    #expect(draft.returns == 0)
+    #expect(draft.text == "/co")
+    #expect(textView.selectedRange().location == 3)
+    // Option-Return is a new line whatever is showing.
+    textView.doCommand(by: #selector(NSTextView.insertNewlineIgnoringFieldEditor(_:)))
+    #expect(draft.text == "/co\n")
+    #expect(draft.slashKeys.count == 4)
+
+    draft.completions = false
+    draft.slashKeys = []
+    textView.doCommand(by: #selector(NSTextView.moveUp(_:)))
+    textView.doCommand(by: #selector(NSTextView.insertNewline(_:)))
+    #expect(draft.slashKeys.isEmpty)
+    #expect(draft.returns == 1)
+    #expect(textView.selectedRange().location == 0)
   }
 
   /// Real key events, as the window delivers them: the text system (and any input method) turns

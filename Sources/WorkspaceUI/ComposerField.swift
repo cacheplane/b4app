@@ -18,6 +18,10 @@ struct ComposerField<Trailing: View>: View {
   /// Shift-, Option- and Control-Return add a line there. The phone's on-screen Return adds a line,
   /// as in Messages, and its round control sends.
   let onReturn: () -> Void
+  /// Opt-in: the keys the `/` completions take while they show (the arrows, Escape, and Return to
+  /// pick), offered to the caller before the editor or `onReturn` has them. False leaves the key
+  /// where it was going.
+  let onSlashKey: ((SlashKey) -> Bool)?
   let trailing: Trailing
   @Environment(\.dynamicTypeSize) private var typeSize
   #if os(iOS)
@@ -34,11 +38,13 @@ struct ComposerField<Trailing: View>: View {
 
   init(
     text: Binding<String>, placeholder: String, focused: FocusState<Bool>.Binding,
-    onReturn: @escaping () -> Void, @ViewBuilder trailing: () -> Trailing
+    onSlashKey: ((SlashKey) -> Bool)? = nil, onReturn: @escaping () -> Void,
+    @ViewBuilder trailing: () -> Trailing
   ) {
     _text = text
     self.placeholder = placeholder
     self.focused = focused
+    self.onSlashKey = onSlashKey
     self.onReturn = onReturn
     self.trailing = trailing()
   }
@@ -153,6 +159,10 @@ struct ComposerField<Trailing: View>: View {
       .foregroundStyle(LLA.Color.ink)
       .lineLimit(1...3)
       .focused(focused)
+      .onKeyPress(keys: [.upArrow, .downArrow, .escape, .return]) { press in
+        guard let onSlashKey, let key = SlashKey(press) else { return .ignored }
+        return onSlashKey(key) ? .handled : .ignored
+      }
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityLabel(placeholder)
       .accessibilityIdentifier("composer")
@@ -162,19 +172,21 @@ struct ComposerField<Trailing: View>: View {
     /// past that, so the field's background always holds the text; Return is the caller's. Its text
     /// starts at its leading edge, where the placeholder sits.
     private var editor: some View {
-      ComposerTextView(text: $text, label: placeholder, maxLines: 3, onReturn: onReturn)
-        .focused(focused)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .topLeading) {
-          if text.isEmpty {
-            Text(placeholder)
-              .font(LLAFont.composer)
-              .foregroundStyle(LLA.Color.muted)
-              .lineLimit(1)
-              .allowsHitTesting(false)
-              .accessibilityHidden(true)
-          }
+      ComposerTextView(
+        text: $text, label: placeholder, maxLines: 3, onSlashKey: onSlashKey, onReturn: onReturn
+      )
+      .focused(focused)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .overlay(alignment: .topLeading) {
+        if text.isEmpty {
+          Text(placeholder)
+            .font(LLAFont.composer)
+            .foregroundStyle(LLA.Color.muted)
+            .lineLimit(1)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
+      }
     }
   #endif
 }

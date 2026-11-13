@@ -22,6 +22,8 @@ import WorkspaceProtocol
     @FocusState private var focused: Bool
     @Namespace private var highlight
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// In a panel of its own the window draws the shadow.
+    @Environment(\.isInFloatingPanel) private var inPanel
 
     static let width: CGFloat = 420
     static let radius: CGFloat = 14
@@ -54,7 +56,9 @@ import WorkspaceProtocol
       .overlay(
         RoundedRectangle(cornerRadius: Self.radius, style: .continuous).strokeBorder(LLA.Color.rule)
       )
-      .llaPopoverShadow()
+      .shadow(
+        color: LLA.Color.ink.opacity(inPanel ? 0 : 0.12), radius: inPanel ? 0 : 18, x: 0, y: inPanel ? 0 : 8
+      )
       .onAppear {
         highlighted = PlacePalette.initialHighlight(rows)
         highlightedId = rows.indices.contains(highlighted) ? rows[highlighted].id : nil

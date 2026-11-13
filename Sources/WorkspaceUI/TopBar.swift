@@ -63,13 +63,13 @@
     /// label sat only on a wrapper outside the menu's own label; `TopBarLabel` sets this on the symbol.
     var accessibilityLabel: String { title }
 
-    /// The shortcut, declared once, by the app's File menu (so it works with the sidebar hidden and
+    /// The shortcut, from the command catalog, declared once by the app's File menu (so it works with the sidebar hidden and
     /// over the palette or the composer); the buttons only name it in their help.
     public var shortcut: KeyboardShortcut? {
       switch self {
       case .viewOptions: nil
-      case .search: KeyboardShortcut("k")
-      case .newThread: KeyboardShortcut("n")
+      case .search: CommandCatalog.definition(.find).shortcut
+      case .newThread: CommandCatalog.definition(.newThread).shortcut
       }
     }
 
@@ -99,7 +99,7 @@
           MoreMenu(model: model)
         case .search:
           Button {
-            model.showSearch = true
+            model.presentPalette(.find)
           } label: {
             TopBarLabel(button: button)
           }

@@ -101,7 +101,9 @@ public final class WorkspaceModel {
   public private(set) var link: LinkState = .connecting
   public private(set) var linkMessage: String?
   public private(set) var connections: [Connection] = []
-  public private(set) var threads: [ConversationThread] = [] {
+  /// Set only by the model itself; open to the module so a test can give a model a large list
+  /// without sending it through a transport.
+  public internal(set) var threads: [ConversationThread] = [] {
     didSet { holdSelectedState() }
   }
   public private(set) var diagnostics: DiagnosticsReport?
@@ -203,8 +205,18 @@ public final class WorkspaceModel {
   /// selected thread is not in the live list (unknown yet, or archived). Only the order uses it: the
   /// mark, the badge, and the arrivals keep the real state.
   private(set) var selectionHold: ThreadState?
-  /// The search palette (⌘K on the Mac, the list's search button on the iPhone).
+  /// The palette is up (⌘K and ⇧⌘P on the Mac, the list's search button on the iPhone).
   public var showSearch = false
+  /// What the palette opens for, and a counter that moves an open palette to it (`presentPalette`).
+  public internal(set) var palettePurpose: PalettePurpose = .find
+  public internal(set) var paletteRequest = 0
+  /// Counts each request to put the cursor back in the open thread's composer; `ComposerView`
+  /// focuses its field on a change.
+  public internal(set) var composerFocusRequest = 0
+  /// The last `composerFocusRequest` a composer answered. A request made while no composer is on
+  /// screen (the palette opened a thread whose view is still loading) is answered by the composer
+  /// that appears next.
+  @ObservationIgnored var answeredComposerFocusRequest = 0
   /// The profile menu above the sidebar's profile button.
   public var showProfileMenu = false
   public var connectionFilter: String? {
@@ -643,6 +655,9 @@ public final class WorkspaceModel {
       }
     }
   }
+
+  /// Moves the iPhone to the thread column (the root view watches `detailRequest`).
+  func showDetailColumn() { detailRequest += 1 }
 
   /// Open Settings, at `page` when given.
   public func openSettings(_ page: SettingsPage? = nil) {

@@ -92,6 +92,9 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
   /// The models the runtime offers for a new thread, read when the connection is inspected; nil for
   /// B4 and until the first inspection.
   public var models: [RuntimeModel]?
+  /// The commands the runtime runs from a message that starts with `/name`, as it last reported
+  /// them on the Mac that owns the connection; nil for B4 and until the runtime has reported.
+  public var commands: [RuntimeCommand]?
   public var status: ConnectionStatus
   public var authStatus: AuthStatus
   public var createdAt: String
@@ -102,6 +105,7 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     target: String, routeKey: String? = nil, b4Mode: B4Mode? = nil, localServerId: String? = nil,
     authReference: String? = nil, nativeScope: String? = nil, environmentId: String? = nil,
     ownerDeviceId: String? = nil, capabilities: Capabilities = .unverified, models: [RuntimeModel]? = nil,
+    commands: [RuntimeCommand]? = nil,
     status: ConnectionStatus = .unconfigured, authStatus: AuthStatus = .unknown,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
   ) {
@@ -120,6 +124,7 @@ public struct Connection: Codable, Sendable, Equatable, Identifiable {
     self.ownerDeviceId = ownerDeviceId
     self.capabilities = capabilities
     self.models = models
+    self.commands = commands
     self.status = status
     self.authStatus = authStatus
     self.createdAt = createdAt
