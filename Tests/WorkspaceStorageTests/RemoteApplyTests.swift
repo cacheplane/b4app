@@ -331,6 +331,30 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
   /// The hub, not a Mac, is the view settings row's source of truth, so another Mac's insert and update
   /// of it apply here (by attribution and by clock), while that Mac's changes to any other table are
   /// still its own history and skipped.
+  /// `density` merges by clock like the row's other columns, from an insert or an update.
+  @Test func remoteDensityMergesByClock() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    let at = epochMillis() - 10_000
+    let created = try db.applyRemote(
+      [
+        remote(
+          phone, stamp(at, phone), "viewSettings", "view", "insert",
+          value: ["id": "view", "density": "dense"])
+      ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 1)
+    #expect(created.applied == 1 && created.touchedViewSettings)
+    #expect(try db.viewSettings() == ViewSettings(density: .dense))
+    #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "density") == stamp(at, phone))
+    let updated = try db.applyRemote(
+      [
+        remote(phone, stamp(at + 1, phone), "viewSettings", "view", column: "density", value: "normal"),
+        remote(phone, stamp(at - 1, phone), "viewSettings", "view", column: "density", value: "dense"),
+      ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 2)
+    #expect(updated.applied == 1 && updated.skipped == 1)
+    #expect(try db.viewSettings().density == .normal)
+    #expect(try db.changes(after: 0).allSatisfy { $0.table != "viewSettings" })
+  }
+
   @Test func viewSettingsFromAnotherMacApplyWhileItsOtherChangesAreSkipped() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)

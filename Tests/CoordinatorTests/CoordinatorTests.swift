@@ -150,8 +150,13 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
       options: RequestOptions(operationId: "view-3"))
     #expect(same == both)
     let last = try await client.request(
-      ViewSettingsSet.self, ViewSettingsSet.Params(quietThreads: .shown),
+      ViewSettingsSet.self, ViewSettingsSet.Params(quietThreads: .shown, density: .dense),
       options: RequestOptions(operationId: "view-4"))
+    #expect(
+      last
+        == ViewSettings(
+          arrangement: .byEnvironment, quietThreads: .shown, showArchived: true, density: .dense))
+    #expect(try await client.request(ViewSettingsGet.self, EmptyParams()) == last)
 
     var iterator = events.makeAsyncIterator()
     var published: [ViewSettings] = []

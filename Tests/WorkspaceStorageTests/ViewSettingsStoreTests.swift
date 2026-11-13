@@ -138,6 +138,97 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
       ])
   }
 
+  @Test func densityIsStoredAndReadBack() throws {
+    let db = try WorkspaceDatabase.temporary()
+    #expect(try db.setViewSettings(density: .dense) == ViewSettings(density: .dense))
+    #expect(try db.viewSettings() == ViewSettings(density: .dense))
+    #expect(try storedRow(db)?["density"] == .some("dense"))
+    let inserted = try viewChanges(db)
+    #expect(inserted.count == 1)
+    let insert = try #require(inserted.first)
+    #expect(insert.op == "insert" && insert.value?["density"] == "dense")
+    #expect(insert.value?["quietThreads"] == nil)
+    #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "density") == insert.hlc)
+    #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "quietThreads") == nil)
+  }
+
+  /// A row an older build wrote (`tiny`, no density) that the migration has not seen, such as one a
+  /// remote change brought in: setting the sidebar alone keeps the dense rows `tiny` implied.
+  @Test func aSidebarChangeOnAnUnconvertedRowKeepsDense() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try db.write { c in
+      try c.execute("SET LOCAL b4app.replaying = 'on'")
+      try c.execute("INSERT INTO \"viewSettings\" (\"id\", \"quietThreads\") VALUES ('view', 'tiny')")
+    }
+    #expect(try db.viewSettings() == ViewSettings(quietThreads: .shown, density: .dense))
+    let after = try db.setViewSettings(quietThreads: .collapsed)
+    #expect(after == ViewSettings(quietThreads: .collapsed, density: .dense))
+    #expect(try storedRow(db)?["density"] == .some("dense"))
+    #expect(try storedRow(db)?["quietThreads"] == .some("collapsed"))
+    #expect(try db.viewSettings() == after)
+    // A density given with it wins over the implied one.
+    let fresh = try WorkspaceDatabase.temporary()
+    try fresh.write { c in
+      try c.execute("SET LOCAL b4app.replaying = 'on'")
+      try c.execute("INSERT INTO \"viewSettings\" (\"id\", \"quietThreads\") VALUES ('view', 'tiny')")
+    }
+    #expect(
+      try fresh.setViewSettings(quietThreads: .hidden, density: .normal)
+        == ViewSettings(quietThreads: .hidden, density: .normal))
+    #expect(try storedRow(fresh)?["density"] == .some("normal"))
+  }
+
+  /// Migration 0014 rewrites the old sidebar values into `quietThreads` and `density`, logging and
+  /// clocking nothing.
+  @Test(arguments: [
+    (old: "small" as String?, quietThreads: "shown" as String?, density: "normal" as String?),
+    (old: "tiny", quietThreads: "shown", density: "dense"),
+    (old: "collapsed", quietThreads: "collapsed", density: "normal"),
+    (old: "hidden", quietThreads: "hidden", density: "normal"),
+    (old: nil, quietThreads: nil, density: nil),
+  ])
+  func theMigrationConvertsEachOldValue(
+    _ row: (old: String?, quietThreads: String?, density: String?)
+  ) throws {
+    let endpoint = try EphemeralPostgres.endpoint()
+    let lib = try LibPQ.load(binDir: endpoint.binDir!)
+    let raw = try PostgresConnection(
+      lib: lib,
+      connectionString:
+        "host=\(endpoint.socketDir) port=\(endpoint.port) dbname=\(endpoint.database) user=\(NSUserName())")
+    _ = try Migrator.applied(raw)
+    for file in try Migrator.files() where file.name < "0014" {
+      try raw.execute(file.sql)
+      try raw.execute(
+        "INSERT INTO \"schemaMigrations\" (\"name\", \"appliedAt\") VALUES ($1, 'then')", [file.name])
+    }
+    // The row an older build wrote, logged and clocked as it would have been.
+    try raw.execute(
+      "INSERT INTO \"viewSettings\" (\"id\", \"arrangement\", \"quietThreads\") VALUES ('view', 'byEnvironment', $1)",
+      [row.old])
+    func state() throws -> (changes: String?, clocks: String?) {
+      let changes = try raw.execute("SELECT count(*)::text AS n FROM \"changes\"").rows.first?.text("n")
+      let clocks = try raw.execute(
+        "SELECT string_agg(\"table\" || '.' || \"rowId\" || '.' || \"column\" || '=' || \"hlc\", ',' ORDER BY \"table\", \"rowId\", \"column\") AS c FROM \"columnClocks\""
+      ).rows.first?.text("c")
+      return (changes, clocks)
+    }
+    let before = try state()
+    #expect(before.changes == "1")
+
+    let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+    #expect(try db.appliedMigrations().last == "0014_density")
+    let stored = try #require(try storedRow(db))
+    #expect(stored["quietThreads"] == .some(row.quietThreads))
+    #expect(stored["density"] == .some(row.density))
+    #expect(stored["arrangement"] == .some("byEnvironment"))
+    let after = try state()
+    #expect(after.changes == before.changes && after.clocks == before.clocks)
+    // The migration leaves replaying off: a later write is logged.
+    _ = try db.setViewSettings(showArchived: true)
+    #expect(try viewChanges(db).contains { $0.op == "update" && $0.column == "showArchived" })
+  }
+
   @Test func viewSettingsSurviveBackupAndRestore() throws {
     let source = try WorkspaceDatabase.temporary()
     let set = try source.setViewSettings(
