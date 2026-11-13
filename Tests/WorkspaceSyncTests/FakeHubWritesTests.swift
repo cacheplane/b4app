@@ -51,7 +51,9 @@ import WorkspaceProtocol
       // The view settings row, which a phone may insert and update, as it may a draft.
       SyncChange(
         deviceSeq: 8, wall: 8, table: "viewSettings", rowId: "view", op: "insert", value: .object([:])),
-      update(9, table: "viewSettings", column: "quietThreads"),
+      SyncChange(
+        deviceSeq: 9, wall: 9, table: "viewSettings", rowId: "view", op: "update", column: "quietThreads",
+        value: "x"),
     ]
 
     let response = try await phone.push(batch)
@@ -62,6 +64,26 @@ import WorkspaceProtocol
     #expect(response.rejected.allSatisfy { $0.code == "column_not_writable" })
     // A rejected change is not in the feed.
     #expect(await phone.stored.map(\.deviceSeq) == [1, 3, 6, 8, 9])
+  }
+
+  @Test func aSettingsChangeUnderAnotherRowIdIsRefused() async throws {
+    for platform in ["macos", "ios"] {
+      let device = try await fake(platform: platform)
+      let response = try await device.push([
+        SyncChange(
+          deviceSeq: 1, wall: 1, table: "viewSettings", rowId: "other", op: "insert", value: .object([:]))
+      ])
+      #expect(response.rejected == [RejectedChange(deviceSeq: 1, code: "invalid_row_id")])
+      #expect(await device.stored.filter { $0.table == "viewSettings" }.isEmpty)
+
+      // The row's own id is accepted.
+      let accepted = try await device.push([
+        SyncChange(
+          deviceSeq: 2, wall: 2, table: "viewSettings", rowId: "view", op: "insert", value: .object([:]))
+      ])
+      #expect(accepted.rejected.isEmpty)
+      #expect(await device.stored.filter { $0.table == "viewSettings" }.map(\.rowId) == ["view"])
+    }
   }
 
   @Test func aMacMayWriteAnything() async throws {

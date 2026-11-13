@@ -18,7 +18,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(status.pending, 0);
-    assert_eq!(status.applied, (1..=19).collect::<Vec<i64>>());
+    assert_eq!(status.applied, (1..=20).collect::<Vec<i64>>());
 
     let app = Db::connect(&app_url).await.unwrap();
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orgs")
@@ -30,7 +30,7 @@ async fn migrate_is_idempotent_and_provisions_the_app_role(pool: PgPool) {
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(migrations, 19);
+    assert_eq!(migrations, 20);
     app.pool.close().await;
 
     let row =
@@ -544,6 +544,12 @@ async fn the_passkey_placeholder_name_is_cleared(pool: PgPool) {
 /// Applies `0001`..`0017` from the migrations directory to `pool`, as the ledger of a hub from
 /// before the environments rename.
 async fn migrate_to_0017(pool: &PgPool) {
+    migrate_before(pool, "0018").await;
+}
+
+/// Applies every migration whose file name sorts before `first_excluded` (a version prefix such as
+/// `0020`) to `pool`, as the ledger of a hub from before that migration.
+async fn migrate_before(pool: &PgPool, first_excluded: &str) {
     use sqlx::migrate::Migrator;
 
     struct Scratch(std::path::PathBuf);
@@ -561,7 +567,7 @@ async fn migrate_to_0017(pool: &PgPool) {
     for entry in std::fs::read_dir(&source).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_str().unwrap().to_string();
-        if name.as_str() < "0018" && name.ends_with(".sql") {
+        if name.as_str() < first_excluded && name.ends_with(".sql") {
             std::fs::copy(&path, scratch.0.join(&name)).unwrap();
         }
     }
@@ -832,4 +838,234 @@ END $$;
     drop(conn);
     pool.close().await;
     outcome.unwrap();
+}
+
+/// `0020_user_settings_rows.sql` moves each settings row, with its clocks, to the id that names
+/// its user, drops rows no device can reach, and leaves the log alone; a change pushed afterwards
+/// lands on the moved row and still merges against the clock that came with it.
+#[sqlx::test(migrations = false)]
+async fn settings_rows_move_to_their_users(pool: PgPool) {
+    use b4hub_core::change::{Change, ChangeOp};
+    use b4hub_db::changes;
+    use b4hub_db::devices::{AuthedDevice, Platform};
+    use serde_json::json;
+
+    // A typical owner is not a superuser, so lifting forced row security is what lets the
+    // migration touch the rows; the tables are migrated by that owner, and the rows are seeded
+    // by the superuser pool, which row security does not bind.
+    for statement in [
+        "DO $$ BEGIN CREATE ROLE b4hub_test_owner LOGIN CREATEROLE PASSWORD 'owner-pw'; \
+         EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$",
+        "DO $$ BEGIN CREATE ROLE b4hub_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'pw-test'; \
+         EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$",
+        "GRANT b4hub_app TO b4hub_test_owner WITH ADMIN OPTION",
+        "GRANT ALL ON SCHEMA public TO b4hub_test_owner",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    let owner_url = url_as(&pool, "b4hub_test_owner", "owner-pw");
+    let owner_pool = PgPool::connect(&owner_url).await.unwrap();
+    migrate_before(&owner_pool, "0020").await;
+    owner_pool.close().await;
+
+    async fn seed_org(pool: &PgPool, slug: &str) -> (orgs::SeedOutcome, sqlx::types::Uuid) {
+        let seeded = orgs::seed(
+            &Db { pool: pool.clone() },
+            slug,
+            slug,
+            slug,
+            slug,
+            &format!("{slug}@example.test"),
+        )
+        .await
+        .unwrap();
+        let device: sqlx::types::Uuid = sqlx::query_scalar(
+            "INSERT INTO devices (id, org_id, user_id, name, platform) \
+             VALUES (gen_random_uuid(), $1, $2, 'Mac', 'macos') RETURNING id",
+        )
+        .bind(seeded.org_id)
+        .bind(seeded.user_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        (seeded, device)
+    }
+    let (seeded, device) = seed_org(&pool, "acme").await;
+    let seeded_clock = format!("000001000000-0000-{device}");
+    for statement in [
+        r#"INSERT INTO "viewSettings" ("id", "arrangement", "quietThreads", org_id, user_id, device_id, owner_device_id)
+           VALUES ('view', 'byEnvironment', 'tiny', $1, $2, $3, $3),
+                  ('stray', 'needsYouFirst', 'small', $1, $2, $3, $3)"#,
+        r#"INSERT INTO column_clocks (org_id, "table", row_id, "column", hlc)
+           VALUES ($1, 'viewSettings', 'view', 'quietThreads', $4),
+                  ($1, 'viewSettings', 'stray', 'arrangement', $4)"#,
+        r#"INSERT INTO changes (org_id, device_id, device_seq, user_id, wall, "table", row_id, op, "column", value, hlc)
+           VALUES ($1, $3, 1, $2, 1, 'viewSettings', 'view', 'insert', NULL,
+                   '{"id": "view", "arrangement": "byEnvironment", "quietThreads": "tiny"}', $4)"#,
+    ] {
+        let mut query = sqlx::query(statement)
+            .bind(seeded.org_id)
+            .bind(seeded.user_id)
+            .bind(device);
+        if statement.contains("$4") {
+            query = query.bind(&seeded_clock);
+        }
+        query.execute(&pool).await.unwrap();
+    }
+    // A second org with its own row and clock, which must end on its own user's id and clock.
+    let (other, other_device) = seed_org(&pool, "beta").await;
+    let other_clock = format!("000003000000-0000-{other_device}");
+    sqlx::query(
+        r#"INSERT INTO "viewSettings" ("id", "arrangement", org_id, user_id, device_id, owner_device_id)
+           VALUES ('view', 'needsYouFirst', $1, $2, $3, $3)"#,
+    )
+    .bind(other.org_id)
+    .bind(other.user_id)
+    .bind(other_device)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO column_clocks (org_id, "table", row_id, "column", hlc)
+           VALUES ($1, 'viewSettings', 'view', 'arrangement', $2)"#,
+    )
+    .bind(other.org_id)
+    .bind(&other_clock)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // A third org holds a clock under `view` but no row (an update that reached a missing row).
+    let (orphan, _) = seed_org(&pool, "gamma").await;
+    sqlx::query(
+        r#"INSERT INTO column_clocks (org_id, "table", row_id, "column", hlc)
+           VALUES ($1, 'viewSettings', 'view', 'arrangement', $2)"#,
+    )
+    .bind(orphan.org_id)
+    .bind(&other_clock)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The full migrator, as the owner, applies 0020 (and provisions the application role).
+    let app_url = app_url(&pool, "pw-test");
+    b4hub_db::migrate::run(&owner_url, &app_url).await.unwrap();
+
+    let moved = format!("view:{}", seeded.user_id);
+    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT "id", "arrangement", "quietThreads" FROM "viewSettings" WHERE org_id = $1"#,
+    )
+    .bind(seeded.org_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![(
+            moved.clone(),
+            Some("byEnvironment".to_string()),
+            Some("tiny".to_string())
+        )]
+    );
+    let clocks_of = |org_id: sqlx::types::Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, String)>(
+                r#"SELECT row_id, hlc FROM column_clocks
+                   WHERE "table" = 'viewSettings' AND org_id = $1"#,
+            )
+            .bind(org_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        clocks_of(seeded.org_id).await,
+        vec![(moved.clone(), seeded_clock.clone())]
+    );
+    // The other org's row and clock end on its own user's id; the orphan clock is gone.
+    let other_rows: Vec<String> =
+        sqlx::query_scalar(r#"SELECT "id" FROM "viewSettings" WHERE org_id = $1"#)
+            .bind(other.org_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(other_rows, vec![format!("view:{}", other.user_id)]);
+    assert_eq!(
+        clocks_of(other.org_id).await,
+        vec![(format!("view:{}", other.user_id), other_clock.clone())]
+    );
+    assert!(clocks_of(orphan.org_id).await.is_empty());
+    assert_eq!(
+        count(
+            &pool,
+            r#"SELECT count(*) FROM changes WHERE "table" = 'viewSettings' AND row_id = 'view'"#
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        count(
+            &pool,
+            r#"SELECT count(*) FROM pg_class
+               WHERE relname IN ('viewSettings', 'column_clocks') AND relforcerowsecurity"#
+        )
+        .await,
+        2
+    );
+
+    // A change pushed afterwards merges against the clock that came with the row.
+    let app = Db::connect(&app_url).await.unwrap();
+    let who = AuthedDevice {
+        org_id: seeded.org_id,
+        user_id: seeded.user_id,
+        device_id: device,
+        platform: Platform::parse("macos").unwrap(),
+    };
+    let quiet = |seq: i64, clock: &str, value: &str| Change {
+        device_seq: seq,
+        wall: 1_761_900_000_000 + seq,
+        table: "viewSettings".into(),
+        row_id: "view".into(),
+        op: ChangeOp::Update,
+        column: Some("quietThreads".into()),
+        value: Some(json!(value)),
+        hlc: Some(format!("{clock}-0000-{device}")),
+    };
+    let quiet_threads = || async {
+        let mut tx = app.tenant_tx(seeded.org_id).await.unwrap();
+        let rows: Vec<(String, Option<String>)> =
+            sqlx::query_as(r#"SELECT "id", "quietThreads" FROM "viewSettings""#)
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        rows
+    };
+    changes::push(&app, &who, &[quiet(2, "000000000001", "hidden")])
+        .await
+        .unwrap();
+    assert_eq!(
+        quiet_threads().await,
+        vec![(moved.clone(), Some("tiny".to_string()))]
+    );
+    changes::push(&app, &who, &[quiet(3, "000002100000", "hidden")])
+        .await
+        .unwrap();
+    assert_eq!(
+        quiet_threads().await,
+        vec![(moved.clone(), Some("hidden".to_string()))]
+    );
+    let pulled = changes::pull(&app, &who, 0, 1000).await.unwrap();
+    let ids: Vec<(&str, &str)> = pulled
+        .changes
+        .iter()
+        .map(|change| (change.table.as_str(), change.row_id.as_str()))
+        .collect();
+    assert_eq!(ids, vec![("viewSettings", "view"); 3]);
+    // The replay ends on the value the migrated row holds.
+    assert_eq!(
+        pulled.changes.last().unwrap().value,
+        Some(serde_json::json!("hidden"))
+    );
 }
