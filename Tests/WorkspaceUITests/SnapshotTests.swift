@@ -496,10 +496,8 @@ struct SnapshotShell: View {
   }
 
   /// Dense on the Mac, rendered at Shown, Collapsed opened with a quiet thread selected, Hidden opened,
-  /// and "By environment". The row heights are asserted at the seam the views draw from
-  /// (`ThreadListView.tiny` with the model's `tightQuietRows`): an offscreen render has no accessibility
-  /// tree to read row frames from. Quiet rows are `threadRowTiny` (20 pt), the top list and the archived
-  /// rows `threadRow` (28 pt).
+  /// and "By environment", with the rows each place holds and the size `ThreadListView.tiny` gives it.
+  /// The drawn heights themselves are measured by `ThreadListHeightTests`.
   @Test func denseSidebarDrawsQuietRowsTight() async throws {
     let transport = ScriptedTransport()
     var archived = ListFixture.thread(
@@ -565,7 +563,7 @@ struct SnapshotShell: View {
     #expect(height(.selected) == 20)
     model.selectedThreadId = nil
 
-    // By environment draws its groups apart, every row at 28 pt (`EnvironmentGroupsView`).
+    // By environment, rendered only; `ThreadListHeightTests` measures that its rows keep their height.
     try await show(ViewSettings(arrangement: .byEnvironment, density: .dense))
     try await render("macSidebarDense-byEnvironment", size: size) { list(open: false) }
 
