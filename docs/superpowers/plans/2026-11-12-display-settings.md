@@ -4,7 +4,7 @@
 
 **Goal:** Split today's four-way "Small, Tiny, Collapsed, Hidden" into a synced density setting (normal or dense, a "Dense" switch on a new Settings → Display page) and a three-way sidebar setting (Shown, Collapsed, Hidden), with the Mac's sidebar drawing quiet rows tight when dense.
 
-**Architecture:** The synced `viewSettings` row gains one text column, `density` (`normal`, `dense`). The existing `quietThreads` column is kept and now holds `shown`, `collapsed` or `hidden`. `ViewSettings` reads the old values leniently (`tiny` with no density is dense and shown; `small` is shown), and each store's migration also converts its stored row, so nothing depends on the order the hub, the Mac and the phone are updated. The list layout stops carrying row size; the views take it from the model.
+**Architecture:** The synced `viewSettings` row gains one text column, `density` (`normal`, `dense`). The existing `quietThreads` column is kept and now holds `shown`, `collapsed` or `hidden`. `ViewSettings` reads the old values leniently (`tiny` with no density is dense and shown; `small` is shown), and each store's migration also converts its stored row, so a device may be updated before or after another. The hub goes first for each flavour: a hub without the column does not store a pushed density. The list layout stops carrying row size; the views take it from the model.
 
 **Tech Stack:** Swift (`WorkspaceProtocol`, `WorkspaceStorage`, `Coordinator`, `WorkspaceMirror`, `WorkspaceUI`), PostgreSQL migrations for the coordinator store and the hub, SQLite for the mirror, Rust for the hub.
 

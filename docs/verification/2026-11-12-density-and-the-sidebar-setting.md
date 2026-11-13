@@ -19,7 +19,7 @@ The tests that carry the change:
 - Hub `tests/migrate.rs` `density_is_split_from_the_sidebar_setting` (run as the non-superuser owner, five organisations, one table left unforced to show each row-security flag is put back as found; a carried clock still beats an older write) and `tests/changes.rs` `a_phone_may_write_density`.
 - `ThreadListHeightTests`: the real Mac list is measured at normal and at dense. Quiet rows, the rows opened from Collapsed and from Hidden, and the selected row beside a stow are 8 pt shorter each; the top list, "By environment", archived rows and the "N more" row are the same height. Swapping two row places in the view, or dropping the size at one call site, was tried and failed these tests.
 - `ViewSettingsModelTests`: `setDensity` shows at once, sends only `density`, is put back when refused, and survives a slow read; a phone model at dense has no tight rows.
-- `ListSnapshotTests` (opt-in, `B4APP_SNAPSHOT_DIR`): the Display page and the dense sidebar in four arrangements were rendered in light and dark and looked at: quiet rows are tight, top and archived rows are not, the switch and its description draw.
+- `ListSnapshotTests` (it runs by default; writing its images is opt-in, `B4APP_SNAPSHOT_DIR`): the Display page and the dense sidebar in four arrangements were rendered in light and dark and looked at: quiet rows are tight, top and archived rows are not, the switch and its description draw.
 
 Failed on the way, and what was done:
 
