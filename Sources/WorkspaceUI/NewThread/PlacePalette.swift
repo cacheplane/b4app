@@ -17,6 +17,8 @@ enum PlacePalette {
   struct Row: Equatable, Identifiable {
     var id: String
     var environmentId: String
+    /// The environment's name: a folder's row is read out with it.
+    var environmentName: String
     var title: String
     /// The folder choosing this row starts in; nil for an environment with no folder.
     var folder: String?
@@ -50,7 +52,8 @@ enum PlacePalette {
       }()
       rows.append(
         Row(
-          id: environment.id, environmentId: environment.id, title: name, folder: first, path: first,
+          id: environment.id, environmentId: environment.id, environmentName: name, title: name,
+          folder: first, path: first,
           indented: false,
           // With several folders the check sits on the folder, unless none is chosen yet.
           checked: current != nil && (!several || current == .some(nil))))
@@ -58,7 +61,7 @@ enum PlacePalette {
       for folder in folders {
         rows.append(
           Row(
-            id: "\(environment.id):\(folder.path)", environmentId: environment.id,
+            id: "\(environment.id):\(folder.path)", environmentId: environment.id, environmentName: name,
             title: ComposerPickerRow.folderName(folder.path), folder: folder.path, path: folder.path,
             indented: true, checked: current == .some(folder.path)))
       }
@@ -85,6 +88,13 @@ enum PlacePalette {
   /// The row highlighted when the palette opens or its filter changes: the checked one, else the first.
   static func initialHighlight(_ rows: [Row]) -> Int {
     rows.firstIndex(where: \.checked) ?? 0
+  }
+
+  /// The highlight after the rows changed under an open palette: on the row it was on (`id`), wherever
+  /// that row now is; if the row is gone, where it was, kept inside the list.
+  static func highlight(_ index: Int, keeping id: String?, in rows: [Row]) -> Int {
+    if let id, let found = rows.firstIndex(where: { $0.id == id }) { return found }
+    return step(index, by: 0, count: rows.count)
   }
 
   /// Move a highlight by `delta`, staying inside `0..<count`.

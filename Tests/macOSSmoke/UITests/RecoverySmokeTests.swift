@@ -63,7 +63,8 @@ final class RecoverySmokeTests: XCTestCase {
     let composer = app.textViews["composer"]
     try requireElement(composer, in: app)
     XCTAssertEqual(composer.value as? String, SmokeFixture.draft)
-    XCTAssertTrue(app.staticTexts["Cached transcript remains readable."].exists)
+    // The transcript draws a moment after the composer: wait for it, as for the other elements.
+    try requireElement(app.staticTexts["Cached transcript remains readable."], in: app)
     let send = app.buttons["send"]
     XCTAssertTrue(send.isEnabled)
     XCTAssertTrue(send.isHittable)

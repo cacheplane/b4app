@@ -167,6 +167,10 @@ public final class WorkspaceModel {
   /// Counts every change to `viewSettings` (a set, an event, a read, a sign-out), so a read that was out
   /// meanwhile knows its row is older than what is shown.
   @ObservationIgnored private var viewSettingsChanges = 0
+  /// Sets that are out and unanswered. A read that answers meanwhile may carry the row from before
+  /// them, so it is not shown; `viewSettingsReadOwed` has it made again once they have settled.
+  @ObservationIgnored private var viewSettingsSetsOut = 0
+  @ObservationIgnored private var viewSettingsReadOwed = false
   /// The Settings page to show, and a counter the root view watches to open Settings (a window on the
   /// Mac, a sheet on the iPhone); a counter so asking twice opens it twice.
   public var settingsPage: SettingsPage = SettingsPage.allCases[0]
@@ -1195,26 +1199,50 @@ public final class WorkspaceModel {
     var shown = viewSettings
     shown[keyPath: field] = value
     showViewSettings(shown)
+    viewSettingsSetsOut += 1
     let stored = await perform {
       try await $0.request(ViewSettingsSet.self, params, options: Self.mutation())
     }
-    guard generation == accountGeneration, viewSettings[keyPath: field] == value else { return }
-    var settled = viewSettings
-    settled[keyPath: field] = stored?[keyPath: field] ?? old
-    showViewSettings(settled)
+    // The account ended meanwhile: its counters were reset with it, and this answer is nobody's.
+    guard generation == accountGeneration else { return }
+    viewSettingsSetsOut -= 1
+    if viewSettings[keyPath: field] == value {
+      var settled = viewSettings
+      settled[keyPath: field] = stored?[keyPath: field] ?? old
+      showViewSettings(settled)
+    }
+    // A read answered while this was out and was held back: make it now.
+    if viewSettingsSetsOut == 0, viewSettingsReadOwed {
+      viewSettingsReadOwed = false
+      await refreshViewSettings()
+    }
   }
 
   /// Read the account's view settings, with each snapshot (connect, reconnect, sign-in, desync). A read
   /// that fails keeps what is shown (the defaults, on a first connect) and never holds the list back.
-  /// A read that a set or an event overtook is dropped: its row is older than what they showed.
+  /// A read that a set or an event overtook is not shown, since its row is older than what they
+  /// showed; it is made again (a few times at most), so the fields they did not touch still load. A read
+  /// that answers while a set is out waits for the set and is made again then.
+  /// After the last try an overtaken read is given up: the next snapshot reads again.
   func refreshViewSettings() async {
     let generation = accountGeneration
-    let changes = viewSettingsChanges
-    guard let client, let settings = try? await client.request(ViewSettingsGet.self, EmptyParams()),
-      generation == accountGeneration, changes == viewSettingsChanges
-    else { return }
-    showViewSettings(settings)
+    for _ in 0..<Self.viewSettingsReadTries {
+      let changes = viewSettingsChanges
+      guard let client, let settings = try? await client.request(ViewSettingsGet.self, EmptyParams()),
+        generation == accountGeneration
+      else { return }
+      if viewSettingsSetsOut > 0 {
+        viewSettingsReadOwed = true
+        return
+      }
+      if changes == viewSettingsChanges {
+        showViewSettings(settings)
+        return
+      }
+    }
   }
+
+  private static let viewSettingsReadTries = 3
 
   /// A new arrangement, or archived threads shown or hidden, is another list rather than a changed one:
   /// the arrival tracker starts afresh from it, as on a filter change.
@@ -1799,6 +1827,8 @@ public final class WorkspaceModel {
     forgetNewThreadDraft()
     connectionFilter = nil
     showViewSettings(ViewSettings())
+    viewSettingsSetsOut = 0
+    viewSettingsReadOwed = false
     pendingForceStop = nil
     diagnosticsError = nil
     connections = []

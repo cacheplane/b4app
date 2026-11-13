@@ -36,7 +36,23 @@ func removeScratch(_ cluster: PostgresCluster) {
       PostgresLocator.binDir(
         environment: [PostgresLocator.environmentVariable: fetchedPostgresBin], executableURL: nil)
         == fetchedPostgresBin)
-    #expect(PostgresLocator.binDir(environment: ["HOME": "/nonexistent"], executableURL: nil) == nil)
+    // With nothing beside the executable and no installed app, nothing is found. The Applications
+    // folders are the test's own, so an app installed on this Mac cannot answer.
+    let applications = NSTemporaryDirectory() + "b4pg-apps-\(UUID().uuidString.prefix(6))"
+    defer { try? FileManager.default.removeItem(atPath: applications) }
+    #expect(
+      PostgresLocator.binDir(
+        environment: ["HOME": "/nonexistent"], executableURL: nil, applications: [applications])
+        == nil)
+    // An app installed there, with the binaries in its SharedSupport, is found.
+    let installed = (applications as NSString).appendingPathComponent(PostgresLocator.installedBin)
+    try? FileManager.default.createDirectory(
+      atPath: (installed as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+    try? FileManager.default.createSymbolicLink(atPath: installed, withDestinationPath: fetchedPostgresBin)
+    #expect(
+      PostgresLocator.binDir(
+        environment: ["HOME": "/nonexistent"], executableURL: nil, applications: [applications])
+        == installed)
   }
 
   @Test func initializesStartsAdoptsAndStops() async throws {
