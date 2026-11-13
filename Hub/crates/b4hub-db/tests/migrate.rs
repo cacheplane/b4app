@@ -850,26 +850,47 @@ async fn settings_rows_move_to_their_users(pool: PgPool) {
     use b4hub_db::devices::{AuthedDevice, Platform};
     use serde_json::json;
 
-    migrate_before(&pool, "0021").await;
-    let seeded = orgs::seed(
-        &Db { pool: pool.clone() },
-        "acme",
-        "Acme",
-        "ann",
-        "Ann",
-        "ann@example.test",
-    )
-    .await
-    .unwrap();
-    let device: sqlx::types::Uuid = sqlx::query_scalar(
-        "INSERT INTO devices (id, org_id, user_id, name, platform) \
-         VALUES (gen_random_uuid(), $1, $2, 'Mac', 'macos') RETURNING id",
-    )
-    .bind(seeded.org_id)
-    .bind(seeded.user_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    // A typical owner is not a superuser, so lifting forced row security is what lets the
+    // migration touch the rows; the tables are migrated by that owner, and the rows are seeded
+    // by the superuser pool, which row security does not bind.
+    for statement in [
+        "DO $$ BEGIN CREATE ROLE b4hub_test_owner LOGIN CREATEROLE PASSWORD 'owner-pw'; \
+         EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$",
+        "DO $$ BEGIN CREATE ROLE b4hub_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'pw-test'; \
+         EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$",
+        "GRANT b4hub_app TO b4hub_test_owner WITH ADMIN OPTION",
+        "GRANT ALL ON SCHEMA public TO b4hub_test_owner",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+    let owner_url = url_as(&pool, "b4hub_test_owner", "owner-pw");
+    let owner_pool = PgPool::connect(&owner_url).await.unwrap();
+    migrate_before(&owner_pool, "0021").await;
+    owner_pool.close().await;
+
+    async fn seed_org(pool: &PgPool, slug: &str) -> (orgs::SeedOutcome, sqlx::types::Uuid) {
+        let seeded = orgs::seed(
+            &Db { pool: pool.clone() },
+            slug,
+            slug,
+            slug,
+            slug,
+            &format!("{slug}@example.test"),
+        )
+        .await
+        .unwrap();
+        let device: sqlx::types::Uuid = sqlx::query_scalar(
+            "INSERT INTO devices (id, org_id, user_id, name, platform) \
+             VALUES (gen_random_uuid(), $1, $2, 'Mac', 'macos') RETURNING id",
+        )
+        .bind(seeded.org_id)
+        .bind(seeded.user_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        (seeded, device)
+    }
+    let (seeded, device) = seed_org(&pool, "acme").await;
     let seeded_clock = format!("000001000000-0000-{device}");
     for statement in [
         r#"INSERT INTO "viewSettings" ("id", "arrangement", "quietThreads", org_id, user_id, device_id, owner_device_id)
@@ -891,18 +912,52 @@ async fn settings_rows_move_to_their_users(pool: PgPool) {
         }
         query.execute(&pool).await.unwrap();
     }
+    // A second org with its own row and clock, which must end on its own user's id and clock.
+    let (other, other_device) = seed_org(&pool, "beta").await;
+    let other_clock = format!("000003000000-0000-{other_device}");
+    sqlx::query(
+        r#"INSERT INTO "viewSettings" ("id", "arrangement", org_id, user_id, device_id, owner_device_id)
+           VALUES ('view', 'needsYouFirst', $1, $2, $3, $3)"#,
+    )
+    .bind(other.org_id)
+    .bind(other.user_id)
+    .bind(other_device)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        r#"INSERT INTO column_clocks (org_id, "table", row_id, "column", hlc)
+           VALUES ($1, 'viewSettings', 'view', 'arrangement', $2)"#,
+    )
+    .bind(other.org_id)
+    .bind(&other_clock)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // A third org holds a clock under `view` but no row (an update that reached a missing row).
+    let (orphan, _) = seed_org(&pool, "gamma").await;
+    sqlx::query(
+        r#"INSERT INTO column_clocks (org_id, "table", row_id, "column", hlc)
+           VALUES ($1, 'viewSettings', 'view', 'arrangement', $2)"#,
+    )
+    .bind(orphan.org_id)
+    .bind(&other_clock)
+    .execute(&pool)
+    .await
+    .unwrap();
 
-    // The full migrator applies 0021 (and provisions the application role).
-    let admin_url = admin_url(&pool);
-    let app_url = app_url(&pool, common::APP_PASSWORD);
-    b4hub_db::migrate::run(&admin_url, &app_url).await.unwrap();
+    // The full migrator, as the owner, applies 0021 (and provisions the application role).
+    let app_url = app_url(&pool, "pw-test");
+    b4hub_db::migrate::run(&owner_url, &app_url).await.unwrap();
 
     let moved = format!("view:{}", seeded.user_id);
-    let rows: Vec<(String, Option<String>, Option<String>)> =
-        sqlx::query_as(r#"SELECT "id", "arrangement", "quietThreads" FROM "viewSettings""#)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT "id", "arrangement", "quietThreads" FROM "viewSettings" WHERE org_id = $1"#,
+    )
+    .bind(seeded.org_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         rows,
         vec![(
@@ -911,12 +966,36 @@ async fn settings_rows_move_to_their_users(pool: PgPool) {
             Some("tiny".to_string())
         )]
     );
-    let clocks: Vec<(String, String)> =
-        sqlx::query_as(r#"SELECT row_id, hlc FROM column_clocks WHERE "table" = 'viewSettings'"#)
+    let clocks_of = |org_id: sqlx::types::Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, String)>(
+                r#"SELECT row_id, hlc FROM column_clocks
+                   WHERE "table" = 'viewSettings' AND org_id = $1"#,
+            )
+            .bind(org_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        clocks_of(seeded.org_id).await,
+        vec![(moved.clone(), seeded_clock.clone())]
+    );
+    // The other org's row and clock end on its own user's id; the orphan clock is gone.
+    let other_rows: Vec<String> =
+        sqlx::query_scalar(r#"SELECT "id" FROM "viewSettings" WHERE org_id = $1"#)
+            .bind(other.org_id)
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(clocks, vec![(moved.clone(), seeded_clock.clone())]);
+    assert_eq!(other_rows, vec![format!("view:{}", other.user_id)]);
+    assert_eq!(
+        clocks_of(other.org_id).await,
+        vec![(format!("view:{}", other.user_id), other_clock.clone())]
+    );
+    assert!(clocks_of(orphan.org_id).await.is_empty());
     assert_eq!(
         count(
             &pool,

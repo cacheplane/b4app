@@ -5,8 +5,8 @@
 -- a write that arrives after the upgrade still merges against the clock that came with the row.
 --
 -- A row whose id is not `view` was never reachable by a device (the id was fixed), and the clocks
--- of such a row go with it. `changes` is left alone: the log keeps `view`, the id devices use.
--- (Migration 0020 is held by another branch; the gap is intended.)
+-- of such a row go with it, as do clocks left under `view` with no row (an update for a missing row
+-- can have claimed one). `changes` is left alone: the log keeps `view`, the id devices use.
 --
 -- The rewrites touch rows under forced row-level security without a tenant, so it is switched
 -- off for those two tables and on again before the migration ends (DDL is transactional here).
@@ -22,6 +22,7 @@ UPDATE column_clocks c
     FROM "viewSettings" v
     WHERE c.org_id = v.org_id AND c."table" = 'viewSettings' AND c.row_id = 'view' AND v."id" = 'view';
 UPDATE "viewSettings" SET "id" = 'view:' || user_id::text WHERE "id" = 'view';
+DELETE FROM column_clocks WHERE "table" = 'viewSettings' AND row_id = 'view';
 
 ALTER TABLE "viewSettings" FORCE ROW LEVEL SECURITY;
 ALTER TABLE column_clocks FORCE ROW LEVEL SECURITY;
