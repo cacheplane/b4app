@@ -34,8 +34,8 @@ public struct ViewSettings: Codable, Sendable, Equatable {
   }
 
   /// The stored text values read leniently: nil or unknown is the default. The old `quietThreads`
-  /// values `small` and `tiny` read as `.shown`; `tiny` also reads as `.dense` unless a valid density
-  /// is stored, which always wins.
+  /// values `small` and `tiny` read as `.shown`; `tiny` also reads as `.dense` when no density is
+  /// stored. Any stored density wins: one this build does not know reads as `.normal`, never implied.
   public init(arrangement: String?, quietThreads: String?, showArchived: Bool?, density: String? = nil) {
     self.init(
       arrangement: arrangement.flatMap(Arrangement.init(rawValue:)) ?? .needsYouFirst,
@@ -45,10 +45,11 @@ public struct ViewSettings: Codable, Sendable, Equatable {
         ?? Self.impliedDensity(storedQuietThreads: quietThreads, storedDensity: density) ?? .normal)
   }
 
-  /// The density an old stored `quietThreads` implies: `.dense` for `tiny` when no valid density is
-  /// stored; otherwise nil.
+  /// The density an old stored `quietThreads` implies: `.dense` for `tiny` when no density is stored
+  /// (NULL); otherwise nil. A stored density this build does not know is a newer build's value, so
+  /// nothing is implied over it, which keeps the read and the stores' write rules in agreement.
   public static func impliedDensity(storedQuietThreads: String?, storedDensity: String?) -> Density? {
-    guard storedDensity.flatMap(Density.init(rawValue:)) == nil, storedQuietThreads == "tiny" else {
+    guard storedDensity == nil, storedQuietThreads == "tiny" else {
       return nil
     }
     return .dense

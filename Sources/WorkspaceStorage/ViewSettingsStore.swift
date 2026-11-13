@@ -33,11 +33,8 @@ extension WorkspaceDatabase {
         let stored = try c.execute(
           "SELECT \"quietThreads\", \"density\" FROM \"viewSettings\" WHERE \"id\" = $1", [ViewSettings.rowId]
         ).rows.first,
-        // Only when no density is stored: a text this build does not know is a newer build's value,
-        // and is kept.
-        stored.text("density") == nil,
         let implied = ViewSettings.impliedDensity(
-          storedQuietThreads: stored.text("quietThreads"), storedDensity: nil)
+          storedQuietThreads: stored.text("quietThreads"), storedDensity: stored.text("density"))
       {
         fields.append(("density", implied.rawValue))
       }

@@ -43,6 +43,14 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
   try #require(try db.columnClock(table: table, rowId: rowId, column: column).flatMap(HLC.init(rawValue:)))
 }
 
+/// The view row's stored `density` text (nil for NULL or no row).
+private func storedDensity(_ db: WorkspaceDatabase) throws -> String? {
+  try db.read {
+    try $0.execute("SELECT \"density\" FROM \"viewSettings\" WHERE \"id\" = 'view'").rows.first?.text(
+      "density")
+  }
+}
+
 @Suite struct RemoteApplyTests {
   @Test func remoteTitleAppliesAndOlderLoses() throws {
     let db = try WorkspaceDatabase.temporary()
@@ -313,9 +321,11 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
           value: ["id": "view", "arrangement": "byEnvironment", "quietThreads": "hidden"])
       ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 2)
     #expect(merged.applied == 1)
+    // Replacing the stored `tiny` keeps the dense rows it implied.
     #expect(
       try db.viewSettings()
-        == ViewSettings(arrangement: .needsYouFirst, quietThreads: .hidden, showArchived: true))
+        == ViewSettings(
+          arrangement: .needsYouFirst, quietThreads: .hidden, showArchived: true, density: .dense))
 
     // A bad value for the boolean is skipped without failing the batch.
     let bad = try db.applyRemote(
@@ -435,6 +445,78 @@ private func clock(_ db: WorkspaceDatabase, _ table: String, _ rowId: String, _ 
     #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "quietThreads") == at)
     // Only the written column has a clock: a local edit of another column is not held back by it.
     #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "arrangement") == nil)
+  }
+
+  /// The hub's log can still end in an old `tiny` that no migration rewrote; a pulled replacement of it
+  /// keeps the dense rows `tiny` implied, stored here without a clock or a log entry, so any real
+  /// density change still wins over it.
+  @Test func aPulledSidebarChangeKeepsTheDensityTinyImplied() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    let at = epochMillis() - 10_000
+    let logged = try db.changes(after: 0).count
+    let applied = try db.applyRemote(
+      [
+        remote(
+          phone, stamp(at, phone), "viewSettings", "view", "insert",
+          value: ["id": "view", "quietThreads": "tiny"]),
+        remote(
+          phone, stamp(at + 1, phone), "viewSettings", "view", column: "quietThreads", value: "collapsed"),
+      ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 1)
+    #expect(applied.applied == 2 && applied.touchedViewSettings)
+    #expect(try db.viewSettings() == ViewSettings(quietThreads: .collapsed, density: .dense))
+    #expect(try storedDensity(db) == "dense")
+    #expect(try db.columnClock(table: "viewSettings", rowId: "view", column: "density") == nil)
+    #expect(try db.changes(after: 0).count == logged)
+
+    // A real density change, older than every clock so far, still applies over it.
+    let later = try db.applyRemote(
+      [remote(phone, stamp(at - 5_000, phone), "viewSettings", "view", column: "density", value: "normal")],
+      ownDeviceId: mac, macDeviceIds: [mac], cursor: 2)
+    #expect(later.applied == 1 && later.touchedViewSettings)
+    #expect(try storedDensity(db) == "normal")
+    #expect(try db.viewSettings() == ViewSettings(quietThreads: .collapsed))
+  }
+
+  /// A density change pulled between the old `tiny` and its replacement is kept: nothing is implied
+  /// over a stored density.
+  @Test func aPulledDensityBeforeTheSidebarChangeIsKept() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    let at = epochMillis() - 10_000
+    _ = try db.applyRemote(
+      [
+        remote(
+          phone, stamp(at, phone), "viewSettings", "view", "insert",
+          value: ["id": "view", "quietThreads": "tiny"]),
+        remote(phone, stamp(at + 1, phone), "viewSettings", "view", column: "density", value: "normal"),
+        remote(
+          phone, stamp(at + 2, phone), "viewSettings", "view", column: "quietThreads", value: "collapsed"),
+      ], ownDeviceId: mac, macDeviceIds: [mac], cursor: 1)
+    #expect(try storedDensity(db) == "normal")
+    #expect(try db.viewSettings() == ViewSettings(quietThreads: .collapsed))
+  }
+
+  /// A stored density this build does not know is a newer build's value; a pulled sidebar change over
+  /// `tiny` keeps it.
+  @Test func aPulledSidebarChangeKeepsAnUnknownDensity() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    try db.write { c in
+      try c.execute("SET LOCAL b4app.replaying = 'on'")
+      try c.execute(
+        "INSERT INTO \"viewSettings\" (\"id\", \"quietThreads\", \"density\") VALUES ('view', 'tiny', 'huge')"
+      )
+    }
+    _ = try db.applyRemote(
+      [
+        remote(
+          phone, stamp(epochMillis(), phone), "viewSettings", "view", column: "quietThreads",
+          value: "collapsed")
+      ],
+      ownDeviceId: mac, macDeviceIds: [mac], cursor: 1)
+    #expect(try storedDensity(db) == "huge")
+    #expect(try db.viewSettings() == ViewSettings(quietThreads: .collapsed))
   }
 
   /// Two devices create the view row offline with different settings: the Mac sets `arrangement`, the

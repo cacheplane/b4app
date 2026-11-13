@@ -29,6 +29,9 @@ private func pulled(
     table: "viewSettings", rowId: ViewSettings.rowId, op: op, column: column, value: value, hlc: hlc)
 }
 
+/// The Mac's clock at `millis`.
+private func hlc(_ millis: UInt64) -> String { HLC(millis: millis, counter: 0, deviceId: macId).rawValue }
+
 /// The row's stored cell for `column`, as text, exactly as the mirror holds it (nil for NULL).
 private func stored(_ store: MirrorStore, _ column: String) throws -> String? {
   let cell = try store.locked {
@@ -270,6 +273,60 @@ private func settingsEvent(_ events: AsyncStream<EventEnvelope>) async throws ->
     let queued = try store.outbox(limit: 10)
     #expect(!queued.contains { $0.column == "density" })
     #expect(queued.compactMap(\.column).filter { $0 != "updatedAt" } == ["quietThreads"])
+  }
+
+  /// The hub's log can still end in an old `tiny` that no migration rewrote; a pulled replacement of it
+  /// keeps the dense rows `tiny` implied, stored here without a clock or an outbox entry, so any real
+  /// density change still wins over it.
+  @Test func aPulledSidebarChangeKeepsTheDensityTinyImplied() throws {
+    let store = try linkedStore()
+    let at = UInt64(Date().timeIntervalSince1970 * 1000) - 10_000
+    let batch = try store.apply([
+      pulled("insert", value: ["id": "view", "quietThreads": "tiny"], hlc: hlc(at)),
+      pulled("update", column: "quietThreads", value: "collapsed", hlc: hlc(at + 1)),
+    ])
+    #expect(batch.touchedViewSettings && batch.skipped == 0)
+    #expect(try store.viewSettings() == ViewSettings(quietThreads: .collapsed, density: .dense))
+    #expect(try stored(store, "density") == "dense")
+    #expect(try store.columnClock(table: "viewSettings", rowId: "view", column: "density") == nil)
+    #expect(store.outboxCount == 0)
+
+    // A real density change, older than every clock so far, still applies over it.
+    let later = try store.apply([pulled("update", column: "density", value: "normal", hlc: hlc(at - 5_000))])
+    #expect(later.touchedViewSettings)
+    #expect(try stored(store, "density") == "normal")
+    #expect(try store.viewSettings() == ViewSettings(quietThreads: .collapsed))
+    #expect(store.outboxCount == 0)
+  }
+
+  /// A density change pulled between the old `tiny` and its replacement is kept: nothing is implied
+  /// over a stored density.
+  @Test func aPulledDensityBeforeTheSidebarChangeIsKept() throws {
+    let store = try linkedStore()
+    let at = UInt64(Date().timeIntervalSince1970 * 1000) - 10_000
+    _ = try store.apply([
+      pulled("insert", value: ["id": "view", "quietThreads": "tiny"], hlc: hlc(at)),
+      pulled("update", column: "density", value: "normal", hlc: hlc(at + 1)),
+      pulled("update", column: "quietThreads", value: "collapsed", hlc: hlc(at + 2)),
+    ])
+    #expect(try stored(store, "density") == "normal")
+    #expect(try store.viewSettings() == ViewSettings(quietThreads: .collapsed))
+    #expect(store.outboxCount == 0)
+  }
+
+  /// A stored density this build does not know is a newer build's value; a pulled sidebar change over
+  /// `tiny` keeps it.
+  @Test func aPulledSidebarChangeKeepsAnUnknownDensity() throws {
+    let store = try linkedStore()
+    _ = try store.apply([
+      pulled(
+        "insert", value: ["id": "view", "quietThreads": "tiny", "density": "huge"],
+        hlc: macClock.next().rawValue),
+      pulled("update", column: "quietThreads", value: "collapsed", hlc: macClock.next().rawValue),
+    ])
+    #expect(try stored(store, "density") == "huge")
+    #expect(try store.viewSettings() == ViewSettings(quietThreads: .collapsed))
+    #expect(store.outboxCount == 0)
   }
 
   /// A first write of `quietThreads` on a missing row implies nothing: the insert carries only it.

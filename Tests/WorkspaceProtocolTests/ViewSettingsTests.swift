@@ -42,11 +42,14 @@ import WorkspaceProtocol
     #expect(read("tiny", "normal") == ViewSettings())
     #expect(read(nil) == ViewSettings())
     #expect(read("nonsense", "nonsense") == ViewSettings())
+    // A density this build does not know is a newer build's value: nothing is implied over it.
+    #expect(read("tiny", "huge") == ViewSettings())
   }
 
   @Test func onlyAnUnconvertedTinyImpliesDense() {
     #expect(ViewSettings.impliedDensity(storedQuietThreads: "tiny", storedDensity: nil) == .dense)
     #expect(ViewSettings.impliedDensity(storedQuietThreads: "tiny", storedDensity: "normal") == nil)
+    #expect(ViewSettings.impliedDensity(storedQuietThreads: "tiny", storedDensity: "huge") == nil)
     #expect(ViewSettings.impliedDensity(storedQuietThreads: "small", storedDensity: nil) == nil)
     #expect(ViewSettings.impliedDensity(storedQuietThreads: "collapsed", storedDensity: nil) == nil)
     #expect(ViewSettings.impliedDensity(storedQuietThreads: nil, storedDensity: nil) == nil)
