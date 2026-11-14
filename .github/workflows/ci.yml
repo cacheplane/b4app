@@ -166,9 +166,9 @@ jobs:
               "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "23a1c01b827d4d0ee1c533ba5c0391500efd37c28d0fa71182eecb43c70af23f",
           }
 
-          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': '1d0ec09f0c7e7a176761d75a597af1767d727e66490744d9947521a15d34ff2c', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '4aa79857d10a9709150318c7aea4b948476f31a55ffbd0452af89ee2635e74c8', 'Sources/WorkspaceStorage/PostgresClient.swift': 'd713d50ed4183abb642f4ca6689d773c8b25306ac225ea0dd9936e0704cfc803', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '7f085ca25a46d3eb4dc7b4b1fb9eff05d6c118f3cb478350fc177dfc2651862c'}
+          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': '1d0ec09f0c7e7a176761d75a597af1767d727e66490744d9947521a15d34ff2c', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '4aa79857d10a9709150318c7aea4b948476f31a55ffbd0452af89ee2635e74c8', 'Sources/WorkspaceStorage/PostgresClient.swift': 'd713d50ed4183abb642f4ca6689d773c8b25306ac225ea0dd9936e0704cfc803', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '4c75114692e36b2d7f88a2c3da0c29647007df8aff89190de561a4fe45790ad6'}
           HELPER_RELATIVE = "Scripts/check-owner-carrier-compiler-controls.py"
-          HELPER_SHA256 = "868f8804a1df1e8a637b9ec1e4f0a6c07c70b588237217fca198f43b1fd062cc"
+          HELPER_SHA256 = "d20504aaafb5207910b671db951f2609d9518d9940f6224b8b64ab7d092c2dcc"
 
           class Rejected(Exception):
               pass
@@ -430,7 +430,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "868f8804a1df1e8a637b9ec1e4f0a6c07c70b588237217fca198f43b1fd062cc"
+              expected = "d20504aaafb5207910b671db951f2609d9518d9940f6224b8b64ab7d092c2dcc"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -481,7 +481,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "868f8804a1df1e8a637b9ec1e4f0a6c07c70b588237217fca198f43b1fd062cc"
+              expected = "d20504aaafb5207910b671db951f2609d9518d9940f6224b8b64ab7d092c2dcc"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())

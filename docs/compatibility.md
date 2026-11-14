@@ -375,6 +375,6 @@ Native migration from public13/14 executes density15 exactly once, preserving cl
 raw v3/v4 restore into16 keeps old quiet values and introduces SQL NULL density. Genuine15 quiet
 and density remain raw, including unknown/empty text and tiny plus SQL NULL. Current16 archives
 retain full rows. Only16 requires the generation marker; old private protocol13/14/15 aliases
-remain invalid. The current unpublished decisions are protocol D-230 and relay D-229; published
+remain invalid. The current unpublished decisions are protocol D-232 and relay D-231; published
 D-218 density, D-220 phone Return and D-221 keycaps retain their original numbers. This source
 integration supplies no compiler/native or release qualification.

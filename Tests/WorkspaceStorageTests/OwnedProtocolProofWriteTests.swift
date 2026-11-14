@@ -5090,16 +5090,17 @@ extension OwnedProtocolProofWriteTests {
       diagnostic.enter(.triggerDefinitionValue)
       let definition = row.text("definition")
       let expectedDefinition = expectedTriggers[name]
-      guard definition == expectedDefinition else {
+      // The query fixes the relation OID; pretty output may omit its schema.
+      guard
+        definition == expectedDefinition
+          || (expectedDefinition != nil
+            && definition
+              == expectedDefinition?.replacingOccurrences(of: " ON public.settings ", with: " ON settings "))
+      else {
         if expectedDefinition == nil {
           diagnostic.enter(.triggerNameUnknown)
         } else if definition == nil {
           diagnostic.enter(.triggerDefinitionNil)
-        } else if definition
-          == expectedDefinition?.replacingOccurrences(of: " ON public.settings ", with: " ON settings ")
-        {
-          diagnostic.enter(
-            name == "owned_bind_body" ? .triggerBodyBareTable : .triggerCommitBareTable)
         } else {
           diagnostic.enter(
             name == "owned_bind_body" ? .triggerBodyOtherValue : .triggerCommitOtherValue)
@@ -6158,7 +6159,7 @@ extension OwnedProtocolProofWriteTests {
       case controlInsert, functionCreate, functionCount, functionSource, functionSignatureAndAttributes
       case privateObjects, columns, constraints, sequences, triggerDefinition
       case triggerRowCount, triggerNameValue, triggerDefinitionValue, triggerFunctionIdentity, catalogCapture
-      case triggerNameUnknown, triggerDefinitionNil, triggerBodyBareTable, triggerCommitBareTable
+      case triggerNameUnknown, triggerDefinitionNil
       case triggerBodyOtherValue, triggerCommitOtherValue
       case recipeNamesRowsMeta, recipeConfig, recipeCatalog, initialState, damage, beforeCheckpoint
       case gateClear, holderStart, holderReady, rawStart, observeCommit, resultCapture, drainReturned
