@@ -119,7 +119,34 @@ jobs:
       - name: Test
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
-        run: swift test
+        # Temporary diagnostics: where the test process's threads are while no test finishes.
+        run: |
+          mkdir -p "$RUNNER_TEMP/samples"
+          swift test &
+          tests=$!
+          (
+            for _ in $(seq 1 600); do
+              pgrep -f 'swiftpm-testing-helper.*b4appPackageTests' >/dev/null && break
+              sleep 0.5
+            done
+            last=0
+            for at in 5 15 30 45; do
+              sleep $((at - last))
+              last=$at
+              helper=$(pgrep -n -f 'swiftpm-testing-helper.*b4appPackageTests' || true)
+              if [ -n "$helper" ]; then
+                sample "$helper" 2 -file "$RUNNER_TEMP/samples/sample-$at.txt" >/dev/null 2>&1 || true
+              fi
+            done
+          ) &
+          wait "$tests"
+      - name: Save the test process samples
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-test-samples
+          path: ${{ runner.temp }}/samples
+          retention-days: 3
 
   apps:
     name: macOS and iOS app builds
