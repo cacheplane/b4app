@@ -91,6 +91,27 @@ class LayoutResultTests(unittest.TestCase):
         self.assertEqual(module.verify(summary(3), tree(0, 3), 0, 3),
                          {"WorkspaceLayoutTests": 0, "WorkspaceLayoutComponentTests": 3})
 
+    def test_a_shard_takes_its_counts_from_the_plan_even_in_ci(self):
+        root = Path(__file__).resolve().parents[2]
+        # A caller's smaller counts are ignored: the shard fails on the missing result files, after
+        # the plan was read, not on the count override.
+        result = subprocess.run(
+            [sys.executable, str(root / "Scripts/verify_ios_layout_results.py"),
+             "missing-summary.json", "missing-tests.json", "--shard", "1", "--ui-count", "1",
+             "--component-count", "0"], cwd=root, env={**os.environ, "CI": "true"},
+            capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing-summary.json", result.stderr)
+        for arguments, message in [(["--shard", "3"], "No shard 3 of 2"),
+                                   (["--shard", "1", "--focused-coverage"], "local-only")]:
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [sys.executable, str(root / "Scripts/verify_ios_layout_results.py"),
+                     "missing-summary.json", "missing-tests.json", *arguments], cwd=root,
+                    env={**os.environ, "CI": "true"}, capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+
     def test_unknown_or_duplicate_bundles_are_rejected(self):
         for extra in (bundle("UnexpectedTests", 1), bundle("WorkspaceLayoutTests", 25)):
             nodes = tree()
