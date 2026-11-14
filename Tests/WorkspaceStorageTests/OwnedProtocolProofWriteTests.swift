@@ -3791,10 +3791,10 @@ extension OwnedProtocolProofWriteTests {
     var result: [Data] = []
     for data in image {
       var row = try ownedT09Object(data)
-      guard let role = row["setrole"] as? NSNumber, let config = row["setconfig"] as? [String] else {
-        throw FixtureFailure.nativeShape
-      }
-      if role.stringValue == "0" {
+      guard let role = row["setrole"] as? String, let roleOID = UInt32(role),
+        equalBytes(role, String(roleOID)), let config = row["setconfig"] as? [String]
+      else { throw FixtureFailure.nativeShape }
+      if equalBytes(role, "0") {
         var retained: [String] = []
         for entry in config {
           if entry.split(separator: "=", maxSplits: 1).first == "default_transaction_isolation" {

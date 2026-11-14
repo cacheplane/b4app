@@ -187,9 +187,152 @@ import WorkspaceProtocol
       .init(prefix: 15, quiet: nil, density: nil, hasRow: true),
       .init(prefix: 15, quiet: nil, density: nil, hasRow: false),
     ]
+  private struct ArchivePayloadWitness {
+    enum Prefix {
+      case twelve, thirteen, fourteen, fifteen, other
+      var label: String {
+        switch self {
+        case .twelve: return "prefix12"
+        case .thirteen: return "prefix13"
+        case .fourteen: return "prefix14"
+        case .fifteen: return "prefix15"
+        case .other: return "prefixOther"
+        }
+      }
+    }
+    enum Invocation {
+      case notEntered, once, reentered
+      var label: String {
+        switch self {
+        case .notEntered: return "notEntered"
+        case .once: return "once"
+        case .reentered: return "reentered"
+        }
+      }
+    }
+    enum RowClass {
+      case unobserved, none, one, many
+      var label: String {
+        switch self {
+        case .unobserved: return "unobserved"
+        case .none: return "none"
+        case .one: return "one"
+        case .many: return "many"
+        }
+      }
+    }
+    enum ColumnClass {
+      case unobserved, payloadOnly, other, missing
+      var label: String {
+        switch self {
+        case .unobserved: return "unobserved"
+        case .payloadOnly: return "payloadOnly"
+        case .other: return "other"
+        case .missing: return "missing"
+        }
+      }
+    }
+    enum PayloadType {
+      case unobserved, textOID25, other, missing
+      var label: String {
+        switch self {
+        case .unobserved: return "unobserved"
+        case .textOID25: return "textOID25"
+        case .other: return "other"
+        case .missing: return "missing"
+        }
+      }
+    }
+    enum Shape {
+      case unobserved, missing, objectLike, other
+      var label: String {
+        switch self {
+        case .unobserved: return "unobserved"
+        case .missing: return "missing"
+        case .objectLike: return "objectLike"
+        case .other: return "other"
+        }
+      }
+      static func classify(_ value: String?) -> Self {
+        guard let value else { return .missing }
+        return value.utf8.first == 123 && value.utf8.last == 125 ? .objectLike : .other
+      }
+    }
+    enum Equality {
+      case unobserved, equal, unequal
+      var label: String {
+        switch self {
+        case .unobserved: return "unobserved"
+        case .equal: return "equal"
+        case .unequal: return "unequal"
+        }
+      }
+    }
+    enum BodyOutcome {
+      case unobserved, returned, threw
+      var label: String {
+        switch self {
+        case .unobserved: return "unobserved"
+        case .returned: return "returned"
+        case .threw: return "threw"
+        }
+      }
+    }
+    let prefix: Prefix
+    var readReached = false
+    var invocation: Invocation = .notEntered
+    var rows: RowClass = .unobserved
+    var columns: ColumnClass = .unobserved
+    var payloadType: PayloadType = .unobserved
+    var selectedShape: Shape = .unobserved
+    var returnedShape: Shape = .unobserved
+    var selectorBackup: Equality = .unobserved
+    var selectorSequence: Equality = .unobserved
+    var returnedSequence: Equality = .unobserved
+    var outsideEquality: Equality = .unobserved
+    var bodyOutcome: BodyOutcome = .unobserved
+
+    init(prefix: Int) {
+      switch prefix {
+      case 12: self.prefix = .twelve
+      case 13: self.prefix = .thirteen
+      case 14: self.prefix = .fourteen
+      case 15: self.prefix = .fifteen
+      default: self.prefix = .other
+      }
+    }
+
+    var readReachedLabel: String {
+      switch readReached {
+      case false: return "false"
+      case true: return "true"
+      }
+    }
+  }
+
   @Test(arguments: Self.publishedCases)
   private func genuinePublishedFoldersViewAndCommandsArchivesSurviveSixteenAndReopen(
     fixture: PublishedCase
+  ) throws {
+    var witness = ArchivePayloadWitness(prefix: fixture.prefix)
+    defer {
+      if witness.outsideEquality == .unequal || witness.bodyOutcome == .threw {
+        print(
+          "archivePayloadWitness \(witness.prefix.label) readReached=\(witness.readReachedLabel) invocation=\(witness.invocation.label) rows=\(witness.rows.label) columns=\(witness.columns.label) payloadType=\(witness.payloadType.label) selectedShape=\(witness.selectedShape.label) returnedShape=\(witness.returnedShape.label) selectorBackup=\(witness.selectorBackup.label) selectorSequence=\(witness.selectorSequence.label) returnedSequence=\(witness.returnedSequence.label) outsideEquality=\(witness.outsideEquality.label) body=\(witness.bodyOutcome.label)"
+        )
+      }
+    }
+    do {
+      try publishedArchiveCase(fixture: fixture, witness: &witness)
+      witness.bodyOutcome = .returned
+    } catch {
+      witness.bodyOutcome = .threw
+      throw error
+    }
+  }
+
+  private func publishedArchiveCase(
+    fixture: PublishedCase, witness: inout ArchivePayloadWitness
   ) throws {
     let prefix = fixture.prefix
     let sourceNames =
@@ -464,11 +607,37 @@ import WorkspaceProtocol
         Data(contentsOf: URL(fileURLWithPath: backups + "/" + backupNames[0])))
       #expect(backup.records["schemaMigrations"]?.compactMap { $0.row["name"] as? String } == sourceNames)
       #expect(backup.records["appFolders"]?.first?.row["threadId"] as? String == "t")
+      witness.readReached = true
       let nativePayload: String? = try source.read { (raw: PostgresConnection) throws -> String? in
+        witness.invocation = witness.invocation == .notEntered ? .once : .reentered
         let rows = try raw.execute(#"SELECT payload::text AS payload FROM "displayItems" WHERE id='i'"#).rows
-        return rows.first?.text("payload")
+        switch rows.count {
+        case 0: witness.rows = .none
+        case 1: witness.rows = .one
+        default: witness.rows = .many
+        }
+        if let row = rows.first, let payload = row.cells["payload"] {
+          witness.columns = row.cells.count == 1 ? .payloadOnly : .other
+          witness.payloadType = payload.typeOID == 25 ? .textOID25 : .other
+        } else {
+          witness.columns = .missing
+          witness.payloadType = .missing
+        }
+        let selected = rows.first?.text("payload")
+        witness.selectedShape = ArchivePayloadWitness.Shape.classify(selected)
+        witness.selectorBackup =
+          (backup.records["displayItems"]?.first?.row["payload"] as? String).map { Data($0.utf8) }
+            == selected.map { Data($0.utf8) } ? .equal : .unequal
+        witness.selectorSequence =
+          selected.map { Data($0.utf8) } == beforeSequence.map { Data($0.utf8) } ? .equal : .unequal
+        return selected
       }
       let backupPayload = backup.records["displayItems"]?.first?.row["payload"] as? String
+      witness.returnedShape = ArchivePayloadWitness.Shape.classify(nativePayload)
+      witness.returnedSequence =
+        nativePayload.map { Data($0.utf8) } == beforeSequence.map { Data($0.utf8) } ? .equal : .unequal
+      witness.outsideEquality =
+        backupPayload.map { Data($0.utf8) } == nativePayload.map { Data($0.utf8) } ? .equal : .unequal
       #expect(backupPayload.map { Data($0.utf8) } == nativePayload.map { Data($0.utf8) })
       try source.export(to: root + "/current16.jsonl")
       let exported = try WorkspaceArchive.read(
