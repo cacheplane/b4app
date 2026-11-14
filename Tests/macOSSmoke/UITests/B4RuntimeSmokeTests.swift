@@ -158,13 +158,7 @@ final class B4RuntimeSmokeTests: XCTestCase {
   }
 
   @MainActor private func open(_ app: XCUIApplication) throws {
-    app.launch()
-    app.activate()
-    if !app.windows.firstMatch.exists {
-      app.menuBars.menuBarItems["File"].click()
-      app.menuItems["New Window"].click()
-    }
-    try requireElement(app.windows.firstMatch, in: app)
+    try launchWithWindow(app)
   }
 
   @MainActor private func send(_ app: XCUIApplication) throws {

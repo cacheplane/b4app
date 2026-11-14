@@ -566,6 +566,8 @@
   /// The title bar's resting control is the palette's top row, as wide as the palette where the
   /// window has the room.
   @Suite @MainActor struct CommandCenterTests {
+    private static func pump() { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+
     @Test func theRestingControlIsThePalettesWidthWhereTheWindowHasRoom() {
       #expect(CommandCenterButton.height == MacPalette.fieldHeight)
       #expect(CommandCenterButton.width(inWindow: 1200) == MacPalette.width)
@@ -574,6 +576,39 @@
       #expect(CommandCenterButton.width(inWindow: 1000) == 460)
       #expect(CommandCenterButton.width(inWindow: 900) == 360)
       #expect(CommandCenterButton.width(inWindow: 700) == CommandCenterButton.minWidth)
+    }
+
+    /// The button comes with its window even when nothing else changes after: a window opened while
+    /// the workspace is already showing (New Window in the screen-test harness, a window reopened from
+    /// the Dock) had no button, because the presenter's first try came before the view had a window
+    /// and nothing asked it again. The palette then opened where it sits without one.
+    /// Turns of the run loop and the main queue, as the app has between events.
+    private func turns(_ count: Int) async throws {
+      for _ in 0..<count {
+        Self.pump()
+        try await Task.sleep(for: .milliseconds(20))
+      }
+    }
+
+    @Test func theButtonComesWithAWindowThatArrivesLater() async throws {
+      let model = WorkspaceModel(transportProvider: { ScriptedTransport() })
+      let anchor = CommandCenterAnchor()
+      let host = NSHostingView(
+        rootView: CommandCenterPresenter(model: model, anchor: anchor, isActive: true)
+          .frame(width: 100, height: 20))
+      host.frame = CGRect(x: 0, y: 0, width: 100, height: 20)
+      host.layoutSubtreeIfNeeded()
+      try await turns(4)
+      #expect(anchor.panel == nil)
+      let window = NSWindow(
+        contentRect: CGRect(x: 0, y: 0, width: 1200, height: 800),
+        styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      defer { window.close() }
+      window.contentView = host
+      try await turns(8)
+      #expect(anchor.panel != nil, "no button panel for a window that came after the first update")
+      #expect(window.childWindows?.contains { $0 === anchor.panel } == true)
     }
   }
 #endif

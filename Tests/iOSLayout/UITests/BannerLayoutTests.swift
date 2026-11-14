@@ -11,10 +11,10 @@ final class BannerLayoutTests: XCTestCase {
   ) -> XCUIApplication {
     continueAfterFailure = false
     coverage.beforeLaunch(in: self)
-    // Only when it is not portrait already. Asking for the orientation the device has waits for a
-    // change that may never be confirmed: on main acef750 that wait timed out and failed a journey
-    // that never leaves portrait (run 43534874181).
-    if XCUIDevice.shared.orientation != .portrait { XCUIDevice.shared.orientation = .portrait }
+    // Only from landscape, where the landscape journey can leave it. Asking for the orientation the
+    // device has waits for a change that may never be confirmed (main acef750, run 43534874181, the
+    // run's first launch straight after the Simulator booted), and a fresh Simulator is upright.
+    if XCUIDevice.shared.orientation.isLandscape { XCUIDevice.shared.orientation = .portrait }
     let app = XCUIApplication()
     app.launchEnvironment = [
       "LAYOUT_SCREEN": screen, "LAYOUT_NOTICE": notice, "LAYOUT_DARK": dark ? "1" : "0",

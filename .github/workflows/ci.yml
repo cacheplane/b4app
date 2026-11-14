@@ -109,8 +109,23 @@ jobs:
         run: ./Scripts/fetch-postgres.sh
       - name: Build
         run: swift build
+      # The storage and coordinator tests wait on PostgreSQL synchronously, from Swift's cooperative
+      # threads (one per core). In one process with everything else they held all of the runner's
+      # threads for the first minute (CI's samples: every thread in libpq, most in CREATE DATABASE),
+      # so no other test ran and those that wait on a clock (MirrorSyncTests) timed out. They run in
+      # a process of their own, then the rest, both on one cluster that a single test starts first.
+      - name: Start the tests' PostgreSQL
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
+        run: swift test --filter 'AccountRegistryTests/aLedgerIsCreatedOnlyWhenMissing'
       - name: Test
-        run: swift test
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
+        run: |
+          status=0
+          swift test --skip-build --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
+          swift test --skip-build --skip '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
+          exit "$status"
 
   apps:
     name: macOS and iOS app builds
