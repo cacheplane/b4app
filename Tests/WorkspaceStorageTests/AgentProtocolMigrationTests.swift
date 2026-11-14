@@ -124,7 +124,7 @@ import WorkspaceProtocol
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backupDirectory(endpoint))
     defer { try? db.close() }
     #expect(try db.appliedMigrations().last == "0016_agent_protocol")
-    try db.read { raw in
+    try db.read { (raw: PostgresConnection) throws -> Void in
       #expect(try raw.execute(#"SELECT 1 FROM connections WHERE models IS NOT NULL"#).rows.isEmpty)
       #expect(
         try raw.execute(#"SELECT 1 FROM threads WHERE model IS NOT NULL OR permission IS NOT NULL"#).rows

@@ -585,7 +585,7 @@ async fn published_view_settings_remain_public_at_both_protocol_floors(pool: PgP
             .unwrap();
         assert!(accepted.rejected.is_empty());
         assert_eq!(accepted.accepted_through, base + 2);
-        let expected = json!({"id":"view","arrangement":"future-layout","quietThreads":"someday","showArchived":true,"updatedAt":"fixture-view-time"});
+        let expected = json!({"id":"view","arrangement":"future-layout","quietThreads":"someday","showArchived":true,"updatedAt":"fixture-view-time","density":null});
         let snapshot = snapshot::take_for_protocol(&app, &phone, client)
             .await
             .unwrap();
@@ -623,7 +623,7 @@ async fn published_view_settings_remain_public_at_both_protocol_floors(pool: PgP
         let physical:(serde_json::Value,sqlx::types::Uuid,sqlx::types::Uuid)=sqlx::query_as("SELECT to_jsonb(t)-ARRAY['org_id','user_id','device_id','owner_device_id','deleted_at'],user_id,owner_device_id FROM public.\"viewSettings\" t WHERE org_id=$1 AND id=$2")
             .bind(phone.org_id).bind(&stored_id).fetch_one(&admin.pool).await.unwrap();
         assert_eq!(physical, (stored_expected, phone.user_id, phone.device_id));
-        let bob_expected = json!({"id":"view","arrangement":"bob-layout","quietThreads":null,"showArchived":null,"updatedAt":null});
+        let bob_expected = json!({"id":"view","arrangement":"bob-layout","quietThreads":null,"showArchived":null,"updatedAt":null,"density":null});
         let bob_stored_id = format!("view:{}", bob.user_id);
         let mut bob_stored_expected = bob_expected.clone();
         bob_stored_expected["id"] = json!(bob_stored_id.clone());
