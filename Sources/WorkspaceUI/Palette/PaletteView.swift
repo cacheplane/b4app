@@ -252,7 +252,7 @@ struct PaletteLead: View {
     }
 
     private func move(_ delta: Int) -> KeyPress.Result {
-      withAnimation(reduceMotion ? nil : .snappy(duration: 0.09, extraBounce: 0)) {
+      withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) {
         scrollTarget = palette.move(by: delta)
       }
       return .handled
@@ -337,20 +337,16 @@ struct PaletteLead: View {
         }
         .padding(.horizontal, LLA.Space.s)
         .frame(height: Self.rowHeight)
-        .background {
-          if selected {
-            RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
-              .fill(LLA.Color.surfaceRaised)
-              .matchedGeometryEffect(id: "selection", in: highlight)
-          }
-        }
+        .selectionHighlight(selected, in: highlight)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .id(item.id)
-      // The pointer selects at once, with no slide, and only when it is the pointer that moved.
+      // The pointer takes the highlight with the same glide as the keys (D-222), and only when it
+      // is the pointer that moved.
       .onContinuousHover(coordinateSpace: .global) { phase in
-        if case .active(let point) = phase, pointer.moved(to: point) { palette.select(item.id) }
+        guard case .active(let point) = phase, pointer.moved(to: point) else { return }
+        withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) { palette.select(item.id) }
       }
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(item.spoken)
