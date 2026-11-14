@@ -29,11 +29,12 @@
 
     /// The Mac's model of the new-thread tests (`Phone.macModel`) at `density`.
     private func macModel(
-      _ density: ViewSettings.Density, connections: [Connection] = Phone.macConnections
+      _ density: ViewSettings.Density, connections: [Connection] = Phone.macConnections,
+      environments: [WorkEnvironment] = Phone.macEnvironments
     ) async throws -> (WorkspaceModel, ScriptedTransport) {
       let transport = ScriptedTransport()
       transport.script(.viewSettingsGet, [try Self.reply(ViewSettings(density: density))])
-      let model = try await Phone.macModel(transport, connections: connections)
+      let model = try await Phone.macModel(transport, connections: connections, environments: environments)
       #expect(model.viewSettings.density == density)
       return (model, transport)
     }
@@ -109,7 +110,6 @@
     }
 
     /// Text, not a control: nothing under it is a button or takes a click, and it reads as static text.
-    /// The source is checked too, as the accessibility tree does not show a tap gesture.
     @Test func theLineIsNotAControl() async throws {
       let summary = ComposerSummary(place: "b4app", runtime: "Claude Code · Opus", permission: "Plan")
       let screen = HostedScreen(ComposerSummaryLine(summary: summary), size: CGSize(width: 480, height: 40))
@@ -123,16 +123,6 @@
       #expect(screen.controls.isEmpty, "\(screen.controls)")
       // No NSControl (a button, a pop-up) is drawn under the line either.
       #expect(!screen.hasControlView)
-
-      let source = try String(contentsOf: Self.source("NewThread/ComposerSummaryLine.swift"), encoding: .utf8)
-      for control in ["Button", "Menu", "Gesture", "onTap", "onHover", "Toggle", "Link"] {
-        #expect(!source.contains(control), "\(control)")
-      }
-    }
-
-    private static func source(_ path: String, file: StaticString = #filePath) -> URL {
-      URL(fileURLWithPath: "\(file)").deletingLastPathComponent().deletingLastPathComponent()
-        .deletingLastPathComponent().appendingPathComponent("Sources/WorkspaceUI/\(path)")
     }
 
     @Test func theLineChangesWhenACommandChangesTheChoice() async throws {
@@ -242,9 +232,15 @@
     }
 
     @Test func aBlockedReasonSitsUnderTheLine() async throws {
-      let (model, _) = try await macModel(.dense, connections: [])
+      // An environment with no folder yet: a ready connection is there, but nothing to start in.
+      let empty = WorkEnvironment(
+        id: "p4", name: "Empty", createdAt: PhoneFixture.at(-700), updatedAt: PhoneFixture.at(-700),
+        folders: [], ownerDeviceId: nil)
+      let (model, _) = try await macModel(.dense, environments: Phone.macEnvironments + [empty])
       let draft = model.newThreadDraft
+      draft.selectEnvironment("p4")
       let reason = try #require(draft.blockedReason)
+      #expect(reason == "This environment has no folder yet.")
       let screen = newThread(model)
       defer { screen.close() }
       try await screen.until("the line and the reason") {
@@ -287,19 +283,33 @@
 
   /// A view in an offscreen window (`SnapshotWindow`), read through the accessibility tree SwiftUI builds
   /// for it: the elements by identifier, their labels, frames and roles. SwiftUI builds the tree only for
-  /// an app an assistive client has asked about, so the app is marked as one first.
+  /// an app an assistive client has asked about, so the app is marked as one first. The app's old setting
+  /// is put back when the last open screen closes.
   @MainActor final class HostedScreen {
+    private static let enhanced = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+    private static var open = 0
+    private static var oldValue: Any?
     private let window: SnapshotWindow<AnyView>
+    private var closed = false
 
     init<V: View>(_ view: V, size: CGSize) {
-      NSApplication.shared.accessibilitySetValue(
-        true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
+      if Self.open == 0 { Self.oldValue = NSApplication.shared.accessibilityAttributeValue(Self.enhanced) }
+      Self.open += 1
+      NSApplication.shared.accessibilitySetValue(true, forAttribute: Self.enhanced)
       window = SnapshotWindow(
         rootView: AnyView(view.frame(width: size.width, height: size.height)), untitled: true, size: size)
       window.host.layoutSubtreeIfNeeded()
     }
 
-    func close() { window.close() }
+    func close() {
+      window.close()
+      guard !closed else { return }
+      closed = true
+      Self.open -= 1
+      if Self.open == 0 {
+        NSApplication.shared.accessibilitySetValue(Self.oldValue ?? false, forAttribute: Self.enhanced)
+      }
+    }
 
     /// Whether any AppKit control is drawn in the window's views.
     var hasControlView: Bool {

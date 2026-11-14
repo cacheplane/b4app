@@ -947,12 +947,17 @@ private final class BackgroundWindow: NSWindow {
     await starting.disconnect()
     await dense.disconnect()
 
-    // No ready connection: the reason goes under the line.
+    // An environment with no folder yet: the reason goes under the line.
     let blockedTransport = ScriptedTransport()
     blockedTransport.script(
       .viewSettingsGet, [.result(try JSONValue(encoding: ViewSettings(density: .dense)))])
-    let blocked = try await Phone.macModel(blockedTransport, connections: [])
-    #expect(blocked.newThreadDraft.blockedReason != nil)
+    let empty = WorkEnvironment(
+      id: "p4", name: "Empty", createdAt: PhoneFixture.at(-700), updatedAt: PhoneFixture.at(-700),
+      folders: [], ownerDeviceId: nil)
+    let blocked = try await Phone.macModel(
+      blockedTransport, environments: Phone.macEnvironments + [empty])
+    blocked.newThreadDraft.selectEnvironment("p4")
+    #expect(blocked.newThreadDraft.blockedReason == "This environment has no folder yet.")
     try await render("dense-composer-new-thread-blocked", size: CGSize(width: 720, height: 420)) {
       NewThreadView(model: blocked)
     }

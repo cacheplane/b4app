@@ -110,6 +110,8 @@ struct NewThreadView: View {
       focused = true
     }
     #if os(macOS)
+      // The panel closing by a choice, a failure or a cancel returns the cursor to the field.
+      .onChange(of: choosingFolder) { _, open in if !open { focused = true } }
       // The "Choose folder…" command: the panel is the picker row's own, so the places list gives way.
       // No `initial: true`, on purpose: a view made after an old request must not open the panel.
       .onChange(of: model.chooseFolderRequest) {
@@ -208,7 +210,7 @@ struct NewThreadView: View {
   /// failed start sits under the line, which stays so the place can be changed to fix it. Why Send is
   /// off is about the place, so it goes under the line too, unless a failure is showing.
   @ViewBuilder private func denseLines(_ draft: NewThreadDraft) -> some View {
-    let failure = draft.status != nil && !draft.submitting && draft.statusIsFailure
+    let failure = draft.statusIsFailure
     if draft.status != nil, !failure {
       statusLine(draft)
     } else {
