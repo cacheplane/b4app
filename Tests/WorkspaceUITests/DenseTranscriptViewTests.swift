@@ -432,6 +432,14 @@
         }
       }
 
+      /// How far a reader's scroll to the end moves the view from where it is: at most the bottom padding
+      /// when the end marker is already in view. Read when the document's height may still be estimated.
+      func distanceToEnd() async throws -> CGFloat {
+        let from = origin
+        try await scrollToEnd()
+        return origin - from
+      }
+
       /// Moves the clip view as a reader's scroll would, and lets the transcript see it.
       func scroll(to y: CGFloat) async throws {
         scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, y)))
@@ -472,7 +480,7 @@
       view.folds.toggle("t12")
       try await view.until("the turn's steps are gone") { view.documentHeight < open - 1 }
       try await view.settle()
-      #expect(abs(view.origin - origin) <= 0.5 || view.atEnd, "moved by \(view.origin - origin)")
+      #expect(abs(view.origin - origin) <= 0.5 || view.atDocumentEnd, "moved by \(view.origin - origin)")
     }
 
     @Test func aStreamDoesNotMoveAnOpenedTurn() async throws {
@@ -515,6 +523,74 @@
       try await view.settle()
       #expect(view.atEnd, "below the viewport: \(view.below)")
       #expect(!view.folds.holds)
+    }
+
+    @Test func aTurnEndingDoesNotMoveAnOpenedTurn() async throws {
+      var detail = twelveTurns()
+      detail.turns.append(turn(13, .running))
+      detail.items += [
+        user("u13", turn: "t13", sequence: 130),
+        message("m13-1", turn: "t13", sequence: 131, text: "Looking at the build first."),
+        step("s13-1", turn: "t13", sequence: 132),
+        message("a13", turn: "t13", sequence: 133, native: "n13", text: ""),
+      ]
+      detail.liveText["n13"] = lines(4)
+      let view = try Hosted(detail)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      view.folds.toggle("t10")
+      try await view.settle()
+      #expect(view.folds.holds)
+      let origin = view.origin
+      let height = view.documentHeight
+
+      var ended = view.host.detail
+      if let index = ended.items.firstIndex(where: { $0.id == "a13" }) {
+        ended.items[index].payload = .object(["text": .string(lines(4))])
+      }
+      ended.liveText = [:]
+      ended.turns[ended.turns.count - 1] = turn(13)
+      view.host.detail = ended
+      try await view.until("the interim message folds") { view.documentHeight < height - 1 }
+      try await view.settle()
+      #expect(view.folds.holds)
+      #expect(abs(view.origin - origin) <= 0.5, "the turn's end moved it by \(view.origin - origin)")
+    }
+
+    @Test func anotherThreadShownWhileHeldOpensAtItsEnd() async throws {
+      let view = try Hosted(twelveTurns())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      view.folds.toggle("t10")
+      try await view.settle()
+      #expect(view.folds.holds)
+
+      // Another long thread with as many items and turns, so no count changes with the switch.
+      var other = twelveTurns()
+      other.thread.id = "other"
+      other.turns = other.turns.map { turn in
+        var copy = turn
+        copy.id = "o-\(turn.id)"
+        copy.threadId = "other"
+        return copy
+      }
+      other.items = other.items.map { item in
+        var copy = item
+        copy.id = "o-\(item.id)"
+        copy.threadId = "other"
+        copy.turnId = item.turnId.map { "o-\($0)" }
+        return copy
+      }
+      view.host.detail = other
+      try await view.until("the turn is closed") { view.folds.open.isEmpty }
+      try await view.settle()
+      #expect(!view.folds.holds)
+      // The document's height is still the lazy stack's estimate for rows of the old thread it has not
+      // laid out again, so the end is found by going there, as a reader would.
+      let short = try await view.distanceToEnd()
+      #expect(short >= -0.5 && short <= LLA.Metrics.margin + 1.5, "short of the end by \(short)")
     }
 
     @Test func sendingAMessageReleasesTheHold() async throws {

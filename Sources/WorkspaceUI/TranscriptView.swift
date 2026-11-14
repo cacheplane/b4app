@@ -95,7 +95,13 @@ struct TranscriptView: View {
         folds.release()
         proxy.scrollTo("bottom", anchor: .bottom)
       }
-      .onChange(of: detail.thread.id) { _, _ in folds.reset() }
+      // The same view shows the next thread. If a turn held this one, a `follow` that ran first in this
+      // update saw the hold and did nothing, so the next thread is taken to its end here.
+      .onChange(of: detail.thread.id) { _, _ in
+        let held = folds.holds
+        folds.reset()
+        if held { proxy.scrollTo("bottom", anchor: .bottom) }
+      }
     }
   }
 
