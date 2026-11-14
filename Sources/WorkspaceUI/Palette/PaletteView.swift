@@ -59,7 +59,8 @@ struct MatchedTitle: View {
   }
 }
 
-/// A row's leading slot: a thread's mark, a command's symbol in the ghost colour, or the typed slash.
+/// A row's leading slot: a thread's mark, a command's symbol at the text's weight in the muted
+/// colour, or the typed slash.
 struct PaletteLead: View {
   let item: PaletteItem
   var selected = false
@@ -71,10 +72,10 @@ struct PaletteLead: View {
       } else if item.isSlash {
         Text("/").font(LLAFont.code)
       } else if let symbol = item.symbol {
-        Image(systemName: symbol).font(.system(size: 12, weight: .light))
+        Image(systemName: symbol).font(.system(size: 13, weight: .regular))
       }
     }
-    .foregroundStyle(selected ? LLA.Color.muted : LLA.Color.ghost)
+    .foregroundStyle(item.state == nil && !item.isSlash || selected ? LLA.Color.muted : LLA.Color.ghost)
     .frame(width: LLA.Space.l, height: LLA.Space.l)
     .accessibilityHidden(true)
   }
@@ -238,7 +239,7 @@ struct PaletteLead: View {
           }
           .accessibilityLabel(palette.purpose.title)
           .accessibilityIdentifier("palette-field")
-        Text("esc").font(LLAFont.codeSmall).foregroundStyle(LLA.Color.muted).accessibilityHidden(true)
+        KeyCaps([.escape]).help(palette.depth > 1 ? "Back (Escape)" : "Close (Escape)")
       }
       .padding(.horizontal, LLA.Space.l)
       .frame(minHeight: Self.fieldHeight)
@@ -251,7 +252,7 @@ struct PaletteLead: View {
     }
 
     private func move(_ delta: Int) -> KeyPress.Result {
-      withAnimation(reduceMotion ? nil : .snappy(duration: 0.09, extraBounce: 0)) {
+      withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) {
         scrollTarget = palette.move(by: delta)
       }
       return .handled
@@ -327,25 +328,25 @@ struct PaletteLead: View {
               .foregroundStyle(LLA.Color.ink).accessibilityHidden(true)
           }
           if let shortcut = item.shortcut {
-            Text(shortcut).font(LLAFont.codeSmall).foregroundStyle(LLA.Color.muted).fixedSize()
+            KeyCaps(label: shortcut)
+          }
+          if item.hasActions {
+            Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+              .foregroundStyle(LLA.Color.ghost).accessibilityHidden(true)
           }
         }
         .padding(.horizontal, LLA.Space.s)
         .frame(height: Self.rowHeight)
-        .background {
-          if selected {
-            RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
-              .fill(LLA.Color.surfaceRaised)
-              .matchedGeometryEffect(id: "selection", in: highlight)
-          }
-        }
+        .selectionHighlight(selected, in: highlight)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .id(item.id)
-      // The pointer selects at once, with no slide, and only when it is the pointer that moved.
+      // The pointer takes the highlight with the same glide as the keys (D-222), and only when it
+      // is the pointer that moved.
       .onContinuousHover(coordinateSpace: .global) { phase in
-        if case .active(let point) = phase, pointer.moved(to: point) { palette.select(item.id) }
+        guard case .active(let point) = phase, pointer.moved(to: point) else { return }
+        withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) { palette.select(item.id) }
       }
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(item.spoken)
@@ -375,22 +376,23 @@ struct PaletteLead: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("palette-context")
         if palette.canShowActions {
-          hint("Actions", key: "\u{21E5}") { palette.showActions() }
+          hint("Actions", keys: [.tab]) { palette.showActions() }
         } else if palette.depth > 1 {
-          hint("Back", key: "\u{21E7}\u{21E5}") { back() }
+          hint("Back", keys: [.shift, .tab]) { back() }
         }
         Button {
           Task { await palette.activate() }
         } label: {
           HStack(spacing: LLA.Space.s) {
             Text(palette.primaryLabel).font(LLAFont.caption).foregroundStyle(LLA.Color.ink).lineLimit(1)
-            Text("\u{21A9}").font(LLAFont.codeSmall).foregroundStyle(LLA.Color.muted)
+            KeyCaps([.return])
           }
         }
         .buttonStyle(.plain)
         .disabled(!palette.primaryEnabled)
         .opacity(palette.primaryEnabled ? 1 : 0.45)
-        .accessibilityLabel(palette.primaryLabel)
+        .help("Return")
+        .accessibilityLabel("\(palette.primaryLabel), Return")
         .accessibilityIdentifier("palette-primary")
       }
       .padding(.horizontal, LLA.Space.l)
@@ -403,16 +405,17 @@ struct PaletteLead: View {
       return false
     }
 
-    private func hint(_ title: String, key: String, action: @escaping () -> Void) -> some View {
+    /// A footer hint: what a key does, and the key in caps. VoiceOver and the tooltip name the key.
+    private func hint(_ title: String, keys: [HintKey], action: @escaping () -> Void) -> some View {
       Button(action: action) {
         HStack(spacing: LLA.Space.s) {
-          Text(title).font(LLAFont.caption)
-          Text(key).font(LLAFont.codeSmall)
+          Text(title).font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
+          KeyCaps(keys)
         }
-        .foregroundStyle(LLA.Color.muted)
       }
       .buttonStyle(.plain)
-      .accessibilityLabel(title)
+      .help(HintKey.spoken(keys))
+      .accessibilityLabel("\(title), \(HintKey.spoken(keys))")
     }
   }
 #endif

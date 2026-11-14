@@ -219,13 +219,11 @@ struct NewThreadView: View {
     if slash.isShowing {
       // While completions show, Return picks one: a typed slash never starts a thread.
       Button(slash.selected?.primary ?? "Choose", systemImage: "return") { chooseSlash(draft) }
-        .returnSends()
         .buttonStyle(style)
         .disabled(slash.selected?.isAvailable != true)
         .accessibilityIdentifier("slash-choose")
     } else {
       Button("Send", systemImage: "arrow.up") { Task { await draft.send() } }
-        .returnSends()
         .buttonStyle(style)
         .disabled(!draft.canSend)
         .accessibilityIdentifier("send")
