@@ -410,32 +410,6 @@
       try await settle()
     }
 
-    /// A drag ends where the pointer is released, even when the last stretch came with the release
-    /// and no drag event: a synthesized drag on a slow machine sends a few large steps, and CI's
-    /// screen test found the palette left one step (12 pt) short of the pointer.
-    @Test func aDragEndsWhereThePointerIsReleased() async throws {
-      let state = PanelState()
-      let host = try shortWindow(state)
-      defer { host.window.close() }
-      state.shown = true
-      try await settle()
-      let panel = try #require(host.window.childWindows?.first as? PalettePanel)
-      let home = panel.frame.origin
-      let grip = CGPoint(x: panel.frame.minX + 60, y: panel.frame.maxY - 20)
-      try send(.leftMouseDown, at: grip, to: panel)
-      // Away from every line, then released 12 pt further on with no drag event for that stretch.
-      for step in 1...14 {
-        try send(.leftMouseDragged, at: CGPoint(x: grip.x + CGFloat(step) * 12, y: grip.y - 40), to: panel)
-        pump()
-      }
-      try send(.leftMouseUp, at: CGPoint(x: grip.x + 180, y: grip.y - 40), to: panel)
-      try await settle()
-      #expect(abs(panel.frame.origin.x - home.x - 180) < 0.5, "now \(panel.frame.origin) home \(home)")
-      #expect(abs(panel.frame.origin.y - home.y + 40) < 0.5)
-      state.shown = false
-      try await settle()
-    }
-
     /// The empty part of a palette's field drags it, with the cursor in the field (as it always is in
     /// an open palette): the press lands on the field's editor, not on the field.
     @Test func theEmptyPartOfAFocusedFieldDragsThePanel() async throws {
@@ -466,6 +440,33 @@
       try await settle()
       #expect(abs(panel.frame.origin.x - home.x - 180) < 0.5, "\(what)")
       #expect(abs(panel.frame.origin.y - home.y + 130) < 0.5, "\(what)")
+      state.shown = false
+      try await settle()
+    }
+
+    /// The panel ends a drag where the pointer was released, when no drag event came from there: a
+    /// busy machine drops the last ones, and CI's screen test found the palette one step short.
+    @Test func aDragEndsWhereThePointerIsReleased() async throws {
+      let state = PanelState()
+      let host = try shortWindow(state)
+      defer { host.window.close() }
+      state.shown = true
+      try await settle()
+      let panel = try #require(host.window.childWindows?.first as? PalettePanel)
+      let home = panel.frame.origin
+      let grip = CGPoint(x: panel.frame.minX + 60, y: panel.frame.maxY - 20)
+      try send(.leftMouseDown, at: grip, to: panel)
+      // Fourteen of fifteen steps arrive; the release is at the fifteenth.
+      for step in 1...14 {
+        try send(
+          .leftMouseDragged, at: CGPoint(x: grip.x + CGFloat(step) * 12, y: grip.y - CGFloat(step) * 9),
+          to: panel)
+        pump()
+      }
+      try send(.leftMouseUp, at: CGPoint(x: grip.x + 180, y: grip.y - 135), to: panel)
+      try await settle()
+      #expect(abs(panel.frame.origin.x - home.x - 180) < 0.5)
+      #expect(abs(panel.frame.origin.y - home.y + 135) < 0.5)
       state.shown = false
       try await settle()
     }

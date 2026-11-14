@@ -164,10 +164,17 @@ jobs:
           -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
 
   # The fixture app builds from the package, not from the four app builds, so it runs beside them.
+  # Two shards of the reviewed plan (Tests/iOSLayout/UITests/shards.json), each checked against the
+  # whole plan; "ios-layout-result" below reports them under the name the branch protection requires.
   ios-layout:
-    name: iOS navigation and banner regression tests
+    name: iOS layout tests (shard ${{ matrix.shard }} of 2)
     runs-on: macos-26
-    timeout-minutes: 40
+    timeout-minutes: 30
+    strategy:
+      # A failure in one shard says nothing about the other's tests: let both report.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
@@ -190,8 +197,7 @@ jobs:
           B4APP_LAYOUT_SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
           B4APP_LAYOUT_DESTINATION: ${{ steps.simulator.outputs.destination }}
           B4APP_LAYOUT_DERIVED_DATA: .build/DerivedData
-          B4APP_LAYOUT_EXPECTED_UI_TESTS: "13"
-          B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS: "3"
+          B4APP_LAYOUT_SHARD: ${{ matrix.shard }}
           B4APP_LAYOUT_FOCUSED_COVERAGE: "0"
         run: |
           set -euo pipefail
@@ -201,9 +207,26 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ios-layout-results
+          name: ios-layout-results-shard-${{ matrix.shard }}
           path: .build/iOSLayout/Results-*.xcresult
           retention-days: 7
+
+  # The required check. It always runs, so a cancelled or skipped shard fails it instead of leaving
+  # it skipped, which the branch protection would take for a pass.
+  ios-layout-result:
+    name: iOS navigation and banner regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: ios-layout
+    if: always()
+    permissions: {}
+    steps:
+      - name: Every shard passed
+        env:
+          SHARDS: ${{ needs.ios-layout.result }}
+        run: |
+          echo "iOS layout shards: $SHARDS"
+          test "$SHARDS" = success
 
   macos-smoke:
     name: macOS recovery smoke tests
