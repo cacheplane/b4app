@@ -1,6 +1,6 @@
 ## 2026-11-11 (Agent Protocol client foundation)
 
-- **D-228 Standard Agent Protocol profiles replace legacy B4 execution through a coordinated client cutover.** The approved implementation contract is in `docs/superpowers/specs/2026-11-05-b4app-agent-protocol-design.md`; the execution plan records current-main integration and open acceptance work.
+- **D-230 Standard Agent Protocol profiles replace legacy B4 execution through a coordinated client cutover.** The approved implementation contract is in `docs/superpowers/specs/2026-11-05-b4app-agent-protocol-design.md`; the execution plan records current-main integration and open acceptance work.
   - **Wire and identity.** Foundation-only DTOs and HTTP/SSE/WebSocket transport follow the pinned OpenAPI/CDDL definitions and documented correction, with explicit credentials, deployment-prefix confinement and no legacy dialect fallback. The checked-in schema/corpus are exact packed SDK bytes; their manifest distinguishes an unpublished immutable source-staging pack from the eventual coordinated release artifact.
   - **History.** The local protocol schema follows immutable published view-settings13 and connection-commands14 as migration 15. Published SQL11/12/13/14 remain immutable. Historical B4 connections keep cached conversations, drafts, opaque payloads, unresolved outcomes and old identities; they are locally read-only and never silently converted into active protocol profiles. Staged protocol profiles explicitly refuse execution until the standard client is implemented.
   - **Unpublished identity schema.** Unpublished protocol migration 15 retains the reviewed generation-qualified design: subscription native generation XOR separate generic localObservationEpoch; segment PK `(connectionId,threadId,identityEpochKind,identityEpochId,namespace,nativeRunId)` with `b4`/`local` kinds. Native IDs and namespace arrays stay intact. Retained segments do not FK to the subscription's current epoch. No-pending15 admission checks the two epoch tables' public identity, all live columns/order/types/typmod/nullability and valid ordered PK. It does not inspect CHECK expressions; XOR/kind are SQL invariants with separate controls. Original development protocol13 aliases and incompatible epoch shapes refuse without guessed backfill; original DDL remains a negative fixture.
@@ -19,5 +19,5 @@
     Genuine15 density stays raw through16. Old private protocol13/14/15 aliases refuse; dated
     receipts retain their historical labels. Binary support2/minimum1 and every release hold remain.
     Published D-218 density, D-220 phone Return and D-221 keycaps remain unchanged. D-222 belongs
-    to the separate picker work; this unpublished protocol decision is D-228 and the relay
+    to the separate picker work; this unpublished protocol decision is D-230 and the relay
     close-cause decision is D-229. Native qualification on this combined source is unobserved.

@@ -562,7 +562,7 @@ Published commands occupy Store `0014_connection_commands.sql`, Hub
 resources move, byte for byte, to Store `0016_agent_protocol.sql` and Hub
 `0023_client_protocol.sql`. Future protocol phone Mirror11 remains documentation only. Published
 SQL, the complete current Mirror1–10 and Infra SQL stay immutable. Binary support2/minimum1
-remain unchanged. The current unpublished decisions are protocol D-228 and relay D-229;
+remain unchanged. The current unpublished decisions are protocol D-230 and relay D-229;
 published D-218 density, D-220 phone Return and D-221 keycaps are unchanged, and separate picker
 work D-222 is not appropriated. Historical private protocol14/15 and Hub21/22 labels above and in
 dated receipts remain historical labels, never accepted migration aliases.
