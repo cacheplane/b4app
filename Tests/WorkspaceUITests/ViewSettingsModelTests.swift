@@ -337,6 +337,21 @@ import WorkspaceProtocol
     }
   }
 
+  /// A dense composer (one line for the pickers) is the Mac's: the phone and the iPad keep their
+  /// pickers at either density.
+  @Test func aDenseComposerIsTheMacsAlone() async throws {
+    let transport = ScriptedTransport()
+    transport.script(.viewSettingsGet, [try Self.reply(ViewSettings(density: .dense))])
+    let model = try await Self.connected(transport)
+    #expect(model.viewSettings.density == .dense)
+    #if os(iOS)
+      #expect(!model.denseComposer)
+    #else
+      #expect(model.denseComposer)
+    #endif
+    await model.disconnect()
+  }
+
   @Test func quietThreadsIsDisabledByEnvironment() {
     #expect(!ViewOptions.quietThreadsDisabled(ViewSettings()))
     #expect(!ViewOptions.quietThreadsDisabled(ViewSettings(quietThreads: .hidden)))

@@ -3,9 +3,10 @@ import UniformTypeIdentifiers
 import WorkspaceProtocol
 
 /// A new thread from a blank composer (the new-thread composer spec, "The Mac" and "The iPhone"): a
-/// headline, the field, the picker row under it, and the draft's start status. Nothing exists until
-/// Send, which creates the thread, starts its first turn, and opens it. The draft is the device's one
-/// `newThreadDraft`, so its text and choices outlive this screen.
+/// headline, the field, the picker row under it (at dense, on the Mac, one line naming its choices), and
+/// the draft's start status. Nothing exists until Send, which creates the thread, starts its first turn,
+/// and opens it. The draft is the device's one `newThreadDraft`, so its text and choices outlive this
+/// screen.
 ///
 /// The Mac (and any regular width) centres the headline and the field in the reading column, the
 /// headline centred over the field (the thread list and environments design, "Starting a thread"); a
@@ -189,9 +190,25 @@ struct NewThreadView: View {
       // Below the field, over the picker row, so the headline above never moves.
       .slashCompletions(slash, placement: .below) { chooseSlash(draft) }
       .onChange(of: draft.text) { old, new in slash.textChanged(from: old, to: new) }
-      ComposerPickerRow(model: model, .draft(draft), openPlaces: openPlaces)
-        .padding(.top, LLA.Space.s)
+      if model.denseComposer {
+        denseLines(draft)
+      } else {
+        ComposerPickerRow(model: model, .draft(draft), openPlaces: openPlaces)
+          .padding(.top, LLA.Space.s)
+        statusLine(draft)
+      }
+    }
+  }
+
+  /// Dense, on the Mac: one line where the picker row is. "Starting…" or a failed start takes its row
+  /// and the line returns after; why Send is off is about the place, so it goes under the line.
+  @ViewBuilder private func denseLines(_ draft: NewThreadDraft) -> some View {
+    if draft.status != nil {
       statusLine(draft)
+    } else {
+      ComposerSummaryLine(summary: .draft(draft, in: model))
+        .padding(.top, LLA.Space.s)
+      if let reason = draft.blockedReason, notice == nil { reasonLine(reason) }
     }
   }
 
@@ -252,11 +269,15 @@ struct NewThreadView: View {
       .accessibilityElement(children: .combine)
       .accessibilityIdentifier("new-thread-status")
     } else if let reason = draft.blockedReason, notice == nil {
-      Text(reason)
-        .llaCaption()
-        .padding(.horizontal, ComposerField<EmptyView>.textLeading)
-        .padding(.top, LLA.Space.s)
-        .accessibilityIdentifier("new-thread-reason")
+      reasonLine(reason)
     }
+  }
+
+  private func reasonLine(_ reason: String) -> some View {
+    Text(reason)
+      .llaCaption()
+      .padding(.horizontal, ComposerField<EmptyView>.textLeading)
+      .padding(.top, LLA.Space.s)
+      .accessibilityIdentifier("new-thread-reason")
   }
 }

@@ -1207,6 +1207,16 @@ public final class WorkspaceModel {
   /// Dense draws a thread as message, line, answer. Both platforms.
   var denseThread: Bool { viewSettings.density == .dense }
 
+  /// Dense draws the composer with one line in place of its row of pickers. The Mac only: the phone and
+  /// the iPad keep their pickers at either density.
+  var denseComposer: Bool {
+    #if os(macOS)
+      viewSettings.density == .dense
+    #else
+      false
+    #endif
+  }
+
   /// One setting, written optimistically (decision 12): shown at once, then sent with only that field.
   /// The answer's row may predate a later set or a change from elsewhere, so only this field is taken
   /// from it, and only while the field still shows this write's value; the other fields are left to

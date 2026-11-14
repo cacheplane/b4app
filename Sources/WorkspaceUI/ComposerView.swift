@@ -52,8 +52,13 @@ struct ComposerView: View {
       }
       .slashCompletions(slash, placement: .above) { chooseSlash() }
       .disabled(unreachable != nil)
-      // Where the thread runs, and the permission and model its next turn uses.
-      ComposerPickerRow(model: model, .thread(detail.thread))
+      // Where the thread runs, and the permission and model its next turn uses; at dense, on the Mac,
+      // one line naming the runtime and permission.
+      if model.denseComposer {
+        ComposerSummaryLine(summary: .thread(detail.thread, in: model))
+      } else {
+        ComposerPickerRow(model: model, .thread(detail.thread))
+      }
     }
     .padding(.horizontal, LLA.Metrics.margin)
     .padding(.top, LLA.Space.s)
