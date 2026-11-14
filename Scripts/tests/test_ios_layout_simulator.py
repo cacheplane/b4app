@@ -201,7 +201,9 @@ class SimulatorWorkflowTests(unittest.TestCase):
         result = workflow[workflow.index('\n  ios-layout-result:'):workflow.index('\n  macos-smoke:')]
         # The name the branch protection requires, on a job that cannot be skipped.
         self.assertIn('name: iOS navigation and banner regression tests\n', result)
-        self.assertIn('needs: ios-layout\n', result)
+        self.assertIn('needs: [scope, ios-layout]\n', result)
+        # The one skip it accepts is the scope job's explicit "false" (test_ci_scope.py).
+        self.assertIn('if [ "$APPLE" = false ] && [ "$SHARDS" = skipped ]; then', result)
         self.assertIn('if: always()\n', result)
         self.assertIn('test "$SHARDS" = success', result)
 
