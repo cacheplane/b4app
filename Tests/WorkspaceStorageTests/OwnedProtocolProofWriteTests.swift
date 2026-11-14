@@ -5082,11 +5082,15 @@ extension OwnedProtocolProofWriteTests {
       "owned_bind_commit_normal":
         "CREATE CONSTRAINT TRIGGER owned_bind_commit_normal AFTER UPDATE ON public.settings DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (new.key = '__b4app_agent_protocol_activation_v1'::text) EXECUTE FUNCTION owned_bind_stage.commit_normal()",
     ]
+    diagnostic.enter(.triggerRowCount)
     guard triggers.count == 2 else { throw FixtureFailure.nativeShape }
     for row in triggers {
-      guard let name = row.text("name"), row.text("definition") == expectedTriggers[name],
-        row.text("exact_function") == "t"
-      else { throw FixtureFailure.nativeShape }
+      diagnostic.enter(.triggerNameValue)
+      guard let name = row.text("name") else { throw FixtureFailure.nativeShape }
+      diagnostic.enter(.triggerDefinitionValue)
+      guard row.text("definition") == expectedTriggers[name] else { throw FixtureFailure.nativeShape }
+      diagnostic.enter(.triggerFunctionIdentity)
+      guard row.text("exact_function") == "t" else { throw FixtureFailure.nativeShape }
     }
     diagnostic.enter(.catalogCapture)
     let recipe = OwnedDeferredRecipe(stage: stage, catalog: try ownedDeferredCatalog(f.inspector))
@@ -6135,7 +6139,8 @@ extension OwnedProtocolProofWriteTests {
     enum Phase: String {
       case oldFour, fixtureConstruct, fixtureValidate, freeze, oldInstall, privateDDL
       case controlInsert, functionCreate, functionCount, functionSource, functionSignatureAndAttributes
-      case privateObjects, columns, constraints, sequences, triggerDefinition, catalogCapture
+      case privateObjects, columns, constraints, sequences, triggerDefinition
+      case triggerRowCount, triggerNameValue, triggerDefinitionValue, triggerFunctionIdentity, catalogCapture
       case recipeNamesRowsMeta, recipeConfig, recipeCatalog, initialState, damage, beforeCheckpoint
       case gateClear, holderStart, holderReady, rawStart, observeCommit, resultCapture, drainReturned
       case rawResult, afterCheckpoint, imageAndProbes, observations, q01 = "Q01", configTransition
