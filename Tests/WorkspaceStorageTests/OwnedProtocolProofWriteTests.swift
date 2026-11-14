@@ -6270,3 +6270,668 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 }
+
+extension OwnedProtocolProofWriteTests {
+  private enum OwnedT12Outcome: Equatable {
+    case current, stale, noncommit, commitTimeoutUnknown
+
+    var disposition: ProtocolProofWriteDisposition {
+      switch self {
+      case .current: return .committedCurrent
+      case .stale: return .committedStale
+      case .noncommit: return .confirmedNoncommit
+      case .commitTimeoutUnknown: return .unknown
+      }
+    }
+    var committed: Bool { self == .current || self == .stale }
+    var calls: Int { self == .noncommit ? 1 : (self == .commitTimeoutUnknown ? 3 : 4) }
+  }
+
+  private enum OwnedT12Mode: Equatable { case openDisposal, closingLease }
+
+  // Coordinator-local primitive identity. It contains no native handle or proof capability.
+  private struct OwnedT12BackendIdentity {
+    let socketDir: String
+    let port: Int
+    let database: String
+    let user: String
+    let application: String
+    let pid: Int
+    let backendStart: String
+  }
+
+  private struct OwnedT12Ordinary {
+    let alias: PostgresConnection
+    let identity: OwnedT12BackendIdentity
+  }
+
+  // Only these fixed primitive facts leave a fully unwound fixture.
+  private struct OwnedT12UnitFacts {
+    let admittedWriters: Int
+    let writerCalls: Int
+    let redemptionCalls: Int
+    let nativeWaits: Int
+    let normalHolders: Int
+    let openAbsences: Int
+    let laterOrdinary: Int
+    let busyClose: Int
+    let drainedClose: Int
+    let closedRefusals: Int
+    let timeoutAllocations: Int
+    let qualified: Bool
+  }
+
+  private struct OwnedT12Facts {
+    let oldControls: Int
+    let newControls: Int
+    let rawAttempts: Int
+    let rawHolders: Int
+    let units: Int
+    let admittedWriters: Int
+    let publicEntries: Int
+    let writerCalls: Int
+    let redemptionCalls: Int
+    let nativeWaits: Int
+    let normalHolders: Int
+    let openAbsences: Int
+    let laterOrdinary: Int
+    let busyClose: Int
+    let drainedClose: Int
+    let closedRefusals: Int
+    let timeoutAllocations: Int
+    let qualified: Bool
+  }
+
+  private static let ownedT12IdentityColumns = """
+    SELECT a.pid::text AS pid,a.backend_start::text AS backend_start,
+      a.datname AS database,a.usename::text AS username,a.application_name AS application,
+      pg_catalog.current_database() AS observer_database,current_user::text AS observer_user
+    FROM pg_catalog.pg_stat_activity a
+    """
+
+  private static func ownedT12Identity(
+    _ rows: [Row], fixture f: Fixture
+  ) throws -> OwnedT12BackendIdentity {
+    let endpoint = f.database.endpoint
+    guard rows.count == 1, let row = rows.first, let pid = row.int("pid"), pid > 0,
+      let start = row.text("backend_start"), !start.isEmpty,
+      let database = row.text("database"), equalBytes(database, endpoint.database),
+      let user = row.text("username"), equalBytes(user, NSUserName()),
+      let application = row.text("application"), equalBytes(application, "b4app"),
+      row.text("observer_database").map({ equalBytes($0, endpoint.database) }) == true,
+      row.text("observer_user").map({ equalBytes($0, user) }) == true
+    else { throw FixtureFailure.nativeShape }
+    return OwnedT12BackendIdentity(
+      socketDir: endpoint.socketDir, port: endpoint.port, database: database, user: user,
+      application: application, pid: pid, backendStart: start)
+  }
+
+  private static func ownedT12SameSession(
+    _ a: OwnedT12BackendIdentity, _ b: OwnedT12BackendIdentity
+  ) -> Bool {
+    a.port == b.port && a.pid == b.pid && equalBytes(a.socketDir, b.socketDir)
+      && equalBytes(a.database, b.database) && equalBytes(a.user, b.user)
+      && equalBytes(a.application, b.application) && equalBytes(a.backendStart, b.backendStart)
+  }
+
+  private static func ownedT12OrdinaryProbe(_ f: Fixture) throws -> OwnedT12Ordinary {
+    try f.database.read { c in
+      let rows = try c.execute(
+        ownedT12IdentityColumns
+          + " WHERE a.pid=pg_catalog.pg_backend_pid() AND a.backend_type='client backend'"
+      ).rows
+      return OwnedT12Ordinary(alias: c, identity: try ownedT12Identity(rows, fixture: f))
+    }
+  }
+
+  private static func ownedT12AdvisoryHolderReady(
+    _ f: Fixture, state: OwnedBindHolderState, hold: OwnedProofHold,
+    application: String, deadline: UInt64
+  ) throws -> Int {
+    let pid = try ownedBindHolderReady(state, hold: hold, deadline: deadline)
+    let rows = try f.inspector.execute(
+      """
+      SELECT h.pid::text AS pid FROM pg_catalog.pg_stat_activity h
+      JOIN pg_catalog.pg_database db ON db.datname=$1
+      WHERE h.pid=$2::int AND h.datname=$1 AND h.usename=current_user
+        AND h.application_name=$3 AND h.backend_type='client backend'
+        AND h.state='idle in transaction'
+        AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks g WHERE g.pid=h.pid
+          AND g.locktype='advisory' AND g.mode='ExclusiveLock' AND g.granted
+          AND g.database=db.oid AND g.classid=0::oid AND g.objid=$4::oid AND g.objsubid=1)
+      """,
+      [f.database.endpoint.database, String(pid), application, String(WorkspaceDatabase.remoteApplyLockKey)]
+    ).rows
+    let queryEnd = DispatchTime.now().uptimeNanoseconds
+    guard queryEnd <= deadline, rows.count == 1, rows[0].int("pid") == pid,
+      hold.heldUnexpired(), state.snapshot().acquired, state.snapshot().pid == pid
+    else { throw FixtureFailure.nativeShape }
+    return pid
+  }
+
+  private static func ownedT12ObserveWriter(
+    _ f: Fixture, outcome: OwnedT12Outcome, holderPID: Int, knownPIDs: [Int],
+    holderApplication: String, hold: OwnedProofHold, finished: OwnedBindFinished,
+    memory: OwnedBindMemory, invocationStart: Int, probes: OwnedDeferredProbes,
+    deadline: UInt64
+  ) throws -> OwnedT12BackendIdentity {
+    let advisory = outcome == .noncommit
+    let expectedCalls = advisory ? 0 : 3
+    if advisory {
+      try ownedBindObserveWait(
+        f.inspector, database: f.database.endpoint.database, holderPID: holderPID,
+        knownOwnedPIDs: knownPIDs, kind: .advisory, hold: hold, finished: finished,
+        memory: memory, invocationStart: invocationStart, deadline: deadline)
+    } else {
+      try ownedDeferredObserveCommit(
+        f.inspector, database: f.database.endpoint.database, holderPID: holderPID,
+        knownOwnedPIDs: knownPIDs, holderApplication: holderApplication,
+        candidateApplication: "b4app", rawPID: nil, hold: hold, finished: finished,
+        memory: memory, invocationStart: invocationStart, probes: probes, deadline: deadline)
+    }
+    // Reuse the SAME protected query and parameters, inside that SAME original window.
+    let excluded = "{" + knownPIDs.map(String.init).joined(separator: ",") + "}"
+    let sql = advisory ? ownedBindAdvisoryWait : ownedDeferredCommitWait
+    let parameters: [String?] =
+      advisory
+      ? [
+        f.database.endpoint.database, String(holderPID), String(WorkspaceDatabase.remoteApplyLockKey),
+        "SELECT pg_advisory_xact_lock($1::bigint)", excluded,
+      ]
+      : [
+        f.database.endpoint.database, String(holderPID), "1647600739", excluded,
+        holderApplication, "b4app", "1647599984",
+      ]
+    func pendingWithinWindow() -> Bool {
+      DispatchTime.now().uptimeNanoseconds <= deadline && hold.heldUnexpired()
+        && finished.pending() && memory.calls() - invocationStart == expectedCalls
+    }
+    guard pendingWithinWindow() else { throw FixtureFailure.nativeShape }
+    let selected = try f.inspector.execute(sql, parameters).rows
+    let selectedEnd = DispatchTime.now().uptimeNanoseconds
+    guard selectedEnd <= deadline, selected.count == 1, let pid = selected[0].int("pid"),
+      pid > 0, !knownPIDs.contains(pid), pendingWithinWindow()
+    else { throw FixtureFailure.nativeShape }
+    if !advisory {
+      guard let age = selected[0].text("age_us").flatMap(Int64.init), age >= 0 else {
+        throw FixtureFailure.nativeShape
+      }
+    }
+    let identitySQL =
+      ownedT12IdentityColumns
+      + " WHERE a.pid=$1::int AND a.datname=$2 AND a.usename=current_user"
+      + " AND a.application_name='b4app' AND a.backend_type='client backend'"
+      + " AND a.backend_start IS NOT NULL"
+    let identityParameters: [String?] = [String(pid), f.database.endpoint.database]
+    let scoped = try f.inspector.execute(identitySQL, identityParameters).rows
+    let identityEnd = DispatchTime.now().uptimeNanoseconds
+    guard identityEnd <= deadline, pendingWithinWindow() else { throw FixtureFailure.nativeShape }
+    let identity = try ownedT12Identity(scoped, fixture: f)
+    guard identity.pid == pid else { throw FixtureFailure.nativeShape }
+    // Identity is never accepted after release or timeout. The exact owned wait must still exist.
+    let revalidated = try f.inspector.execute(sql, parameters).rows
+    let revalidatedEnd = DispatchTime.now().uptimeNanoseconds
+    guard revalidatedEnd <= deadline, revalidated.count == 1,
+      revalidated[0].int("pid") == pid, pendingWithinWindow()
+    else { throw FixtureFailure.nativeShape }
+    if !advisory {
+      guard let age = revalidated[0].text("age_us").flatMap(Int64.init), age >= 0 else {
+        throw FixtureFailure.nativeShape
+      }
+    }
+    let sameIdentityRows = try f.inspector.execute(identitySQL, identityParameters).rows
+    let sameIdentityEnd = DispatchTime.now().uptimeNanoseconds
+    guard sameIdentityEnd <= deadline, pendingWithinWindow(),
+      ownedT12SameSession(try ownedT12Identity(sameIdentityRows, fixture: f), identity)
+    else { throw FixtureFailure.nativeShape }
+    let actualProbes = try ownedDeferredProbes(f.inspector)
+    let probesEnd = DispatchTime.now().uptimeNanoseconds
+    guard probesEnd <= deadline, pendingWithinWindow(),
+      actualProbes.advanced(from: probes, body: advisory ? 0 : 1, commit: advisory ? 0 : 1, timeout: 0)
+    else { throw FixtureFailure.nativeShape }
+    return identity
+  }
+
+  private static func ownedT12Absent(
+    _ f: Fixture, identity: OwnedT12BackendIdentity
+  ) throws {
+    let endpoint = f.database.endpoint
+    guard equalBytes(identity.socketDir, endpoint.socketDir), identity.port == endpoint.port,
+      equalBytes(identity.database, endpoint.database), equalBytes(identity.user, NSUserName()),
+      equalBytes(identity.application, "b4app")
+    else { throw FixtureFailure.nativeShape }
+    let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      // Do not filter scope here: a same pid/start row with wrong scope must FAIL, not look absent.
+      let rows = try f.inspector.execute(
+        ownedT12IdentityColumns + " WHERE a.pid=$1::int AND a.backend_start::text=$2",
+        [String(identity.pid), identity.backendStart]
+      ).rows
+      let queryEnd = DispatchTime.now().uptimeNanoseconds
+      guard queryEnd <= deadline, rows.count <= 1 else { throw FixtureFailure.nativeShape }
+      if rows.isEmpty { return }
+      let present = try ownedT12Identity(rows, fixture: f)
+      guard ownedT12SameSession(present, identity) else { throw FixtureFailure.nativeShape }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedT12Unchanged(
+    _ f: Fixture, recipe: OwnedDeferredRecipe, baseline: Int,
+    diagnostic: OwnedDeferredDiagnostic, checkpoint: OwnedDeferredCheckpoint
+  ) throws {
+    guard
+      try ownedDeferredCheckpointRead(
+        f.inspector, recipe: recipe, mode: "gate", baseline: baseline, diagnostic: diagnostic) == checkpoint
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedT12Redemptions(
+    _ receipt: ProtocolOwnedProofWriteReceipt, outcome: OwnedT12Outcome,
+    fixture f: Fixture, recipe: OwnedDeferredRecipe, baseline: Int,
+    diagnostic: OwnedDeferredDiagnostic, checkpoint: OwnedDeferredCheckpoint,
+    admission: ProtocolProofMemoryAdmission, memory: OwnedBindMemory, mode: OwnedT12Mode
+  ) throws -> Int {
+    let before = memory.calls()
+    guard receipt.operation == .bind, receipt.disposition == outcome.disposition else {
+      throw FixtureFailure.nativeShape
+    }
+    if outcome != .current {
+      // Also checked before the inverse control; the original sealed disposition never upgrades.
+      try ownedDeferredRefuses(
+        receipt, fixture: f, admission: admission, memory: memory, disposition: outcome.disposition)
+      try ownedT12Unchanged(
+        f, recipe: recipe, baseline: baseline, diagnostic: diagnostic, checkpoint: checkpoint)
+      return 0
+    }
+    let wrongReference = "secret:OWNED_T12_DIFFERENT_REFERENCE"
+    let otherMemory = OwnedBindMemory(selected: nil)
+    let otherAdmission = ProtocolProofMemoryAdmission { [otherMemory] in
+      let allowed = otherMemory.compare()
+      if !allowed { throw FixtureFailure.redactedFailure }
+    }
+    guard ProtocolCredentialReference(wrongReference) != nil,
+      !equalBytes(wrongReference, f.link.tokenRef)
+    else { throw FixtureFailure.nativeShape }
+    let wrongReferenceRefused = !validates {
+      _ = try receipt.currentSuccessor(
+        expectedSnapshot: f.anchor, expectedTokenRef: wrongReference, memoryAdmission: admission)
+    }
+    guard wrongReferenceRefused, memory.calls() == before else { throw FixtureFailure.nativeShape }
+    try ownedT12Unchanged(
+      f, recipe: recipe, baseline: baseline, diagnostic: diagnostic, checkpoint: checkpoint)
+    let otherAdmissionRefused = !validates {
+      _ = try receipt.currentSuccessor(
+        expectedSnapshot: f.anchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: otherAdmission)
+    }
+    guard otherAdmissionRefused, memory.calls() == before, otherMemory.calls() == 0 else {
+      throw FixtureFailure.nativeShape
+    }
+    try ownedT12Unchanged(
+      f, recipe: recipe, baseline: baseline, diagnostic: diagnostic, checkpoint: checkpoint)
+    let successor = try receipt.currentSuccessor(
+      expectedSnapshot: f.anchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+    guard memory.calls() == before + 1, successor.observation == nil else {
+      throw FixtureFailure.nativeShape
+    }
+    // Closed-pool redemption is comparison only. Never perform an ordinary checkout after close.
+    if mode == .openDisposal { try validateSuccessor(f, successor) }
+    try ownedT12Unchanged(
+      f, recipe: recipe, baseline: baseline, diagnostic: diagnostic, checkpoint: checkpoint)
+    memory.setCurrent(false)
+    let retiredRefused = !validates {
+      _ = try receipt.currentSuccessor(
+        expectedSnapshot: f.anchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+    }
+    memory.setCurrent(true)
+    guard retiredRefused, memory.calls() == before + 2,
+      receipt.disposition == .committedCurrent, otherMemory.calls() == 0
+    else { throw FixtureFailure.nativeShape }
+    try ownedT12Unchanged(
+      f, recipe: recipe, baseline: baseline, diagnostic: diagnostic, checkpoint: checkpoint)
+    return memory.calls() - before
+  }
+
+  private static func ownedT12Unit(
+    _ target: OwnedT12Outcome, mode: OwnedT12Mode, diagnostic: OwnedDeferredDiagnostic
+  ) throws -> OwnedT12UnitFacts {
+    var facts: OwnedT12UnitFacts?
+    try withFixture { f in
+      let predecessor = try validateFixture(f)
+      let reference = f.link.tokenRef
+      guard ProtocolCredentialReference(reference) != nil,
+        reference.utf8.allSatisfy({ $0 > 0 && $0 < 128 })
+      else { throw FixtureFailure.nativeShape }
+      let stage = try ownedBindFreeze(f, predecessor: predecessor, replacement: reference)
+      let recipe = try ownedDeferredInstall(f, stage: stage, mode: "gate", diagnostic: diagnostic)
+      let initial = try ownedDeferredCheckpointRead(
+        f.inspector, recipe: recipe, mode: "gate", baseline: 0, diagnostic: diagnostic)
+      let zero = OwnedBindProbe(last: 1, called: false)
+      guard initial.image == stage.before, initial.observations.isEmpty,
+        initial.probes == OwnedDeferredProbes(body: zero, commit: zero, timeout: zero)
+      else { throw FixtureFailure.nativeShape }
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        let allowed = memory.compare()
+        if !allowed { throw FixtureFailure.redactedFailure }
+      }
+      let work = OwnedDeferredWork()
+      // This cleanup exists BEFORE the first child, including any partially started attempt.
+      defer { work.releaseAndJoin() }
+      var aliases: [OwnedT12Ordinary] = []
+      var receipts: [ProtocolOwnedProofWriteReceipt] = []
+      var knownPIDs = [inspectorPID]
+      var baseline = 0
+      var writerCalls = 0
+      var openAbsences = 0
+      var laterOrdinary = 0
+      var busyClose = 0
+      var drainedClose = 0
+      var closedRefusals = 0
+      var timeoutAllocations = 0
+      let outcomes: [OwnedT12Outcome] = mode == .openDisposal ? [target, .current] : [.current, target]
+      for (attempt, outcome) in outcomes.enumerated() {
+        let before = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: "gate", baseline: baseline, diagnostic: diagnostic)
+        guard before.image == stage.before, before.observations.count == baseline else {
+          throw FixtureFailure.nativeShape
+        }
+        memory.setCurrent(true)
+        let invocationStart = memory.calls()
+        // Setup and all ordinary calls are sequential. Only this one candidate is idle here.
+        // Retained aliases are never used for SQL while any actual writer can be using them.
+        let old = try ownedT12OrdinaryProbe(f)
+        aliases.append(old)
+        if !knownPIDs.contains(old.identity.pid) { knownPIDs.append(old.identity.pid) }
+        let hold = OwnedProofHold()
+        let state = OwnedBindHolderState()
+        let holderApplication = "owned-t12-gate-\(UUID().uuidString)"
+        work.holds.append(hold)
+        try ownedDeferredGateClear(f.inspector)
+        let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        let holder: OwnedProofNativeWork<OwnedBindHolderResult>
+        let holderPID: Int
+        if outcome == .noncommit {
+          holder = ownedBindHolder(
+            binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+            database: endpoint.database, user: NSUserName(), application: holderApplication,
+            kind: .advisory, hold: hold, state: state)
+          work.holders.append(holder)
+          holderPID = try ownedT12AdvisoryHolderReady(
+            f, state: state, hold: hold, application: holderApplication, deadline: readiness)
+        } else {
+          holder = ownedDeferredHolder(
+            binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+            database: endpoint.database, user: NSUserName(), application: holderApplication,
+            hold: hold, state: state)
+          work.holders.append(holder)
+          holderPID = try ownedDeferredHolderReady(
+            f.inspector, state: state, hold: hold, database: endpoint.database,
+            application: holderApplication, deadline: readiness)
+        }
+        guard !knownPIDs.contains(holderPID) else { throw FixtureFailure.nativeShape }
+        knownPIDs.append(holderPID)
+        let finished = OwnedBindFinished()
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        // Both admitted attempts keep literal ORIGINAL S0/A/binding and the SAME admission.
+        let writer = ownedBindWriter(
+          database: f.database, anchor: f.anchor, binding: f.binding, reference: reference,
+          admission: admission, finished: finished)
+        work.writers.append(writer)
+        let identity = try ownedT12ObserveWriter(
+          f, outcome: outcome, holderPID: holderPID, knownPIDs: knownPIDs,
+          holderApplication: holderApplication, hold: hold, finished: finished,
+          memory: memory, invocationStart: invocationStart, probes: before.probes, deadline: deadline)
+        var closeReturned: Bool?
+        var closeAt: UInt64 = 0
+        var heldAtClose: OwnedProofHold.Facts?
+        var pendingAtClose = false
+        var callsAtClose = 0
+        if mode == .closingLease && attempt == 1 {
+          // Native wait was directly observed under the original deadline. Close only admission.
+          closeReturned = f.database.closeForMigration(timeout: .zero)
+          closeAt = DispatchTime.now().uptimeNanoseconds
+          heldAtClose = hold.snapshot()
+          pendingAtClose = finished.pending()
+          callsAtClose = memory.calls() - invocationStart
+        }
+        if outcome == .noncommit {
+          try ownedBindReleaseObservedHold(
+            hold, finished: finished, memory: memory, invocationStart: invocationStart,
+            retiring: true, deadline: deadline)
+        } else if outcome != .commitTimeoutUnknown {
+          try ownedDeferredRelease(
+            hold, finished: finished, memory: memory, invocationStart: invocationStart,
+            retire: outcome == .stale, deadline: deadline)
+        }
+        // Timeout alone deliberately retains the SAME original eight-second hold until return.
+        // Capture primitives, immediately release ALL, then join ALL before ANY result guard/image.
+        let receipt = writer.join()
+        let receiptAt = DispatchTime.now().uptimeNanoseconds
+        let heldAtReturn = hold.snapshot()
+        work.releaseAndJoin()
+        let held = holder.join()
+        guard !finished.pending(), held.normal, receipt.operation == .bind,
+          receipt.disposition == outcome.disposition,
+          memory.calls() - invocationStart == outcome.calls
+        else { throw FixtureFailure.nativeShape }
+        if outcome == .commitTimeoutUnknown {
+          // Exact native timeout/rethrow is independently qualified by this method's raw R4.
+          // Target cause is inference from that immutable recipe, held actual COMMIT, relative
+          // timeout allocation and sealed unknown; the receipt exports no native SQLSTATE.
+          guard heldAtReturn.entered, heldAtReturn.held, !heldAtReturn.expired,
+            !heldAtReturn.released, receiptAt < heldAtReturn.expiry
+          else { throw FixtureFailure.nativeShape }
+          timeoutAllocations += 1
+        }
+        if mode == .closingLease && attempt == 1 {
+          guard closeReturned == false, let snapshot = heldAtClose,
+            snapshot.entered, snapshot.held, !snapshot.expired, !snapshot.released,
+            closeAt < snapshot.expiry, closeAt <= deadline, pendingAtClose,
+            callsAtClose == (outcome == .noncommit ? 0 : 3)
+          else { throw FixtureFailure.nativeShape }
+          busyClose += 1
+        }
+        let after = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: "gate", baseline: baseline, diagnostic: diagnostic)
+        guard after.image == (outcome.committed ? stage.expected : stage.before),
+          after.probes.advanced(
+            from: before.probes, body: outcome == .noncommit ? 0 : 1,
+            commit: outcome == .noncommit ? 0 : 1,
+            timeout: outcome == .commitTimeoutUnknown ? 1 : 0)
+        else { throw FixtureFailure.nativeShape }
+        if outcome.committed {
+          try ownedDeferredAppendObservation(
+            f.inspector, stage: stage, old: before.observations, actual: after.observations,
+            rawMillis: nil)
+        } else {
+          guard after.observations == before.observations else { throw FixtureFailure.nativeShape }
+        }
+        writerCalls += memory.calls() - invocationStart
+        receipts.append(receipt)
+        if mode == .openDisposal {
+          // No close/drain/fixture teardown precedes this bounded disappearance observation.
+          // Actual receipts and every legitimate ordinary alias remain alive across both checks.
+          let later = try withExtendedLifetime((aliases, receipts)) {
+            try ownedT12Absent(f, identity: identity)
+            let probe = try ownedT12OrdinaryProbe(f)
+            guard !ownedT12SameSession(probe.identity, identity),
+              aliases.allSatisfy({ !ownedT12SameSession(probe.identity, $0.identity) })
+            else { throw FixtureFailure.nativeShape }
+            return probe
+          }
+          aliases.append(later)
+          if !knownPIDs.contains(later.identity.pid) { knownPIDs.append(later.identity.pid) }
+          openAbsences += 1
+          laterOrdinary += 1
+        }
+        if !knownPIDs.contains(identity.pid) { knownPIDs.append(identity.pid) }
+        if outcome != .current {
+          try ownedDeferredRefuses(
+            receipt, fixture: f, admission: admission, memory: memory,
+            disposition: outcome.disposition)
+          try ownedT12Unchanged(
+            f, recipe: recipe, baseline: baseline, diagnostic: diagnostic, checkpoint: after)
+        }
+        if attempt == 0 && outcome.committed {
+          // S1 was fully checked FIRST. Q01 changes ONLY the public control; probes stay consumed.
+          try ownedDeferredQ01(f, recipe: recipe, mode: "gate", diagnostic: diagnostic)
+          try ownedDeferredTransition(
+            f, recipe: recipe, oldMode: "gate", oldBaseline: 0,
+            newMode: "gate", newBaseline: 1, diagnostic: diagnostic)
+          baseline = 1
+        }
+        // A noncommit/unknown first target already retained S0/baseline0: no reset/transition.
+      }
+      let finalCheckpoint = try ownedDeferredCheckpointRead(
+        f.inspector, recipe: recipe, mode: "gate", baseline: baseline, diagnostic: diagnostic)
+      if mode == .closingLease {
+        guard f.database.closeForMigration(timeout: .zero) else { throw FixtureFailure.nativeShape }
+        drainedClose += 1
+        memory.setCurrent(true)
+        let invocationStart = memory.calls()
+        let finished = OwnedBindFinished()
+        // Additional public entry is a CLOSED pre-BEGIN refusal, not an admitted target/control.
+        let closedWriter = ownedBindWriter(
+          database: f.database, anchor: f.anchor, binding: f.binding, reference: reference,
+          admission: admission, finished: finished)
+        work.writers.append(closedWriter)
+        let closedReceipt = closedWriter.join()
+        let closedReceiptAt = DispatchTime.now().uptimeNanoseconds
+        work.releaseAndJoin()
+        guard !finished.pending(), closedReceiptAt > 0, closedReceipt.operation == .bind,
+          closedReceipt.disposition == .confirmedNoncommit, memory.calls() == invocationStart
+        else { throw FixtureFailure.nativeShape }
+        try ownedDeferredRefuses(
+          closedReceipt, fixture: f, admission: admission, memory: memory,
+          disposition: .confirmedNoncommit)
+        try ownedT12Unchanged(
+          f, recipe: recipe, baseline: baseline, diagnostic: diagnostic, checkpoint: finalCheckpoint)
+        receipts.append(closedReceipt)
+        closedRefusals += 1
+      }
+      // Restoration is test memory only. Sealed stale/noncommit/unknown receipts remain refused.
+      memory.setCurrent(true)
+      var redemptionCalls = 0
+      for (receipt, outcome) in zip(receipts.prefix(2), outcomes) {
+        redemptionCalls += try ownedT12Redemptions(
+          receipt, outcome: outcome, fixture: f, recipe: recipe, baseline: baseline,
+          diagnostic: diagnostic, checkpoint: finalCheckpoint,
+          admission: admission, memory: memory, mode: mode)
+      }
+      // In the closing order the noncurrent target follows its current control's inverses.
+      // Recheck every noncurrent original after ALL current comparisons, in both orders.
+      for (receipt, outcome) in zip(receipts.prefix(2), outcomes) where outcome != .current {
+        try ownedDeferredRefuses(
+          receipt, fixture: f, admission: admission, memory: memory, disposition: outcome.disposition)
+        try ownedT12Unchanged(
+          f, recipe: recipe, baseline: baseline, diagnostic: diagnostic, checkpoint: finalCheckpoint)
+      }
+      let expectedRedemptions = target == .current ? 4 : 2
+      guard work.holders.count == 2, work.holds.count == 2, work.raw.isEmpty,
+        work.writers.count == (mode == .closingLease ? 3 : 2),
+        receipts.count == work.writers.count, writerCalls == target.calls + 4,
+        redemptionCalls == expectedRedemptions, memory.calls() == writerCalls + redemptionCalls,
+        receipts[0].disposition == outcomes[0].disposition,
+        receipts[1].disposition == outcomes[1].disposition,
+        openAbsences == (mode == .openDisposal ? 2 : 0), laterOrdinary == openAbsences,
+        busyClose == (mode == .closingLease ? 1 : 0), drainedClose == busyClose,
+        closedRefusals == busyClose,
+        timeoutAllocations == (target == .commitTimeoutUnknown ? 1 : 0)
+      else { throw FixtureFailure.nativeShape }
+      // Bounded absence is not PQfinish/ARC quiescence. Group joins are not OS-thread exit.
+      // Unchanged helper -> lease.leave -> slot.signal and no-idle/no-result-capture source
+      // ordering complements these observations; one checkout does not prove all permits.
+      withExtendedLifetime((aliases, receipts)) {}
+      facts = OwnedT12UnitFacts(
+        admittedWriters: 2, writerCalls: writerCalls, redemptionCalls: redemptionCalls,
+        nativeWaits: 2, normalHolders: 2, openAbsences: openAbsences, laterOrdinary: laterOrdinary,
+        busyClose: busyClose, drainedClose: drainedClose, closedRefusals: closedRefusals,
+        timeoutAllocations: timeoutAllocations, qualified: true)
+    }
+    guard let facts, facts.qualified else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  private static func ownedT12Run(_ outcome: OwnedT12Outcome) throws -> OwnedT12Facts {
+    do {
+      // Scratch context only. Never emit its old six-field TASK5 diagnostic as a T12 identity.
+      let diagnostic = OwnedDeferredDiagnostic(unit: .stale)
+      let prerequisites = try ownedDeferredPrerequisites(diagnostic: diagnostic)
+      let open = try ownedT12Unit(outcome, mode: .openDisposal, diagnostic: diagnostic)
+      let closing = try ownedT12Unit(outcome, mode: .closingLease, diagnostic: diagnostic)
+      return OwnedT12Facts(
+        oldControls: prerequisites.old, newControls: prerequisites.controls,
+        rawAttempts: prerequisites.attempts, rawHolders: prerequisites.holders, units: 2,
+        admittedWriters: open.admittedWriters + closing.admittedWriters,
+        publicEntries: open.admittedWriters + closing.admittedWriters + closing.closedRefusals,
+        writerCalls: open.writerCalls + closing.writerCalls,
+        redemptionCalls: open.redemptionCalls + closing.redemptionCalls,
+        nativeWaits: open.nativeWaits + closing.nativeWaits,
+        normalHolders: open.normalHolders + closing.normalHolders,
+        openAbsences: open.openAbsences + closing.openAbsences,
+        laterOrdinary: open.laterOrdinary + closing.laterOrdinary,
+        busyClose: open.busyClose + closing.busyClose,
+        drainedClose: open.drainedClose + closing.drainedClose,
+        closedRefusals: open.closedRefusals + closing.closedRefusals,
+        timeoutAllocations: open.timeoutAllocations + closing.timeoutAllocations,
+        qualified: open.qualified && closing.qualified)
+    } catch {
+      // Every owned child drain and fixture unwind precedes this ONLY fixed failure marker.
+      print("LATE_T12_FAILURE")
+      throw FixtureFailure.redactedFailure
+    }
+  }
+
+  @Test func ownedBindIntegratedCurrentDisposalAndLease() throws {
+    let facts = try Self.ownedT12Run(.current)
+    #expect(facts.oldControls == 4 && facts.newControls == 5)
+    #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
+    #expect(facts.units == 2 && facts.admittedWriters == 4 && facts.publicEntries == 5)
+    #expect(facts.writerCalls == 16 && facts.redemptionCalls == 8)
+    #expect(facts.nativeWaits == 4 && facts.normalHolders == 4)
+    #expect(facts.openAbsences == 2 && facts.laterOrdinary == 2)
+    #expect(facts.busyClose == 1 && facts.drainedClose == 1 && facts.closedRefusals == 1)
+    #expect(facts.timeoutAllocations == 0 && facts.qualified)
+  }
+
+  @Test func ownedBindIntegratedStaleDisposalAndLease() throws {
+    let facts = try Self.ownedT12Run(.stale)
+    #expect(facts.oldControls == 4 && facts.newControls == 5)
+    #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
+    #expect(facts.units == 2 && facts.admittedWriters == 4 && facts.publicEntries == 5)
+    #expect(facts.writerCalls == 16 && facts.redemptionCalls == 4)
+    #expect(facts.nativeWaits == 4 && facts.normalHolders == 4)
+    #expect(facts.openAbsences == 2 && facts.laterOrdinary == 2)
+    #expect(facts.busyClose == 1 && facts.drainedClose == 1 && facts.closedRefusals == 1)
+    #expect(facts.timeoutAllocations == 0 && facts.qualified)
+  }
+
+  @Test func ownedBindIntegratedNoncommitDisposalAndLease() throws {
+    let facts = try Self.ownedT12Run(.noncommit)
+    #expect(facts.oldControls == 4 && facts.newControls == 5)
+    #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
+    #expect(facts.units == 2 && facts.admittedWriters == 4 && facts.publicEntries == 5)
+    #expect(facts.writerCalls == 10 && facts.redemptionCalls == 4)
+    #expect(facts.nativeWaits == 4 && facts.normalHolders == 4)
+    #expect(facts.openAbsences == 2 && facts.laterOrdinary == 2)
+    #expect(facts.busyClose == 1 && facts.drainedClose == 1 && facts.closedRefusals == 1)
+    #expect(facts.timeoutAllocations == 0 && facts.qualified)
+  }
+
+  @Test func ownedBindIntegratedCommitUnknownDisposalAndLease() throws {
+    let facts = try Self.ownedT12Run(.commitTimeoutUnknown)
+    #expect(facts.oldControls == 4 && facts.newControls == 5)
+    #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
+    #expect(facts.units == 2 && facts.admittedWriters == 4 && facts.publicEntries == 5)
+    #expect(facts.writerCalls == 14 && facts.redemptionCalls == 4)
+    #expect(facts.nativeWaits == 4 && facts.normalHolders == 4)
+    #expect(facts.openAbsences == 2 && facts.laterOrdinary == 2)
+    #expect(facts.busyClose == 1 && facts.drainedClose == 1 && facts.closedRefusals == 1)
+    #expect(facts.timeoutAllocations == 2 && facts.qualified)
+  }
+}
