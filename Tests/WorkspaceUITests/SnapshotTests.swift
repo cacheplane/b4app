@@ -879,6 +879,90 @@ private final class BackgroundWindow: NSWindow {
       ], turns: [])
     try await render("dense-thread-history", size: size) { transcript(history) }
   }
+
+  // MARK: a dense composer
+
+  /// The composer at dense on the Mac: one line where the pickers were. A thread's, with the default and
+  /// a chosen permission; the new-thread screen as it opens, starting, failed, blocked, and 420 pt wide with a
+  /// long place; and the new-thread screen at normal density for comparison.
+  @Test func denseComposers() async throws {
+    func model(
+      _ density: ViewSettings.Density, _ transport: ScriptedTransport = ScriptedTransport()
+    ) async throws -> WorkspaceModel {
+      transport.script(.viewSettingsGet, [.result(try JSONValue(encoding: ViewSettings(density: density)))])
+      return try await ListFixture.model(transport)
+    }
+    func composer(_ model: WorkspaceModel, _ thread: ConversationThread) -> some View {
+      ComposerView(model: model, detail: ThreadDetail(thread: thread, turns: [], items: [], requests: []))
+        .frame(maxHeight: .infinity, alignment: .bottom)
+        .background(LLA.Color.bg)
+    }
+
+    let dense = try await model(.dense)
+    var thread = try #require(dense.threads.first { $0.id == "busy" })
+    thread.model = "sonnet"
+    try await render("dense-composer-thread", size: CGSize(width: 720, height: 120)) {
+      composer(dense, thread)
+    }
+    thread.permission = "plan"
+    try await render("dense-composer-thread-permission", size: CGSize(width: 720, height: 120)) {
+      composer(dense, thread)
+    }
+    try await render("dense-composer-new-thread", size: CGSize(width: 720, height: 420)) {
+      NewThreadView(model: dense)
+    }
+    let normal = try await model(.normal)
+    try await render("dense-composer-new-thread-normal", size: CGSize(width: 720, height: 420)) {
+      NewThreadView(model: normal)
+    }
+    await normal.disconnect()
+
+    // A long chosen folder, Claude Code with Plan mode, at 420 pt: the place is cut in the middle.
+    let draft = dense.newThreadDraft
+    draft.chooseFolder(
+      "/Users/brian/repos/" + String(repeating: "a-very-long-folder-name-", count: 4) + "end")
+    draft.selectRuntime(connectionId: "c2", model: nil)
+    draft.selectPermission("plan")
+    try await render("dense-composer-new-thread-narrow", size: CGSize(width: 420, height: 420)) {
+      NewThreadView(model: dense)
+    }
+
+    // Starting: "Starting…" takes the line's row.
+    let transport = ScriptedTransport()
+    let starting = try await model(.dense, transport)
+    starting.newThreadDraft.text = "Find the flaky test"
+    transport.script(.threadStart, [.hold])
+    let send = Task { await starting.newThreadDraft.send() }
+    try await waitUntil("starting") { transport.heldCount(.threadStart) == 1 }
+    try await render("dense-composer-new-thread-starting", size: CGSize(width: 720, height: 420)) {
+      NewThreadView(model: starting)
+    }
+    transport.release(.threadStart, with: .failure(WorkspaceError(.endpointUnavailable, "Stopped.")))
+    await send.value
+    // The start failed: the line stays, the failure under it.
+    #expect(starting.newThreadDraft.statusIsFailure)
+    try await render("dense-composer-new-thread-failed", size: CGSize(width: 720, height: 420)) {
+      NewThreadView(model: starting)
+    }
+    await starting.disconnect()
+    await dense.disconnect()
+
+    // An environment with no folder yet: the reason goes under the line.
+    let blockedTransport = ScriptedTransport()
+    blockedTransport.script(
+      .viewSettingsGet, [.result(try JSONValue(encoding: ViewSettings(density: .dense)))])
+    let empty = WorkEnvironment(
+      id: "p4", name: "Empty", createdAt: PhoneFixture.at(-700), updatedAt: PhoneFixture.at(-700),
+      folders: [], ownerDeviceId: nil)
+    let blocked = try await Phone.macModel(
+      blockedTransport, environments: Phone.macEnvironments + [empty])
+    blocked.newThreadDraft.selectEnvironment("p4")
+    #expect(blocked.newThreadDraft.blockedReason == "This environment has no folder yet.")
+    try await render("dense-composer-new-thread-blocked", size: CGSize(width: 720, height: 420)) {
+      NewThreadView(model: blocked)
+    }
+    await blocked.disconnect()
+  }
 }
 
 /// A fixed set of threads in every state but approve (`approving`, added with `extra`), across two environments, "Other", and one empty manual environment.

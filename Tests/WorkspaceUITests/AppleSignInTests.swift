@@ -76,7 +76,7 @@ private func mac(
 /// The phone as the app wires it: a mirror, its account over one fake hub, and the model with the
 /// account as its host.
 @MainActor
-private struct Phone {
+private struct SignInPhone {
   let store: MirrorStore
   let fake: FakeHubAPI
   let account: MirrorAccount
@@ -243,7 +243,7 @@ private func sha256Hex(_ text: String) -> String {
   }
 
   @Test func iosNativeSendsTokenAndName() async throws {
-    let phone = try await Phone()
+    let phone = try await SignInPhone()
     defer { Task { await phone.close() } }
     #expect(phone.model.rootScreen == .signIn)
     await phone.fake.setSession(
@@ -272,7 +272,7 @@ private func sha256Hex(_ text: String) -> String {
 
   @Test func appleCancelShowsNothing() async throws {
     // The phone: the sheet closed.
-    let phone = try await Phone()
+    let phone = try await SignInPhone()
     defer { Task { await phone.close() } }
     let apple = FakeApple()
     apple.native = .success(nil)
@@ -351,7 +351,7 @@ private func sha256Hex(_ text: String) -> String {
   }
 
   @Test func aRefusedNativeSignInIsOneLine() async throws {
-    let phone = try await Phone()
+    let phone = try await SignInPhone()
     defer { Task { await phone.close() } }
     await phone.fake.setFailNext(
       HubError(kind: "request_error", code: "signup_closed", message: "closed", status: 403))
@@ -405,7 +405,7 @@ private func sha256Hex(_ text: String) -> String {
   }
 
   @Test func aStrayCallbackIsDroppedOnThePhone() async throws {
-    let phone = try await Phone()
+    let phone = try await SignInPhone()
     defer { Task { await phone.close() } }
     #expect(phone.model.openURL(URL(string: "b4app-beta://auth?handoff=H-stray")!))
     #expect(phone.model.openURL(URL(string: "b4app://auth?error=cancelled")!))
@@ -418,7 +418,7 @@ private func sha256Hex(_ text: String) -> String {
   // MARK: The phone's sign-in, root, and log out
 
   @Test func thePhoneSignsInAndOutThroughItsHost() async throws {
-    let phone = try await Phone()
+    let phone = try await SignInPhone()
     defer { Task { await phone.close() } }
     #expect(phone.model.rootScreen == .signIn)
     try await phone.signIn()
@@ -444,7 +444,7 @@ private func sha256Hex(_ text: String) -> String {
   }
 
   @Test func onboardingOnThePhoneSignsIn() async throws {
-    let phone = try await Phone()
+    let phone = try await SignInPhone()
     defer { Task { await phone.close() } }
     try await phone.signIn(onboarding: true)
     await phone.model.completeProfile(fullName: "  Brian Love ")
@@ -464,7 +464,7 @@ private func sha256Hex(_ text: String) -> String {
       await fake.setPasskeyBegin(
         PasskeyBeginResponse(
           ceremonyId: "c1", authentication: assertionOptions, registration: registrationOptions))
-      let phone = try await Phone(fake: fake, api: RejectingPasskeyHub(fake: fake, reason: reason))
+      let phone = try await SignInPhone(fake: fake, api: RejectingPasskeyHub(fake: fake, reason: reason))
       let passkeys = FakePasskeys()
       await phone.model.signInWithPasskey(using: passkeys)
       #expect(phone.model.accountState == .signedOut(reason: nil))
@@ -482,7 +482,7 @@ private func sha256Hex(_ text: String) -> String {
   }
 
   @Test func a401MovesThePhoneToSignIn() async throws {
-    let phone = try await Phone()
+    let phone = try await SignInPhone()
     defer { Task { await phone.close() } }
     try await phone.signIn()
     try await waitUntil("the sync's first push", timeout: .seconds(10)) { phone.account.sync != nil }
@@ -575,7 +575,7 @@ private func sha256Hex(_ text: String) -> String {
   }
 
   @Test func connectAppleIDOnThePhone() async throws {
-    let phone = try await Phone()
+    let phone = try await SignInPhone()
     defer { Task { await phone.close() } }
     try await phone.signIn()
     await phone.fake.setIdentities([Identity(id: "i1", kind: "passkey", createdAt: "2026-11-01T09:00:00Z")])

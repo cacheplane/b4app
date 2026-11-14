@@ -26,6 +26,8 @@ struct ThreadsView: View {
     }
   #endif
 
+  /// The branches, in order, are the ones `WorkspaceModel.newThreadViewIsShowing` repeats for the last;
+  /// change the two together.
   @ViewBuilder private var threadOrComposer: some View {
     if let thread = model.threads.first(where: { $0.id == model.selectedThreadId }) {
       ThreadDetailView(model: model, thread: thread)

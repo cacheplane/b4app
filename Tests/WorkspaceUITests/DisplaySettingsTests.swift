@@ -22,7 +22,7 @@ import WorkspaceProtocol
     #if os(macOS)
       #expect(
         DisplaySettingsView.denseDescription
-          == "Tighter rows for the threads that don\u{2019}t need you, and answers without the steps in a thread."
+          == "Tighter rows for the threads that don\u{2019}t need you, answers without the steps in a thread, and a composer without its pickers."
       )
     #else
       #expect(DisplaySettingsView.denseDescription == "Answers without the steps in a thread.")

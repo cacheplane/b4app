@@ -9,7 +9,7 @@ import WorkspaceProtocol
 
 /// Two Macs. `mac-1` owns environment `p1` (two folders) and `p2` (one folder) with their connections;
 /// `mac-2` owns `p3` (one folder).
-private enum Phone {
+enum Phone {
   static func folder(_ id: String, _ environmentId: String, _ path: String) -> EnvironmentFolder {
     EnvironmentFolder(id: id, environmentId: environmentId, path: path, createdAt: PhoneFixture.at(-1000))
   }
@@ -96,14 +96,15 @@ private enum Phone {
   @MainActor
   static func macModel(
     _ transport: ScriptedTransport, preferences: InMemoryPreferences = InMemoryPreferences(),
-    threads: [ConversationThread] = [], connections: [Connection] = macConnections
+    threads: [ConversationThread] = [], connections: [Connection] = macConnections,
+    environments: [WorkEnvironment] = macEnvironments
   ) async throws -> WorkspaceModel {
-    transport.set(connections: connections, threads: threads, environments: macEnvironments)
+    transport.set(connections: connections, threads: threads, environments: environments)
     let model = WorkspaceModel(transportProvider: { transport })
     model.preferences = preferences
     model.connect()
     try #require(await model.settledLink() == .ready)
-    try await waitUntil("environments") { model.environments.count == 3 }
+    try await waitUntil("environments") { model.environments.count == environments.count }
     return model
   }
 

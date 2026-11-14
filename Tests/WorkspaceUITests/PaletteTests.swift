@@ -505,11 +505,150 @@ struct SelectionMotionTests {
     await model.disconnect()
   }
 
+  @Test func foldersOfOneEnvironmentWithTheSameNameDifferByTheirPath() async throws {
+    let twins = WorkEnvironment(
+      id: "e3", name: "twins",
+      folders: [
+        EnvironmentFolder(id: "f3", environmentId: "e3", path: "/r/one/app"),
+        EnvironmentFolder(id: "f4", environmentId: "e3", path: "/r/two/app"),
+      ])
+    let transport = ScriptedTransport()
+    transport.set(connections: [claude], threads: [], environments: [twins])
+    let model = WorkspaceModel(transportProvider: { transport })
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    let rows = model.choices(for: .draftEnvironment, target: .draft).filter { $0.title.hasPrefix("twins") }
+    #expect(rows.count == 2)
+    #expect(rows[0].title == rows[1].title)
+    #expect(rows.compactMap(\.detail) == ["/r/one/app", "/r/two/app"])
+    await model.disconnect()
+  }
+
+  @Test func theDraftOffersChooseFolderOnTheMac() async throws {
+    let (model, _) = try await connected()
+    let list = model.commands(for: .draft)
+    #if os(macOS)
+      let at = try #require(list.firstIndex(of: .draftEnvironment))
+      #expect(list[at + 1] == .draftChooseFolder)
+    #else
+      #expect(!list.contains(.draftChooseFolder))
+    #endif
+    await model.disconnect()
+    let b4 = try await Phone.macModel(ScriptedTransport())
+    b4.newThreadDraft.selectRuntime(connectionId: "b4-remote", model: nil)
+    #expect(b4.newThreadDraft.connection?.kind == .b4)
+    #if os(macOS)
+      let b4List = b4.commands(for: .draft)
+      let b4At = try #require(b4List.firstIndex(of: .draftEnvironment))
+      #expect(b4List[b4At + 1] == .draftChooseFolder)
+    #else
+      #expect(!b4.commands(for: .draft).contains(.draftChooseFolder))
+    #endif
+    await b4.disconnect()
+  }
+
+  @Test func chooseFolderAsksTheNewThreadViewForThePanel() async throws {
+    let (model, _) = try await connected()
+    let before = model.newThreadDraft.environmentId
+    #expect(model.chooseFolderRequest == 0)
+    #if os(macOS)
+      #expect(model.newThreadViewIsShowing)
+      #expect(model.availability(of: .draftChooseFolder, target: .draft) == .available)
+      let outcome = await model.run(.draftChooseFolder, target: .draft)
+      #expect(outcome == .completed("Choose a folder"))
+      #expect(model.chooseFolderRequest == 1)
+    #else
+      #expect(
+        model.availability(of: .draftChooseFolder, target: .draft)
+          == .unavailable("Folders are chosen on your Mac."))
+      _ = await model.run(.draftChooseFolder, target: .draft)
+      #expect(model.chooseFolderRequest == 0)
+    #endif
+    #expect(model.newThreadDraft.environmentId == before)
+    #expect(model.newThreadDraft.chosenFolder == nil)
+    await model.disconnect()
+  }
+
+  #if os(macOS)
+    /// The request is answered by `NewThreadView`; where another screen shows, the command says so and
+    /// leaves the request alone.
+    private func expectChooseFolderOff(_ model: WorkspaceModel) async {
+      #expect(!model.newThreadViewIsShowing)
+      #expect(
+        model.availability(of: .draftChooseFolder, target: .draft)
+          == .unavailable("Open a new thread first."))
+      let outcome = await model.run(.draftChooseFolder, target: .draft)
+      guard case .failed = outcome else {
+        Issue.record("expected .failed, got \(outcome)")
+        return
+      }
+      #expect(model.chooseFolderRequest == 0)
+    }
+
+    @Test func chooseFolderNeedsTheNewThreadScreenNotAThread() async throws {
+      let (model, _) = try await connected()
+      model.selectedThreadId = "quiet"
+      await expectChooseFolderOff(model)
+      model.selectedThreadId = nil
+      #expect(model.availability(of: .draftChooseFolder, target: .draft) == .available)
+      await model.disconnect()
+    }
+
+    @Test func chooseFolderNeedsTheNewThreadScreenNotAnEnvironmentForm() async throws {
+      let (model, _) = try await connected()
+      model.openEnvironmentForm(id: b4app.id)
+      await expectChooseFolderOff(model)
+      model.closeEnvironmentForm()
+      #expect(model.availability(of: .draftChooseFolder, target: .draft) == .available)
+      await model.disconnect()
+    }
+
+    @Test func chooseFolderNeedsAReadyConnection() async throws {
+      let model = try await Phone.macModel(ScriptedTransport(), connections: [])
+      await expectChooseFolderOff(model)
+      await model.disconnect()
+    }
+  #endif
+
+  @Test func chooseFolderIsOffOnAMacThatRelays() async throws {
+    let (model, _) = try await connected()
+    model.accountSource = .host
+    #if os(macOS)
+      #expect(
+        model.availability(of: .draftChooseFolder, target: .draft)
+          == .unavailable("This Mac\u{2019}s folders cannot be browsed from here."))
+    #endif
+    _ = await model.run(.draftChooseFolder, target: .draft)
+    #expect(model.chooseFolderRequest == 0)
+    await model.disconnect()
+  }
+
+  @Test func slashBrowseIsOfferedInANewThreadDraft() async throws {
+    let (model, _) = try await connected()
+    #if os(macOS)
+      #expect(model.slashCommands(for: .draft).contains(.draftChooseFolder))
+      // On a Mac that relays through the hub the row is still listed, but cannot run.
+      model.accountSource = .host
+      #expect(model.slashCommands(for: .draft).contains(.draftChooseFolder))
+      #expect(model.availability(of: .draftChooseFolder, target: .draft) != .available)
+      model.accountSource = .coordinator
+    #endif
+    #expect(!model.slashCommands(for: .thread("quiet")).contains(.draftChooseFolder))
+    #expect(CommandCatalog.definition(.draftChooseFolder).slash == "browse")
+    #expect(CommandCatalog.definition(.draftChooseFolder).argument == .none)
+    await model.disconnect()
+  }
+
   @Test func aDraftsCommandsAreItsOwn() async throws {
     let (model, _) = try await connected()
     let slash = SlashController(workspace: model, target: .draft)
     slash.textChanged(from: "", to: "/")
-    #expect(slash.items.compactMap(\.command) == ["/environment", "/model", "/permissions"])
+    #if os(macOS)
+      #expect(
+        slash.items.compactMap(\.command) == ["/environment", "/model", "/permissions", "/browse"])
+    #else
+      #expect(slash.items.compactMap(\.command) == ["/environment", "/model", "/permissions"])
+    #endif
     slash.textChanged(from: "/", to: "/env")
     _ = await slash.choose()
     slash.textChanged(from: "/env", to: "")

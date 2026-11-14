@@ -160,6 +160,8 @@ This part depends on work that is not on main. The command palette is being buil
 
 So: parts 1 to 3 can be built and shipped without part 4. In that state dense leaves the composer's pickers in place. Part 4 follows the command palette's merge, and its plan names the commands it found there. On the phone, where there is no command palette, the pickers stay at either density unless the owner says otherwise.
 
+Built 2026-11-13 (D-224): the palette already had `draft.environment` (`/environment`), `draft.runtime` and `thread.model` (`/model`), and `draft.permission` and `thread.permission` (`/permissions`); the one missing was the folder panel, now `draft.chooseFolder` (`/browse`, Mac only). Two of the plan's rulings changed in the build: only "Starting…" takes the line's row, and a failed start sits under the line (it would hide the line while the place is being changed); and "Choose folder…" is refused unless the new-thread screen is showing. No shortcut for the model or permission, and the phone keeps its pickers.
+
 ## Build order
 
 The builder's suggestion, each its own pull request:

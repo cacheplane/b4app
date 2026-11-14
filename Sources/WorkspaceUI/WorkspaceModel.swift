@@ -192,6 +192,20 @@ public final class WorkspaceModel {
   /// Counts each request to put the cursor in the new-thread composer; `NewThreadView` focuses its
   /// field on a change, as it does when it appears.
   public internal(set) var newThreadFocusRequest = 0
+  /// Whether the detail column draws `NewThreadView`: no thread is selected (or one is selected that is
+  /// neither listed nor loading), no environment form is open, and a ready connection can start a
+  /// conversation. The same tests as `ThreadsView.threadOrComposer`; change the two together.
+  var newThreadViewIsShowing: Bool {
+    #if os(macOS)
+      if let id = editingEnvironmentId, environments.contains(where: { $0.id == id }) { return false }
+    #endif
+    if threads.contains(where: { $0.id == selectedThreadId }) { return false }
+    if selectedThreadId != nil, detailLoading || pendingThreadOpen == selectedThreadId { return false }
+    return !conversationReadyConnections.isEmpty
+  }
+  /// Counts each request for the system folder panel ("Choose folder…"); `NewThreadView` opens it on a
+  /// change.
+  public internal(set) var chooseFolderRequest = 0
   /// The iPhone's Settings sheet.
   public var showSettingsSheet = false
   /// Set by the Settings views while they are on screen.
@@ -1203,6 +1217,16 @@ public final class WorkspaceModel {
 
   /// Dense draws a thread as message, line, answer. Both platforms.
   var denseThread: Bool { viewSettings.density == .dense }
+
+  /// Dense draws the composer with one line in place of its row of pickers. The Mac only: the phone and
+  /// the iPad keep their pickers at either density.
+  var denseComposer: Bool {
+    #if os(macOS)
+      viewSettings.density == .dense
+    #else
+      false
+    #endif
+  }
 
   /// One setting, written optimistically (decision 12): shown at once, then sent with only that field.
   /// The answer's row may predate a later set or a change from elsewhere, so only this field is taken

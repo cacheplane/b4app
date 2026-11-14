@@ -3,9 +3,10 @@ import UniformTypeIdentifiers
 import WorkspaceProtocol
 
 /// A new thread from a blank composer (the new-thread composer spec, "The Mac" and "The iPhone"): a
-/// headline, the field, the picker row under it, and the draft's start status. Nothing exists until
-/// Send, which creates the thread, starts its first turn, and opens it. The draft is the device's one
-/// `newThreadDraft`, so its text and choices outlive this screen.
+/// headline, the field, the picker row under it (at dense, on the Mac, one line naming its choices), and
+/// the draft's start status. Nothing exists until Send, which creates the thread, starts its first turn,
+/// and opens it. The draft is the device's one `newThreadDraft`, so its text and choices outlive this
+/// screen.
 ///
 /// The Mac (and any regular width) centres the headline and the field in the reading column, the
 /// headline centred over the field (the thread list and environments design, "Starting a thread"); a
@@ -101,10 +102,23 @@ struct NewThreadView: View {
     // ⌘N, the top bar's New thread, or "New thread here": an open palette gives way to the composer.
     .onChange(of: model.newThreadFocusRequest) {
       #if os(macOS)
+        // The palette's dismissal asks for focus as it closes; the folder panel it opened keeps it
+        // until the importer answers.
+        if choosingFolder { return }
         placesOpen = false
       #endif
       focused = true
     }
+    #if os(macOS)
+      // The panel closing by a choice, a failure or a cancel returns the cursor to the field.
+      .onChange(of: choosingFolder) { _, open in if !open { focused = true } }
+      // The "Choose folder…" command: the panel is the picker row's own, so the places list gives way.
+      // No `initial: true`, on purpose: a view made after an old request must not open the panel.
+      .onChange(of: model.chooseFolderRequest) {
+        placesOpen = false
+        choosingFolder = true
+      }
+    #endif
     // A start accepted later (a retry, a lookup) did not open its thread; open it now.
     .onChange(of: draft.finished) { _, finished in
       guard finished else { return }
@@ -182,9 +196,31 @@ struct NewThreadView: View {
       // Below the field, over the picker row, so the headline above never moves.
       .slashCompletions(slash, placement: .below) { chooseSlash(draft) }
       .onChange(of: draft.text) { old, new in slash.textChanged(from: old, to: new) }
-      ComposerPickerRow(model: model, .draft(draft), openPlaces: openPlaces)
-        .padding(.top, LLA.Space.s)
+      if model.denseComposer {
+        denseLines(draft)
+      } else {
+        ComposerPickerRow(model: model, .draft(draft), openPlaces: openPlaces)
+          .padding(.top, LLA.Space.s)
+        statusLine(draft)
+      }
+    }
+  }
+
+  /// Dense, on the Mac: one line where the picker row is. "Starting…" takes its row while it runs; a
+  /// failed start sits under the line, which stays so the place can be changed to fix it. Why Send is
+  /// off is about the place, so it goes under the line too, unless a failure is showing.
+  @ViewBuilder private func denseLines(_ draft: NewThreadDraft) -> some View {
+    let failure = draft.statusIsFailure
+    if draft.status != nil, !failure {
       statusLine(draft)
+    } else {
+      ComposerSummaryLine(summary: .draft(draft, in: model))
+        .padding(.top, LLA.Space.s)
+      if failure {
+        statusLine(draft)
+      } else if let reason = draft.blockedReason, notice == nil {
+        reasonLine(reason)
+      }
     }
   }
 
@@ -245,11 +281,15 @@ struct NewThreadView: View {
       .accessibilityElement(children: .combine)
       .accessibilityIdentifier("new-thread-status")
     } else if let reason = draft.blockedReason, notice == nil {
-      Text(reason)
-        .llaCaption()
-        .padding(.horizontal, ComposerField<EmptyView>.textLeading)
-        .padding(.top, LLA.Space.s)
-        .accessibilityIdentifier("new-thread-reason")
+      reasonLine(reason)
     }
+  }
+
+  private func reasonLine(_ reason: String) -> some View {
+    Text(reason)
+      .llaCaption()
+      .padding(.horizontal, ComposerField<EmptyView>.textLeading)
+      .padding(.top, LLA.Space.s)
+      .accessibilityIdentifier("new-thread-reason")
   }
 }
