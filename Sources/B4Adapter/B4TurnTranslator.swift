@@ -119,7 +119,7 @@ public struct B4TurnTranslator: Sendable {
   }
 
   /// B4 refused the call itself (a route's permissions, a rule, the permission mode): the result's
-  /// step says `denied` (D-229).
+  /// step says `denied` (D-230).
   static func toolRefused(_ output: JSONValue) -> Bool {
     guard output["lc"] != nil, let kwargs = output["kwargs"] else { return false }
     return B4Protocol.stepStatus(ofToolMessage: kwargs) == "denied"

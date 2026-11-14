@@ -24,7 +24,7 @@ public struct ClaudeTurnTracker: Sendable {
   private var declinedToolUses: Set<String> = []
   /// Tool uses this turn closed as failed, as they were closed. Claude Code can say afterwards that it
   /// refused one itself (a `permission_denied` frame, the result's `permission_denials`); that one
-  /// is closed again as declined (D-229).
+  /// is closed again as declined (D-230).
   private var failedToolUses: [String: (use: (name: String, input: JSONValue)?, extra: [String: JSONValue])] =
     [:]
   private var lastErrorCode: ErrorCode?
