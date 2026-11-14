@@ -4573,3 +4573,1450 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.settingsRestored && facts.qualified)
   }
 }
+
+// Task5 qualification is test-fixture-only. Native feasibility and scheduling remain unobserved
+// until the same complete candidate is exercised by the managed lane. Operation joins below
+// establish operation results, not Thread exit, native quiescence, or authority.
+extension OwnedProtocolProofWriteTests {
+  private enum OwnedDeferredCase: Int { case stale, fault, timeout }
+  private enum OwnedDeferredRawKind: Sendable, Equatable { case reject, normal, fault, timeout }
+
+  private struct OwnedDeferredFunction: Sendable {
+    let name: String
+    let arguments: String
+    let result: String
+    let sql: String
+  }
+
+  // The two unchanged function definitions are independent expected source, never reinstalled.
+  // The three approved replacements apply exclusively to newly constructed private fixtures.
+  private static let ownedDeferredFunctions: [OwnedDeferredFunction] = [
+    OwnedDeferredFunction(
+      name: "assert_complete", arguments: "required_reference text", result: "void",
+      sql: """
+        CREATE FUNCTION "owned_bind_stage"."assert_complete"(required_reference text)
+        RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        DECLARE t text; mismatch boolean;
+        BEGIN
+          IF required_reference IS NULL
+            OR (SELECT count(*) FROM "owned_bind_stage"."meta")<>1
+            OR (SELECT count(*) FROM "owned_bind_stage"."mode")<>1
+            OR convert_to(current_database(),'UTF8') IS DISTINCT FROM
+              (SELECT convert_to(database,'UTF8') FROM "owned_bind_stage"."meta" WHERE singleton=1)
+            OR (SELECT count(*) FROM public.settings WHERE key='__b4app_agent_protocol_activation_v1')<>1
+            OR (SELECT value FROM public.settings WHERE key='__b4app_agent_protocol_activation_v1')
+              IS DISTINCT FROM
+              (SELECT expected_control FROM "owned_bind_stage"."meta" WHERE singleton=1)
+            OR (SELECT count(*) FROM public."hubLink")<>1
+            OR (SELECT count(*) FROM public."hubLink" WHERE id=1)<>1
+            OR (SELECT convert_to("tokenRef",'UTF8') FROM public."hubLink" WHERE id=1)
+              IS DISTINCT FROM convert_to(required_reference,'UTF8')
+          THEN RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001'; END IF;
+          IF EXISTS((SELECT tablename::text FROM pg_catalog.pg_tables WHERE schemaname='public')
+              EXCEPT SELECT name FROM "owned_bind_stage"."names")
+            OR EXISTS((SELECT name FROM "owned_bind_stage"."names")
+              EXCEPT SELECT tablename::text FROM pg_catalog.pg_tables WHERE schemaname='public')
+          THEN RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001'; END IF;
+          FOR t IN SELECT name FROM "owned_bind_stage"."names" LOOP
+            IF t='hubLink' THEN
+              EXECUTE format(
+                'SELECT EXISTS((SELECT to_jsonb(p) FROM public.%I p) EXCEPT ALL '
+                '(SELECT value||jsonb_build_object(''tokenRef'',$2::text) '
+                'FROM "owned_bind_stage"."expected" WHERE name=$1)) '
+                'OR EXISTS((SELECT value||jsonb_build_object(''tokenRef'',$2::text) '
+                'FROM "owned_bind_stage"."expected" WHERE name=$1) EXCEPT ALL '
+                '(SELECT to_jsonb(p) FROM public.%I p))',t,t)
+                INTO mismatch USING t,required_reference;
+            ELSE
+              EXECUTE format(
+                'SELECT EXISTS((SELECT to_jsonb(p) FROM public.%I p) EXCEPT ALL '
+                '(SELECT value FROM "owned_bind_stage"."expected" WHERE name=$1)) '
+                'OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=$1) '
+                'EXCEPT ALL (SELECT to_jsonb(p) FROM public.%I p))',t,t)
+                INTO mismatch USING t;
+            END IF;
+            IF mismatch THEN
+              RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001';
+            END IF;
+          END LOOP;
+          IF (SELECT jsonb_build_object('last_value',last_value,'log_cnt',log_cnt,'is_called',is_called)
+              FROM public.changes_seq_seq) IS DISTINCT FROM
+              (SELECT expected_sequence FROM "owned_bind_stage"."meta" WHERE singleton=1)
+          THEN RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001'; END IF;
+        END $$;
+        """),
+    OwnedDeferredFunction(
+      name: "body", arguments: "", result: "trigger",
+      sql: """
+        CREATE FUNCTION "owned_bind_stage"."body"() RETURNS trigger
+        LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        DECLARE original text; replacement text; fault boolean; changed bigint;
+        BEGIN
+          SELECT original_ref INTO STRICT original FROM "owned_bind_stage"."meta" WHERE singleton=1;
+          PERFORM "owned_bind_stage"."assert_complete"(original);
+          PERFORM "owned_bind_stage"."assert_transaction"();
+          SELECT m.replacement,m.raw_body_fault INTO STRICT replacement,fault
+            FROM "owned_bind_stage"."mode" m WHERE singleton=1;
+          UPDATE public."hubLink" SET "tokenRef"=replacement WHERE id=1;
+          GET DIAGNOSTICS changed=ROW_COUNT;
+          IF changed<>1 THEN
+            RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001';
+          END IF;
+          PERFORM "owned_bind_stage"."assert_complete"(replacement);
+          PERFORM nextval('"owned_bind_stage"."body_probe"'::regclass);
+          IF fault THEN
+            RAISE EXCEPTION 'OWNED_BIND_RAW_BODY_FAULT' USING ERRCODE='23514';
+          END IF;
+          RETURN NEW;
+        END $$;
+        """),
+    OwnedDeferredFunction(
+      name: "transaction_checked", arguments: "persist boolean", result: "void",
+      sql: """
+        CREATE FUNCTION "owned_bind_stage"."transaction_checked"(persist boolean)
+        RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        DECLARE iso text; lb text; sb text; h text; d text; wanted text; n bigint; wanted_row jsonb;
+        BEGIN
+         IF (SELECT count(*) FROM "owned_bind_stage"."deferred_control")<>1
+           OR (SELECT count(*) FROM "owned_bind_stage"."meta")<>1
+           OR (SELECT count(*) FROM "owned_bind_stage"."mode")<>1
+         THEN RAISE EXCEPTION 'OWNED_BIND_TRANSACTION_MISMATCH' USING ERRCODE='P0001'; END IF;
+         SELECT observed_before INTO STRICT n FROM "owned_bind_stage"."deferred_control" WHERE singleton=1;
+         SELECT expected_device INTO STRICT wanted FROM "owned_bind_stage"."meta" WHERE singleton=1;
+         iso:=current_setting('transaction_isolation'); lb:=current_setting('lock_timeout');
+         sb:=current_setting('statement_timeout'); h:=current_setting('b4app.hlc',true);
+         d:=current_setting('b4app.device_id',true);
+         IF persist IS NULL OR iso IS DISTINCT FROM 'read committed' OR lb IS DISTINCT FROM '2s'
+           OR sb IS DISTINCT FROM '2s' OR h IS NULL OR h !~ '^[0-9a-f]{12}-[0-9a-f]{4}-.+$'
+           OR convert_to(substring(h FROM 19),'UTF8') IS DISTINCT FROM convert_to(wanted,'UTF8')
+           OR (wanted='local' AND coalesce(d,'')<>'')
+           OR (wanted<>'local' AND convert_to(d,'UTF8') IS DISTINCT FROM convert_to(wanted,'UTF8'))
+           OR (SELECT count(*) FROM "owned_bind_stage"."observed") <> n + CASE WHEN persist THEN 0 ELSE 1 END
+         THEN RAISE EXCEPTION 'OWNED_BIND_TRANSACTION_MISMATCH' USING ERRCODE='P0001'; END IF;
+         IF persist THEN
+           INSERT INTO "owned_bind_stage"."observed"(isolation,lock_budget,statement_budget,hlc,device)
+             VALUES(iso,lb,sb,h,d);
+         ELSE
+           wanted_row:=jsonb_build_object('isolation',iso,'lock_budget',lb,'statement_budget',sb,'hlc',h,'device',d);
+           IF (SELECT count(*) FROM "owned_bind_stage"."observed" o WHERE to_jsonb(o)=wanted_row)<>1
+           THEN RAISE EXCEPTION 'OWNED_BIND_TRANSACTION_MISMATCH' USING ERRCODE='P0001'; END IF;
+         END IF;
+        END $$;
+        """),
+    OwnedDeferredFunction(
+      name: "assert_transaction", arguments: "", result: "void",
+      sql: """
+        CREATE OR REPLACE FUNCTION "owned_bind_stage"."assert_transaction"()
+        RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        BEGIN PERFORM "owned_bind_stage"."transaction_checked"(true); END $$;
+        """),
+    OwnedDeferredFunction(
+      name: "commit_normal", arguments: "", result: "trigger",
+      sql: """
+        CREATE OR REPLACE FUNCTION "owned_bind_stage"."commit_normal"()
+        RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+        DECLARE m text; k bigint; a text; replacement text; fault boolean; candidate jsonb;
+         native_state text; native_message text;
+        BEGIN
+         SELECT original_ref,expected_control INTO STRICT a,candidate
+           FROM "owned_bind_stage"."meta" WHERE singleton=1;
+         SELECT deferred_mode,gate_key INTO STRICT m,k
+           FROM "owned_bind_stage"."deferred_control" WHERE singleton=1;
+         SELECT md.replacement,md.raw_body_fault INTO STRICT replacement,fault
+           FROM "owned_bind_stage"."mode" md WHERE singleton=1;
+         IF TG_OP IS DISTINCT FROM 'UPDATE' OR k IS DISTINCT FROM 1647600739::bigint
+           OR m IS NULL OR m NOT IN ('normal','fault','gate') OR fault IS DISTINCT FROM false
+           OR convert_to(replacement,'UTF8') IS DISTINCT FROM convert_to(a,'UTF8')
+           OR to_jsonb(NEW) IS DISTINCT FROM jsonb_build_object('key','__b4app_agent_protocol_activation_v1','value',candidate)
+         THEN RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001'; END IF;
+         PERFORM "owned_bind_stage"."assert_complete"(a);
+         PERFORM "owned_bind_stage"."transaction_checked"(false);
+         PERFORM nextval('"owned_bind_stage"."commit_probe"'::regclass);
+         IF m='fault' THEN
+           RAISE EXCEPTION 'OWNED_BIND_ACTUAL_DEFERRED_FAULT' USING ERRCODE='23514';
+         ELSIF m='gate' THEN
+           BEGIN
+             PERFORM pg_catalog.pg_advisory_xact_lock(k);
+           EXCEPTION WHEN lock_not_available OR query_canceled THEN
+             GET STACKED DIAGNOSTICS native_state=RETURNED_SQLSTATE,native_message=MESSAGE_TEXT;
+             IF (native_state='55P03' AND native_message='canceling statement due to lock timeout')
+               OR (native_state='57014' AND native_message='canceling statement due to statement timeout')
+             THEN
+               PERFORM nextval('"owned_bind_stage"."timeout_probe"'::regclass);
+             END IF;
+             RAISE;
+           END;
+         END IF;
+         RETURN NEW;
+        END $$;
+        """),
+  ]
+
+  private struct OwnedDeferredProbes: Equatable {
+    let body: OwnedBindProbe
+    let commit: OwnedBindProbe
+    let timeout: OwnedBindProbe
+
+    func advanced(from old: Self, body: Int64, commit: Int64, timeout: Int64) -> Bool {
+      self.body.advanced(from: old.body, by: body)
+        && self.commit.advanced(from: old.commit, by: commit)
+        && self.timeout.advanced(from: old.timeout, by: timeout)
+    }
+  }
+
+  private struct OwnedDeferredRecipe {
+    let stage: OwnedBindStageFixture
+    let catalog: [Data]
+  }
+
+  private struct OwnedDeferredCheckpoint: Equatable {
+    let image: OwnedBindImage
+    let observations: [Data]
+    let probes: OwnedDeferredProbes
+  }
+
+  private struct OwnedDeferredRawResult: Sendable {
+    var valid = false
+    var dmlReturned = false
+    var commitSent = false
+    var acknowledged = false
+    var rollbackAcknowledged = false
+    var predicateRejected = false
+    var actualDeferredFault = false
+    var actualServerTimeout = false
+    var ownPredicate = false
+    var ownSettings = false
+    var millis: UInt64 = 0
+  }
+
+  // These are the only facts returned outside a completely closed unit or raw fixture.
+  private struct OwnedDeferredFacts {
+    let oldControls: Int
+    let newControls: Int
+    let rawAttempts: Int
+    let rawHolders: Int
+    let writerCalls: Int
+    let redemptionCalls: Int
+    let targetHolders: Int
+    let targetWaits: Int
+    let timeoutAllocations: Int
+    let qualified: Bool
+  }
+
+  private final class OwnedDeferredWork {
+    var holds: [OwnedProofHold] = []
+    var holders: [OwnedProofNativeWork<OwnedBindHolderResult>] = []
+    var raw: [OwnedProofNativeWork<OwnedDeferredRawResult>] = []
+    var writers: [OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>] = []
+
+    // Installed by defer before ANY child starts. Earlier joined handles stay retained.
+    // All releases precede every join, and no result validation interrupts this drain.
+    func releaseAndJoin() {
+      for hold in holds { hold.release() }
+      for work in holders { _ = work.join() }
+      for work in raw { _ = work.join() }
+      for work in writers { _ = work.join() }
+    }
+  }
+
+  private static func ownedDeferredTimeout(_ c: PostgresConnection) throws -> OwnedBindProbe {
+    // The existing two-name probe reader and its allowlist remain unchanged.
+    let rows = try c.execute(
+      "SELECT last_value::text AS last,is_called::text AS called FROM \"owned_bind_stage\".\"timeout_probe\""
+    ).rows
+    guard rows.count == 1, let text = rows[0].text("last"), let last = Int64(text), last >= 1,
+      rows[0].text("called") == "true" || rows[0].text("called") == "false"
+    else { throw FixtureFailure.nativeShape }
+    return OwnedBindProbe(last: last, called: rows[0].text("called") == "true")
+  }
+
+  private static func ownedDeferredProbes(_ c: PostgresConnection) throws -> OwnedDeferredProbes {
+    OwnedDeferredProbes(
+      body: try ownedBindProbe(c, "body_probe"), commit: try ownedBindProbe(c, "commit_probe"),
+      timeout: try ownedDeferredTimeout(c))
+  }
+
+  private static func ownedDeferredRows(_ c: PostgresConnection, sql: String) throws -> [Data] {
+    try c.execute(sql).rows.map {
+      guard let value = $0.text("value") else { throw FixtureFailure.nativeShape }
+      return try ownedBindJSON(value)
+    }.sorted { $0.lexicographicallyPrecedes($1) }
+  }
+
+  private static func ownedDeferredObservations(_ c: PostgresConnection) throws -> [Data] {
+    try ownedDeferredRows(
+      c, sql: "SELECT to_jsonb(o)::text AS value FROM \"owned_bind_stage\".\"observed\" o")
+  }
+
+  private static func ownedDeferredCatalog(_ c: PostgresConnection) throws -> [Data] {
+    // Every current public/private table, column, constraint, index, trigger, function and
+    // sequence definition participates, including Store16's empty protocol tables and density.
+    // Mutable sequence position is checked independently, never mistaken for catalog shape.
+    try ownedDeferredRows(
+      c,
+      sql: """
+        SELECT jsonb_build_object('class',c.oid,'schema',n.nspname,'name',c.relname,
+          'kind',c.relkind,'persistence',c.relpersistence,'owner',c.relowner,'am',c.relam,
+          'security',c.relrowsecurity,'force',c.relforcerowsecurity,
+          'replica',c.relreplident,'options',c.reloptions)::text AS value
+        FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname IN ('public','owned_bind_stage')
+        UNION ALL
+        SELECT jsonb_build_object('attribute',a.attrelid,'number',a.attnum,'name',a.attname,
+          'type',a.atttypid,'modifier',a.atttypmod,'notnull',a.attnotnull,
+          'collation',a.attcollation,'identity',a.attidentity,'generated',a.attgenerated,
+          'dropped',a.attisdropped,'default',pg_get_expr(d.adbin,d.adrelid))::text
+        FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+        WHERE n.nspname IN ('public','owned_bind_stage') AND a.attnum>0
+        UNION ALL
+        SELECT jsonb_build_object('constraint',x.oid,'name',x.conname,'relation',x.conrelid,
+          'definition',pg_get_constraintdef(x.oid,true),'validated',x.convalidated)::text
+        FROM pg_catalog.pg_constraint x JOIN pg_catalog.pg_namespace n ON n.oid=x.connamespace
+        WHERE n.nspname IN ('public','owned_bind_stage')
+        UNION ALL
+        SELECT jsonb_build_object('index',i.indexrelid,'definition',pg_get_indexdef(i.indexrelid),
+          'valid',i.indisvalid,'ready',i.indisready,'live',i.indislive)::text
+        FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname IN ('public','owned_bind_stage')
+        UNION ALL
+        SELECT jsonb_build_object('trigger',t.oid,'definition',pg_get_triggerdef(t.oid,true),
+          'enabled',t.tgenabled,'function',t.tgfoid,'relation',t.tgrelid)::text
+        FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname IN ('public','owned_bind_stage')
+        UNION ALL
+        SELECT jsonb_build_object('function',p.oid,'definition',pg_get_functiondef(p.oid),
+          'config',p.proconfig,'owner',p.proowner,'acl',p.proacl)::text
+        FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname IN ('public','owned_bind_stage')
+        UNION ALL
+        SELECT jsonb_build_object('sequence',s.seqrelid,'type',s.seqtypid,'start',s.seqstart,
+          'increment',s.seqincrement,'max',s.seqmax,'min',s.seqmin,'cache',s.seqcache,
+          'cycle',s.seqcycle)::text
+        FROM pg_catalog.pg_sequence s JOIN pg_catalog.pg_class c ON c.oid=s.seqrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname IN ('public','owned_bind_stage')
+        """)
+  }
+
+  private static func ownedDeferredConfig(_ mode: String, baseline: Int) throws -> Data {
+    guard ["normal", "fault", "gate"].contains(mode), baseline == 0 || baseline == 1 else {
+      throw FixtureFailure.nativeShape
+    }
+    return try ownedT09Data([
+      "singleton": 1, "deferred_mode": mode, "observed_before": baseline,
+      "gate_key": 1647600739,
+    ])
+  }
+
+  private static func ownedDeferredRecipeCheck(
+    _ c: PostgresConnection, recipe: OwnedDeferredRecipe, mode: String, baseline: Int
+  ) throws {
+    // The freezer checked the zero-trigger catalog before installation. Post-install checks
+    // retain the complete recipe and catalog snapshot, including both installed triggers.
+    try ownedT09Recipe(c, stage: recipe.stage)
+    let config = try ownedDeferredRows(
+      c, sql: "SELECT to_jsonb(d)::text AS value FROM \"owned_bind_stage\".\"deferred_control\" d")
+    guard config == [try ownedDeferredConfig(mode, baseline: baseline)],
+      try ownedDeferredCatalog(c) == recipe.catalog
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedDeferredInstall(
+    _ f: Fixture, stage: OwnedBindStageFixture, mode: String
+  ) throws -> OwnedDeferredRecipe {
+    guard WorkspaceDatabase.remoteApplyLockKey == 1647599984,
+      Migrator.migrationLockKey == 7076401213980434804,
+      Migrator.migrationLockKey != 1647600739,
+      WorkspaceDatabase.remoteApplyLockKey != 1647600739
+    else { throw FixtureFailure.nativeShape }
+    // This is the ONLY old installer use in each NEW fixture, before replacing private functions.
+    try ownedBindInstall(f, stage: stage, rawBodyFault: false)
+    try f.inspector.execute(
+      """
+      CREATE SEQUENCE "owned_bind_stage"."timeout_probe"
+        AS bigint START WITH 1 INCREMENT BY 1 CACHE 1 NO CYCLE;
+      CREATE TABLE "owned_bind_stage"."deferred_control"(
+        singleton integer PRIMARY KEY CHECK(singleton=1),
+        deferred_mode text NOT NULL CHECK(deferred_mode IN ('normal','fault','gate')),
+        observed_before bigint NOT NULL CHECK(observed_before>=0),
+        gate_key bigint NOT NULL CHECK(gate_key=1647600739));
+      """)
+    guard
+      try f.inspector.execute(
+        """
+        INSERT INTO "owned_bind_stage"."deferred_control"
+          (singleton,deferred_mode,observed_before,gate_key) VALUES(1,$1,0,1647600739)
+        """, [mode]
+      ).affected == 1
+    else { throw FixtureFailure.nativeShape }
+    for function in ownedDeferredFunctions.dropFirst(2) { try f.inspector.execute(function.sql) }
+    let functions = try f.inspector.execute(
+      """
+      SELECT p.proname AS name,p.prosrc AS source,pg_get_function_identity_arguments(p.oid) AS args,
+        pg_get_function_result(p.oid) AS result,p.proconfig::text AS config,l.lanname AS language,
+        p.provolatile::text AS volatility,p.proparallel::text AS parallel,
+        p.prosecdef::text AS definer,p.proisstrict::text AS strict,p.proleakproof::text AS leakproof,
+        p.prokind::text AS kind
+      FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+      JOIN pg_catalog.pg_language l ON l.oid=p.prolang WHERE n.nspname='owned_bind_stage'
+      """
+    ).rows
+    guard functions.count == ownedDeferredFunctions.count else { throw FixtureFailure.nativeShape }
+    for expected in ownedDeferredFunctions {
+      let rows = functions.filter { $0.text("name") == expected.name }
+      let parts = expected.sql.components(separatedBy: "$$")
+      guard rows.count == 1, parts.count == 3, let row = rows.first,
+        row.text("source") == parts[1], row.text("args") == expected.arguments,
+        row.text("result") == expected.result, row.text("config") == "{search_path=pg_catalog}",
+        row.text("language") == "plpgsql", row.text("volatility") == "v",
+        row.text("parallel") == "u", row.text("definer") == "false",
+        row.text("strict") == "false", row.text("leakproof") == "false", row.text("kind") == "f"
+      else { throw FixtureFailure.nativeShape }
+    }
+    let privateObjects = try f.inspector.execute(
+      """
+      SELECT c.relname AS name,c.relkind::text AS kind,c.relpersistence::text AS persistence
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname='owned_bind_stage' AND c.relkind<>'i' ORDER BY c.relname
+      """
+    ).rows
+    let objects = [
+      "body_probe": "S", "commit_probe": "S", "timeout_probe": "S", "names": "r",
+      "expected": "r", "meta": "r", "mode": "r", "observed": "r", "deferred_control": "r",
+    ]
+    guard privateObjects.count == objects.count else { throw FixtureFailure.nativeShape }
+    for row in privateObjects {
+      guard let name = row.text("name"), row.text("kind") == objects[name],
+        row.text("persistence") == "p"
+      else { throw FixtureFailure.nativeShape }
+    }
+    let columns = try f.inspector.execute(
+      """
+      SELECT a.attname AS name,format_type(a.atttypid,a.atttypmod) AS type,
+        a.attnotnull::text AS required
+      FROM pg_catalog.pg_attribute a WHERE a.attrelid='owned_bind_stage.deferred_control'::regclass
+        AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum
+      """
+    ).rows
+    let expectedColumns = [
+      ("singleton", "integer"), ("deferred_mode", "text"),
+      ("observed_before", "bigint"), ("gate_key", "bigint"),
+    ]
+    guard columns.count == expectedColumns.count else { throw FixtureFailure.nativeShape }
+    for (row, expected) in zip(columns, expectedColumns) {
+      guard row.text("name") == expected.0, row.text("type") == expected.1,
+        row.text("required") == "true"
+      else { throw FixtureFailure.nativeShape }
+    }
+    let constraints = try f.inspector.execute(
+      """
+      SELECT conname AS name,contype::text AS kind,convalidated::text AS valid,
+        condeferrable::text AS deferrable,pg_get_constraintdef(oid,true) AS definition
+      FROM pg_catalog.pg_constraint WHERE conrelid='owned_bind_stage.deferred_control'::regclass
+      """
+    ).rows
+    let expectedConstraints = [
+      "deferred_control_pkey": "PRIMARY KEY (singleton)",
+      "deferred_control_singleton_check": "CHECK (singleton = 1)",
+      "deferred_control_deferred_mode_check":
+        "CHECK (deferred_mode = ANY (ARRAY['normal'::text, 'fault'::text, 'gate'::text]))",
+      "deferred_control_observed_before_check": "CHECK (observed_before >= 0)",
+      "deferred_control_gate_key_check": "CHECK (gate_key = 1647600739)",
+    ]
+    guard constraints.count == expectedConstraints.count else { throw FixtureFailure.nativeShape }
+    for row in constraints {
+      guard let name = row.text("name"), row.text("definition") == expectedConstraints[name],
+        row.text("valid") == "true", row.text("deferrable") == "false",
+        row.text("kind") == (name == "deferred_control_pkey" ? "p" : "c")
+      else { throw FixtureFailure.nativeShape }
+    }
+    let probes = try f.inspector.execute(
+      """
+      SELECT c.relname AS name,s.seqtypid='bigint'::regtype AS bigint,s.seqstart::text AS start,
+        s.seqincrement::text AS increment,s.seqmin::text AS minimum,s.seqmax::text AS maximum,
+        s.seqcache::text AS cache,s.seqcycle::text AS cycle
+      FROM pg_catalog.pg_sequence s JOIN pg_catalog.pg_class c ON c.oid=s.seqrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='owned_bind_stage'
+      """
+    ).rows
+    guard probes.count == 3 else { throw FixtureFailure.nativeShape }
+    for row in probes {
+      guard let name = row.text("name"), ["body_probe", "commit_probe", "timeout_probe"].contains(name),
+        row.text("bigint") == "t", row.text("start") == "1", row.text("increment") == "1",
+        row.text("minimum") == "1", row.text("maximum") == "9223372036854775807",
+        row.text("cache") == "1", row.text("cycle") == "false"
+      else { throw FixtureFailure.nativeShape }
+    }
+    let triggers = try f.inspector.execute(
+      """
+      SELECT t.tgname AS name,pg_get_triggerdef(t.oid,true) AS definition,
+        t.tgfoid=('owned_bind_stage.'||p.proname||'()')::regprocedure AS exact_function
+      FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
+      WHERE t.tgrelid='public.settings'::regclass AND NOT t.tgisinternal
+      """
+    ).rows
+    let expectedTriggers = [
+      "owned_bind_body":
+        "CREATE TRIGGER owned_bind_body AFTER UPDATE ON public.settings FOR EACH ROW WHEN (new.key = '__b4app_agent_protocol_activation_v1'::text) EXECUTE FUNCTION owned_bind_stage.body()",
+      "owned_bind_commit_normal":
+        "CREATE CONSTRAINT TRIGGER owned_bind_commit_normal AFTER UPDATE ON public.settings DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (new.key = '__b4app_agent_protocol_activation_v1'::text) EXECUTE FUNCTION owned_bind_stage.commit_normal()",
+    ]
+    guard triggers.count == 2 else { throw FixtureFailure.nativeShape }
+    for row in triggers {
+      guard let name = row.text("name"), row.text("definition") == expectedTriggers[name],
+        row.text("exact_function") == "t"
+      else { throw FixtureFailure.nativeShape }
+    }
+    let recipe = OwnedDeferredRecipe(stage: stage, catalog: try ownedDeferredCatalog(f.inspector))
+    try ownedDeferredRecipeCheck(f.inspector, recipe: recipe, mode: mode, baseline: 0)
+    let initial = try ownedDeferredProbes(f.inspector)
+    let fresh = OwnedBindProbe(last: 1, called: false)
+    guard initial == OwnedDeferredProbes(body: fresh, commit: fresh, timeout: fresh),
+      try ownedDeferredObservations(f.inspector).isEmpty,
+      try ownedBindImage(f.inspector) == stage.before
+    else { throw FixtureFailure.nativeShape }
+    return recipe
+  }
+
+  private static func ownedDeferredCheckpointRead(
+    _ c: PostgresConnection, recipe: OwnedDeferredRecipe, mode: String, baseline: Int
+  ) throws -> OwnedDeferredCheckpoint {
+    try ownedDeferredRecipeCheck(c, recipe: recipe, mode: mode, baseline: baseline)
+    return OwnedDeferredCheckpoint(
+      image: try ownedBindImage(c), observations: try ownedDeferredObservations(c),
+      probes: try ownedDeferredProbes(c))
+  }
+
+  private static func ownedDeferredAppendObservation(
+    _ c: PostgresConnection, stage: OwnedBindStageFixture, old: [Data], actual: [Data],
+    rawMillis: UInt64?
+  ) throws {
+    // Subtract a sorted MULTISET, retaining duplicate multiplicity and every prior full row.
+    var added = actual
+    for row in old {
+      guard let index = added.firstIndex(of: row) else { throw FixtureFailure.nativeShape }
+      added.remove(at: index)
+    }
+    guard actual.count == old.count + 1, added.count == 1,
+      let row = try JSONSerialization.jsonObject(with: added[0]) as? [String: Any],
+      Set(row.keys) == Set(["isolation", "lock_budget", "statement_budget", "hlc", "device"]),
+      row["isolation"] as? String == "read committed", row["lock_budget"] as? String == "2s",
+      row["statement_budget"] as? String == "2s", let text = row["hlc"] as? String,
+      let hlc = HLC(rawValue: text), equalBytes(hlc.rawValue, text),
+      equalBytes(hlc.deviceId, stage.device), hlc.millis >= stage.lowerWall,
+      hlc.millis <= (try ownedBindWall(c))
+    else { throw FixtureFailure.nativeShape }
+    if let rawMillis {
+      guard hlc.millis == rawMillis, hlc.counter == 0 else { throw FixtureFailure.nativeShape }
+    }
+    if equalBytes(stage.device, "local") {
+      guard row["device"] is NSNull || row["device"] as? String == "" else {
+        throw FixtureFailure.nativeShape
+      }
+    } else {
+      guard let device = row["device"] as? String, equalBytes(device, stage.device) else {
+        throw FixtureFailure.nativeShape
+      }
+    }
+  }
+
+  private static func ownedDeferredQ01(
+    _ f: Fixture, recipe: OwnedDeferredRecipe, mode: String
+  ) throws {
+    let before = try ownedDeferredCheckpointRead(f.inspector, recipe: recipe, mode: mode, baseline: 0)
+    guard before.image == recipe.stage.expected, before.observations.count == 1 else {
+      throw FixtureFailure.nativeShape
+    }
+    let old = try ownedDeferredControl(recipe.stage.expected)
+    let new = try ownedDeferredControl(recipe.stage.before)
+    guard try ownedT09ControlImage(recipe.stage.expected, old: old, new: new) == recipe.stage.before,
+      !old.isEmpty, !new.isEmpty
+    else { throw FixtureFailure.nativeShape }
+    var commitSent = false
+    var committed = false
+    // Registered before BEGIN. A failed COMMIT is not converted to a checked rollback fact.
+    defer { if !commitSent && !committed { _ = try? f.inspector.execute("ROLLBACK") } }
+    try f.inspector.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+    try f.inspector.execute("SET LOCAL lock_timeout='2s'")
+    try f.inspector.execute("SET LOCAL statement_timeout='2s'")
+    guard
+      try f.inspector.execute(
+        "DELETE FROM public.settings WHERE key=$1 AND value=$2::jsonb",
+        [key, try ownedBindText(ownedT09Data(old))]
+      ).affected == 1,
+      try f.inspector.execute(
+        "INSERT INTO public.settings(key,value) VALUES($1,$2::jsonb)",
+        [key, try ownedBindText(ownedT09Data(new))]
+      ).affected == 1
+    else { throw FixtureFailure.nativeShape }
+    commitSent = true
+    try f.inspector.execute("COMMIT")
+    committed = true
+    let after = try ownedDeferredCheckpointRead(f.inspector, recipe: recipe, mode: mode, baseline: 0)
+    guard after.image == recipe.stage.before, after.observations == before.observations,
+      after.probes == before.probes
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedDeferredTransition(
+    _ f: Fixture, recipe: OwnedDeferredRecipe, oldMode: String, oldBaseline: Int,
+    newMode: String, newBaseline: Int
+  ) throws {
+    guard
+      (oldMode == newMode && oldBaseline == 0 && newBaseline == 1)
+        || (oldMode == "fault" && newMode == "normal" && oldBaseline == 0 && newBaseline == 0)
+    else { throw FixtureFailure.nativeShape }
+    let before = try ownedDeferredCheckpointRead(
+      f.inspector, recipe: recipe, mode: oldMode, baseline: oldBaseline)
+    guard before.image == recipe.stage.before,
+      before.observations.count == newBaseline
+    else { throw FixtureFailure.nativeShape }
+    let old = try ownedDeferredConfig(oldMode, baseline: oldBaseline)
+    let new = try ownedDeferredConfig(newMode, baseline: newBaseline)
+    var commitSent = false
+    var committed = false
+    defer { if !commitSent && !committed { _ = try? f.inspector.execute("ROLLBACK") } }
+    try f.inspector.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+    try f.inspector.execute("SET LOCAL lock_timeout='2s'")
+    try f.inspector.execute("SET LOCAL statement_timeout='2s'")
+    let sql =
+      oldMode == newMode
+      ? "UPDATE \"owned_bind_stage\".\"deferred_control\" AS d SET observed_before=1 WHERE singleton=1 AND to_jsonb(d)=$1::jsonb"
+      : "UPDATE \"owned_bind_stage\".\"deferred_control\" AS d SET deferred_mode='normal' WHERE singleton=1 AND to_jsonb(d)=$1::jsonb"
+    guard try f.inspector.execute(sql, [try ownedBindText(old)]).affected == 1,
+      try ownedDeferredRows(
+        f.inspector,
+        sql: "SELECT to_jsonb(d)::text AS value FROM \"owned_bind_stage\".\"deferred_control\" d") == [new]
+    else { throw FixtureFailure.nativeShape }
+    commitSent = true
+    try f.inspector.execute("COMMIT")
+    committed = true
+    let after = try ownedDeferredCheckpointRead(
+      f.inspector, recipe: recipe, mode: newMode, baseline: newBaseline)
+    guard after == before else { throw FixtureFailure.nativeShape }
+  }
+
+  private static let ownedDeferredRawDML = """
+    INSERT INTO public.settings(key,value)
+    SELECT '__b4app_agent_protocol_activation_v1',expected_control
+    FROM "owned_bind_stage"."meta" WHERE singleton=1
+    ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value
+    """
+
+  private static func ownedDeferredRawWorker(
+    binDir: String, socketDir: String, port: Int, database: String, user: String,
+    application: String, kind: OwnedDeferredRawKind,
+    state: OwnedBindHolderState, finished: OwnedBindFinished
+  ) -> OwnedProofNativeWork<OwnedDeferredRawResult> {
+    OwnedProofNativeWork {
+      [binDir, socketDir, port, database, user, application, kind, state, finished] in
+      defer { finished.markReturned() }
+      do {
+        // The worker creates, uses and closes its own native connection lexically. No Fixture,
+        // inspector, image, JSON candidate, proof object, or externally created connection capture.
+        let c = try PostgresConnection(
+          lib: LibPQ.load(binDir: binDir),
+          connectionString:
+            "host=\(socketDir) port=\(port) user=\(user) dbname=\(database) application_name=\(application)")
+        var result = OwnedDeferredRawResult()
+        var began = false
+        var rollbackSent = false
+        defer {
+          if began && !result.commitSent && !rollbackSent { _ = try? c.execute("ROLLBACK") }
+        }
+        let identity = try c.execute(
+          """
+          SELECT pg_backend_pid() AS pid,current_database() AS database,current_user AS username,
+            current_setting('application_name') AS application
+          """
+        ).rows
+        guard identity.count == 1, let pid = identity[0].int("pid"), pid > 0,
+          identity[0].text("database") == database, identity[0].text("username") == user,
+          identity[0].text("application") == application
+        else { return result }
+        state.acquired(pid: pid)
+        let probes = try ownedDeferredProbes(c)
+        try c.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+        began = true
+        try c.execute("SET LOCAL lock_timeout='2s'")
+        try c.execute("SET LOCAL statement_timeout='2s'")
+        try c.execute("SELECT pg_catalog.pg_advisory_xact_lock($1::bigint)", ["1647599984"])
+        let meta = try c.execute(
+          """
+          SELECT expected_device,original_ref FROM "owned_bind_stage"."meta" WHERE singleton=1
+          """
+        ).rows
+        guard meta.count == 1, let device = meta[0].text("expected_device"), !device.isEmpty,
+          let reference = meta[0].text("original_ref")
+        else { return result }
+        let wall = try ownedBindWall(c)
+        let stamp = HLC(millis: wall, counter: 0, deviceId: device)
+        guard HLC(rawValue: stamp.rawValue) != nil else { return result }
+        result.millis = wall
+        try c.execute("SELECT pg_catalog.set_config('b4app.hlc',$1,true)", [stamp.rawValue])
+        if device != "local" {
+          try c.execute("SELECT pg_catalog.set_config('b4app.device_id',$1,true)", [device])
+        }
+        do {
+          guard try c.execute(ownedDeferredRawDML).affected == 1 else { return result }
+          result.dmlReturned = true
+        } catch let error as PostgresError {
+          result.predicateRejected =
+            kind == .reject && error.sqlState == "P0001"
+            && error.message.components(separatedBy: "\n").first == "ERROR:  OWNED_BIND_COMPLETE_MISMATCH"
+            && equalBytes(error.sql, ownedDeferredRawDML)
+          guard result.predicateRejected else { return result }
+        }
+        if kind == .reject {
+          guard result.predicateRejected, !result.dmlReturned
+          else { return result }
+          rollbackSent = true
+          try c.execute("ROLLBACK")
+          result.rollbackAcknowledged = true
+          guard try ownedDeferredProbes(c) == probes else { return result }
+          result.valid = true
+          return result
+        }
+        guard result.dmlReturned else { return result }
+        try c.execute("SELECT \"owned_bind_stage\".\"assert_complete\"($1)", [reference])
+        result.ownPredicate = true
+        try c.execute("SELECT \"owned_bind_stage\".\"transaction_checked\"(false)")
+        let seen = try c.execute(
+          """
+          SELECT count(*) AS n FROM "owned_bind_stage"."observed"
+          WHERE hlc=$1 AND isolation='read committed' AND lock_budget='2s' AND statement_budget='2s'
+            AND device IS NOT DISTINCT FROM current_setting('b4app.device_id',true)
+          """, [stamp.rawValue]
+        ).rows
+        guard seen.count == 1, seen[0].int("n") == 1,
+          try ownedDeferredProbes(c).advanced(from: probes, body: 1, commit: 0, timeout: 0)
+        else { return result }
+        result.ownSettings = true
+        result.commitSent = true
+        do {
+          try c.execute("COMMIT")
+          result.acknowledged = true
+        } catch let error as PostgresError {
+          // After actual COMMIT is sent there is NO further SQL on this lexical connection.
+          let line = error.message.components(separatedBy: "\n").first
+          result.actualDeferredFault =
+            kind == .fault && error.sqlState == "23514"
+            && line == "ERROR:  OWNED_BIND_ACTUAL_DEFERRED_FAULT" && error.sql == "COMMIT"
+          result.actualServerTimeout =
+            kind == .timeout && error.sql == "COMMIT"
+            && ((error.sqlState == "55P03" && line == "ERROR:  canceling statement due to lock timeout")
+              || (error.sqlState == "57014" && line == "ERROR:  canceling statement due to statement timeout"))
+        }
+        result.valid =
+          result.ownPredicate && result.ownSettings
+          && ((kind == .normal && result.acknowledged)
+            || (kind == .fault && result.actualDeferredFault && !result.acknowledged)
+            || (kind == .timeout && result.actualServerTimeout && !result.acknowledged))
+        return result
+      } catch {
+        // Redaction follows lexical rollback/close; arbitrary diagnostics never leave the worker.
+        return OwnedDeferredRawResult()
+      }
+    }
+  }
+
+  private static func ownedDeferredHolder(
+    binDir: String, socketDir: String, port: Int, database: String, user: String,
+    application: String, hold: OwnedProofHold, state: OwnedBindHolderState
+  ) -> OwnedProofNativeWork<OwnedBindHolderResult> {
+    OwnedProofNativeWork { [binDir, socketDir, port, database, user, application, hold, state] in
+      do {
+        let c = try PostgresConnection(
+          lib: LibPQ.load(binDir: binDir),
+          connectionString:
+            "host=\(socketDir) port=\(port) user=\(user) dbname=\(database) application_name=\(application)")
+        var began = false
+        var rollbackAcknowledged = false
+        defer { if began && !rollbackAcknowledged { _ = try? c.execute("ROLLBACK") } }
+        began = true
+        try c.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+        try c.execute("SET LOCAL lock_timeout='2s'")
+        try c.execute("SET LOCAL statement_timeout='2s'")
+        let rows = try c.execute(
+          """
+          SELECT pg_backend_pid() AS pid,current_database() AS database,current_user AS username,
+            current_setting('application_name') AS application,
+            current_setting('transaction_isolation') AS isolation,
+            current_setting('lock_timeout') AS lock_budget,
+            current_setting('statement_timeout') AS statement_budget
+          """
+        ).rows
+        guard rows.count == 1, let pid = rows[0].int("pid"), pid > 0,
+          rows[0].text("database") == database, rows[0].text("username") == user,
+          rows[0].text("application") == application, rows[0].text("isolation") == "read committed",
+          rows[0].text("lock_budget") == "2s", rows[0].text("statement_budget") == "2s"
+        else { return .invalid }
+        try c.execute("SELECT pg_catalog.pg_advisory_xact_lock($1::bigint)", ["1647600739"])
+        state.acquired(pid: pid)
+        let released = hold.wait()
+        try c.execute("ROLLBACK")
+        rollbackAcknowledged = true
+        let final = hold.snapshot()
+        return OwnedBindHolderResult(
+          acquired: true, released: released && final.released, expired: final.expired,
+          rollbackAcknowledged: rollbackAcknowledged)
+      } catch { return .invalid }
+    }
+  }
+
+  private static func ownedDeferredGateClear(_ c: PostgresConnection) throws {
+    let rows = try c.execute(
+      """
+      SELECT count(*) AS n FROM pg_catalog.pg_locks g
+      JOIN pg_catalog.pg_database db ON db.oid=g.database
+      WHERE db.datname=current_database() AND g.locktype='advisory'
+        AND g.classid=0::oid AND g.objid=1647600739::oid AND g.objsubid=1
+      """
+    ).rows
+    // Both granted and waiting resources count. A collision fails; nothing is adopted/unlocked.
+    guard rows.count == 1, rows[0].int("n") == 0 else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedDeferredHolderReady(
+    _ c: PostgresConnection, state: OwnedBindHolderState, hold: OwnedProofHold,
+    database: String, application: String, deadline: UInt64
+  ) throws -> Int {
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      let facts = state.snapshot()
+      if facts.acquired && facts.pid > 0 && hold.heldUnexpired() {
+        let rows = try c.execute(
+          """
+          SELECT a.pid AS pid FROM pg_catalog.pg_stat_activity a
+          JOIN pg_catalog.pg_database db ON db.datname=$1
+          WHERE a.pid=$2::int AND a.datname=$1 AND a.usename=current_user
+            AND a.application_name=$3 AND a.backend_type='client backend'
+            AND a.state='idle in transaction'
+            AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks g WHERE g.pid=a.pid
+              AND g.locktype='advisory' AND g.mode='ExclusiveLock' AND g.granted
+              AND g.database=db.oid AND g.classid=0::oid
+              AND g.objid=1647600739::oid AND g.objsubid=1)
+          """, [database, String(facts.pid), application]
+        ).rows
+        let queryEnd = DispatchTime.now().uptimeNanoseconds
+        guard queryEnd <= deadline, rows.count <= 1, hold.heldUnexpired() else {
+          throw FixtureFailure.nativeShape
+        }
+        if rows.count == 1 {
+          guard rows[0].int("pid") == facts.pid else { throw FixtureFailure.nativeShape }
+          return facts.pid
+        }
+      }
+      guard DispatchTime.now().uptimeNanoseconds <= deadline else { throw FixtureFailure.nativeShape }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static let ownedDeferredCommitWait = """
+    SELECT a.pid::text AS pid,
+      ceil(extract(epoch FROM (clock_timestamp()-a.query_start))*1000000)::bigint::text AS age_us
+    FROM pg_catalog.pg_stat_activity a
+    JOIN pg_catalog.pg_database db ON db.datname=$1
+    WHERE a.datname=$1 AND a.usename=current_user AND a.application_name=$6
+      AND a.backend_type='client backend' AND a.pid<>pg_backend_pid() AND a.pid<>$2::int
+      AND NOT(a.pid=ANY($4::int[]))
+      AND a.state='active' AND a.wait_event_type='Lock' AND a.wait_event='advisory'
+      AND a.query='COMMIT' AND a.query_start IS NOT NULL
+      AND $2::int=ANY(pg_catalog.pg_blocking_pids(a.pid))
+      AND EXISTS(SELECT 1 FROM pg_catalog.pg_stat_activity h WHERE h.pid=$2::int
+        AND h.datname=$1 AND h.usename=current_user AND h.application_name=$5
+        AND h.backend_type='client backend' AND h.state='idle in transaction')
+      AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks w JOIN pg_catalog.pg_locks h
+        ON h.database=w.database AND h.classid=w.classid
+          AND h.objid=w.objid AND h.objsubid=w.objsubid
+        WHERE w.pid=a.pid AND w.locktype='advisory' AND w.mode='ExclusiveLock' AND NOT w.granted
+          AND w.database=db.oid AND w.classid=0::oid AND w.objid=$3::oid AND w.objsubid=1
+          AND h.pid=$2::int AND h.locktype='advisory' AND h.mode='ExclusiveLock' AND h.granted)
+      AND EXISTS(SELECT 1 FROM pg_catalog.pg_locks g WHERE g.pid=a.pid
+        AND g.locktype='advisory' AND g.mode='ExclusiveLock' AND g.granted
+        AND g.database=db.oid AND g.classid=0::oid AND g.objid=$7::oid AND g.objsubid=1)
+    """
+
+  private static func ownedDeferredObserveCommit(
+    _ c: PostgresConnection, database: String, holderPID: Int, knownOwnedPIDs: [Int],
+    holderApplication: String, candidateApplication: String, rawPID: Int?,
+    hold: OwnedProofHold, finished: OwnedBindFinished, memory: OwnedBindMemory?,
+    invocationStart: Int, probes: OwnedDeferredProbes, deadline: UInt64
+  ) throws {
+    guard holderPID > 0, knownOwnedPIDs.contains(holderPID),
+      knownOwnedPIDs.allSatisfy({ $0 > 0 }), WorkspaceDatabase.remoteApplyLockKey == 1647599984,
+      WorkspaceDatabase.remoteApplyLockKey != 1647600739
+    else { throw FixtureFailure.nativeShape }
+    let excluded = "{" + knownOwnedPIDs.map(String.init).joined(separator: ",") + "}"
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      guard hold.heldUnexpired(), finished.pending() else { throw FixtureFailure.nativeShape }
+      if let memory {
+        let delta = memory.calls() - invocationStart
+        guard (0...3).contains(delta) else { throw FixtureFailure.nativeShape }
+        if delta != 3 {
+          // Waiting for entry is non-credit; no memory ordinal substitutes for native COMMIT.
+          Thread.sleep(forTimeInterval: 0.005)
+          continue
+        }
+      }
+      let queryBegin = DispatchTime.now().uptimeNanoseconds
+      let rows = try c.execute(
+        ownedDeferredCommitWait,
+        [
+          database, String(holderPID), "1647600739", excluded,
+          holderApplication, candidateApplication, "1647599984",
+        ]
+      ).rows
+      let queryEnd = DispatchTime.now().uptimeNanoseconds
+      // Both query completion and all synchronous proof reads must fit the ORIGINAL window.
+      guard queryBegin <= queryEnd, queryEnd <= deadline, rows.count <= 1,
+        hold.heldUnexpired(), finished.pending(),
+        memory.map({ $0.calls() - invocationStart == 3 }) ?? true
+      else { throw FixtureFailure.nativeShape }
+      let actualProbes = try ownedDeferredProbes(c)
+      guard actualProbes.timeout == probes.timeout,
+        actualProbes.body.advanced(from: probes.body, by: 0)
+          || actualProbes.body.advanced(from: probes.body, by: 1),
+        actualProbes.commit.advanced(from: probes.commit, by: 0)
+          || actualProbes.commit.advanced(from: probes.commit, by: 1),
+        DispatchTime.now().uptimeNanoseconds <= deadline,
+        hold.heldUnexpired(), finished.pending(),
+        memory.map({ $0.calls() - invocationStart == 3 }) ?? true
+      else { throw FixtureFailure.nativeShape }
+      if rows.count == 1 {
+        guard let text = rows[0].text("pid"), let pid = Int(text), pid > 0,
+          !knownOwnedPIDs.contains(pid), rawPID.map({ $0 == pid }) ?? true,
+          let ageText = rows[0].text("age_us"), let age = Int64(ageText), age >= 0,
+          actualProbes.advanced(from: probes, body: 1, commit: 1, timeout: 0),
+          DispatchTime.now().uptimeNanoseconds <= deadline,
+          hold.heldUnexpired(), finished.pending(),
+          memory.map({ $0.calls() - invocationStart == 3 }) ?? true
+        else { throw FixtureFailure.nativeShape }
+        // Age is a nonnegative diagnostic only, never a cause or timer reset.
+        return
+      }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedDeferredRelease(
+    _ hold: OwnedProofHold, finished: OwnedBindFinished, memory: OwnedBindMemory?,
+    invocationStart: Int, retire: Bool, deadline: UInt64
+  ) throws {
+    guard hold.heldUnexpired(), finished.pending(),
+      memory.map({ $0.calls() - invocationStart == 3 }) ?? true,
+      !retire || memory != nil
+    else { throw FixtureFailure.nativeShape }
+    if retire { memory?.setCurrent(false) }
+    // The memory mutex has been released. Nothing blocking or SQL runs before release.
+    let retirement = DispatchTime.now().uptimeNanoseconds
+    let original = hold.snapshot()
+    guard original.entered, original.held, !original.expired, !original.released,
+      retirement < original.expiry, finished.pending(),
+      memory.map({ $0.calls() - invocationStart == 3 }) ?? true
+    else { throw FixtureFailure.nativeShape }
+    let releaseStart = DispatchTime.now().uptimeNanoseconds
+    hold.release()
+    let releaseEnd = DispatchTime.now().uptimeNanoseconds
+    let released = hold.snapshot()
+    guard retirement <= releaseStart, releaseStart <= releaseEnd, releaseEnd <= deadline,
+      releaseEnd < original.expiry, released.released, !released.expired
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedDeferredInspectorPID(_ c: PostgresConnection) throws -> Int {
+    let rows = try c.execute("SELECT pg_backend_pid() AS pid").rows
+    guard rows.count == 1, let pid = rows[0].int("pid"), pid > 0 else {
+      throw FixtureFailure.nativeShape
+    }
+    return pid
+  }
+
+  private static func ownedDeferredControl(_ image: OwnedBindImage) throws -> [String: Any] {
+    guard let settings = image.rows["settings"] else { throw FixtureFailure.nativeShape }
+    let rows = try settings.map { try ownedT09Object($0) }.filter { $0["key"] as? String == key }
+    guard rows.count == 1, let control = rows[0]["value"] as? [String: Any] else {
+      throw FixtureFailure.nativeShape
+    }
+    return control
+  }
+
+  private static func ownedDeferredDamage(
+    _ c: PostgresConnection, recipe: OwnedDeferredRecipe
+  ) throws -> OwnedDeferredRecipe {
+    let stage = recipe.stage
+    guard let rows = stage.expected.rows["settings"] else { throw FixtureFailure.nativeShape }
+    var old: Data?
+    var new: Data?
+    let damaged = try rows.map { data -> Data in
+      var object = try ownedT09Object(data)
+      if object["key"] as? String == sentinelKey {
+        guard old == nil, object["value"] as? String == "OWNED_PROOF_RETAINED" else {
+          throw FixtureFailure.nativeShape
+        }
+        old = data
+        object["value"] = "OWNED_BIND_PRIVATE_IMAGE_CORRUPTION"
+        let value = try ownedT09Data(object)
+        new = value
+        return value
+      }
+      return data
+    }.sorted { $0.lexicographicallyPrecedes($1) }
+    guard let old, let new,
+      try c.execute(
+        """
+        UPDATE "owned_bind_stage"."expected" AS e
+        SET value=pg_catalog.jsonb_set(value,'{value}',
+          pg_catalog.to_jsonb('OWNED_BIND_PRIVATE_IMAGE_CORRUPTION'::text))
+        WHERE name='settings' AND value=$1::jsonb
+        """, [try ownedBindText(old)]
+      ).affected == 1
+    else { throw FixtureFailure.nativeShape }
+    let checked = try c.execute(
+      """
+      SELECT value::text AS value FROM "owned_bind_stage"."expected"
+      WHERE name='settings' AND value->>'key'=$1
+      """, [sentinelKey]
+    ).rows
+    guard checked.count == 1, let value = checked[0].text("value"),
+      try ownedBindJSON(value) == new
+    else { throw FixtureFailure.nativeShape }
+    var expected = stage.expected.rows
+    expected["settings"] = damaged
+    let adapted = OwnedBindStageFixture(
+      before: stage.before,
+      expected: OwnedBindImage(
+        database: stage.expected.database, rows: expected, sequence: stage.expected.sequence),
+      controlJSON: stage.controlJSON, originalReference: stage.originalReference,
+      replacement: stage.replacement, device: stage.device, lowerWall: stage.lowerWall)
+    let result = OwnedDeferredRecipe(stage: adapted, catalog: recipe.catalog)
+    try ownedDeferredRecipeCheck(c, recipe: result, mode: "normal", baseline: 0)
+    return result
+  }
+
+  private struct OwnedDeferredControlFacts {
+    let row: Int
+    let attempts: Int
+    let holders: Int
+    let acknowledgements: Int
+    let errors: Int
+    let rollbacks: Int
+    let bodies: Int
+    let deferred: Int
+    let timeouts: Int
+    let restorations: Int
+    let transitions: Int
+    let qualified: Bool
+  }
+
+  private static func ownedDeferredRawControl(_ row: Int) throws -> OwnedDeferredControlFacts {
+    guard (0...4).contains(row) else { throw FixtureFailure.nativeShape }
+    var facts: OwnedDeferredControlFacts?
+    try withFixture { f in
+      let predecessor = try validateFixture(f)
+      let stage = try ownedBindFreeze(f, predecessor: predecessor, replacement: f.link.tokenRef)
+      var mode = row == 2 ? "fault" : (row >= 3 ? "gate" : "normal")
+      var baseline = 0
+      var recipe = try ownedDeferredInstall(f, stage: stage, mode: mode)
+      if row == 0 { recipe = try ownedDeferredDamage(f.inspector, recipe: recipe) }
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
+      let work = OwnedDeferredWork()
+      // Registration precedes every holder/worker, including partially started attempts.
+      defer { work.releaseAndJoin() }
+      var knownPIDs = [inspectorPID]
+      var attempts = 0
+      var acknowledgements = 0
+      var errors = 0
+      var rollbacks = 0
+      var bodies = 0
+      var deferred = 0
+      var timeouts = 0
+      var restorations = 0
+      var transitions = 0
+      for attempt in 0..<(row == 0 ? 1 : 2) {
+        let before = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline)
+        guard before.image == stage.before, before.observations.count == baseline else {
+          throw FixtureFailure.nativeShape
+        }
+        let gated = row >= 3
+        let timeout = row == 4 && attempt == 0
+        let kind: OwnedDeferredRawKind =
+          row == 0 ? .reject : (row == 2 && attempt == 0 ? .fault : (timeout ? .timeout : .normal))
+        let application = "owned-deferred-raw-\(UUID().uuidString)"
+        let holderApplication = "owned-deferred-gate-\(UUID().uuidString)"
+        let hold = OwnedProofHold()
+        let holderState = OwnedBindHolderState()
+        var holderPID = 0
+        var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+        if gated {
+          work.holds.append(hold)
+          try ownedDeferredGateClear(f.inspector)
+          let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+          let started = ownedDeferredHolder(
+            binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+            database: endpoint.database, user: NSUserName(), application: holderApplication,
+            hold: hold, state: holderState)
+          work.holders.append(started)
+          holder = started
+          holderPID = try ownedDeferredHolderReady(
+            f.inspector, state: holderState, hold: hold, database: endpoint.database,
+            application: holderApplication, deadline: readiness)
+          guard !knownPIDs.contains(holderPID) else { throw FixtureFailure.nativeShape }
+          knownPIDs.append(holderPID)
+        }
+        let state = OwnedBindHolderState()
+        let finished = OwnedBindFinished()
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        let worker = ownedDeferredRawWorker(
+          binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+          database: endpoint.database, user: NSUserName(), application: application,
+          kind: kind, state: state, finished: finished)
+        work.raw.append(worker)
+        if gated {
+          while state.snapshot().pid == 0 && finished.pending()
+            && DispatchTime.now().uptimeNanoseconds <= deadline
+          { Thread.sleep(forTimeInterval: 0.005) }
+          let candidate = state.snapshot()
+          guard candidate.acquired, candidate.pid > 0, !knownPIDs.contains(candidate.pid),
+            DispatchTime.now().uptimeNanoseconds <= deadline
+          else { throw FixtureFailure.nativeShape }
+          try ownedDeferredObserveCommit(
+            f.inspector, database: endpoint.database, holderPID: holderPID,
+            knownOwnedPIDs: knownPIDs, holderApplication: holderApplication,
+            candidateApplication: application, rawPID: candidate.pid, hold: hold,
+            finished: finished, memory: nil, invocationStart: 0, probes: before.probes,
+            deadline: deadline)
+          if !timeout {
+            try ownedDeferredRelease(
+              hold, finished: finished, memory: nil, invocationStart: 0, retire: false,
+              deadline: deadline)
+          }
+        }
+        // The intended timeout keeps its original eight-second hold valid until actual return.
+        // Capture the result/timestamp, then immediately release ALL and join ALL before guards.
+        let result = worker.join()
+        let receiptAt = DispatchTime.now().uptimeNanoseconds
+        let heldAtReturn = !timeout || hold.heldUnexpired()
+        work.releaseAndJoin()
+        let held = holder?.join()
+        let rawIdentity = state.snapshot()
+        guard result.valid, finished.pending() == false, rawIdentity.acquired,
+          rawIdentity.pid > 0, !knownPIDs.contains(rawIdentity.pid),
+          (!gated || held?.normal == true), heldAtReturn,
+          !timeout || receiptAt < hold.snapshot().expiry
+        else { throw FixtureFailure.nativeShape }
+        knownPIDs.append(rawIdentity.pid)
+        attempts += 1
+        let success = kind == .normal
+        let bodyCount: Int64 = row == 0 ? 0 : 1
+        let commitCount: Int64 = row == 0 ? 0 : 1
+        let timeoutCount: Int64 = timeout ? 1 : 0
+        guard result.dmlReturned == (row != 0), result.commitSent == (row != 0),
+          result.acknowledged == success, result.rollbackAcknowledged == (row == 0),
+          result.predicateRejected == (row == 0),
+          result.actualDeferredFault == (kind == .fault), result.actualServerTimeout == timeout,
+          result.ownPredicate == (row != 0), result.ownSettings == (row != 0)
+        else { throw FixtureFailure.nativeShape }
+        let after = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline)
+        guard after.image == (success ? stage.expected : stage.before),
+          after.probes.advanced(
+            from: before.probes, body: bodyCount, commit: commitCount, timeout: timeoutCount)
+        else { throw FixtureFailure.nativeShape }
+        if success {
+          try ownedDeferredAppendObservation(
+            f.inspector, stage: stage, old: before.observations, actual: after.observations,
+            rawMillis: result.millis)
+          acknowledgements += 1
+        } else {
+          guard after.observations == before.observations else { throw FixtureFailure.nativeShape }
+          if row == 0 { rollbacks += 1 } else { errors += 1 }
+        }
+        bodies += Int(bodyCount)
+        deferred += Int(commitCount)
+        timeouts += Int(timeoutCount)
+        if attempt == 0 && (row == 1 || row == 3) {
+          try ownedDeferredQ01(f, recipe: recipe, mode: mode)
+          restorations += 1
+          try ownedDeferredTransition(
+            f, recipe: recipe, oldMode: mode, oldBaseline: 0, newMode: mode, newBaseline: 1)
+          baseline = 1
+          transitions += 1
+        } else if attempt == 0 && row == 2 {
+          try ownedDeferredTransition(
+            f, recipe: recipe, oldMode: "fault", oldBaseline: 0, newMode: "normal", newBaseline: 0)
+          mode = "normal"
+          transitions += 1
+        }
+      }
+      guard work.raw.count == (row == 0 ? 1 : 2), work.holders.count == (row >= 3 ? 2 : 0) else {
+        throw FixtureFailure.nativeShape
+      }
+      facts = OwnedDeferredControlFacts(
+        row: row, attempts: attempts, holders: work.holders.count,
+        acknowledgements: acknowledgements, errors: errors, rollbacks: rollbacks,
+        bodies: bodies, deferred: deferred, timeouts: timeouts,
+        restorations: restorations, transitions: transitions, qualified: true)
+    }
+    // Complete fixture close/root teardown precedes escape of these primitive-only facts.
+    guard let facts, facts.qualified else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  private static func ownedDeferredPrerequisites() throws -> (
+    old: Int, controls: Int, attempts: Int, holders: Int
+  ) {
+    let old = try ownedBindRawStageControls()
+    guard old.map({ $0.row }) == [0, 1, 2, 3], old.count == 4,
+      old.allSatisfy({ $0.qualified && $0.durableImageValidated })
+    else { throw FixtureFailure.nativeShape }
+    // The old four have ALL torn down. Each NEW recipe row independently tears down as well.
+    var rows: [OwnedDeferredControlFacts] = []
+    for row in 0...4 { rows.append(try ownedDeferredRawControl(row)) }
+    guard rows.map({ $0.row }) == [0, 1, 2, 3, 4], rows.allSatisfy({ $0.qualified }),
+      rows.map({ $0.attempts }) == [1, 2, 2, 2, 2],
+      rows.map({ $0.holders }) == [0, 0, 0, 2, 2],
+      rows.map({ $0.acknowledgements }) == [0, 2, 1, 2, 1],
+      rows.map({ $0.errors }) == [0, 0, 1, 0, 1],
+      rows.map({ $0.rollbacks }) == [1, 0, 0, 0, 0],
+      rows.map({ $0.bodies }) == [0, 2, 2, 2, 2],
+      rows.map({ $0.deferred }) == [0, 2, 2, 2, 2],
+      rows.map({ $0.timeouts }) == [0, 0, 0, 0, 1],
+      rows.map({ $0.restorations }) == [0, 1, 0, 1, 0],
+      rows.map({ $0.transitions }) == [0, 1, 1, 1, 0]
+    else { throw FixtureFailure.nativeShape }
+    return (old.count, rows.count, rows.reduce(0) { $0 + $1.attempts }, rows.reduce(0) { $0 + $1.holders })
+  }
+
+  private static func ownedDeferredRefuses(
+    _ receipt: ProtocolOwnedProofWriteReceipt, fixture f: Fixture,
+    admission: ProtocolProofMemoryAdmission, memory: OwnedBindMemory,
+    disposition: ProtocolProofWriteDisposition
+  ) throws {
+    let before = memory.calls()
+    guard receipt.operation == .bind, receipt.disposition == disposition else {
+      throw FixtureFailure.nativeShape
+    }
+    let refused = !validates {
+      _ = try receipt.currentSuccessor(
+        expectedSnapshot: f.anchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+    }
+    guard refused, memory.calls() == before, receipt.disposition == disposition else {
+      throw FixtureFailure.nativeShape
+    }
+    // The sealed redemption implementation refuses before its callback and contains no SQL.
+    // Inspector S0 is never used to upgrade an unknown receipt to continuation evidence.
+  }
+
+  private static func ownedDeferredTarget(_ unit: OwnedDeferredCase) throws -> OwnedDeferredFacts {
+    // Every call owns ALL prerequisites; no cache, earlier test, or previously qualified run.
+    let prerequisites = try ownedDeferredPrerequisites()
+    var facts: OwnedDeferredFacts?
+    try withFixture { f in
+      let predecessor = try validateFixture(f)
+      let reference = f.link.tokenRef
+      guard ProtocolCredentialReference(reference) != nil,
+        reference.utf8.allSatisfy({ $0 > 0 && $0 < 128 })
+      else { throw FixtureFailure.nativeShape }
+      let stage = try ownedBindFreeze(f, predecessor: predecessor, replacement: reference)
+      var mode = unit == .fault ? "fault" : "gate"
+      var baseline = 0
+      let recipe = try ownedDeferredInstall(f, stage: stage, mode: mode)
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        let allowed = memory.compare()
+        if !allowed { throw FixtureFailure.redactedFailure }
+      }
+      let work = OwnedDeferredWork()
+      defer { work.releaseAndJoin() }
+      var knownPIDs = [inspectorPID]
+      var original: ProtocolOwnedProofWriteReceipt?
+      var writerCalls = 0
+      var redemptions = 0
+      var waits = 0
+      var timeoutAllocations = 0
+      for attempt in 0..<2 {
+        let before = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline)
+        guard before.image == stage.before, before.observations.count == baseline else {
+          throw FixtureFailure.nativeShape
+        }
+        let invocationStart = memory.calls()
+        let expectedStart = attempt == 0 ? 0 : (unit == .stale ? 4 : 3)
+        guard invocationStart == expectedStart else { throw FixtureFailure.nativeShape }
+        let gated = unit != .fault
+        let timeout = unit == .timeout && attempt == 0
+        let hold = OwnedProofHold()
+        let holderState = OwnedBindHolderState()
+        let holderApplication = "owned-deferred-target-gate-\(UUID().uuidString)"
+        var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+        var holderPID = 0
+        if gated {
+          work.holds.append(hold)
+          try ownedDeferredGateClear(f.inspector)
+          let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+          let started = ownedDeferredHolder(
+            binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+            database: endpoint.database, user: NSUserName(), application: holderApplication,
+            hold: hold, state: holderState)
+          work.holders.append(started)
+          holder = started
+          holderPID = try ownedDeferredHolderReady(
+            f.inspector, state: holderState, hold: hold, database: endpoint.database,
+            application: holderApplication, deadline: readiness)
+          guard !knownPIDs.contains(holderPID) else { throw FixtureFailure.nativeShape }
+          knownPIDs.append(holderPID)
+        }
+        guard memory.calls() == invocationStart else { throw FixtureFailure.nativeShape }
+        let finished = OwnedBindFinished()
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        // Literal same original database/anchor/binding/reference/admission for both invocations.
+        let writer = ownedBindWriter(
+          database: f.database, anchor: f.anchor, binding: f.binding, reference: reference,
+          admission: admission, finished: finished)
+        work.writers.append(writer)
+        if gated {
+          try ownedDeferredObserveCommit(
+            f.inspector, database: endpoint.database, holderPID: holderPID,
+            knownOwnedPIDs: knownPIDs, holderApplication: holderApplication,
+            candidateApplication: "b4app", rawPID: nil, hold: hold, finished: finished,
+            memory: memory, invocationStart: invocationStart, probes: before.probes,
+            deadline: deadline)
+          waits += 1
+          if !timeout {
+            try ownedDeferredRelease(
+              hold, finished: finished, memory: memory, invocationStart: invocationStart,
+              retire: unit == .stale && attempt == 0, deadline: deadline)
+          }
+        }
+        // No throwing assertion, inspector image, or receipt validation may intervene here.
+        // In the timeout branch actual receipt capture occurs while the original hold is valid;
+        // immediately release ALL and join ALL before validating any result, including this fact.
+        let receipt = writer.join()
+        let receiptAt = DispatchTime.now().uptimeNanoseconds
+        let heldAtReturn = !timeout || hold.heldUnexpired()
+        work.releaseAndJoin()
+        let held = holder?.join()
+        guard !finished.pending(), !gated || held?.normal == true,
+          heldAtReturn, !timeout || receiptAt < hold.snapshot().expiry
+        else { throw FixtureFailure.nativeShape }
+        let after = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline)
+        let committed = unit == .stale || attempt == 1
+        let expectedCalls = committed ? 4 : 3
+        let delta = memory.calls() - invocationStart
+        guard receipt.operation == .bind, delta == expectedCalls,
+          after.image == (committed ? stage.expected : stage.before),
+          after.probes.advanced(from: before.probes, body: 1, commit: 1, timeout: timeout ? 1 : 0)
+        else { throw FixtureFailure.nativeShape }
+        writerCalls += delta
+        if timeout { timeoutAllocations += 1 }
+        if committed {
+          try ownedDeferredAppendObservation(
+            f.inspector, stage: stage, old: before.observations,
+            actual: after.observations, rawMillis: nil)
+        } else {
+          guard after.observations == before.observations else { throw FixtureFailure.nativeShape }
+        }
+        if attempt == 0 {
+          original = receipt
+          let disposition: ProtocolProofWriteDisposition = unit == .stale ? .committedStale : .unknown
+          try ownedDeferredRefuses(
+            receipt, fixture: f, admission: admission, memory: memory, disposition: disposition)
+          guard
+            try ownedDeferredCheckpointRead(
+              f.inspector, recipe: recipe, mode: mode, baseline: baseline) == after
+          else { throw FixtureFailure.nativeShape }
+          if unit == .stale {
+            // Genuine acknowledged stale S1 and its original refusal were checked BEFORE Q01.
+            // This fixture-only restoration is never a rollback or repair by the product API.
+            try ownedDeferredQ01(f, recipe: recipe, mode: mode)
+            try ownedDeferredTransition(
+              f, recipe: recipe, oldMode: mode, oldBaseline: 0, newMode: mode, newBaseline: 1)
+            baseline = 1
+            memory.setCurrent(true)
+          } else if unit == .fault {
+            // Exact native 23514/canary/COMMIT was directly qualified by this unit's R2.
+            // Target fault/stage/source attribution is explicitly INFERENCE from the immutable
+            // full recipe, body/deferred relative probes, genuine unknown and reviewed writer
+            // COMMIT-sent catch; the sealed target receipt exports no native diagnostic.
+            try ownedDeferredTransition(
+              f, recipe: recipe, oldMode: "fault", oldBaseline: 0, newMode: "normal", newBaseline: 0)
+            mode = "normal"
+          }
+          // T07's ONLY timeout allocation is inside its actual deferred gate handler, after
+          // exact COMMIT/blocker/resource observation. Own R4 qualified original native rethrow.
+          // An infeasible handler fails prerequisites; elapsed+unknown+S0 supplies no substitute.
+        } else {
+          guard receipt.disposition == .committedCurrent else { throw FixtureFailure.nativeShape }
+          let beforeRedemption = memory.calls()
+          let successor = try receipt.currentSuccessor(
+            expectedSnapshot: f.anchor, expectedTokenRef: reference, memoryAdmission: admission)
+          let afterRedemption = memory.calls()
+          guard afterRedemption - beforeRedemption == 1 else { throw FixtureFailure.nativeShape }
+          redemptions += afterRedemption - beforeRedemption
+          try validateSuccessor(f, successor)
+          guard let original else { throw FixtureFailure.nativeShape }
+          try ownedDeferredRefuses(
+            original, fixture: f, admission: admission, memory: memory,
+            disposition: unit == .stale ? .committedStale : .unknown)
+          guard
+            try ownedDeferredCheckpointRead(
+              f.inspector, recipe: recipe, mode: mode, baseline: baseline) == after
+          else { throw FixtureFailure.nativeShape }
+        }
+      }
+      guard work.writers.count == 2, work.raw.isEmpty,
+        work.holders.count == (unit == .fault ? 0 : 2),
+        writerCalls == (unit == .stale ? 8 : 7), redemptions == 1,
+        memory.calls() == writerCalls + redemptions, waits == (unit == .fault ? 0 : 2),
+        timeoutAllocations == (unit == .timeout ? 1 : 0)
+      else { throw FixtureFailure.nativeShape }
+      facts = OwnedDeferredFacts(
+        oldControls: prerequisites.old, newControls: prerequisites.controls,
+        rawAttempts: prerequisites.attempts, rawHolders: prerequisites.holders,
+        writerCalls: writerCalls, redemptionCalls: redemptions, targetHolders: work.holders.count,
+        targetWaits: waits, timeoutAllocations: timeoutAllocations, qualified: true)
+    }
+    guard let facts, facts.qualified else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  @Test func ownedBindRetirementDuringRealSuccessfulCommitIsStale() throws {
+    let facts = try Self.ownedDeferredTarget(.stale)
+    #expect(facts.oldControls == 4 && facts.newControls == 5)
+    #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
+    #expect(facts.writerCalls == 8 && facts.redemptionCalls == 1)
+    #expect(facts.targetHolders == 2 && facts.targetWaits == 2)
+    #expect(facts.timeoutAllocations == 0 && facts.qualified)
+  }
+
+  @Test func ownedBindActualDeferredFaultAndSameInputAllow() throws {
+    let facts = try Self.ownedDeferredTarget(.fault)
+    #expect(facts.oldControls == 4 && facts.newControls == 5)
+    #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
+    #expect(facts.writerCalls == 7 && facts.redemptionCalls == 1)
+    #expect(facts.targetHolders == 0 && facts.targetWaits == 0)
+    #expect(facts.timeoutAllocations == 0 && facts.qualified)
+  }
+
+  @Test func ownedBindActualCommitServerTimeoutIsUnknown() throws {
+    let facts = try Self.ownedDeferredTarget(.timeout)
+    #expect(facts.oldControls == 4 && facts.newControls == 5)
+    #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
+    #expect(facts.writerCalls == 7 && facts.redemptionCalls == 1)
+    #expect(facts.targetHolders == 2 && facts.targetWaits == 2)
+    #expect(facts.timeoutAllocations == 1 && facts.qualified)
+  }
+}

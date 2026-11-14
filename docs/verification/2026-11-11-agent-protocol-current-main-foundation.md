@@ -696,3 +696,38 @@ behavior and the next compilation remain unobserved. The checker, toolchain, fla
 remain unchanged. The current 24 methods remain at 0/48 required passes; six compiler controls
 are unobserved. The earlier 140 issues and recovery failures/skip remain open. All previously stated Task5, SDK, activation, deployment,
 merge and release holds remain in force. No native qualification follows from this source change.
+
+
+### Deferred-COMMIT test stage (2026-11-14)
+
+[Managed run43575145728](https://github.com/cacheplane/b4app/actions/runs/43575145728) tested
+`1b7a52c8` through `df281dd9aca11ad5e1821a5b36a93942827ed6d7` with main `c15be6d1`.
+Test compilation completed. Socket24, transport44, foundation337 (including the26 archive cases)
+and Node4 passed. All24 owned-writer methods passed in both aggregate and dedicated lanes:
+48 actual individual passes. Six compiler controls qualified. This run avoided the previous
+compiler abort and passed the archive checks without establishing either earlier cause.
+
+All nine outcomes and raw logs are preserved, with every job log matching its full run
+archive member exactly: seven jobs passed and two failed. Hub594, workflow, aimock, iOS7+9 and their
+aggregate passed. Four direct App build steps returned success; only three literal success banners
+appear in both raw and archived logs. Recovery remains7PASS/2FAIL/1SKIP at the historical B4
+fixture guard; its skip reason is unverified. The full package suite remains2277 tests/268 suites,
+2172PASS/93FAIL/12SKIP and123 issues. The complete census records87 persisted issue occurrences
+and36 observations absent from the earlier140-issue run. Previously absent occurrences and
+focused passes do not waive any issue. All123 current and140 historical issues remain open.
+
+This stage adds the three approved deferred-COMMIT tests after the entire existing216310-byte
+file. Each target owns its original four raw controls, then five independent controls of the new
+recipe, before target creation. The targets cover genuine acknowledged commits with stale receipts and
+restoration using the same inputs, an actual deferred fault with an unknown receipt and allow using the same inputs,
+and an actual server timeout witnessed inside the deferred gate handler. The last case requires
+its own raw handler/probe/original-error qualification; elapsed time alone gives no credit.
+Current Store16 data, complete images, catalog/function/configuration checks, monotonic probes
+and memory deltas, release/join ordering and all existing budgets remain binding.
+
+The new27-method revision has no native qualification from the prior48 passes. It requires54
+individual passes, six fresh compiler controls, all actual current job outcomes and detailed logs,
+four App builds and a fresh failure census. Handler feasibility and scheduling fit remain
+unobserved; no fallback or wider budget is authorized. Normal execution acknowledgement trust
+and the gap between the memory check and COMMIT remain; no physical quiescence or authentication theorem follows.
+SDK publication, activation, new deployment, full App merge and release remain held.
