@@ -731,3 +731,39 @@ four App builds and a fresh failure census. Handler feasibility and scheduling f
 unobserved; no fallback or wider budget is authorized. Normal execution acknowledgement trust
 and the gap between the memory check and COMMIT remain; no physical quiescence or authentication theorem follows.
 SDK publication, activation, new deployment, full App merge and release remain held.
+
+
+### Task5 diagnostic experiment (2026-11-14)
+
+[Run43586313544](https://github.com/cacheplane/b4app/actions/runs/43586313544) tested
+`28905512` through `34e3f56f0ddcb8e3ae6efe1ed6104c9b1c74fe34` with main `c15be6d1`.
+All nine jobs completed, seven passing and two failing. All nine raw logs exactly match
+members of the preserved complete123-member archive. Socket24, transport44, foundation337,
+Node4, Hub594, iOS7+9 and their aggregate, workflow, aimock and four App builds passed.
+This run has four successful direct build steps and four raw success banners.
+
+The selected54 gate failed: the previous24 methods passed in both lanes, while all three
+new methods threw `.redactedFailure` in both lanes. Thus48 passed and6 failed; the
+new tests' internal throw stage, rawR4 reachability and handler feasibility remain unknown.
+Six actual compiler controls qualified against the current source, helper, metadata and
+merged workflow. The metadata artifact alone supplies no qualification or quiescence proof.
+
+The aggregate was2280 tests/268 suites,2152PASS/116FAIL/12SKIP with187 issues. The complete
+census matches114 occurrences to the previous123 and111 to historical140;73 and76 current
+observations respectively were absent from those runs. Absence and focused passes close
+no individual issue. Recovery remains7PASS/2FAIL/1SKIP at the historical B4 fixture guard;
+its skip reason remains unverified. All current187, prior123, historical140 and recovery
+issues remain open without waiver.
+
+The follow-up adds coordinator-only entered-region diagnostics for the three new tests.
+One failure line may be emitted after existing work and fixture scopes unwind, using only
+six fixed literal fields. Success stays silent. Native workers, holder/results/work types,
+memory callbacks, native capture lists, SQL, guards, cleanup order and budgets remain unchanged. An entered
+region is neither native-stage evidence nor a cause. No deparser or other semantic fix is
+included; a conditional formatting hypothesis still needs managed evidence. Lexical scope
+unwinding proves no physical cleanup or quiescence theorem.
+
+The diagnostic revision starts unqualified and requires fresh managed results for both
+27-method lanes, six compiler controls, every actual job and raw log, the complete archive,
+four App builds and a fresh census. LateT12/A5 and later source progress, SDK publication,
+activation, new deployment, full App merge and release remain held.

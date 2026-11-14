@@ -4913,28 +4913,35 @@ extension OwnedProtocolProofWriteTests {
   }
 
   private static func ownedDeferredRecipeCheck(
-    _ c: PostgresConnection, recipe: OwnedDeferredRecipe, mode: String, baseline: Int
+    _ c: PostgresConnection, recipe: OwnedDeferredRecipe, mode: String, baseline: Int,
+    diagnostic: OwnedDeferredDiagnostic
   ) throws {
     // The freezer checked the zero-trigger catalog before installation. Post-install checks
     // retain the complete recipe and catalog snapshot, including both installed triggers.
+    diagnostic.enter(.recipeNamesRowsMeta)
     try ownedT09Recipe(c, stage: recipe.stage)
+    diagnostic.enter(.recipeConfig)
     let config = try ownedDeferredRows(
       c, sql: "SELECT to_jsonb(d)::text AS value FROM \"owned_bind_stage\".\"deferred_control\" d")
+    diagnostic.enter(.recipeCatalog)
     guard config == [try ownedDeferredConfig(mode, baseline: baseline)],
       try ownedDeferredCatalog(c) == recipe.catalog
     else { throw FixtureFailure.nativeShape }
   }
 
   private static func ownedDeferredInstall(
-    _ f: Fixture, stage: OwnedBindStageFixture, mode: String
+    _ f: Fixture, stage: OwnedBindStageFixture, mode: String, diagnostic: OwnedDeferredDiagnostic
   ) throws -> OwnedDeferredRecipe {
+    diagnostic.enter(.oldInstall)
     guard WorkspaceDatabase.remoteApplyLockKey == 1647599984,
       Migrator.migrationLockKey == 7076401213980434804,
       Migrator.migrationLockKey != 1647600739,
       WorkspaceDatabase.remoteApplyLockKey != 1647600739
     else { throw FixtureFailure.nativeShape }
     // This is the ONLY old installer use in each NEW fixture, before replacing private functions.
+    diagnostic.enter(.oldInstall)
     try ownedBindInstall(f, stage: stage, rawBodyFault: false)
+    diagnostic.enter(.privateDDL)
     try f.inspector.execute(
       """
       CREATE SEQUENCE "owned_bind_stage"."timeout_probe"
@@ -4945,6 +4952,7 @@ extension OwnedProtocolProofWriteTests {
         observed_before bigint NOT NULL CHECK(observed_before>=0),
         gate_key bigint NOT NULL CHECK(gate_key=1647600739));
       """)
+    diagnostic.enter(.controlInsert)
     guard
       try f.inspector.execute(
         """
@@ -4953,7 +4961,9 @@ extension OwnedProtocolProofWriteTests {
         """, [mode]
       ).affected == 1
     else { throw FixtureFailure.nativeShape }
+    diagnostic.enter(.functionCreate)
     for function in ownedDeferredFunctions.dropFirst(2) { try f.inspector.execute(function.sql) }
+    diagnostic.enter(.functionCount)
     let functions = try f.inspector.execute(
       """
       SELECT p.proname AS name,p.prosrc AS source,pg_get_function_identity_arguments(p.oid) AS args,
@@ -4967,8 +4977,10 @@ extension OwnedProtocolProofWriteTests {
     ).rows
     guard functions.count == ownedDeferredFunctions.count else { throw FixtureFailure.nativeShape }
     for expected in ownedDeferredFunctions {
+      diagnostic.enter(.functionSource)
       let rows = functions.filter { $0.text("name") == expected.name }
       let parts = expected.sql.components(separatedBy: "$$")
+      diagnostic.enter(.functionSignatureAndAttributes)
       guard rows.count == 1, parts.count == 3, let row = rows.first,
         row.text("source") == parts[1], row.text("args") == expected.arguments,
         row.text("result") == expected.result, row.text("config") == "{search_path=pg_catalog}",
@@ -4977,6 +4989,7 @@ extension OwnedProtocolProofWriteTests {
         row.text("strict") == "false", row.text("leakproof") == "false", row.text("kind") == "f"
       else { throw FixtureFailure.nativeShape }
     }
+    diagnostic.enter(.privateObjects)
     let privateObjects = try f.inspector.execute(
       """
       SELECT c.relname AS name,c.relkind::text AS kind,c.relpersistence::text AS persistence
@@ -4994,6 +5007,7 @@ extension OwnedProtocolProofWriteTests {
         row.text("persistence") == "p"
       else { throw FixtureFailure.nativeShape }
     }
+    diagnostic.enter(.columns)
     let columns = try f.inspector.execute(
       """
       SELECT a.attname AS name,format_type(a.atttypid,a.atttypmod) AS type,
@@ -5012,6 +5026,7 @@ extension OwnedProtocolProofWriteTests {
         row.text("required") == "true"
       else { throw FixtureFailure.nativeShape }
     }
+    diagnostic.enter(.constraints)
     let constraints = try f.inspector.execute(
       """
       SELECT conname AS name,contype::text AS kind,convalidated::text AS valid,
@@ -5034,6 +5049,7 @@ extension OwnedProtocolProofWriteTests {
         row.text("kind") == (name == "deferred_control_pkey" ? "p" : "c")
       else { throw FixtureFailure.nativeShape }
     }
+    diagnostic.enter(.sequences)
     let probes = try f.inspector.execute(
       """
       SELECT c.relname AS name,s.seqtypid='bigint'::regtype AS bigint,s.seqstart::text AS start,
@@ -5051,6 +5067,7 @@ extension OwnedProtocolProofWriteTests {
         row.text("cache") == "1", row.text("cycle") == "false"
       else { throw FixtureFailure.nativeShape }
     }
+    diagnostic.enter(.triggerDefinition)
     let triggers = try f.inspector.execute(
       """
       SELECT t.tgname AS name,pg_get_triggerdef(t.oid,true) AS definition,
@@ -5071,8 +5088,10 @@ extension OwnedProtocolProofWriteTests {
         row.text("exact_function") == "t"
       else { throw FixtureFailure.nativeShape }
     }
+    diagnostic.enter(.catalogCapture)
     let recipe = OwnedDeferredRecipe(stage: stage, catalog: try ownedDeferredCatalog(f.inspector))
-    try ownedDeferredRecipeCheck(f.inspector, recipe: recipe, mode: mode, baseline: 0)
+    try ownedDeferredRecipeCheck(f.inspector, recipe: recipe, mode: mode, baseline: 0, diagnostic: diagnostic)
+    diagnostic.enter(.initialState)
     let initial = try ownedDeferredProbes(f.inspector)
     let fresh = OwnedBindProbe(last: 1, called: false)
     guard initial == OwnedDeferredProbes(body: fresh, commit: fresh, timeout: fresh),
@@ -5083,9 +5102,11 @@ extension OwnedProtocolProofWriteTests {
   }
 
   private static func ownedDeferredCheckpointRead(
-    _ c: PostgresConnection, recipe: OwnedDeferredRecipe, mode: String, baseline: Int
+    _ c: PostgresConnection, recipe: OwnedDeferredRecipe, mode: String, baseline: Int,
+    diagnostic: OwnedDeferredDiagnostic
   ) throws -> OwnedDeferredCheckpoint {
-    try ownedDeferredRecipeCheck(c, recipe: recipe, mode: mode, baseline: baseline)
+    try ownedDeferredRecipeCheck(c, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+    diagnostic.enter(.imageAndProbes)
     return OwnedDeferredCheckpoint(
       image: try ownedBindImage(c), observations: try ownedDeferredObservations(c),
       probes: try ownedDeferredProbes(c))
@@ -5125,9 +5146,11 @@ extension OwnedProtocolProofWriteTests {
   }
 
   private static func ownedDeferredQ01(
-    _ f: Fixture, recipe: OwnedDeferredRecipe, mode: String
+    _ f: Fixture, recipe: OwnedDeferredRecipe, mode: String, diagnostic: OwnedDeferredDiagnostic
   ) throws {
-    let before = try ownedDeferredCheckpointRead(f.inspector, recipe: recipe, mode: mode, baseline: 0)
+    let before = try ownedDeferredCheckpointRead(
+      f.inspector, recipe: recipe, mode: mode, baseline: 0, diagnostic: diagnostic)
+    diagnostic.enter(.q01)
     guard before.image == recipe.stage.expected, before.observations.count == 1 else {
       throw FixtureFailure.nativeShape
     }
@@ -5156,7 +5179,10 @@ extension OwnedProtocolProofWriteTests {
     commitSent = true
     try f.inspector.execute("COMMIT")
     committed = true
-    let after = try ownedDeferredCheckpointRead(f.inspector, recipe: recipe, mode: mode, baseline: 0)
+    diagnostic.enter(.afterCheckpoint)
+    let after = try ownedDeferredCheckpointRead(
+      f.inspector, recipe: recipe, mode: mode, baseline: 0, diagnostic: diagnostic)
+    diagnostic.enter(.q01)
     guard after.image == recipe.stage.before, after.observations == before.observations,
       after.probes == before.probes
     else { throw FixtureFailure.nativeShape }
@@ -5164,14 +5190,16 @@ extension OwnedProtocolProofWriteTests {
 
   private static func ownedDeferredTransition(
     _ f: Fixture, recipe: OwnedDeferredRecipe, oldMode: String, oldBaseline: Int,
-    newMode: String, newBaseline: Int
+    newMode: String, newBaseline: Int, diagnostic: OwnedDeferredDiagnostic
   ) throws {
+    diagnostic.enter(.configTransition)
     guard
       (oldMode == newMode && oldBaseline == 0 && newBaseline == 1)
         || (oldMode == "fault" && newMode == "normal" && oldBaseline == 0 && newBaseline == 0)
     else { throw FixtureFailure.nativeShape }
     let before = try ownedDeferredCheckpointRead(
-      f.inspector, recipe: recipe, mode: oldMode, baseline: oldBaseline)
+      f.inspector, recipe: recipe, mode: oldMode, baseline: oldBaseline, diagnostic: diagnostic)
+    diagnostic.enter(.configTransition)
     guard before.image == recipe.stage.before,
       before.observations.count == newBaseline
     else { throw FixtureFailure.nativeShape }
@@ -5195,8 +5223,10 @@ extension OwnedProtocolProofWriteTests {
     commitSent = true
     try f.inspector.execute("COMMIT")
     committed = true
+    diagnostic.enter(.afterCheckpoint)
     let after = try ownedDeferredCheckpointRead(
-      f.inspector, recipe: recipe, mode: newMode, baseline: newBaseline)
+      f.inspector, recipe: recipe, mode: newMode, baseline: newBaseline, diagnostic: diagnostic)
+    diagnostic.enter(.configTransition)
     guard after == before else { throw FixtureFailure.nativeShape }
   }
 
@@ -5547,8 +5577,9 @@ extension OwnedProtocolProofWriteTests {
   }
 
   private static func ownedDeferredDamage(
-    _ c: PostgresConnection, recipe: OwnedDeferredRecipe
+    _ c: PostgresConnection, recipe: OwnedDeferredRecipe, diagnostic: OwnedDeferredDiagnostic
   ) throws -> OwnedDeferredRecipe {
+    diagnostic.enter(.damage)
     let stage = recipe.stage
     guard let rows = stage.expected.rows["settings"] else { throw FixtureFailure.nativeShape }
     var old: Data?
@@ -5595,7 +5626,7 @@ extension OwnedProtocolProofWriteTests {
       controlJSON: stage.controlJSON, originalReference: stage.originalReference,
       replacement: stage.replacement, device: stage.device, lowerWall: stage.lowerWall)
     let result = OwnedDeferredRecipe(stage: adapted, catalog: recipe.catalog)
-    try ownedDeferredRecipeCheck(c, recipe: result, mode: "normal", baseline: 0)
+    try ownedDeferredRecipeCheck(c, recipe: result, mode: "normal", baseline: 0, diagnostic: diagnostic)
     return result
   }
 
@@ -5614,16 +5645,25 @@ extension OwnedProtocolProofWriteTests {
     let qualified: Bool
   }
 
-  private static func ownedDeferredRawControl(_ row: Int) throws -> OwnedDeferredControlFacts {
+  private static func ownedDeferredRawControl(
+    _ row: Int, diagnostic: OwnedDeferredDiagnostic
+  ) throws -> OwnedDeferredControlFacts {
+    diagnostic.selectRawFixture(row)
+    diagnostic.attempt = .none
     guard (0...4).contains(row) else { throw FixtureFailure.nativeShape }
     var facts: OwnedDeferredControlFacts?
-    try withFixture { f in
+    try ownedDeferredWithFixture(diagnostic) { f in
+      diagnostic.enter(.fixtureValidate)
       let predecessor = try validateFixture(f)
+      diagnostic.enter(.freeze)
       let stage = try ownedBindFreeze(f, predecessor: predecessor, replacement: f.link.tokenRef)
       var mode = row == 2 ? "fault" : (row >= 3 ? "gate" : "normal")
       var baseline = 0
-      var recipe = try ownedDeferredInstall(f, stage: stage, mode: mode)
-      if row == 0 { recipe = try ownedDeferredDamage(f.inspector, recipe: recipe) }
+      diagnostic.enter(.oldInstall)
+      var recipe = try ownedDeferredInstall(f, stage: stage, mode: mode, diagnostic: diagnostic)
+      diagnostic.enter(.damage)
+      if row == 0 { recipe = try ownedDeferredDamage(f.inspector, recipe: recipe, diagnostic: diagnostic) }
+      diagnostic.enter(.initialState)
       let endpoint = f.database.endpoint
       guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
       let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
@@ -5641,8 +5681,11 @@ extension OwnedProtocolProofWriteTests {
       var restorations = 0
       var transitions = 0
       for attempt in 0..<(row == 0 ? 1 : 2) {
+        diagnostic.selectAttempt(attempt)
+        diagnostic.enter(.beforeCheckpoint)
         let before = try ownedDeferredCheckpointRead(
-          f.inspector, recipe: recipe, mode: mode, baseline: baseline)
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        diagnostic.enter(.imageAndProbes)
         guard before.image == stage.before, before.observations.count == baseline else {
           throw FixtureFailure.nativeShape
         }
@@ -5658,14 +5701,17 @@ extension OwnedProtocolProofWriteTests {
         var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
         if gated {
           work.holds.append(hold)
+          diagnostic.enter(.gateClear)
           try ownedDeferredGateClear(f.inspector)
           let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+          diagnostic.enter(.holderStart)
           let started = ownedDeferredHolder(
             binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
             database: endpoint.database, user: NSUserName(), application: holderApplication,
             hold: hold, state: holderState)
           work.holders.append(started)
           holder = started
+          diagnostic.enter(.holderReady)
           holderPID = try ownedDeferredHolderReady(
             f.inspector, state: holderState, hold: hold, database: endpoint.database,
             application: holderApplication, deadline: readiness)
@@ -5675,11 +5721,13 @@ extension OwnedProtocolProofWriteTests {
         let state = OwnedBindHolderState()
         let finished = OwnedBindFinished()
         let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        diagnostic.enter(.rawStart)
         let worker = ownedDeferredRawWorker(
           binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
           database: endpoint.database, user: NSUserName(), application: application,
           kind: kind, state: state, finished: finished)
         work.raw.append(worker)
+        diagnostic.enter(.observeCommit)
         if gated {
           while state.snapshot().pid == 0 && finished.pending()
             && DispatchTime.now().uptimeNanoseconds <= deadline
@@ -5702,12 +5750,15 @@ extension OwnedProtocolProofWriteTests {
         }
         // The intended timeout keeps its original eight-second hold valid until actual return.
         // Capture the result/timestamp, then immediately release ALL and join ALL before guards.
+        diagnostic.enter(.resultCapture)
         let result = worker.join()
         let receiptAt = DispatchTime.now().uptimeNanoseconds
         let heldAtReturn = !timeout || hold.heldUnexpired()
         work.releaseAndJoin()
         let held = holder?.join()
+        diagnostic.enter(.drainReturned)
         let rawIdentity = state.snapshot()
+        diagnostic.enter(.rawResult)
         guard result.valid, finished.pending() == false, rawIdentity.acquired,
           rawIdentity.pid > 0, !knownPIDs.contains(rawIdentity.pid),
           (!gated || held?.normal == true), heldAtReturn,
@@ -5719,18 +5770,22 @@ extension OwnedProtocolProofWriteTests {
         let bodyCount: Int64 = row == 0 ? 0 : 1
         let commitCount: Int64 = row == 0 ? 0 : 1
         let timeoutCount: Int64 = timeout ? 1 : 0
+        diagnostic.enter(.rawResult)
         guard result.dmlReturned == (row != 0), result.commitSent == (row != 0),
           result.acknowledged == success, result.rollbackAcknowledged == (row == 0),
           result.predicateRejected == (row == 0),
           result.actualDeferredFault == (kind == .fault), result.actualServerTimeout == timeout,
           result.ownPredicate == (row != 0), result.ownSettings == (row != 0)
         else { throw FixtureFailure.nativeShape }
+        diagnostic.enter(.afterCheckpoint)
         let after = try ownedDeferredCheckpointRead(
-          f.inspector, recipe: recipe, mode: mode, baseline: baseline)
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        diagnostic.enter(.imageAndProbes)
         guard after.image == (success ? stage.expected : stage.before),
           after.probes.advanced(
             from: before.probes, body: bodyCount, commit: commitCount, timeout: timeoutCount)
         else { throw FixtureFailure.nativeShape }
+        diagnostic.enter(.observations)
         if success {
           try ownedDeferredAppendObservation(
             f.inspector, stage: stage, old: before.observations, actual: after.observations,
@@ -5744,19 +5799,25 @@ extension OwnedProtocolProofWriteTests {
         deferred += Int(commitCount)
         timeouts += Int(timeoutCount)
         if attempt == 0 && (row == 1 || row == 3) {
-          try ownedDeferredQ01(f, recipe: recipe, mode: mode)
+          diagnostic.enter(.q01)
+          try ownedDeferredQ01(f, recipe: recipe, mode: mode, diagnostic: diagnostic)
           restorations += 1
+          diagnostic.enter(.configTransition)
           try ownedDeferredTransition(
-            f, recipe: recipe, oldMode: mode, oldBaseline: 0, newMode: mode, newBaseline: 1)
+            f, recipe: recipe, oldMode: mode, oldBaseline: 0, newMode: mode, newBaseline: 1,
+            diagnostic: diagnostic)
           baseline = 1
           transitions += 1
         } else if attempt == 0 && row == 2 {
+          diagnostic.enter(.configTransition)
           try ownedDeferredTransition(
-            f, recipe: recipe, oldMode: "fault", oldBaseline: 0, newMode: "normal", newBaseline: 0)
+            f, recipe: recipe, oldMode: "fault", oldBaseline: 0, newMode: "normal", newBaseline: 0,
+            diagnostic: diagnostic)
           mode = "normal"
           transitions += 1
         }
       }
+      diagnostic.enter(.finalFacts)
       guard work.raw.count == (row == 0 ? 1 : 2), work.holders.count == (row >= 3 ? 2 : 0) else {
         throw FixtureFailure.nativeShape
       }
@@ -5767,20 +5828,30 @@ extension OwnedProtocolProofWriteTests {
         restorations: restorations, transitions: transitions, qualified: true)
     }
     // Complete fixture close/root teardown precedes escape of these primitive-only facts.
+    diagnostic.enter(.finalFacts)
     guard let facts, facts.qualified else { throw FixtureFailure.redactedFailure }
     return facts
   }
 
-  private static func ownedDeferredPrerequisites() throws -> (
+  private static func ownedDeferredPrerequisites(
+    diagnostic: OwnedDeferredDiagnostic
+  ) throws -> (
     old: Int, controls: Int, attempts: Int, holders: Int
   ) {
+    diagnostic.fixture = .oldFour
+    diagnostic.attempt = .none
+    diagnostic.enter(.oldFour)
     let old = try ownedBindRawStageControls()
+    diagnostic.enter(.oldFour)
     guard old.map({ $0.row }) == [0, 1, 2, 3], old.count == 4,
       old.allSatisfy({ $0.qualified && $0.durableImageValidated })
     else { throw FixtureFailure.nativeShape }
     // The old four have ALL torn down. Each NEW recipe row independently tears down as well.
     var rows: [OwnedDeferredControlFacts] = []
-    for row in 0...4 { rows.append(try ownedDeferredRawControl(row)) }
+    for row in 0...4 { rows.append(try ownedDeferredRawControl(row, diagnostic: diagnostic)) }
+    diagnostic.fixture = .none
+    diagnostic.attempt = .none
+    diagnostic.enter(.finalFacts)
     guard rows.map({ $0.row }) == [0, 1, 2, 3, 4], rows.allSatisfy({ $0.qualified }),
       rows.map({ $0.attempts }) == [1, 2, 2, 2, 2],
       rows.map({ $0.holders }) == [0, 0, 0, 2, 2],
@@ -5816,20 +5887,28 @@ extension OwnedProtocolProofWriteTests {
     // Inspector S0 is never used to upgrade an unknown receipt to continuation evidence.
   }
 
-  private static func ownedDeferredTarget(_ unit: OwnedDeferredCase) throws -> OwnedDeferredFacts {
+  private static func ownedDeferredTarget(
+    _ unit: OwnedDeferredCase, diagnostic: OwnedDeferredDiagnostic
+  ) throws -> OwnedDeferredFacts {
     // Every call owns ALL prerequisites; no cache, earlier test, or previously qualified run.
-    let prerequisites = try ownedDeferredPrerequisites()
+    let prerequisites = try ownedDeferredPrerequisites(diagnostic: diagnostic)
     var facts: OwnedDeferredFacts?
-    try withFixture { f in
+    diagnostic.fixture = .target
+    diagnostic.attempt = .none
+    try ownedDeferredWithFixture(diagnostic) { f in
+      diagnostic.enter(.fixtureValidate)
       let predecessor = try validateFixture(f)
       let reference = f.link.tokenRef
       guard ProtocolCredentialReference(reference) != nil,
         reference.utf8.allSatisfy({ $0 > 0 && $0 < 128 })
       else { throw FixtureFailure.nativeShape }
+      diagnostic.enter(.freeze)
       let stage = try ownedBindFreeze(f, predecessor: predecessor, replacement: reference)
       var mode = unit == .fault ? "fault" : "gate"
       var baseline = 0
-      let recipe = try ownedDeferredInstall(f, stage: stage, mode: mode)
+      diagnostic.enter(.oldInstall)
+      let recipe = try ownedDeferredInstall(f, stage: stage, mode: mode, diagnostic: diagnostic)
+      diagnostic.enter(.initialState)
       let endpoint = f.database.endpoint
       guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
       let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
@@ -5847,11 +5926,15 @@ extension OwnedProtocolProofWriteTests {
       var waits = 0
       var timeoutAllocations = 0
       for attempt in 0..<2 {
+        diagnostic.selectAttempt(attempt)
+        diagnostic.enter(.beforeCheckpoint)
         let before = try ownedDeferredCheckpointRead(
-          f.inspector, recipe: recipe, mode: mode, baseline: baseline)
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        diagnostic.enter(.imageAndProbes)
         guard before.image == stage.before, before.observations.count == baseline else {
           throw FixtureFailure.nativeShape
         }
+        diagnostic.enter(.targetWrite)
         let invocationStart = memory.calls()
         let expectedStart = attempt == 0 ? 0 : (unit == .stale ? 4 : 3)
         guard invocationStart == expectedStart else { throw FixtureFailure.nativeShape }
@@ -5864,29 +5947,35 @@ extension OwnedProtocolProofWriteTests {
         var holderPID = 0
         if gated {
           work.holds.append(hold)
+          diagnostic.enter(.gateClear)
           try ownedDeferredGateClear(f.inspector)
           let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+          diagnostic.enter(.holderStart)
           let started = ownedDeferredHolder(
             binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
             database: endpoint.database, user: NSUserName(), application: holderApplication,
             hold: hold, state: holderState)
           work.holders.append(started)
           holder = started
+          diagnostic.enter(.holderReady)
           holderPID = try ownedDeferredHolderReady(
             f.inspector, state: holderState, hold: hold, database: endpoint.database,
             application: holderApplication, deadline: readiness)
           guard !knownPIDs.contains(holderPID) else { throw FixtureFailure.nativeShape }
           knownPIDs.append(holderPID)
         }
+        diagnostic.enter(.targetWrite)
         guard memory.calls() == invocationStart else { throw FixtureFailure.nativeShape }
         let finished = OwnedBindFinished()
         let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
         // Literal same original database/anchor/binding/reference/admission for both invocations.
+        diagnostic.enter(.targetWrite)
         let writer = ownedBindWriter(
           database: f.database, anchor: f.anchor, binding: f.binding, reference: reference,
           admission: admission, finished: finished)
         work.writers.append(writer)
         if gated {
+          diagnostic.enter(.observeCommit)
           try ownedDeferredObserveCommit(
             f.inspector, database: endpoint.database, holderPID: holderPID,
             knownOwnedPIDs: knownPIDs, holderApplication: holderApplication,
@@ -5903,25 +5992,30 @@ extension OwnedProtocolProofWriteTests {
         // No throwing assertion, inspector image, or receipt validation may intervene here.
         // In the timeout branch actual receipt capture occurs while the original hold is valid;
         // immediately release ALL and join ALL before validating any result, including this fact.
+        diagnostic.enter(.resultCapture)
         let receipt = writer.join()
         let receiptAt = DispatchTime.now().uptimeNanoseconds
         let heldAtReturn = !timeout || hold.heldUnexpired()
         work.releaseAndJoin()
         let held = holder?.join()
+        diagnostic.enter(.drainReturned)
         guard !finished.pending(), !gated || held?.normal == true,
           heldAtReturn, !timeout || receiptAt < hold.snapshot().expiry
         else { throw FixtureFailure.nativeShape }
+        diagnostic.enter(.afterCheckpoint)
         let after = try ownedDeferredCheckpointRead(
-          f.inspector, recipe: recipe, mode: mode, baseline: baseline)
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
         let committed = unit == .stale || attempt == 1
         let expectedCalls = committed ? 4 : 3
         let delta = memory.calls() - invocationStart
+        diagnostic.enter(.targetReceipt)
         guard receipt.operation == .bind, delta == expectedCalls,
           after.image == (committed ? stage.expected : stage.before),
           after.probes.advanced(from: before.probes, body: 1, commit: 1, timeout: timeout ? 1 : 0)
         else { throw FixtureFailure.nativeShape }
         writerCalls += delta
         if timeout { timeoutAllocations += 1 }
+        diagnostic.enter(.observations)
         if committed {
           try ownedDeferredAppendObservation(
             f.inspector, stage: stage, old: before.observations,
@@ -5932,18 +6026,22 @@ extension OwnedProtocolProofWriteTests {
         if attempt == 0 {
           original = receipt
           let disposition: ProtocolProofWriteDisposition = unit == .stale ? .committedStale : .unknown
+          diagnostic.enter(.targetRefusal)
           try ownedDeferredRefuses(
             receipt, fixture: f, admission: admission, memory: memory, disposition: disposition)
           guard
             try ownedDeferredCheckpointRead(
-              f.inspector, recipe: recipe, mode: mode, baseline: baseline) == after
+              f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic) == after
           else { throw FixtureFailure.nativeShape }
           if unit == .stale {
             // Genuine acknowledged stale S1 and its original refusal were checked BEFORE Q01.
             // This fixture-only restoration is never a rollback or repair by the product API.
-            try ownedDeferredQ01(f, recipe: recipe, mode: mode)
+            diagnostic.enter(.q01)
+            try ownedDeferredQ01(f, recipe: recipe, mode: mode, diagnostic: diagnostic)
+            diagnostic.enter(.configTransition)
             try ownedDeferredTransition(
-              f, recipe: recipe, oldMode: mode, oldBaseline: 0, newMode: mode, newBaseline: 1)
+              f, recipe: recipe, oldMode: mode, oldBaseline: 0, newMode: mode, newBaseline: 1,
+              diagnostic: diagnostic)
             baseline = 1
             memory.setCurrent(true)
           } else if unit == .fault {
@@ -5951,8 +6049,10 @@ extension OwnedProtocolProofWriteTests {
             // Target fault/stage/source attribution is explicitly INFERENCE from the immutable
             // full recipe, body/deferred relative probes, genuine unknown and reviewed writer
             // COMMIT-sent catch; the sealed target receipt exports no native diagnostic.
+            diagnostic.enter(.configTransition)
             try ownedDeferredTransition(
-              f, recipe: recipe, oldMode: "fault", oldBaseline: 0, newMode: "normal", newBaseline: 0)
+              f, recipe: recipe, oldMode: "fault", oldBaseline: 0, newMode: "normal", newBaseline: 0,
+              diagnostic: diagnostic)
             mode = "normal"
           }
           // T07's ONLY timeout allocation is inside its actual deferred gate handler, after
@@ -5960,23 +6060,27 @@ extension OwnedProtocolProofWriteTests {
           // An infeasible handler fails prerequisites; elapsed+unknown+S0 supplies no substitute.
         } else {
           guard receipt.disposition == .committedCurrent else { throw FixtureFailure.nativeShape }
+          diagnostic.enter(.targetRedemption)
           let beforeRedemption = memory.calls()
           let successor = try receipt.currentSuccessor(
             expectedSnapshot: f.anchor, expectedTokenRef: reference, memoryAdmission: admission)
           let afterRedemption = memory.calls()
           guard afterRedemption - beforeRedemption == 1 else { throw FixtureFailure.nativeShape }
           redemptions += afterRedemption - beforeRedemption
+          diagnostic.enter(.successorValidation)
           try validateSuccessor(f, successor)
+          diagnostic.enter(.originalRefusal)
           guard let original else { throw FixtureFailure.nativeShape }
           try ownedDeferredRefuses(
             original, fixture: f, admission: admission, memory: memory,
             disposition: unit == .stale ? .committedStale : .unknown)
           guard
             try ownedDeferredCheckpointRead(
-              f.inspector, recipe: recipe, mode: mode, baseline: baseline) == after
+              f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic) == after
           else { throw FixtureFailure.nativeShape }
         }
       }
+      diagnostic.enter(.finalFacts)
       guard work.writers.count == 2, work.raw.isEmpty,
         work.holders.count == (unit == .fault ? 0 : 2),
         writerCalls == (unit == .stale ? 8 : 7), redemptions == 1,
@@ -5989,12 +6093,13 @@ extension OwnedProtocolProofWriteTests {
         writerCalls: writerCalls, redemptionCalls: redemptions, targetHolders: work.holders.count,
         targetWaits: waits, timeoutAllocations: timeoutAllocations, qualified: true)
     }
+    diagnostic.enter(.finalFacts)
     guard let facts, facts.qualified else { throw FixtureFailure.redactedFailure }
     return facts
   }
 
   @Test func ownedBindRetirementDuringRealSuccessfulCommitIsStale() throws {
-    let facts = try Self.ownedDeferredTarget(.stale)
+    let facts = try Self.ownedDeferredDiagnosedTarget(.stale)
     #expect(facts.oldControls == 4 && facts.newControls == 5)
     #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
     #expect(facts.writerCalls == 8 && facts.redemptionCalls == 1)
@@ -6003,7 +6108,7 @@ extension OwnedProtocolProofWriteTests {
   }
 
   @Test func ownedBindActualDeferredFaultAndSameInputAllow() throws {
-    let facts = try Self.ownedDeferredTarget(.fault)
+    let facts = try Self.ownedDeferredDiagnosedTarget(.fault)
     #expect(facts.oldControls == 4 && facts.newControls == 5)
     #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
     #expect(facts.writerCalls == 7 && facts.redemptionCalls == 1)
@@ -6012,11 +6117,131 @@ extension OwnedProtocolProofWriteTests {
   }
 
   @Test func ownedBindActualCommitServerTimeoutIsUnknown() throws {
-    let facts = try Self.ownedDeferredTarget(.timeout)
+    let facts = try Self.ownedDeferredDiagnosedTarget(.timeout)
     #expect(facts.oldControls == 4 && facts.newControls == 5)
     #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
     #expect(facts.writerCalls == 7 && facts.redemptionCalls == 1)
     #expect(facts.targetHolders == 2 && facts.targetWaits == 2)
     #expect(facts.timeoutAllocations == 1 && facts.qualified)
+  }
+
+  // Synchronous coordinator context only: entered regions never attest native completion/cause.
+  // State retains only finite enums, never errors, fixtures, connections, images or identifiers.
+  private final class OwnedDeferredDiagnostic {
+    enum FixtureRegion: String {
+      case none, oldFour, r0 = "R0", r1 = "R1", r2 = "R2", r3 = "R3", r4 = "R4", target
+    }
+    enum Attempt: String { case none, first, second }
+    enum Phase: String {
+      case oldFour, fixtureConstruct, fixtureValidate, freeze, oldInstall, privateDDL
+      case controlInsert, functionCreate, functionCount, functionSource, functionSignatureAndAttributes
+      case privateObjects, columns, constraints, sequences, triggerDefinition, catalogCapture
+      case recipeNamesRowsMeta, recipeConfig, recipeCatalog, initialState, damage, beforeCheckpoint
+      case gateClear, holderStart, holderReady, rawStart, observeCommit, resultCapture, drainReturned
+      case rawResult, afterCheckpoint, imageAndProbes, observations, q01 = "Q01", configTransition
+      case targetWrite, targetReceipt, targetRefusal, targetRedemption, successorValidation
+      case originalRefusal, finalFacts, fixtureBodyReturned, fixtureReturned
+    }
+    enum Category: String { case guardMismatch, postgresError, otherError, fixtureBoundaryError }
+    enum Unwind: String { case returned }
+    private struct Failure {
+      let fixture: FixtureRegion
+      let attempt: Attempt
+      let phase: Phase
+      let category: Category
+    }
+    private let unit: OwnedDeferredCase
+    var fixture: FixtureRegion = .none
+    var attempt: Attempt = .none
+    private var phase: Phase = .oldFour
+    private var failure: Failure?
+
+    init(unit: OwnedDeferredCase) { self.unit = unit }
+    func enter(_ phase: Phase) { self.phase = phase }
+    func selectRawFixture(_ row: Int) {
+      switch row {
+      case 0: fixture = .r0
+      case 1: fixture = .r1
+      case 2: fixture = .r2
+      case 3: fixture = .r3
+      case 4: fixture = .r4
+      default: fixture = .none
+      }
+    }
+    func selectAttempt(_ index: Int) {
+      switch index {
+      case 0: attempt = .first
+      case 1: attempt = .second
+      default: attempt = .none
+      }
+    }
+    func freeze(_ error: any Error) {
+      if failure != nil { return }
+      let category: Category
+      if error is PostgresError {
+        category = .postgresError
+      } else if let fixed = error as? FixtureFailure {
+        switch fixed {
+        case .nativeShape: category = .guardMismatch
+        case .redactedFailure: category = .fixtureBoundaryError
+        }
+      } else {
+        category = .otherError
+      }
+      failure = Failure(fixture: fixture, attempt: attempt, phase: phase, category: category)
+    }
+    func freezeBoundary() {
+      if failure != nil { return }
+      failure = Failure(fixture: fixture, attempt: attempt, phase: phase, category: .fixtureBoundaryError)
+    }
+    private var unitLiteral: String {
+      switch unit {
+      case .stale: return "stale"
+      case .fault: return "fault"
+      case .timeout: return "timeout"
+      }
+    }
+    var failureLine: String {
+      let value = failure ?? Failure(fixture: fixture, attempt: attempt, phase: phase, category: .otherError)
+      return "TASK5_DIAG_V1 unit=" + unitLiteral + " fixture=" + value.fixture.rawValue
+        + " attempt=" + value.attempt.rawValue + " enteredPhase=" + value.phase.rawValue
+        + " category=" + value.category.rawValue + " unwind=" + Unwind.returned.rawValue
+    }
+  }
+
+  // Calls the original fixture wrapper. Existing body release/join defers run before this
+  // nonescaping catch freezes primitives; the original wrapper still owns close/redaction.
+  private static func ownedDeferredWithFixture(
+    _ diagnostic: OwnedDeferredDiagnostic, _ body: (Fixture) throws -> Void
+  ) throws {
+    diagnostic.enter(.fixtureConstruct)
+    do {
+      try withFixture { f in
+        do {
+          try body(f)
+          diagnostic.enter(.fixtureBodyReturned)
+        } catch {
+          diagnostic.freeze(error)
+          throw error
+        }
+      }
+      diagnostic.enter(.fixtureReturned)
+    } catch {
+      diagnostic.freezeBoundary()
+      throw error
+    }
+  }
+
+  private static func ownedDeferredDiagnosedTarget(_ unit: OwnedDeferredCase) throws -> OwnedDeferredFacts {
+    let diagnostic = OwnedDeferredDiagnostic(unit: unit)
+    do {
+      return try ownedDeferredTarget(unit, diagnostic: diagnostic)
+    } catch {
+      // All owned target/helper/fixture scopes have returned or unwound before this one line.
+      // Returned is scope ordering only, never cleanup success or physical quiescence.
+      diagnostic.freeze(error)
+      print(diagnostic.failureLine)
+      throw error
+    }
   }
 }
