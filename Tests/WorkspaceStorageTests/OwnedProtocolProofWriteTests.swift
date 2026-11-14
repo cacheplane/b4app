@@ -1886,21 +1886,29 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  private static func ownedBindRawStageControls() throws -> [OwnedBindRawFacts] {
+  private static func ownedBindRawStageControls(
+    diagnostic: OwnedT11Diagnostic? = nil
+  ) throws -> [OwnedBindRawFacts] {
     var results: [OwnedBindRawFacts] = []
     var databases = Set<Data>()
     for row in OwnedBindRawControl.allCases {
+      diagnostic?.selectRawRow(row)
+      diagnostic?.phase = .rawFixture
       var observed: OwnedBindRawFacts?
       try withFixture { f in
+        diagnostic?.phase = .rawValidate
         let predecessor = try validateFixture(f)
         let replacement = row == .normalB ? "secret:OWNED_BIND_RAW_REFERENCE_B" : f.link.tokenRef
+        diagnostic?.phase = .rawFreeze
         let stage = try ownedBindFreeze(f, predecessor: predecessor, replacement: replacement)
         guard databases.insert(Data(stage.before.database.utf8)).inserted else {
           throw FixtureFailure.nativeShape
         }
         // Every row gets a distinct endpoint/database, independently captured native S0, exact
         // checked S1, and the identical two enabled UPDATE-only functions/triggers.
+        diagnostic?.phase = .rawInstall
         try ownedBindInstall(f, stage: stage, rawBodyFault: row == .bodyFault)
+        diagnostic?.phase = .rawExpectedDamage
         if row == .imageReject {
           guard
             try f.inspector.execute(
@@ -1913,10 +1921,14 @@ extension OwnedProtocolProofWriteTests {
             ).affected == 1
           else { throw FixtureFailure.nativeShape }
         }
+        diagnostic?.phase = .rawInitialImage
         guard try ownedBindImage(f.inspector) == stage.before else { throw FixtureFailure.nativeShape }
+        diagnostic?.phase = .rawDriver
         observed = try ownedBindRawDriver(f, stage: stage, row: row)
+        diagnostic?.phase = .rawTeardown
       }
       // withFixture has closed its database and relinquished its inspector/physical root first.
+      diagnostic?.phase = .rawFacts
       guard let observed, observed.qualified else { throw FixtureFailure.nativeShape }
       results.append(observed)
     }
@@ -3479,6 +3491,188 @@ extension OwnedProtocolProofWriteTests {
 extension OwnedProtocolProofWriteTests {
   private enum OwnedT11Device { case local, nonlocal }
 
+  // T11-only entered-region diagnostics: no native values or errors are retained here.
+  // Mutated only by the synchronous caller; never passed into either native worker.
+  private final class OwnedT11Diagnostic {
+    enum Unit {
+      case local
+      case nonlocal
+
+      var label: String {
+        switch self {
+        case .local: return "local"
+        case .nonlocal: return "nonlocal"
+        }
+      }
+    }
+    enum RawRow {
+      case none
+      case imageReject
+      case normalA
+      case bodyFault
+      case normalB
+
+      var label: String {
+        switch self {
+        case .none: return "none"
+        case .imageReject: return "imageReject"
+        case .normalA: return "normalA"
+        case .bodyFault: return "bodyFault"
+        case .normalB: return "normalB"
+        }
+      }
+    }
+    enum Phase {
+      case rawFour
+      case rawFixture
+      case rawValidate
+      case rawFreeze
+      case rawInstall
+      case rawExpectedDamage
+      case rawInitialImage
+      case rawDriver
+      case rawTeardown
+      case rawFacts
+      case targetFixture
+      case targetValidate
+      case targetFreeze
+      case setupStampIdentity
+      case catalogPrecheck
+      case catalogAlter
+      case inheritedConstruct
+      case inheritedDeviceGuard
+      case anchorCapture
+      case ordinaryBaseline
+      case ordinaryOutside
+      case ordinaryBegin
+      case ordinaryWrite
+      case ordinaryAfter
+      case ordinaryChecks
+      case targetStageInstall
+      case targetStageReady
+      case holderReady
+      case nativeWait
+      case markerAndRelease
+      case joinsAndHolderAck
+      case markerReadback
+      case receiptImageAndCounters
+      case receiptRedemption
+      case receiptNativeValidation
+      case ordinaryRestoration
+      case finalImageRecipe
+      case inheritedBodyOutcome
+      case extraClose
+      case catalogRestore
+      case outerFixtureTeardown
+      case facts
+
+      var label: String {
+        switch self {
+        case .rawFour: return "rawFour"
+        case .rawFixture: return "rawFixture"
+        case .rawValidate: return "rawValidate"
+        case .rawFreeze: return "rawFreeze"
+        case .rawInstall: return "rawInstall"
+        case .rawExpectedDamage: return "rawExpectedDamage"
+        case .rawInitialImage: return "rawInitialImage"
+        case .rawDriver: return "rawDriver"
+        case .rawTeardown: return "rawTeardown"
+        case .rawFacts: return "rawFacts"
+        case .targetFixture: return "targetFixture"
+        case .targetValidate: return "targetValidate"
+        case .targetFreeze: return "targetFreeze"
+        case .setupStampIdentity: return "setupStampIdentity"
+        case .catalogPrecheck: return "catalogPrecheck"
+        case .catalogAlter: return "catalogAlter"
+        case .inheritedConstruct: return "inheritedConstruct"
+        case .inheritedDeviceGuard: return "inheritedDeviceGuard"
+        case .anchorCapture: return "anchorCapture"
+        case .ordinaryBaseline: return "ordinaryBaseline"
+        case .ordinaryOutside: return "ordinaryOutside"
+        case .ordinaryBegin: return "ordinaryBegin"
+        case .ordinaryWrite: return "ordinaryWrite"
+        case .ordinaryAfter: return "ordinaryAfter"
+        case .ordinaryChecks: return "ordinaryChecks"
+        case .targetStageInstall: return "targetStageInstall"
+        case .targetStageReady: return "targetStageReady"
+        case .holderReady: return "holderReady"
+        case .nativeWait: return "nativeWait"
+        case .markerAndRelease: return "markerAndRelease"
+        case .joinsAndHolderAck: return "joinsAndHolderAck"
+        case .markerReadback: return "markerReadback"
+        case .receiptImageAndCounters: return "receiptImageAndCounters"
+        case .receiptRedemption: return "receiptRedemption"
+        case .receiptNativeValidation: return "receiptNativeValidation"
+        case .ordinaryRestoration: return "ordinaryRestoration"
+        case .finalImageRecipe: return "finalImageRecipe"
+        case .inheritedBodyOutcome: return "inheritedBodyOutcome"
+        case .extraClose: return "extraClose"
+        case .catalogRestore: return "catalogRestore"
+        case .outerFixtureTeardown: return "outerFixtureTeardown"
+        case .facts: return "facts"
+        }
+      }
+    }
+    enum Outcome {
+      case notReached
+      case succeeded
+      case failed
+
+      var label: String {
+        switch self {
+        case .notReached: return "notReached"
+        case .succeeded: return "succeeded"
+        case .failed: return "failed"
+        }
+      }
+    }
+    enum OuterScope {
+      case pending
+      case unwound
+
+      var label: String {
+        switch self {
+        case .pending: return "pending"
+        case .unwound: return "unwound"
+        }
+      }
+    }
+
+    let unit: Unit
+    var rawRow: RawRow = .none
+    var phase: Phase = .rawFour
+    var firstFailure: Phase?
+    var inheritedBody: Outcome = .notReached
+    var extraClose: Outcome = .notReached
+    var catalogRestore: Outcome = .notReached
+    var outerScope: OuterScope = .pending
+
+    init(_ device: OwnedT11Device) {
+      switch device {
+      case .local: unit = .local
+      case .nonlocal: unit = .nonlocal
+      }
+    }
+
+    func selectRawRow(_ row: OwnedBindRawControl) {
+      switch row {
+      case .imageReject: rawRow = .imageReject
+      case .normalA: rawRow = .normalA
+      case .bodyFault: rawRow = .bodyFault
+      case .normalB: rawRow = .normalB
+      }
+    }
+
+    func rememberFailure() {
+      if firstFailure == nil { firstFailure = phase }
+    }
+
+    // This line is constructed only after the entire failing helper has unwound.
+    var failureLine: String {
+      "OWNED_T11_DIAGNOSTIC unit=\(unit.label) rawRow=\(rawRow.label) phase=\(phase.label) firstFailure=\((firstFailure ?? phase).label) inheritedBody=\(inheritedBody.label) extraClose=\(extraClose.label) catalogRestore=\(catalogRestore.label) outerScope=\(outerScope.label)"
+    }
+  }
+
   // Only these fixed primitive facts escape the completed outer fixture teardown.
   private struct OwnedT11Facts {
     let rawControls: Int
@@ -3525,8 +3719,10 @@ extension OwnedProtocolProofWriteTests {
   }
 
   private static func ownedT11OrdinarySettings(
-    _ database: WorkspaceDatabase, expected: OwnedT11SessionSettings? = nil
+    _ database: WorkspaceDatabase, expected: OwnedT11SessionSettings? = nil,
+    diagnostic: OwnedT11Diagnostic? = nil
   ) throws -> (settings: OwnedT11SessionSettings, highWater: HLC) {
+    diagnostic?.phase = .ordinaryOutside
     let outside = try database.read { try ownedT11Settings($0) }
     guard outside.defaultIsolation == "repeatable read", outside.isolation == "repeatable read",
       outside.unset
@@ -3535,6 +3731,7 @@ extension OwnedProtocolProofWriteTests {
       guard equalBytes(outside.lock, expected.lock), equalBytes(outside.statement, expected.statement)
       else { throw FixtureFailure.nativeShape }
     }
+    diagnostic?.phase = .ordinaryBegin
     let begun = try database.read { c in
       var beginAttempted = false
       var rollbackAcknowledged = false
@@ -3549,8 +3746,11 @@ extension OwnedProtocolProofWriteTests {
       return result
     }
     // This is the actual ordinary write API. Its body contains only a settings SELECT.
+    diagnostic?.phase = .ordinaryWrite
     let written = try database.write { try ownedT11Settings($0) }
+    diagnostic?.phase = .ordinaryAfter
     let after = try database.read { try ownedT11Settings($0) }
+    diagnostic?.phase = .ordinaryChecks
     for value in [begun, written, after] {
       guard value.defaultIsolation == "repeatable read", value.isolation == "repeatable read",
         equalBytes(value.lock, outside.lock), equalBytes(value.statement, outside.statement)
@@ -3616,9 +3816,10 @@ extension OwnedProtocolProofWriteTests {
   }
 
   private static func ownedT11WithInheritedDatabase(
-    _ f: Fixture, device: OwnedT11Device,
+    _ f: Fixture, device: OwnedT11Device, diagnostic: OwnedT11Diagnostic? = nil,
     _ body: (WorkspaceDatabase, ProtocolVerificationSnapshot, OwnedT11SessionSettings, HLC) throws -> Void
   ) throws {
+    diagnostic?.phase = .catalogPrecheck
     let endpoint = f.database.endpoint
     guard let binDir = endpoint.binDir, !binDir.isEmpty, !binDir.utf8.contains(0),
       !endpoint.database.isEmpty, !endpoint.database.utf8.contains(0),
@@ -3654,6 +3855,7 @@ extension OwnedProtocolProofWriteTests {
       }
     }
     let outcome = Result<Void, any Error> {
+      diagnostic?.phase = .catalogAlter
       alterAttempted = true
       try f.inspector.execute(
         "ALTER DATABASE \(quoted) SET default_transaction_isolation TO 'repeatable read'")
@@ -3662,8 +3864,10 @@ extension OwnedProtocolProofWriteTests {
         throw FixtureFailure.nativeShape
       }
       // Same actual endpoint and binDir; no original-pool session is changed or replaced.
+      diagnostic?.phase = .inheritedConstruct
       let actual = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir, createIfMissing: false)
       extra = actual
+      diagnostic?.phase = .inheritedDeviceGuard
       guard try ownedBindImage(f.inspector) == businessBefore,
         equalBytes(actual.deviceId, "local"), equalBytes(actual.clock.deviceId, "local")
       else { throw FixtureFailure.nativeShape }
@@ -3685,15 +3889,33 @@ extension OwnedProtocolProofWriteTests {
       // Constructor and setter call no next/observe. This genuine capture calls ordinary write
       // exactly once; existing control means no business DML. The following ordinary write's
       // observed stamp bounds that earlier stamp by HybridClock.next's strict monotonicity.
+      diagnostic?.phase = .anchorCapture
       let anchor = try actual.captureProtocolVerification(
         accountID: f.binding.accountID, expectedMembership: membership)
       guard try ownedBindImage(f.inspector) == businessBefore else { throw FixtureFailure.nativeShape }
-      let ordinary = try ownedT11OrdinarySettings(actual)
+      diagnostic?.phase = .ordinaryBaseline
+      let ordinary = try ownedT11OrdinarySettings(actual, diagnostic: diagnostic)
       guard try ownedBindImage(f.inspector) == businessBefore else { throw FixtureFailure.nativeShape }
       try body(actual, anchor, ordinary.settings, ordinary.highWater)
     }
+    // Freeze the first entered failure region before settlement labels can replace it.
+    switch outcome {
+    case .success: diagnostic?.inheritedBody = .succeeded
+    case .failure:
+      diagnostic?.inheritedBody = .failed
+      diagnostic?.rememberFailure()
+    }
+    diagnostic?.phase = .inheritedBodyOutcome
     // Evaluate ALL settlements before propagating any error, even the declared close error.
+    diagnostic?.phase = .extraClose
     let closeOutcome = Result<Void, any Error> { if let extra { try extra.close() } }
+    switch closeOutcome {
+    case .success: diagnostic?.extraClose = .succeeded
+    case .failure:
+      diagnostic?.extraClose = .failed
+      diagnostic?.rememberFailure()
+    }
+    diagnostic?.phase = .catalogRestore
     let restoreOutcome = Result<Void, any Error> {
       if alterAttempted {
         try f.inspector.execute("ALTER DATABASE \(quoted) RESET default_transaction_isolation")
@@ -3701,6 +3923,12 @@ extension OwnedProtocolProofWriteTests {
           throw FixtureFailure.nativeShape
         }
       }
+    }
+    switch restoreOutcome {
+    case .success: diagnostic?.catalogRestore = .succeeded
+    case .failure:
+      diagnostic?.catalogRestore = .failed
+      diagnostic?.rememberFailure()
     }
     guard case .success = closeOutcome, case .success = restoreOutcome else {
       throw FixtureFailure.redactedFailure
@@ -3771,8 +3999,9 @@ extension OwnedProtocolProofWriteTests {
     anchor: ProtocolVerificationSnapshot, binding: ProtocolMembershipBinding, reference: String,
     inspector: PostgresConnection, stage: OwnedBindStageFixture,
     admission: ProtocolProofMemoryAdmission, memory: OwnedBindMemory,
-    body: OwnedBindProbe, commit: OwnedBindProbe
+    body: OwnedBindProbe, commit: OwnedBindProbe, diagnostic: OwnedT11Diagnostic? = nil
   ) throws -> (calls: Int, redemption: Int) {
+    diagnostic?.phase = .receiptImageAndCounters
     let beforeRedemption = memory.calls()
     guard receipt.operation == .bind, receipt.disposition == .committedCurrent,
       beforeRedemption == 4, equalBytes(reference, stage.originalReference),
@@ -3783,12 +4012,14 @@ extension OwnedProtocolProofWriteTests {
     try ownedT09Recipe(inspector, stage: stage)
     // Redemption is sealed-context plus memory only. The following actual-object API calls
     // independently validate native facts; redemption itself makes no native-currentness claim.
+    diagnostic?.phase = .receiptRedemption
     let successor = try receipt.currentSuccessor(
       expectedSnapshot: anchor, expectedTokenRef: reference, memoryAdmission: admission)
     let afterRedemption = memory.calls()
     guard afterRedemption - beforeRedemption == 1, successor.observation == nil else {
       throw FixtureFailure.nativeShape
     }
+    diagnostic?.phase = .receiptNativeValidation
     try database.validateProtocolVerification(expectedSnapshot: successor)
     try database.compareOriginalLinkedCaptureOwner(
       expectedSnapshot: successor, accountID: binding.accountID,
@@ -3800,8 +4031,9 @@ extension OwnedProtocolProofWriteTests {
     return (beforeRedemption, afterRedemption - beforeRedemption)
   }
 
-  private static func ownedT11RawControls() throws -> Int {
-    let rows = try ownedBindRawStageControls()
+  private static func ownedT11RawControls(diagnostic: OwnedT11Diagnostic? = nil) throws -> Int {
+    diagnostic?.phase = .rawFour
+    let rows = try ownedBindRawStageControls(diagnostic: diagnostic)
     guard rows.count == 4 else { throw FixtureFailure.nativeShape }
     for (index, row) in rows.enumerated() {
       guard row.row == index, row.qualified else { throw FixtureFailure.nativeShape }
@@ -3826,18 +4058,27 @@ extension OwnedProtocolProofWriteTests {
     return (pid, user, binDir)
   }
 
-  private static func ownedT11SettingsUnit(_ device: OwnedT11Device) throws -> OwnedT11Facts {
+  private static func ownedT11SettingsUnit(
+    _ device: OwnedT11Device, diagnostic: OwnedT11Diagnostic? = nil
+  ) throws -> OwnedT11Facts {
     // No prerequisite borrowing: all four fresh raw fixtures finish teardown BEFORE this target.
-    let raw = try ownedT11RawControls()
+    let raw = try ownedT11RawControls(diagnostic: diagnostic)
+    diagnostic?.rawRow = .none
+    diagnostic?.phase = .targetFixture
     var facts: OwnedT11Facts?
     try withFixture { f in
+      diagnostic?.phase = .targetValidate
       let predecessor = try validateFixture(f)
+      diagnostic?.phase = .targetFreeze
       let frozen = try ownedBindFreeze(f, predecessor: predecessor, replacement: f.link.tokenRef)
+      diagnostic?.phase = .setupStampIdentity
       let setupStamps = try ownedT11SetupStamps(frozen.before)
       let identity = try ownedT11Identity(f)
       let endpoint = f.database.endpoint
       var completed: (calls: Int, redemption: Int)?
-      try ownedT11WithInheritedDatabase(f, device: device) { database, anchor, ordinary, highWater in
+      try ownedT11WithInheritedDatabase(f, device: device, diagnostic: diagnostic) {
+        database, anchor, ordinary, highWater in
+        diagnostic?.phase = .targetStageInstall
         let stage = try ownedT11Stage(frozen, database: database)
         try ownedBindInstall(f, stage: stage, rawBodyFault: false)
         let body = try ownedBindProbe(f.inspector, "body_probe")
@@ -3845,6 +4086,7 @@ extension OwnedProtocolProofWriteTests {
         guard body == OwnedBindProbe(last: 1, called: false),
           commit == OwnedBindProbe(last: 1, called: false)
         else { throw FixtureFailure.nativeShape }
+        diagnostic?.phase = .targetStageReady
         try ownedT09Recipe(f.inspector, stage: stage)
         try ownedBindWriterReady(
           f, stage: stage, replacement: stage.originalReference, body: body, commit: commit)
@@ -3864,6 +4106,7 @@ extension OwnedProtocolProofWriteTests {
           if let holder { _ = holder.join() }
           if let writer { _ = writer.join() }
         }
+        diagnostic?.phase = .holderReady
         let application = "owned-t11-advisory-\(UUID().uuidString)"
         let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
         holder = ownedBindHolder(
@@ -3872,6 +4115,7 @@ extension OwnedProtocolProofWriteTests {
           kind: .advisory, hold: hold, state: state)
         let holderPID = try ownedBindHolderReady(state, hold: hold, deadline: readiness)
         guard memory.calls() == 0 else { throw FixtureFailure.nativeShape }
+        diagnostic?.phase = .nativeWait
         let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
         writer = ownedBindWriter(
           database: database, anchor: anchor, binding: f.binding, reference: stage.originalReference,
@@ -3880,6 +4124,7 @@ extension OwnedProtocolProofWriteTests {
           f.inspector, database: endpoint.database, holderPID: holderPID,
           knownOwnedPIDs: [identity.pid, holderPID], kind: .advisory, hold: hold,
           finished: finished, memory: memory, invocationStart: 0, deadline: deadline)
+        diagnostic?.phase = .markerAndRelease
         let now = try ownedBindWall(f.inspector)
         let sampleEnd = DispatchTime.now().uptimeNanoseconds
         let (markerMillis, overflow) = now.addingReportingOverflow(10_000)
@@ -3898,17 +4143,21 @@ extension OwnedProtocolProofWriteTests {
         try ownedBindReleaseObservedHold(
           hold, finished: finished, memory: memory, invocationStart: 0, retiring: false,
           deadline: deadline)
+        diagnostic?.phase = .joinsAndHolderAck
         let held = holder!.join()
         let receipt = writer!.join()
         guard held.normal else { throw FixtureFailure.nativeShape }
+        diagnostic?.phase = .markerReadback
         try ownedT11MarkerObserved(
           f.inspector, stage: stage, expected: expectedBody, marker: markerMillis)
         let current = try ownedT11Current(
           receipt, database: database, anchor: anchor, binding: f.binding,
           reference: stage.originalReference, inspector: f.inspector, stage: stage,
-          admission: admission, memory: memory, body: body, commit: commit)
+          admission: admission, memory: memory, body: body, commit: commit, diagnostic: diagnostic)
         // This new ordinary next is strictly AFTER body-marker read and genuine redemption.
-        _ = try ownedT11OrdinarySettings(database, expected: ordinary)
+        diagnostic?.phase = .ordinaryRestoration
+        _ = try ownedT11OrdinarySettings(database, expected: ordinary, diagnostic: diagnostic)
+        diagnostic?.phase = .finalImageRecipe
         guard try ownedBindImage(f.inspector) == stage.expected,
           try ownedBindProbe(f.inspector, "body_probe").advanced(from: body, by: 1),
           try ownedBindProbe(f.inspector, "commit_probe").advanced(from: commit, by: 1)
@@ -3922,7 +4171,9 @@ extension OwnedProtocolProofWriteTests {
         rawControls: raw, nativeWaits: 1, writerCalls: completed.calls,
         redemptionCalls: completed.redemption, normalHolders: 1, normalContenders: 0,
         body: 1, deferred: 1, settingsRestored: true, qualified: true)
+      diagnostic?.phase = .outerFixtureTeardown
     }
+    diagnostic?.phase = .facts
     guard let facts else { throw FixtureFailure.redactedFailure }
     return facts
   }
@@ -4293,7 +4544,18 @@ extension OwnedProtocolProofWriteTests {
   @Test func ownedBindOverridesInheritedIsolationAndSamplesClockAfterAdvisoryWait() throws {
     // Explicit local and nonlocal units, each with its own rawfour and NEW unique target DB.
     for device in [OwnedT11Device.local, .nonlocal] {
-      let facts = try Self.ownedT11SettingsUnit(device)
+      let diagnostic = OwnedT11Diagnostic(device)
+      let facts: OwnedT11Facts
+      do {
+        facts = try Self.ownedT11SettingsUnit(device, diagnostic: diagnostic)
+      } catch {
+        // The complete unit has unwound: releases/joins, extra close/reset, fixture/root defers.
+        // Unwound does not claim Thread exit, native quiescence, or best-effort removal success.
+        diagnostic.rememberFailure()
+        diagnostic.outerScope = .unwound
+        print(diagnostic.failureLine)
+        throw error
+      }
       #expect(facts.rawControls == 4 && facts.nativeWaits == 1)
       #expect(facts.writerCalls == 4 && facts.redemptionCalls == 1)
       #expect(facts.normalHolders == 1 && facts.normalContenders == 0)

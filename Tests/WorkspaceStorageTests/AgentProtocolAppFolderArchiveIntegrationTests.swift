@@ -464,11 +464,12 @@ import WorkspaceProtocol
         Data(contentsOf: URL(fileURLWithPath: backups + "/" + backupNames[0])))
       #expect(backup.records["schemaMigrations"]?.compactMap { $0.row["name"] as? String } == sourceNames)
       #expect(backup.records["appFolders"]?.first?.row["threadId"] as? String == "t")
-      let nativePayload = try source.read {
-        try $0.execute(#"SELECT payload::text AS payload FROM "displayItems" WHERE id='i'"#).rows.first?.text(
-          "payload")
+      let nativePayload: String? = try source.read { (raw: PostgresConnection) throws -> String? in
+        let rows = try raw.execute(#"SELECT payload::text AS payload FROM "displayItems" WHERE id='i'"#).rows
+        return rows.first?.text("payload")
       }
-      #expect(backup.records["displayItems"]?.first?.row["payload"] as? String == nativePayload)
+      let backupPayload = backup.records["displayItems"]?.first?.row["payload"] as? String
+      #expect(backupPayload.map { Data($0.utf8) } == nativePayload.map { Data($0.utf8) })
       try source.export(to: root + "/current16.jsonl")
       let exported = try WorkspaceArchive.read(
         Data(contentsOf: URL(fileURLWithPath: root + "/current16.jsonl")))

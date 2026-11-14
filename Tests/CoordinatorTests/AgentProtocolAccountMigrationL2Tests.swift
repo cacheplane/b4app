@@ -1011,7 +1011,10 @@ private final class L2LifetimeOwner: Sendable {
   @Test func oldWriterCompletionsUseClosedOrDrainedPool() async throws {
     let factory = L2Factory()
     try await factory.configure()
-    try await H.withFixture(apiFactory: { factory.api($0, token: $1) }, isolatedDiagnostics: true) {
+    try await H.withFixture(
+      apiFactory: { factory.api($0, token: $1) }, isolatedDiagnostics: true,
+      expectedAdapterFactoryCalls: 1
+    ) {
       fixture, cleanup in
       cleanup.release {
         factory.old.unstick(); factory.fresh.unstick()
