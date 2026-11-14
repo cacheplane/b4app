@@ -27,6 +27,8 @@ public struct B4TurnTranslator: Sendable {
   private var currentReasoning: (id: String, text: String)?
   private var toolCalls: [String: (name: String, input: JSONValue, args: String, label: String?)] = [:]
   private var toolOrder: [String] = []
+  /// Tool calls whose permission the app refused; a result for one is "declined", not "failed" (D-226).
+  private var declinedCalls: Set<String> = []
   private var sawInterrupt = false
   private var streamedText = false
   private var capabilityIndex = 0
@@ -50,6 +52,15 @@ public struct B4TurnTranslator: Sendable {
     sawInterrupt = false
     phase = .streaming
     reattaching = false
+  }
+
+  /// The app refused this tool call's permission ("Deny", a decline, a stop on a parked turn). A call
+  /// the stream has shown is closed as declined now, since B4 need not send a result for a call it did
+  /// not run; a result that does arrive is declined too.
+  public mutating func declineCall(_ id: String) -> [AdapterEvent] {
+    declinedCalls.insert(id)
+    guard toolCalls[id] != nil else { return [] }
+    return [event(.toolCompleted, toolPayload(id: id, status: "declined"), itemId: id)]
   }
 
   private func event(
@@ -163,12 +174,9 @@ public struct B4TurnTranslator: Sendable {
       let callId =
         id ?? toolOrder.last(where: { toolCalls[$0]?.name == name }) ?? "\(turnId):t\(toolOrder.count + 1)"
       track(callId, name: name)
-      let failed = Self.toolFailed(output)
-      return [
-        event(
-          .toolCompleted, toolPayload(id: callId, status: failed ? "failed" : "completed", output: output),
-          itemId: callId)
-      ]
+      let status =
+        declinedCalls.contains(callId) ? "declined" : Self.toolFailed(output) ? "failed" : "completed"
+      return [event(.toolCompleted, toolPayload(id: callId, status: status, output: output), itemId: callId)]
     case .interrupt(let interruptId, let type, let kind, let detail, let grant, let raw):
       var events = closeMessage()
       sawInterrupt = true

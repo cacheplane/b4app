@@ -199,6 +199,10 @@ def execute(run):
         if "approve" in text:
             say("I need to run a command.")
             run.emit("message_end", {"messageId": next_id("m")})
+            if "shown" in text:
+                # The call the prompt is about, sent before the park.
+                run.emit("tool_call", {"id": "call_9", "name": "bash", "input": {"command": "rm -rf tmp"},
+                                       "messageId": "m_x"})
             interrupt_id = next_id("perm")
             grant = "grant-" + uuid.uuid4().hex[:8]
             value = {"interruptId": interrupt_id, "type": "permission-request", "kind": "command",
