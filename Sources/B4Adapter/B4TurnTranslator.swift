@@ -118,6 +118,12 @@ public struct B4TurnTranslator: Sendable {
     return output.stringValue.map(JSONValue.string) ?? output
   }
 
+  /// B4 refused the call itself (a route's permission policy, a delegation rule): the result's text
+  /// starts with B4's permission code (D-229).
+  static func toolRefused(_ output: JSONValue) -> Bool {
+    toolOutput(output).stringValue.map(B4Protocol.isPermissionDenial) ?? false
+  }
+
   static func toolFailed(_ output: JSONValue) -> Bool {
     if output["lc"] != nil { return output["kwargs"]?["status"]?.stringValue == "error" }
     return output["error"] != nil
@@ -174,8 +180,8 @@ public struct B4TurnTranslator: Sendable {
       let callId =
         id ?? toolOrder.last(where: { toolCalls[$0]?.name == name }) ?? "\(turnId):t\(toolOrder.count + 1)"
       track(callId, name: name)
-      let status =
-        declinedCalls.contains(callId) ? "declined" : Self.toolFailed(output) ? "failed" : "completed"
+      let declined = declinedCalls.contains(callId) || Self.toolRefused(output)
+      let status = declined ? "declined" : Self.toolFailed(output) ? "failed" : "completed"
       return [event(.toolCompleted, toolPayload(id: callId, status: status, output: output), itemId: callId)]
     case .interrupt(let interruptId, let type, let kind, let detail, let grant, let raw):
       var events = closeMessage()

@@ -125,6 +125,53 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(result[0].payload["item"]?["status"]?.stringValue == "declined")
   }
 
+  @Test func aCallB4RefusedItselfReadsDeclinedAndTheSameWordsWithoutTheCodeDoNot() {
+    var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
+    for id in ["call_1", "call_2", "call_3", "call_4"] {
+      _ = translator.translate(.toolCall(id: id, name: "deploy", input: [:], messageId: nil))
+    }
+    func status(_ id: String, _ output: JSONValue) -> String? {
+      translator.translate(.toolResult(id: id, name: "deploy", output: output))[0].payload["item"]?["status"]?
+        .stringValue
+    }
+    // A live result is a serialized ToolMessage whose content is the refusal.
+    let message: JSONValue = [
+      "lc": 1, "kwargs": ["content": "[DAWN_E3001] Permission denied (fail-closed): tool deploy"],
+    ]
+    #expect(status("call_1", message) == "declined")
+    #expect(status("call_2", "[DAWN_E3002] Delegation to subagent 'writer' is denied.") == "declined")
+    // The words alone are a tool's own business, and another code is not a refusal.
+    #expect(status("call_3", "Permission denied (fail-closed): tool deploy") == "completed")
+    #expect(status("call_4", ["error": "[DAWN_E5003] Subagent failed"]) == "failed")
+  }
+
+  @Test func aCallB4RefusedItselfReadsDeclinedInHistory() {
+    func lc(_ cls: String, _ kwargs: JSONValue) -> JSONValue {
+      ["lc": 1, "type": "constructor", "id": ["langchain_core", "messages", .string(cls)], "kwargs": kwargs]
+    }
+    let items = B4Protocol.snapshotItems(
+      stateValues: [
+        "messages": [
+          lc("HumanMessage", ["content": "ship it"]),
+          lc(
+            "AIMessage",
+            [
+              "content": "",
+              "tool_calls": [
+                ["id": "call_1", "name": "deploy", "args": [:]],
+                ["id": "call_2", "name": "search", "args": [:]],
+              ],
+            ]),
+          lc(
+            "ToolMessage",
+            ["content": "[DAWN_E3001] Permission denied by user: tool deploy", "tool_call_id": "call_1"]),
+          lc("ToolMessage", ["content": "2 hits", "tool_call_id": "call_2"]),
+        ]
+      ])
+    #expect(items.compactMap { $0.payload["status"]?.stringValue } == ["declined", "completed"])
+    #expect(items[1].payload["output"]?.stringValue == "[DAWN_E3001] Permission denied by user: tool deploy")
+  }
+
   @Test func aParkKeepsTheTurnOpenUntilTheResumeStreamFinishes() {
     var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
     var events: [AdapterEvent] = []

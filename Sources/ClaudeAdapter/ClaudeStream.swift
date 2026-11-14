@@ -185,6 +185,9 @@ public enum ClaudeStream {
     public var result: String?
     public var errors: [String]
     public var userMessageUuid: String?
+    /// `permission_denials`: the tool uses Claude Code refused this turn, by tool use id. Its own
+    /// record of them, whoever refused (a deny rule, the permission mode, the app's answer).
+    public var permissionDenials: [String] = []
     public var isSuccess: Bool { subtype == "success" && !isError }
   }
 
@@ -258,7 +261,10 @@ public enum ClaudeStream {
           terminalReason: value["terminal_reason"]?.stringValue,
           result: value["result"]?.stringValue,
           errors: value["errors"]?.arrayValue?.compactMap(\.stringValue) ?? [],
-          userMessageUuid: value["user_message_uuid"]?.stringValue))
+          userMessageUuid: value["user_message_uuid"]?.stringValue,
+          permissionDenials: value["permission_denials"]?.arrayValue?.compactMap {
+            $0["tool_use_id"]?.stringValue
+          } ?? []))
     case "control_request":
       guard let requestId = value["request_id"]?.stringValue, let request = value["request"] else {
         return .unknown(type: type, body: value)

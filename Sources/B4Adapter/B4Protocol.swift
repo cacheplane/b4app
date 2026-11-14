@@ -205,6 +205,17 @@ public enum B4Protocol {
       .text
   }
 
+  /// B4's error codes for a call its permissions refused: `DAWN_E3001` (permission denied) and
+  /// `DAWN_E3002` (subagent dispatch denied). B4 returns such a refusal as the tool's result, its text
+  /// prefixed with the code in brackets.
+  static let permissionDenialCodes = ["DAWN_E3001", "DAWN_E3002"]
+
+  /// Whether a tool result's text is B4's own refusal of the call. The code is B4's documented
+  /// contract; the words after it are not read.
+  public static func isPermissionDenial(_ text: String) -> Bool {
+    permissionDenialCodes.contains { text.hasPrefix("[\($0)]") }
+  }
+
   /// History from `GET /threads/:id/state` `values.messages`. Tool results are folded into their
   /// tool call items; unknown message classes are skipped rather than guessed.
   public static func snapshotItems(stateValues: JSONValue) -> [SnapshotItem] {
@@ -240,7 +251,10 @@ public enum B4Protocol {
             "name": .string(call["name"]?.stringValue ?? "tool"), "input": call["args"] ?? .null,
             "status": "completed",
           ]
-          if let id, let output = results[id] { payload["output"] = .string(output) }
+          if let id, let output = results[id] {
+            payload["output"] = .string(output)
+            if isPermissionDenial(output) { payload["status"] = "declined" }
+          }
           items.append(
             SnapshotItem(nativeItemId: id, role: "tool", type: "toolCall", payload: .object(payload)))
         }
