@@ -22,7 +22,8 @@ struct ComposerSummary: Equatable {
   var spoken: String {
     var sentence = place.map { "Runs in \($0)" } ?? "Runs"
     if runtime == Self.noRuntime {
-      sentence += ", no runtime"
+      // A thread has no place to lead with: "Runs, no runtime" would read as a fragment.
+      sentence = place == nil ? Self.noRuntime : sentence + ", no runtime"
     } else {
       sentence += " with " + runtime.replacingOccurrences(of: " · ", with: ", ")
     }

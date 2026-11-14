@@ -47,10 +47,8 @@ import WorkspaceProtocol
 
   @Test func anEnvironmentWithSeveralFoldersNamesTheFolder() async throws {
     let (draft, model) = try await Self.draft(in: "p1")
-    let folder = try #require(draft.folder)
-    #expect(
-      ComposerSummary.draft(draft, in: model).place
-        == "Atlas · \(ComposerPickerRow.folderName(folder))")
+    #expect(draft.folder != nil)
+    #expect(ComposerSummary.draft(draft, in: model).place == "Atlas · atlas")
     await model.disconnect()
   }
 
@@ -131,7 +129,9 @@ import WorkspaceProtocol
     let agent = try #require(model.connection(id: "b4-p1"))
     let summary = ComposerSummary.thread(thread, in: model)
     #expect(summary.text == model.startLabel(for: agent))
+    #expect(summary.place == nil)
     #expect(summary.permission == nil)
+    #expect(summary.spoken == "Runs with \(model.startLabel(for: agent))")
     await model.disconnect()
   }
 
@@ -140,7 +140,47 @@ import WorkspaceProtocol
     let model = try await Phone.macModel(ScriptedTransport(), threads: [thread])
     let summary = ComposerSummary.thread(thread, in: model)
     #expect(summary.runtime == "No runtime")
-    #expect(summary.spoken == "Runs, no runtime")
+    #expect(summary.spoken == "No runtime")
+    await model.disconnect()
+  }
+
+  @Test func aThreadWithNoEnvironmentHasNoFolder() async throws {
+    let thread = Self.thread("claude-1", environmentId: nil)
+    let model = try await Phone.macModel(ScriptedTransport(), threads: [thread])
+    #expect(ComposerSummary.placeText(thread, in: model) == "No folder")
+    await model.disconnect()
+  }
+
+  @Test func anEnvironmentThatIsNotLoadedIsNamedByTheThreadsFolder() async throws {
+    var thread = Self.thread("claude-1", environmentId: "gone")
+    thread.context = "/x/scratch"
+    let model = try await Phone.macModel(ScriptedTransport(), threads: [thread])
+    #expect(ComposerSummary.placeText(thread, in: model) == "scratch")
+    thread.context = ""
+    #expect(ComposerSummary.placeText(thread, in: model) == "No folder")
+    await model.disconnect()
+  }
+
+  @Test func aB4ThreadInASeveralFolderEnvironmentIsTheEnvironmentAlone() async throws {
+    var thread = Self.thread("b4-p1", environmentId: "p1")
+    thread.context = "/work/atlas-docs"
+    let model = try await Phone.macModel(ScriptedTransport(), threads: [thread])
+    #expect(ComposerSummary.placeText(thread, in: model) == "Atlas")
+    await model.disconnect()
+  }
+
+  @Test func aThreadInASeveralFolderEnvironmentNamesItsFolder() async throws {
+    var thread = Self.thread("claude-1", environmentId: "p1")
+    thread.context = "/work/atlas-docs"
+    let model = try await Phone.macModel(ScriptedTransport(), threads: [thread])
+    #expect(ComposerSummary.placeText(thread, in: model) == "Atlas · atlas-docs")
+    await model.disconnect()
+  }
+
+  @Test func aB4DraftInASeveralFolderEnvironmentIsTheEnvironmentAlone() async throws {
+    let (draft, model) = try await Self.draft(in: "p1", runtime: "b4-p1")
+    #expect(draft.connection?.kind == .b4)
+    #expect(ComposerSummary.placeText(draft) == "Atlas")
     await model.disconnect()
   }
 
