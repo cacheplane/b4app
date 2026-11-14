@@ -141,6 +141,63 @@ private let streamedTurn = """
     #expect(events[3].payload["item"]?["status"]?.stringValue == "failed")
   }
 
+  @Test func aToolUseClaudeCodeRefusedItselfReadsDeclinedWhicheverFrameComesFirst() {
+    var t = tracker()
+    // The notice, then the result.
+    let before = run(
+      &t,
+      """
+      {"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"rm -rf data"}}]},"session_id":"s1"}
+      {"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_1","message":"Permission to use Bash has been denied.","uuid":"p1","session_id":"s1"}
+      {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Permission to use Bash has been denied.","is_error":true}]},"session_id":"s1","uuid":"u2"}
+      """)
+    #expect(before.map(\.kind) == [.toolStarted, .toolCompleted])
+    #expect(before[1].payload["item"]?["status"]?.stringValue == "declined")
+    // The result, then the notice: the step is closed again, with what it was closed with.
+    let after = run(
+      &t,
+      """
+      {"type":"assistant","message":{"id":"m3","role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"curl example.com"}}]},"session_id":"s1"}
+      {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"Denied by rule","is_error":true}]},"session_id":"s1","uuid":"u3"}
+      {"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_2","message":"Denied by rule","uuid":"p2","session_id":"s1"}
+      """)
+    #expect(after.map(\.kind) == [.toolStarted, .toolCompleted, .toolCompleted])
+    #expect(after[1].payload["item"]?["status"]?.stringValue == "failed")
+    #expect(after[2].nativeIds["itemId"] == "toolu_2")
+    #expect(after[2].payload["item"]?["status"]?.stringValue == "declined")
+    #expect(after[2].payload["item"]?["command"]?.stringValue == "curl example.com")
+    #expect(after[2].payload["item"]?["output"]?.stringValue == "Denied by rule")
+  }
+
+  @Test func theResultsDenialsCloseARefusedToolUseAsDeclinedAndLeaveAFailureAlone() {
+    var t = tracker()
+    t.beginTurn(uuid: "turn-1")
+    let events = run(
+      &t,
+      """
+      {"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Write","input":{"file_path":"/etc/hosts"}}]},"session_id":"s1"}
+      {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"denied","is_error":true}]},"session_id":"s1","uuid":"u2"}
+      {"type":"assistant","message":{"id":"m3","role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"false"}}]},"session_id":"s1"}
+      {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"exit 1","is_error":true}]},"session_id":"s1","uuid":"u3"}
+      {"type":"result","subtype":"success","is_error":false,"session_id":"s1","permission_denials":[{"tool_name":"Write","tool_use_id":"toolu_1","tool_input":{}},{"tool_name":"Read","tool_use_id":"toolu_gone","tool_input":{}}]}
+      """)
+    #expect(
+      events.map(\.kind) == [
+        .toolStarted, .toolCompleted, .toolStarted, .toolCompleted, .toolCompleted, .turnFinished,
+      ])
+    #expect(events[4].nativeIds["itemId"] == "toolu_1")
+    #expect(events[4].payload["item"]?["status"]?.stringValue == "declined")
+    #expect(events[4].payload["item"]?["path"]?.stringValue == "/etc/hosts")
+    #expect(events[3].payload["item"]?["status"]?.stringValue == "failed")
+    // The failure is not carried into the next turn, where a late notice could reach it.
+    let late = run(
+      &t,
+      """
+      {"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_2","message":"x","uuid":"p9","session_id":"s1"}
+      """)
+    #expect(late.isEmpty)
+  }
+
   @Test func aRefusalThatWasNeverSentLeavesTheResultItsOwn() {
     var t = tracker()
     t.markDeclined(toolUseId: "toolu_1")

@@ -22,6 +22,11 @@ public struct ClaudeTurnTracker: Sendable {
   /// Tool uses whose permission the app refused (the user's "Deny", a decline, a stop). Claude Code
   /// reports each as an error result; it is the user's refusal, not the tool's failure (D-227).
   private var declinedToolUses: Set<String> = []
+  /// Tool uses this turn closed as failed, as they were closed. Claude Code can say afterwards that it
+  /// refused one itself (a `permission_denied` frame, the result's `permission_denials`); that one
+  /// is closed again as declined (D-230).
+  private var failedToolUses: [String: (use: (name: String, input: JSONValue)?, extra: [String: JSONValue])] =
+    [:]
   private var lastErrorCode: ErrorCode?
 
   public init(connectionId: String, sessionId: String, generation: Int) {
@@ -121,6 +126,13 @@ public struct ClaudeTurnTracker: Sendable {
               "errorCode": .string(ErrorCode.endpointUnavailable.rawValue),
             ])
         ]
+      case "permission_denied":
+        // Claude Code refused the tool use without asking (a deny rule, the permission mode). The
+        // frame can come before the tool use's error result or after it.
+        guard let id = body["tool_use_id"]?.stringValue else { return [] }
+        let closed = redecline(id)
+        if closed.isEmpty { declinedToolUses.insert(id) }
+        return closed
       default:
         return []
       }
@@ -247,16 +259,26 @@ public struct ClaudeTurnTracker: Sendable {
       guard let id = block["tool_use_id"]?.stringValue else { continue }
       let failed = block["is_error"]?.boolValue == true
       let declined = declinedToolUses.remove(id) != nil
+      let extra: [String: JSONValue] = [
+        "output": .string(Self.text(of: block["content"]) ?? ""), "isError": .bool(failed),
+      ]
       events.append(
         event(
           .toolCompleted,
-          toolItem(
-            id: id, status: declined ? "declined" : failed ? "failed" : "completed",
-            extra: ["output": .string(Self.text(of: block["content"]) ?? ""), "isError": .bool(failed)]),
+          toolItem(id: id, status: declined ? "declined" : failed ? "failed" : "completed", extra: extra),
           itemId: id))
+      if failed, !declined { failedToolUses[id] = (toolUses[id], extra) }
       toolUses[id] = nil
     }
     return events
+  }
+
+  /// Close a tool use again as declined, if this turn closed it as failed: Claude Code refused it.
+  private mutating func redecline(_ id: String) -> [AdapterEvent] {
+    guard let closed = failedToolUses.removeValue(forKey: id) else { return [] }
+    toolUses[id] = closed.use
+    defer { toolUses[id] = nil }
+    return [event(.toolCompleted, toolItem(id: id, status: "declined", extra: closed.extra), itemId: id)]
   }
 
   private mutating func finish(_ result: ClaudeStream.ResultFrame) -> [AdapterEvent] {
@@ -287,12 +309,15 @@ public struct ClaudeTurnTracker: Sendable {
       payload["errorCode"] = .string(
         (lastErrorCode ?? Self.errorCode(forResultSubtype: result.subtype)).rawValue)
     }
+    // Claude Code's own record of what it refused this turn; `permission_denied` frames are advisory.
+    let redeclined = result.permissionDenials.flatMap { redecline($0) }
+    failedToolUses = [:]
     let finished = event(.turnFinished, .object(payload))
     activeTurnUuid = nil
     interruptRequested = false
     blocks = [:]
     unfinished = [:]
-    return [finished]
+    return redeclined + [finished]
   }
 
   private func requestOpened(_ request: ClaudeStream.ControlRequestFrame) -> AdapterEvent {
