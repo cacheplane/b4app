@@ -220,6 +220,8 @@ extension BannerLayoutTests {
   }
 
   @MainActor func testLandscapeJourney() {
+    // Upright again even if a step fails, since the next launch turns it upright only from landscape.
+    addTeardownBlock { @MainActor in XCUIDevice.shared.orientation = .portrait }
     for (screen, index) in [("list", 1), ("empty", 2), ("connect-mac", 4)] {
       let app = launch(screen)
       XCUIDevice.shared.orientation = .landscapeLeft

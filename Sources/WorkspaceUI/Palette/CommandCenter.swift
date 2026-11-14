@@ -78,22 +78,42 @@
     /// The workspace is showing (signed in, past onboarding): the button has something to open.
     var isActive: Bool
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
+    func makeCoordinator() -> Coordinator { Coordinator(model: model, anchor: anchor) }
+
+    /// The view says when it has a window: the first update can come before it has one, and a window
+    /// opened while the workspace already shows (New Window, a window reopened from the Dock) brings
+    /// no later update to try again on, so it had no button.
+    func makeNSView(context: Context) -> NSView {
+      let view = WindowWatcher(frame: .zero)
+      // A turn later, as from an update: the view is still being inserted when it is told.
+      view.movedToWindow = { [weak coordinator = context.coordinator, weak view] in
+        DispatchQueue.main.async {
+          guard let coordinator, let view else { return }
+          coordinator.attach(to: view)
+        }
+      }
+      return view
+    }
 
     func updateNSView(_ view: NSView, context: Context) {
       let coordinator = context.coordinator
       coordinator.isActive = isActive
       if coordinator.panel == nil {
-        let model = self.model
-        let anchor = self.anchor
-        DispatchQueue.main.async { coordinator.attach(to: view, model: model, anchor: anchor) }
+        DispatchQueue.main.async { coordinator.attach(to: view) }
       } else {
         coordinator.layout()
       }
     }
 
     static func dismantleNSView(_ view: NSView, coordinator: Coordinator) { coordinator.detach() }
+
+    final class WindowWatcher: NSView {
+      var movedToWindow: () -> Void = {}
+      override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { movedToWindow() }
+      }
+    }
 
     /// A panel that takes clicks and never the keyboard.
     final class ButtonPanel: NSPanel {
@@ -104,10 +124,17 @@
     @MainActor final class Coordinator {
       var panel: ButtonPanel?
       var isActive = true
+      private let model: WorkspaceModel
+      private let anchor: CommandCenterAnchor
       private weak var parent: NSWindow?
       private var observers: [NSObjectProtocol] = []
 
-      func attach(to view: NSView, model: WorkspaceModel, anchor: CommandCenterAnchor) {
+      init(model: WorkspaceModel, anchor: CommandCenterAnchor) {
+        self.model = model
+        self.anchor = anchor
+      }
+
+      func attach(to view: NSView) {
         guard panel == nil, let parent = view.window else { return }
         self.parent = parent
         let size = CGSize(

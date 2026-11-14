@@ -109,7 +109,16 @@ jobs:
         run: ./Scripts/fetch-postgres.sh
       - name: Build
         run: swift build
+      # The tests' shared PostgreSQL cluster, started by one test before the run and used by the
+      # rest: while a test process starts it, every test waiting for it holds one of the runner's
+      # few cooperative threads (one per core), and the whole process stood still for 50 to 70 s.
+      - name: Start the tests' PostgreSQL
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
+        run: swift test --filter 'AccountRegistryTests/aLedgerIsCreatedOnlyWhenMissing'
       - name: Test
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
         run: swift test
 
   apps:

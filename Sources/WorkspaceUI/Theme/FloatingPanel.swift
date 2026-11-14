@@ -178,21 +178,15 @@
           dragEvents += 1
           trace += dragEvents <= 3 ? " | drag \(pointer)" : ""
         #endif
-        let travel = CGSize(width: pointer.x - current.pointer.x, height: pointer.y - current.pointer.y)
-        if !current.moving, hypot(travel.width, travel.height) > FloatingPanelGeometry.dragThreshold {
-          current.moving = true
-        }
-        if current.moving {
-          // Measured from the press each time, not from where the panel is: a panel held on a line
-          // leaves it as soon as the pointer has carried it far enough, and not before.
-          setFrameOrigin(
-            snap(CGPoint(x: current.origin.x + travel.width, y: current.origin.y + travel.height)))
-        }
+        follow(&current, to: pointer)
         press = current
         return
       case .leftMouseUp:
-        guard let current = press else { break }
+        guard var current = press else { break }
         press = nil
+        // The release is the drag's last step: the pointer may have gone on since the last drag
+        // event (a synthesized drag sends a few large steps), and the panel ends where it is let go.
+        follow(&current, to: pointer(event))
         #if DEBUG
           trace += " | up after \(dragEvents) drags moving \(current.moving) frame \(frame)"
         #endif
@@ -213,6 +207,19 @@
         break
       }
       super.sendEvent(event)
+    }
+
+    /// The press becomes a drag once the pointer has travelled the threshold, and from then on the
+    /// panel is where the pointer has carried it. Measured from the press each time, not from where
+    /// the panel is: a panel held on a line leaves it as soon as the pointer has carried it far
+    /// enough, and not before.
+    private func follow(_ current: inout Press, to pointer: CGPoint) {
+      let travel = CGSize(width: pointer.x - current.pointer.x, height: pointer.y - current.pointer.y)
+      if !current.moving, hypot(travel.width, travel.height) > FloatingPanelGeometry.dragThreshold {
+        current.moving = true
+      }
+      guard current.moving else { return }
+      setFrameOrigin(snap(CGPoint(x: current.origin.x + travel.width, y: current.origin.y + travel.height)))
     }
 
     private func clickPastText(_ down: NSEvent) {

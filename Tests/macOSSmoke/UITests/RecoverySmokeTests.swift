@@ -47,14 +47,8 @@ final class RecoverySmokeTests: XCTestCase {
         self.add(tree)
       }
     }
-    app.launch()
-    app.activate()
     // The harness tests workspace interactions, independently of macOS's saved-window policy.
-    if !app.windows.firstMatch.exists {
-      app.menuBars.menuBarItems["File"].click()
-      app.menuItems["New Window"].click()
-    }
-    try requireElement(app.windows.firstMatch, in: app)
+    try launchWithWindow(app)
     try await checkContentSize(app, root: fixture.root, width: width, height: height)
     let row = app.buttons.matching(identifier: "thread-row").firstMatch
     try requireElement(row, in: app, timeout: 30)
@@ -101,14 +95,8 @@ final class RecoverySmokeTests: XCTestCase {
     app.typeKey("q", modifierFlags: .command)
     XCTAssertTrue(app.wait(for: .notRunning, timeout: 10))
     try FileManager.default.removeItem(at: fixture.root.appendingPathComponent("window.json"))
-    app.launch()
-    app.activate()
     // The harness tests workspace interactions, independently of macOS's saved-window policy.
-    if !app.windows.firstMatch.exists {
-      app.menuBars.menuBarItems["File"].click()
-      app.menuItems["New Window"].click()
-    }
-    try requireElement(app.windows.firstMatch, in: app)
+    try launchWithWindow(app)
     try await checkContentSize(app, root: fixture.root, width: width, height: height)
     XCTAssertTrue(row.waitForExistence(timeout: 15), app.debugDescription)
     row.click()

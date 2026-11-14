@@ -5,10 +5,20 @@ import WorkspaceProtocol
 
 /// One private cluster per test process, started on first use from the fetched binaries and stopped
 /// at exit; every caller gets its own fresh database. Production code never calls this.
+///
+/// Every caller waits on the start, and the callers are synchronous tests on Swift's cooperative
+/// threads, one per core: while the cluster starts, as many waiting tests as the machine has cores
+/// stop every other test in the process, timers included. On CI no test finished in the first 50 to
+/// 70 s, and tests that wait on a clock timed out. So the start should be done before the tests run: with
+/// `B4APP_TEST_POSTGRES_DIR` set, the cluster lives in that directory and outlives the process, and a
+/// later process that finds it running uses it at once (CI starts it with one test before the run).
 public enum EphemeralPostgres {
   private static let state = Mutex<Shared?>(nil)
   /// Suites run in parallel; the one-time initdb and start happen under this lock.
   private static let startLock = NSLock()
+  /// A directory for a cluster that outlives the test process (see above). It is never swept, and
+  /// stopped only by hand: `pg_ctl -D "$B4APP_TEST_POSTGRES_DIR/data" stop`.
+  public static let persistentVariable = "B4APP_TEST_POSTGRES_DIR"
 
   struct Shared {
     var cluster: PostgresCluster
@@ -47,27 +57,43 @@ public enum EphemeralPostgres {
         "No PostgreSQL binaries: run ./Scripts/fetch-postgres.sh (or set \(PostgresLocator.environmentVariable))."
       )
     }
+    let began = ContinuousClock.now
     let ownPid = ProcessInfo.processInfo.processIdentifier
     let short = String(ownPid)
-    let tmp = ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory()
-    sweepStale(in: [NSTemporaryDirectory(), tmp], ownPid: ownPid)
+    let environment = ProcessInfo.processInfo.environment
+    let tmp = environment["TMPDIR"] ?? NSTemporaryDirectory()
+    // What earlier runs left behind is removed beside the start, not before it: every test that needs
+    // the cluster waits for this lock, and a sweep of a few old clusters took longer than the start.
+    Thread.detachNewThread { sweepStale(in: [NSTemporaryDirectory(), tmp], ownPid: ownPid) }
+    if let directory = environment[persistentVariable], !directory.isEmpty {
+      let cluster = PostgresCluster(
+        binDir: binDir, dataDir: (directory as NSString).appendingPathComponent("data"),
+        socketDir: directory, logPath: (directory as NSString).appendingPathComponent("postgres.log"),
+        maxConnections: 300)
+      // The socket is made in the directory, and a Unix socket path is limited to 104 bytes.
+      guard cluster.socketPath.utf8.count < 104 else {
+        throw WorkspaceError(
+          .internalError, "\(persistentVariable) is too long for a socket in it; use a shorter directory.")
+      }
+      let running = postmasterPid(dataDir: cluster.dataDir).map { ProcessInspector.isAlive(pid: $0) } ?? false
+      if !running {
+        try PrivateFiles.ensurePrivateDirectory(cluster.socketDir)
+        if !cluster.isInitialized { try initdb(cluster) }
+        try start(cluster)
+      }
+      report(running ? "in use" : "started", in: directory, since: began)
+      let shared = Shared(cluster: cluster)
+      state.withLock { $0 = shared }
+      return shared
+    }
     let cluster = PostgresCluster(
       binDir: binDir, dataDir: NSTemporaryDirectory() + "b4pg-shared-\(short)/data",
       socketDir: (tmp as NSString).appendingPathComponent("b4pgs-\(short)"),
       logPath: NSTemporaryDirectory() + "b4pg-shared-\(short)/postgres.log", maxConnections: 300)
-    try run(
-      cluster, "initdb",
-      [
-        "-D", cluster.dataDir, "-U", cluster.user, "--auth=trust", "--encoding=UTF8", "--locale=C",
-        "--no-instructions",
-      ])
+    try initdb(cluster)
     try PrivateFiles.ensurePrivateDirectory(cluster.socketDir)
-    try run(
-      cluster, "pg_ctl",
-      [
-        "-D", cluster.dataDir, "-l", cluster.logPath, "-w", "-t", "60", "-o",
-        cluster.serverOptions.joined(separator: " "), "start",
-      ])
+    try start(cluster)
+    report("started", in: cluster.socketDir, since: began)
     atexit {
       // Best effort: stop the shared cluster and remove it when the test process exits. A run that
       // is killed skips this; the next run's sweep removes what it left.
@@ -82,6 +108,33 @@ public enum EphemeralPostgres {
     let shared = Shared(cluster: cluster)
     state.withLock { $0 = shared }
     return shared
+  }
+
+  private static func initdb(_ cluster: PostgresCluster) throws {
+    try run(
+      cluster, "initdb",
+      [
+        "-D", cluster.dataDir, "-U", cluster.user, "--auth=trust", "--encoding=UTF8", "--locale=C",
+        "--no-instructions",
+      ])
+  }
+
+  private static func start(_ cluster: PostgresCluster) throws {
+    try run(
+      cluster, "pg_ctl",
+      [
+        "-D", cluster.dataDir, "-l", cluster.logPath, "-w", "-t", "60", "-o",
+        cluster.serverOptions.joined(separator: " "), "start",
+      ])
+  }
+
+  /// One line on stderr, so a slow start shows in a CI log: every test that needs the cluster, and
+  /// on a small machine every other test too, waited this long.
+  private static func report(_ what: String, in directory: String, since began: ContinuousClock.Instant) {
+    let elapsed = (ContinuousClock.now - began).components
+    let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+    let line = "EphemeralPostgres: the shared cluster in \(directory) is \(what) after "
+    FileHandle.standardError.write(Data((line + String(format: "%.1f s\n", seconds)).utf8))
   }
 
   /// Who owns a test scratch entry in the temporary directory, from its name.

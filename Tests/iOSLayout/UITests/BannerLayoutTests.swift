@@ -11,7 +11,9 @@ final class BannerLayoutTests: XCTestCase {
   ) -> XCUIApplication {
     continueAfterFailure = false
     coverage.beforeLaunch(in: self)
-    XCUIDevice.shared.orientation = .portrait
+    // Only when a journey left it on its side: the first launch comes straight after the Simulator
+    // boots, when a rotation can take 15 s to be confirmed, and a fresh Simulator is upright.
+    if XCUIDevice.shared.orientation.isLandscape { XCUIDevice.shared.orientation = .portrait }
     let app = XCUIApplication()
     app.launchEnvironment = [
       "LAYOUT_SCREEN": screen, "LAYOUT_NOTICE": notice, "LAYOUT_DARK": dark ? "1" : "0",
