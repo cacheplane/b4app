@@ -187,7 +187,7 @@ import WorkspaceProtocol
       .init(prefix: 15, quiet: nil, density: nil, hasRow: true),
       .init(prefix: 15, quiet: nil, density: nil, hasRow: false),
     ]
-  private struct ArchivePayloadWitness {
+  private final class ArchivePayloadWitness {
     enum Prefix {
       case twelve, thirteen, fourteen, fifteen, other
       var label: String {
@@ -314,7 +314,7 @@ import WorkspaceProtocol
   private func genuinePublishedFoldersViewAndCommandsArchivesSurviveSixteenAndReopen(
     fixture: PublishedCase
   ) throws {
-    var witness = ArchivePayloadWitness(prefix: fixture.prefix)
+    let witness = ArchivePayloadWitness(prefix: fixture.prefix)
     defer {
       if witness.outsideEquality == .unequal || witness.bodyOutcome == .threw {
         print(
@@ -323,7 +323,7 @@ import WorkspaceProtocol
       }
     }
     do {
-      try publishedArchiveCase(fixture: fixture, witness: &witness)
+      try publishedArchiveCase(fixture: fixture, witness: witness)
       witness.bodyOutcome = .returned
     } catch {
       witness.bodyOutcome = .threw
@@ -332,7 +332,7 @@ import WorkspaceProtocol
   }
 
   private func publishedArchiveCase(
-    fixture: PublishedCase, witness: inout ArchivePayloadWitness
+    fixture: PublishedCase, witness: ArchivePayloadWitness
   ) throws {
     let prefix = fixture.prefix
     let sourceNames =

@@ -634,3 +634,42 @@ and two failing jobs, with140 issues and two recovery failures still open. Curre
 five complete detailed logs, all four App builds and a new source-bound failure census. Task5
 source and SDK PR1131/npm remain held. Later main `acef750c` was read as a seven-path UI/docs delta;
 it is not imported into this frozen candidate and earns no current native qualification.
+
+
+### Compiler trial and unpublished decision allocation (2026-11-13)
+
+Main `c15be6d1` published D-225 for iOS layout sharding. The unpublished protocol decision is now
+D-226; relay close-cause remains D-224. This allocation supersedes the current-number wording in
+the preceding dated section. That section and all earlier receipts remain intact as historical
+records. Published decision identities, Store14/15, Hub21/22 and Mirror9/10 remain unchanged;
+unpublished protocol Store16/Hub23 and future Mirror11 documentation retain their existing scope.
+
+The last observed [managed run](https://github.com/cacheplane/b4app/actions/runs/43564195251) tested
+own revision `dd5eb705` through synthetic `633608bbb51e16cd99e4c02d5dd54d433adafb5b`, with main
+`c15be6d165bf8fcc3e0fdf59993f33bd2d0afa29`. All nine outcomes are complete: six passed and three
+failed. All four App builds, Hub594, aimock, both iOS shards (7+9 cases, no failures/skips) and the
+iOS aggregate passed. Six detailed raw logs, the aggregate log and the failing workflow log were
+preserved. Workflow lint found the D-225 collision. Recovery retained seven passes, two historical
+B4 fixture-setup refusals at the intended read-only guard and one skip; the skip's current artifact
+reason was not independently audited.
+
+Package's production build passed, but Swift 6.3.3 crashed with signal11 while compiling the test
+module in closure/access analysis. No test ran: current24 remains 0/48, with compiler controls,
+archive witnesses, T11 and aggregate results unobserved for that revision. The fifteen-primary
+batch and stack do not isolate a triggering function or explain the earlier archive comparison.
+The prior140 aggregate issues remain open without waiver.
+
+This source amendment changes the per-case diagnostic witness to a private final reference type,
+with an immutable outer binding and ordinary helper argument. The query, full assertion, finite
+labels, 26 cases, entire helper body and cleanup order are preserved. This is a controlled compiler
+trial; ARC and property accesses still exist, and a future compile pass would establish avoidance
+only for that run. It would not prove compiler mechanism, production repair or the cause of the
+older458-versus9-byte observation. The strict native OID String oracle and protected compiler
+inputs remain unchanged. Source review and static checks supply no compiler/native qualification.
+
+Fresh qualification still requires the 24 specific methods in aggregate and dedicated lanes
+(48 actual passes), six compiler controls, all current jobs including both iOS shards and their
+aggregate, complete detailed logs, all four App builds and a fresh failure census before Task5
+source. A4–A10, full App acceptance, historical issues, recovery replacement and live/device gates
+remain open. SDK publication, production floor changes, coordinated activation, deployment, merge
+and release remain held. This amendment grants no production or physical-quiescence authority.
