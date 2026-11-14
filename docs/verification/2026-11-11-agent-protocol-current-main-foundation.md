@@ -767,3 +767,46 @@ The diagnostic revision starts unqualified and requires fresh managed results fo
 27-method lanes, six compiler controls, every actual job and raw log, the complete archive,
 four App builds and a fresh census. LateT12/A5 and later source progress, SDK publication,
 activation, new deployment, full App merge and release remain held.
+
+
+### Task5 fixture CASE grouping correction (2026-11-14)
+
+[Run43596245064](https://github.com/cacheplane/b4app/actions/runs/43596245064) tested
+`fa9b438b` through actual merge `1f133721` with main `c15be6d1`. All nine jobs completed:
+seven passed and two failed. All nine raw logs exactly match members of the preserved
+121-member archive; all five artifact ZIPs and the complete merged source are preserved.
+Hub594, workflow, aimock, iOS7+9 and their aggregate, and four direct App builds passed.
+Four actual successful build steps and four literal build-success banners were observed.
+
+Socket24 and transport44 passed. Foundation had335PASS/2FAIL across337 tests; its failure
+caused focused Node and the full aggregate to be skipped. Dedicated ownership had24PASS/
+3FAIL across27 methods. The required54 gate therefore remains failed:24PASS,3FAIL and27
+aggregate methods unobserved. Six actual compiler controls qualified separately against
+this run's sources, helper, sample and merged workflow; the metadata artifact alone gives
+no credit. Normal driver completion remains trusted without descendant-quiescence proof.
+
+The complete actual-run census binds432 terminal rows and all five package issue events.
+oldCallbacks reached the second fixture's disposal-entry observation and received false
+after replacement sign-in returned; pendingPool's precise internal observation remains
+unresolved. Three new tests each emitted one R0/functionCreate/PostgresError diagnostic
+before any raw attempt. That entered region groups three creation calls and identifies
+neither a specific call, native submission, SQLSTATE nor sole cause. Scope unwind returned
+attests no physical cleanup, connection finalization or backend exit.
+
+The source correction adds only two parentheses around the existing CASE operand in the
+private transaction_checked fixture function. The pinned [PostgreSQL17.11 parser](https://github.com/postgres/postgres/blob/REL_17_11/src/pl/plpgsql/src/pl_gram.y)
+ends an IF condition at THEN outside parentheses; the previous inner CASE THEN therefore
+conflicts with that delimiter reader. Grouping preserves the intended arithmetic and
+condition without weakening a predicate or adding an operation. This source-level defect
+is established independently; actual bundled parser/settings and the run's sole native
+cause remain unproven. No further semantic or deparser correction is included.
+
+The other23 protected Task5 SQL values,17 other normative declarations, native workers,
+callbacks/capture lists, guards, cleanup order and budgets remain exact. The changed SQL
+and complete function array recover their prior bytes by removing exactly two parentheses.
+All187 previous aggregate,123 earlier,140 historical and recovery issues remain individually
+open. The current skipped aggregate supplies no absence or issue-count comparison. Recovery
+remains7PASS/2FAIL/1SKIP at historical read-only fixture guards; skip identity/reason remain
+unverified. The new revision starts unqualified and requires fresh current27 observations
+in both lanes, compiler6, all actual jobs/raw/archive/artifacts/App4 and a fresh census.
+LateT12/A5, SDK publication, activation, new deployment, full App merge and release remain held.

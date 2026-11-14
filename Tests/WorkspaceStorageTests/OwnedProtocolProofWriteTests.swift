@@ -4691,7 +4691,7 @@ extension OwnedProtocolProofWriteTests {
            OR convert_to(substring(h FROM 19),'UTF8') IS DISTINCT FROM convert_to(wanted,'UTF8')
            OR (wanted='local' AND coalesce(d,'')<>'')
            OR (wanted<>'local' AND convert_to(d,'UTF8') IS DISTINCT FROM convert_to(wanted,'UTF8'))
-           OR (SELECT count(*) FROM "owned_bind_stage"."observed") <> n + CASE WHEN persist THEN 0 ELSE 1 END
+           OR (SELECT count(*) FROM "owned_bind_stage"."observed") <> n + (CASE WHEN persist THEN 0 ELSE 1 END)
          THEN RAISE EXCEPTION 'OWNED_BIND_TRANSACTION_MISMATCH' USING ERRCODE='P0001'; END IF;
          IF persist THEN
            INSERT INTO "owned_bind_stage"."observed"(isolation,lock_budget,statement_budget,hlc,device)
