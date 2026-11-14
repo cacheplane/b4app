@@ -8,37 +8,23 @@ struct ThreadsView: View {
   @Bindable var model: WorkspaceModel
 
   var body: some View {
-    #if os(macOS)
-      if let environment = editedEnvironment {
+    switch model.detailPane {
+    case .environment(let environment):
+      #if os(macOS)
         EnvironmentForm(model: model, environment: environment)
-      } else {
-        threadOrComposer
-      }
-    #else
-      threadOrComposer
-    #endif
-  }
-
-  #if os(macOS)
-    private var editedEnvironment: WorkEnvironment? {
-      guard let id = model.editingEnvironmentId else { return nil }
-      return model.environments.first { $0.id == id }
-    }
-  #endif
-
-  /// The branches, in order, are the ones `WorkspaceModel.newThreadViewIsShowing` repeats for the last;
-  /// change the two together.
-  @ViewBuilder private var threadOrComposer: some View {
-    if let thread = model.threads.first(where: { $0.id == model.selectedThreadId }) {
+      #else
+        EmptyView()
+      #endif
+    case .thread(let thread):
       ThreadDetailView(model: model, thread: thread)
-    } else if model.selectedThreadId != nil, openingSelection {
+    case .opening:
       ProgressView("Loading thread…")
         .llaSmallMuted()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(LLA.Color.bg)
         .navigationTitle("Thread")
         .accessibilityIdentifier("thread-opening")
-    } else if model.conversationReadyConnections.isEmpty {
+    case .noConnection:
       LLAEmptyState(
         "Threads",
         text: model.connections.isEmpty
@@ -50,14 +36,9 @@ struct ThreadsView: View {
           .accessibilityIdentifier("add-connection")
       }
       .navigationTitle("Threads")
-    } else {
+    case .newThread:
       NewThreadView(model: model)
     }
-  }
-
-  /// Keep a loading pane while a read or an external open is waiting for the thread's local row.
-  private var openingSelection: Bool {
-    model.detailLoading || model.pendingThreadOpen == model.selectedThreadId
   }
 }
 

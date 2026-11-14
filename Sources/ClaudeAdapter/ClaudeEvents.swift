@@ -19,6 +19,9 @@ public struct ClaudeTurnTracker: Sendable {
   /// frame's position is not the block's stream index; a completion takes the first of its type here.
   private var unfinished: [String: [(type: String, itemId: String)]] = [:]
   private var toolUses: [String: (name: String, input: JSONValue)] = [:]
+  /// Tool uses whose permission the app refused (the user's "Deny", a decline, a stop). Claude Code
+  /// reports each as an error result; it is the user's refusal, not the tool's failure (D-227).
+  private var declinedToolUses: Set<String> = []
   private var lastErrorCode: ErrorCode?
 
   public init(connectionId: String, sessionId: String, generation: Int) {
@@ -34,6 +37,12 @@ public struct ClaudeTurnTracker: Sendable {
   }
 
   public mutating func markInterruptRequested() { interruptRequested = true }
+
+  /// The app refused this tool use's permission: its result is "declined", whatever Claude Code says.
+  public mutating func markDeclined(toolUseId: String) { declinedToolUses.insert(toolUseId) }
+
+  /// The refusal was never sent, so the tool use's result is its own.
+  public mutating func unmarkDeclined(toolUseId: String) { declinedToolUses.remove(toolUseId) }
 
   private func event(
     _ kind: EventKind, _ payload: JSONValue = [:], itemId: String? = nil, requestId: String? = nil
@@ -237,11 +246,12 @@ public struct ClaudeTurnTracker: Sendable {
     where block["type"]?.stringValue == "tool_result" {
       guard let id = block["tool_use_id"]?.stringValue else { continue }
       let failed = block["is_error"]?.boolValue == true
+      let declined = declinedToolUses.remove(id) != nil
       events.append(
         event(
           .toolCompleted,
           toolItem(
-            id: id, status: failed ? "failed" : "completed",
+            id: id, status: declined ? "declined" : failed ? "failed" : "completed",
             extra: ["output": .string(Self.text(of: block["content"]) ?? ""), "isError": .bool(failed)]),
           itemId: id))
       toolUses[id] = nil
