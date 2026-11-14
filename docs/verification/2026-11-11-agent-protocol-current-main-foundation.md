@@ -673,3 +673,26 @@ aggregate, complete detailed logs, all four App builds and a fresh failure censu
 source. A4–A10, full App acceptance, historical issues, recovery replacement and live/device gates
 remain open. SDK publication, production floor changes, coordinated activation, deployment, merge
 and release remain held. This amendment grants no production or physical-quiescence authority.
+
+
+### Identified source-outcome closure trial (2026-11-13)
+
+The subsequent [managed run](https://github.com/cacheplane/b4app/actions/runs/43569801464) used
+`3adeae2b` through synthetic `894ba0fab5c46fcc8dab332d438525a802f2d73a` with unchanged main
+`c15be6d1`. All nine outcomes and six detailed raw logs plus aggregate/workflow logs are preserved:
+seven jobs passed and two failed. D-226 workflow lint, all four App builds, Hub594, aimock and
+both iOS shards (7+9 cases) with their aggregate passed. Recovery retained its two historical
+B4 fixture-setup refusals and one skip. Package again failed before tests, now signal6 in
+SendNonSendable/region analysis on the source-outcome Result closure at 572:43–688:5. The class
+trial did not produce compilation; a different reported phase does not establish either earlier
+compiler cause or the older payload mismatch.
+
+This amendment replaces only that immediate Result wrapper with a typed immutable result and
+explicit do/success/catch/failure. Its full 115-line body (6,459 bytes) remains exact. The original
+throwing source.close still precedes outcome.get, including close-error precedence. Other Result
+closures, the finite reference witness, assertions, query, 26 cases and explicit resource operations
+remain unchanged. The enclosing helper still undergoes region analysis; compiler/lifetime/SIL
+behavior and the next compilation remain unobserved. The checker, toolchain, flags, batching, test inventory and time limits
+remain unchanged. The current 24 methods remain at 0/48 required passes; six compiler controls
+are unobserved. The earlier 140 issues and recovery failures/skip remain open. All previously stated Task5, SDK, activation, deployment,
+merge and release holds remain in force. No native qualification follows from this source change.

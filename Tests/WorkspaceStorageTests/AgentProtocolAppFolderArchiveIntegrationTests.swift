@@ -569,7 +569,8 @@ import WorkspaceProtocol
       try outcome.get()
     }
     let source = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
-    let outcome = Result<Void, any Error> { () throws -> Void in
+    let outcome: Result<Void, any Error>
+    do {
       #expect(try source.appliedMigrations() == Self.sixteen)
       #expect(
         try source.read {
@@ -685,6 +686,9 @@ import WorkspaceProtocol
       }
       try migratedRestore.close()
       try migratedOutcome.get()
+      outcome = .success(())
+    } catch {
+      outcome = .failure(error)
     }
     try source.close()
     try outcome.get()
