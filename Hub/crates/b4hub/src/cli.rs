@@ -50,6 +50,11 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect or monotonically raise the floor after the complete fleet has drained.
+    Protocol {
+        #[command(subcommand)]
+        action: ProtocolAction,
+    },
     /// Run the HTTP service (connects with DATABASE_URL).
     Serve {
         /// Address to listen on; defaults to 0.0.0.0 on B4HUB_PORT (8080).
@@ -70,6 +75,15 @@ pub enum Command {
     Maintenance {
         #[command(subcommand)]
         action: MaintenanceAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProtocolAction {
+    Status,
+    /// Requires no registered instances; no force mode and no heartbeat-expiry shortcut.
+    Raise {
+        minimum: u32,
     },
 }
 
@@ -512,7 +526,24 @@ pub async fn run(cli: Cli, settings: &Settings) -> Result<(), CliError> {
         Command::Enroll(args) => enroll_command(args, settings).await,
         Command::Prune(args) => prune_command(args, settings).await,
         Command::Maintenance { action } => maintenance_command(action, settings).await,
+        Command::Protocol { action } => protocol_command(action, settings).await,
     }
+}
+
+async fn protocol_command(action: ProtocolAction, settings: &Settings) -> Result<(), CliError> {
+    let db = Db::connect(&settings.admin_url()?).await?;
+    let floor = match action {
+        ProtocolAction::Status => b4hub_db::settings::protocol_floor(&db).await?,
+        ProtocolAction::Raise { minimum } => {
+            b4hub_db::settings::raise_protocol_floor(&db, minimum).await?
+        }
+    };
+    println!(
+        "minClientProtocol: {} (binary supports {})",
+        floor.minimum(),
+        b4hub_core::protocol::ClientProtocol::SUPPORTED.value()
+    );
+    Ok(())
 }
 
 async fn maintenance_command(

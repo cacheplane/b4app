@@ -219,6 +219,47 @@ public struct EnrollResponse: Codable, Sendable, Equatable, CustomStringConverti
   public var debugDescription: String { description }
 }
 
+/// Facts from the configured hub's public `/readyz`. Even active server facts confer no account,
+/// owner, credential or execution authority; Coordinator must bind and durably verify those.
+public struct HubReadiness: Codable, Sendable, Equatable {
+  public static let clientProtocolVersion = 2
+  public var ok: Bool
+  public var migrations: String
+  public var minClientProtocol: Int
+  /// Missing from old hubs. Absence never supplies support for activation.
+  public var supportedClientProtocol: Int?
+  public var relay: String
+  public var instances: String
+  public var maintenance: String?
+
+  public init(
+    ok: Bool, migrations: String, minClientProtocol: Int, supportedClientProtocol: Int? = nil,
+    relay: String, instances: String, maintenance: String? = nil
+  ) {
+    self.ok = ok
+    self.migrations = migrations
+    self.minClientProtocol = minClientProtocol
+    self.supportedClientProtocol = supportedClientProtocol
+    self.relay = relay
+    self.instances = instances
+    self.maintenance = maintenance
+  }
+
+  /// A minimum this client can speak, with no contradictory advertised support.
+  var hasSupportedMinimum: Bool {
+    (1...Self.clientProtocolVersion).contains(minClientProtocol)
+      && supportedClientProtocol.map { $0 >= minClientProtocol } != false
+  }
+
+  /// Server fact only. A header2, legacy minimum, missing support or unhealthy answer is not active2.
+  public var reportsActiveProtocolTwo: Bool {
+    ok && migrations == "current" && relay == "ok" && instances == "ok"
+      && minClientProtocol == Self.clientProtocolVersion
+      && supportedClientProtocol.map { $0 >= Self.clientProtocolVersion } == true
+      && (maintenance == nil || maintenance == "read_only")
+  }
+}
+
 /// `GET /v1/me`: the device, its org and user, and the account's sign-in methods. The fields before
 /// `onboarded` are the enrollment-era ones; `user.fullName`, `onboarded`, and `identities` came with
 /// sign-in, and a hub without them answers a user who counts as onboarded and has no identities.
@@ -227,6 +268,8 @@ public struct MeResponse: Codable, Sendable, Equatable {
   /// The user's id (`users.id`), which never changes and is never reused; nil from a hub older than
   /// sign-in.
   public var userId: String?
+  /// Stable authenticated organization id; absent on older hubs, never inferred from its label.
+  public var orgId: String?
   public var deviceName: String
   public var platform: String
   public var org: OrgInfo
@@ -242,10 +285,12 @@ public struct MeResponse: Codable, Sendable, Equatable {
 
   public init(
     deviceId: String, deviceName: String, platform: String, org: OrgInfo, user: UserInfo, createdAt: String,
-    fullName: String? = nil, onboarded: Bool = true, identities: [Identity] = [], userId: String? = nil
+    fullName: String? = nil, onboarded: Bool = true, identities: [Identity] = [], userId: String? = nil,
+    orgId: String? = nil
   ) {
     self.deviceId = deviceId
     self.userId = userId
+    self.orgId = orgId
     self.deviceName = deviceName
     self.platform = platform
     self.org = org
@@ -257,7 +302,7 @@ public struct MeResponse: Codable, Sendable, Equatable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case deviceId, userId, deviceName, platform, org, user, createdAt, onboarded, identities
+    case deviceId, userId, orgId, deviceName, platform, org, user, createdAt, onboarded, identities
   }
 
   private enum UserKeys: String, CodingKey { case username, displayName, fullName }
@@ -266,6 +311,7 @@ public struct MeResponse: Codable, Sendable, Equatable {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     deviceId = try container.decode(String.self, forKey: .deviceId)
     userId = try container.decodeIfPresent(String.self, forKey: .userId)
+    orgId = try container.decodeIfPresent(String.self, forKey: .orgId)
     deviceName = try container.decode(String.self, forKey: .deviceName)
     platform = try container.decode(String.self, forKey: .platform)
     org = try container.decode(OrgInfo.self, forKey: .org)
@@ -284,6 +330,7 @@ public struct MeResponse: Codable, Sendable, Equatable {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(deviceId, forKey: .deviceId)
     try container.encodeIfPresent(userId, forKey: .userId)
+    try container.encodeIfPresent(orgId, forKey: .orgId)
     try container.encode(deviceName, forKey: .deviceName)
     try container.encode(platform, forKey: .platform)
     try container.encode(org, forKey: .org)

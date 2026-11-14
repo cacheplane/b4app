@@ -120,7 +120,7 @@ public enum RuntimeOptions {
       ]
     case .codex:
       return CodexPermission.allCases.map { PermissionOption(id: $0.rawValue, label: $0.label) }
-    case .b4:
+    case .b4, .agentProtocol:
       return []
     }
   }

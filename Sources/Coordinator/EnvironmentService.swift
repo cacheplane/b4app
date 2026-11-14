@@ -36,6 +36,8 @@ public actor EnvironmentService {
       return try isAppFolder(canonical) ? nil : canonical
     case .b4:
       return try serverFolder(of: connection)
+    case .agentProtocol:
+      return nil
     }
   }
 

@@ -351,3 +351,30 @@ The thread list's arrangement, its quiet-thread mode and Show archived are one s
 Hub migration `0020_user_settings_rows.sql` stores each user's settings row as `view:<userId>`; devices still send and receive `view`, so no Mac or phone build is needed. The hub refuses a `viewSettings` change under any other row id with `invalid_row_id`. Run `migrate` before `serve`. While two hub tasks run side by side during a deploy, an old task can still write a row named `view` after the migration; see D-213.
 
 Hub migration `0022_density.sql`, the Mac's store migration `0015_density.sql` and mirror schema 10 add `density` to the settings row and turn the four-way sidebar value into density plus a three-way sidebar value (D-218). Deploy the hub first, for each flavour, before any Mac or phone build that knows `density`: run `migrate` before `serve`. A hub from before `0022` accepts a Mac's `density` change into the feed but does not store it (the column is not in its table), and refuses a phone's, so a density set against an old hub is lost from the hub's row. An older Mac or phone build still syncs against an updated hub, and its Collapsed and Hidden choices are understood by current builds; its choice between Small and Tiny is not, once the row has a stored density, which wins. While two hub tasks run side by side during a deploy, an old task skips `density` changes the same way. A Mac store that already holds another build's `0015` refuses this build, so compare the installed app's bundled `SQL/*.sql` with this build's before installing.
+
+### Agent Protocol client staging
+
+The unpublished Hub protocol-floor migration is now `0023_client_protocol.sql`, after immutable published per-user settings20, connection commands21 and density22. Its SQL bytes are unchanged by this renumbering; prior floor20 receipts remain historical evidence. Binary support remains 2 and the production minimum remains 1. This integration does not activate the floor or qualify the complete app.
+
+The staged client schema is unpublished `0016_agent_protocol.sql` after immutable published Store11/12, D-208 viewSettings13, connection commands14 and density15. Subscriptions separate native generation from a generic local observation epoch (exactly one); Run segment keys include the epoch kind/id and preserve namespace arrays/native IDs, without an FK to the current subscription epoch. Current16 admission checks all live epoch-table columns/types/typmod/nullability and ordered PK, not SQL CHECK expressions. Old development protocol13 ledger aliases and incompatible protocol shapes are not adopted. Archive v4 prefix16 requires `protocolSchema: "generation_epochs_v1"`; Published viewSettings13, commands14 and density15 have their own closed inventories without the protocol marker. Original protocol13 DDL/archives remain historical negative inputs, distinct from published viewSettings13.
+
+Public profile identity stays complete while private auth may be absent on a device. Absent mode/header is unconfigured, never explicit `.none` or owner authority. The complete trusted-owner/account and explicit-auth guard before any future cached adapter, secret resolution, discovery or request remains required and unimplemented by this foundation. Historical B4 rows stay locally read-only. DTO/transport and protected archive source do not qualify current native behavior, protocol execution or release; A4–A10 remain open. Preserve Codex/Claude no-folder behavior. Neither `B4-Protocol: 2` advertisement nor an unpublished source pack proves activation. Production minimum, publication and coordinated release remain held; see [the foundation record](verification/2026-11-11-agent-protocol-current-main-foundation.md).
+
+Published commands and current protocol allocations remain separate: Store14, Hub21 and phone
+Mirror9 carry commands; unpublished protocol resources are Store16 and Hub23. Future protocol
+Mirror11 is documentation only. Archive prefix13 excludes commands and protocol fields; prefix14
+adds opaque commands only; prefix15 adds nullable raw density; prefix16 adds the six profile fields and seven private tables and
+requires the exact generation marker, even when empty. Legacy v1–v3 commands remain opaque JSON
+cell text, while protocol profile obligations remain nullable-only. Old private protocol14/Hub21
+labels in dated receipts remain historical and are not admission aliases. Native command startup
+checks are restricted to enabled Codex and Claude profiles; historical B4 and staged Agent Protocol
+profiles retain their unavailable execution boundary. No activation or qualification claim follows
+from this source integration.
+
+Native migration from public13/14 executes density15 exactly once, preserving clocks and history;
+raw v3/v4 restore into16 keeps old quiet values and introduces SQL NULL density. Genuine15 quiet
+and density remain raw, including unknown/empty text and tiny plus SQL NULL. Current16 archives
+retain full rows. Only16 requires the generation marker; old private protocol13/14/15 aliases
+remain invalid. The current unpublished decisions are protocol D-232 and relay D-231; published
+D-218 density, D-220 phone Return and D-221 keycaps retain their original numbers. This source
+integration supplies no compiler/native or release qualification.

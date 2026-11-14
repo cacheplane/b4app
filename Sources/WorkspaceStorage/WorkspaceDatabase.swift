@@ -49,6 +49,7 @@ public final class WorkspaceDatabase: Sendable {
   /// throws. `wall` is the clock's time source (tests pin it to replay recorded clocks).
   public init(
     endpoint: PostgresEndpoint, binDir: String, createIfMissing: Bool = true,
+    backupDirectory: String? = nil,
     wall: @escaping @Sendable () -> UInt64 = epochMillis
   ) throws {
     self.endpoint = endpoint
@@ -66,7 +67,9 @@ public final class WorkspaceDatabase: Sendable {
     }
     pool = try ConnectionPool(lib: lib, connectionString: base + " dbname=\(endpoint.database)", size: 4)
     do {
-      try pool.withConnection { try Migrator.migrate($0) }
+      try pool.withConnection { c in
+        try Self.migrateWithBackup(c, endpoint: endpoint, backupDirectory: backupDirectory)
+      }
     } catch {
       pool.close()
       throw error
@@ -89,6 +92,36 @@ public final class WorkspaceDatabase: Sendable {
 
   public func close() throws { pool.close() }
 
+  /// Storage-module admission facts for the account lifecycle, not a protocol/UI state.
+  public enum MigrationState: Sendable, Equatable {
+    case missing, current, pending
+  }
+
+  /// Inspect migration state without creating a database/ledger or opening a migrating pool. The
+  /// normal initializer must still recheck under its exclusive advisory lock before applying SQL.
+  public static func preflightMigration(
+    endpoint: PostgresEndpoint, binDir: String
+  ) throws
+    -> MigrationState
+  {
+    let lib = try LibPQ.load(binDir: binDir)
+    let base = "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) application_name=b4app"
+    let admin = try PostgresConnection(lib: lib, connectionString: base + " dbname=postgres")
+    guard try !admin.execute("SELECT 1 FROM pg_database WHERE datname = $1", [endpoint.database]).rows.isEmpty
+    else { return .missing }
+    let connection = try PostgresConnection(
+      lib: lib, connectionString: base + " dbname=\(endpoint.database)")
+    try connection.execute("BEGIN READ ONLY")
+    defer { _ = try? connection.execute("ROLLBACK") }
+    return try Migrator.pending(connection) ? .pending : .current
+  }
+
+  /// Close admission and bound the wait for this database's admitted pool leases. False never
+  /// authorizes migration; the account lifecycle must quiesce its scope before requesting capture.
+  public func closeForMigration(timeout: Duration) -> Bool {
+    pool.closeForMigration(timeout: timeout)
+  }
+
   // MARK: - Plumbing
 
   func read<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
@@ -110,11 +143,13 @@ public final class WorkspaceDatabase: Sendable {
   /// local edit is stamped after them and wins, on this Mac and at the hub alike. And because a pull
   /// takes the lock before any row lock and a local write takes it before any row lock, a pull never
   /// holds a row lock that a local write waits on, or the reverse, so the two cannot deadlock.
-  func write<T>(exclusive: Bool = false, _ body: (PostgresConnection) throws -> T) throws -> T {
+  func write<T>(
+    exclusive: Bool = false, readCommitted: Bool = false, _ body: (PostgresConnection) throws -> T
+  ) throws -> T {
     let device = deviceId
     do {
       return try pool.withConnection { c in
-        try c.execute("BEGIN")
+        try c.execute(readCommitted ? "BEGIN ISOLATION LEVEL READ COMMITTED" : "BEGIN")
         do {
           try c.execute(
             exclusive
@@ -267,7 +302,25 @@ public final class WorkspaceDatabase: Sendable {
         var connection = try one(
           c, Connection.self, "SELECT * FROM \"connections\" WHERE \"id\" = $1 FOR UPDATE", [id])
       else { return nil }
+      let original = connection
       mutate(&connection)
+      if original.kind == .agentProtocol || connection.kind == .agentProtocol {
+        func sameBytes(_ lhs: String?, _ rhs: String?) -> Bool {
+          switch (lhs, rhs) {
+          case (nil, nil): return true
+          case (.some(let left), .some(let right)): return left.utf8.elementsEqual(right.utf8)
+          default: return false
+          }
+        }
+        guard sameBytes(connection.id, original.id), connection.kind == original.kind,
+          sameBytes(connection.target, original.target), connection.peerProfile == original.peerProfile,
+          sameBytes(connection.agentId, original.agentId),
+          sameBytes(connection.nativeScope, original.nativeScope)
+        else {
+          throw WorkspaceError(
+            .protocolInvalid, "Agent Protocol identity cannot change. Create a new connection.")
+        }
+      }
       connection.updatedAt = Timestamp.now()
       try update(c, "connections", connection)
       return connection
@@ -934,23 +987,55 @@ public final class WorkspaceDatabase: Sendable {
   /// (`applyRemote`, `setHubCursor`), so a push recording its outcome never rewinds a pull that committed
   /// meanwhile.
   public func saveHubLink(_ link: HubLink) throws {
-    try write { c in
-      try c.execute(
+    try saveHubLink(link, membershipChange: .preserveIfUnchanged)
+  }
+
+  /// Invalidate local comparison facts when the membership changes. Labels, token refreshes and
+  /// cursor/status updates for the same native membership preserve those facts byte for byte.
+  public func saveHubLink(_ link: HubLink, membershipChange: ProtocolMembershipChange) throws {
+    do {
+      try write(exclusive: true) { c -> Void in
+        let previous = try one(c, HubLink.self, "SELECT * FROM \"hubLink\" WHERE \"id\" = 1 FOR UPDATE")
+        try ProtocolActivationControl.mutateMembership(
+          c, oldLink: previous, newLink: link, change: membershipChange)
+        try persistHubLink(c, link: link, insertingOnly: false)
+      }
+    } catch { throw ProtocolActivationControl.failure }
+  }
+
+  /// Transaction borrower only. The owner already locked hubLink→control and owns rollback/COMMIT.
+  /// Ordinary wrappers retain the exact original UPSERT; checked captured absence uses INSERT-only.
+  @discardableResult
+  func persistHubLink(_ c: PostgresConnection, link: HubLink, insertingOnly: Bool) throws -> Int {
+    if insertingOnly {
+      return try c.execute(
         """
         INSERT INTO "hubLink" ("id", "url", "deviceId", "deviceName", "tokenRef", "orgSlug", "username",
           "cursor", "lastPushAt", "lastError", "joinedAt")
         VALUES (1, $1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)
-        ON CONFLICT ("id") DO UPDATE SET "url" = EXCLUDED."url", "deviceId" = EXCLUDED."deviceId",
-          "deviceName" = EXCLUDED."deviceName", "tokenRef" = EXCLUDED."tokenRef",
-          "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username",
-          "lastPushAt" = EXCLUDED."lastPushAt", "lastError" = EXCLUDED."lastError",
-          "joinedAt" = EXCLUDED."joinedAt"
         """,
         [
           link.url, link.deviceId, link.deviceName, link.tokenRef, link.orgSlug, link.username,
           String(link.cursor), link.lastPushAt, link.lastError, link.joinedAt,
-        ])
+        ]
+      ).affected
     }
+    return try c.execute(
+      """
+      INSERT INTO "hubLink" ("id", "url", "deviceId", "deviceName", "tokenRef", "orgSlug", "username",
+        "cursor", "lastPushAt", "lastError", "joinedAt")
+      VALUES (1, $1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10)
+      ON CONFLICT ("id") DO UPDATE SET "url" = EXCLUDED."url", "deviceId" = EXCLUDED."deviceId",
+        "deviceName" = EXCLUDED."deviceName", "tokenRef" = EXCLUDED."tokenRef",
+        "orgSlug" = EXCLUDED."orgSlug", "username" = EXCLUDED."username",
+        "lastPushAt" = EXCLUDED."lastPushAt", "lastError" = EXCLUDED."lastError",
+        "joinedAt" = EXCLUDED."joinedAt"
+      """,
+      [
+        link.url, link.deviceId, link.deviceName, link.tokenRef, link.orgSlug, link.username,
+        String(link.cursor), link.lastPushAt, link.lastError, link.joinedAt,
+      ]
+    ).affected
   }
 
   /// The tables whose rows carry an owner: the device of a row's latest insert, on the hub
@@ -969,41 +1054,150 @@ public final class WorkspaceDatabase: Sendable {
   @discardableResult
   public func claimOwnedRows() throws -> Int {
     try write { c in
-      guard
-        let row = try c.execute(#"SELECT "deviceId", "ownedAs" FROM "hubLink" WHERE "id" = 1"#).rows.first,
-        let device = row.text("deviceId")
-      else { return 0 }
-      if row.text("ownedAs") == device { return 0 }
-      let pushed = try !c.execute(#"SELECT 1 FROM "changes" WHERE "synced" LIMIT 1"#).rows.isEmpty
-      guard pushed else {
-        try c.execute(#"UPDATE "hubLink" SET "ownedAs" = $1 WHERE "id" = 1"#, [device])
-        return 0
-      }
-      let wall = String(Int(Date().timeIntervalSince1970 * 1000))
-      let oldest = "000000000000-0000-" + device
-      var appended = 0
-      for table in Self.ownedTables {
-        let quoted = Rows.quote(table)
-        let inserted = try c.execute(
-          """
-          INSERT INTO "changes" ("deviceId", "wall", "table", "rowId", "op", "value", "hlc")
-          SELECT $1, $2::bigint, $3, t."id", 'insert', to_jsonb(t), $4 FROM \(quoted) t
-          RETURNING "seq"
-          """, [device, wall, table, oldest])
-        appended += inserted.rows.count
-      }
+      try claimOwnedRows(c)
+    }
+  }
+
+  /// Re-announce owned rows only while the original linked compatibility snapshot still matches.
+  @discardableResult
+  public func claimOwnedRows(
+    expectedProtocolSnapshot: ProtocolVerificationSnapshot
+  ) throws -> Int {
+    try writeProtocolSyncEffect(expectedSnapshot: expectedProtocolSnapshot) { c in
+      try claimOwnedRows(c)
+    }
+  }
+
+  /// Re-announce owned rows only while the original linked snapshot and reference both match.
+  @discardableResult
+  package func claimOwnedRows(
+    expectedProtocolSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String
+  ) throws -> Int {
+    try writeProtocolSyncEffect(
+      expectedSnapshot: expectedProtocolSnapshot, expectedTokenRef: expectedTokenRef
+    ) { c in
+      try claimOwnedRows(c)
+    }
+  }
+
+  /// Transaction borrower only; both wrappers preserve the original local reannouncement body.
+  private func claimOwnedRows(_ c: PostgresConnection) throws -> Int {
+    guard
+      let row = try c.execute(#"SELECT "deviceId", "ownedAs" FROM "hubLink" WHERE "id" = 1"#).rows.first,
+      let device = row.text("deviceId")
+    else { return 0 }
+    if row.text("ownedAs") == device { return 0 }
+    let pushed = try !c.execute(#"SELECT 1 FROM "changes" WHERE "synced" LIMIT 1"#).rows.isEmpty
+    guard pushed else {
       try c.execute(#"UPDATE "hubLink" SET "ownedAs" = $1 WHERE "id" = 1"#, [device])
-      return appended
+      return 0
+    }
+    let wall = String(Int(Date().timeIntervalSince1970 * 1000))
+    let oldest = "000000000000-0000-" + device
+    var appended = 0
+    for table in Self.ownedTables {
+      let quoted = Rows.quote(table)
+      let inserted = try c.execute(
+        """
+        INSERT INTO "changes" ("deviceId", "wall", "table", "rowId", "op", "value", "hlc")
+        SELECT $1, $2::bigint, $3, t."id", 'insert', to_jsonb(t), $4 FROM \(quoted) t
+        RETURNING "seq"
+        """, [device, wall, table, oldest])
+      appended += inserted.rows.count
+    }
+    try c.execute(#"UPDATE "hubLink" SET "ownedAs" = $1 WHERE "id" = 1"#, [device])
+    return appended
+  }
+
+  /// Record only the push status fields while the original linked snapshot still matches.
+  public func recordHubPushResult(
+    error: String?, pushedAt: String?, expectedProtocolSnapshot: ProtocolVerificationSnapshot
+  ) throws {
+    try writeProtocolSyncEffect(expectedSnapshot: expectedProtocolSnapshot) { c -> Void in
+      if error?.utf8.contains(0) == true || pushedAt?.utf8.contains(0) == true {
+        throw ProtocolActivationControl.failure
+      }
+      try c.execute(
+        """
+        UPDATE "hubLink"
+        SET "lastError" = $1, "lastPushAt" = COALESCE($2::text, "lastPushAt")
+        WHERE "id" = 1
+        """, [error, pushedAt])
+    }
+  }
+
+  /// Clear only a current pull-prefixed error, or record the exact supplied pull error.
+  public func recordHubPullResult(
+    error: String?, expectedProtocolSnapshot: ProtocolVerificationSnapshot
+  ) throws {
+    try writeProtocolSyncEffect(expectedSnapshot: expectedProtocolSnapshot) { c -> Void in
+      if let error {
+        guard !error.utf8.contains(0) else { throw ProtocolActivationControl.failure }
+        try c.execute(
+          #"UPDATE "hubLink" SET "lastError" = $1 WHERE "id" = 1"#, ["Pull: " + error])
+      } else {
+        try c.execute(
+          """
+          UPDATE "hubLink" SET "lastError" = NULL
+          WHERE "id" = 1 AND left("lastError", 6) COLLATE "C" = 'Pull: '
+          """)
+      }
+    }
+  }
+
+  /// Record push status only while the original linked snapshot and reference both match.
+  package func recordHubPushResult(
+    error: String?, pushedAt: String?, expectedProtocolSnapshot: ProtocolVerificationSnapshot,
+    expectedTokenRef: String
+  ) throws {
+    try writeProtocolSyncEffect(
+      expectedSnapshot: expectedProtocolSnapshot, expectedTokenRef: expectedTokenRef
+    ) { c -> Void in
+      if error?.utf8.contains(0) == true || pushedAt?.utf8.contains(0) == true {
+        throw ProtocolActivationControl.failure
+      }
+      try c.execute(
+        """
+        UPDATE "hubLink"
+        SET "lastError" = $1, "lastPushAt" = COALESCE($2::text, "lastPushAt")
+        WHERE "id" = 1
+        """, [error, pushedAt])
+    }
+  }
+
+  /// Record or clear pull status only while the original linked snapshot and reference both match.
+  package func recordHubPullResult(
+    error: String?, expectedProtocolSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String
+  ) throws {
+    try writeProtocolSyncEffect(
+      expectedSnapshot: expectedProtocolSnapshot, expectedTokenRef: expectedTokenRef
+    ) { c -> Void in
+      if let error {
+        guard !error.utf8.contains(0) else { throw ProtocolActivationControl.failure }
+        try c.execute(
+          #"UPDATE "hubLink" SET "lastError" = $1 WHERE "id" = 1"#, ["Pull: " + error])
+      } else {
+        try c.execute(
+          """
+          UPDATE "hubLink" SET "lastError" = NULL
+          WHERE "id" = 1 AND left("lastError", 6) COLLATE "C" = 'Pull: '
+          """)
+      }
     }
   }
 
   /// Forget the hub: remove the link and mark the whole change log unsynced, so a later join (to this
   /// or another hub) uploads everything again.
   public func clearHubLink() throws {
-    try write { c in
-      try c.execute("DELETE FROM \"hubLink\"")
-      try c.execute("UPDATE \"changes\" SET \"synced\" = false WHERE \"synced\"")
-    }
+    do {
+      try write(exclusive: true) { c -> Void in
+        let previous = try one(c, HubLink.self, "SELECT * FROM \"hubLink\" WHERE \"id\" = 1 FOR UPDATE")
+        try ProtocolActivationControl.mutateMembership(
+          c, oldLink: previous, newLink: nil, change: .replace)
+        try c.execute("DELETE FROM \"hubLink\"")
+        try c.execute("UPDATE \"changes\" SET \"synced\" = false WHERE \"synced\"")
+      }
+    } catch { throw ProtocolActivationControl.failure }
   }
 
   /// Record this device in `devices` (the hub's id and name), keeping an existing row's creation time.
@@ -1015,5 +1209,13 @@ public final class WorkspaceDatabase: Sendable {
         ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name"
         """, [id, name, Timestamp.now()])
     }
+  }
+}
+
+extension WorkspaceDatabase {
+  func withOwnedProtocolProofConnection(
+    _ body: (PostgresConnection) -> ProtocolOwnedProofWriteReceipt
+  ) throws -> ProtocolOwnedProofWriteReceipt {
+    try pool.withOwnedProofConnection(body)
   }
 }

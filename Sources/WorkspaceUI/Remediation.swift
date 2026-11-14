@@ -58,7 +58,7 @@ public struct Remediation: Equatable, Sendable {
         return Remediation(
           message: "Claude Code is signed out or the login expired. Sign in again; nothing was re-sent.",
           action: .signIn(connectionId: connection!.id), actionTitle: "Sign in to Claude")
-      case .b4?:
+      case .b4?, .agentProtocol?:
         return Remediation(
           message:
             "The endpoint rejected the credential. Store a new one with `agent-workspace credential add` and attach the endpoint again with its reference.",

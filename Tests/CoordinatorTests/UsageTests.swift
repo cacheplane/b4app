@@ -53,7 +53,8 @@ actor RefusingRemoveStore: SecretStore {
   }
 
   @Test func codexCheckStoresUsage() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .codexUsage))
     let codex = try await h.addCodex()
     let usage = try #require(try await h.usage(codex.id))
     #expect(usage.reading?.fiveHour?.usedPercent == 62)

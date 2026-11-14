@@ -23,11 +23,40 @@ actor RuntimeCalls {
   func deleteDelay(of nativeThreadId: String) -> Duration? { delays[nativeThreadId] }
 }
 
+/// Inject only a retryable adapter failure; reachable attempts still call the real Codex adapter.
+private actor DeleteReachability {
+  private var reachable = true
+  func setReachable(_ value: Bool) { reachable = value }
+  func requireReachable() throws {
+    guard reachable else {
+      throw WorkspaceError(.endpointUnavailable, "Controlled test runtime is unreachable.")
+    }
+  }
+}
+
+/// Own one real held-turn interrupt; clear the stored callback before awaiting it.
+private actor LateCompletion {
+  private var completion: (@Sendable () async throws -> StopReceipt)?
+  func install(_ value: @escaping @Sendable () async throws -> StopReceipt) {
+    precondition(completion == nil)
+    completion = value
+  }
+  func finish() async throws -> StopReceipt {
+    guard let value = completion else {
+      throw WorkspaceError(.internalError, "No held native turn was installed.")
+    }
+    completion = nil
+    return try await value()
+  }
+}
+
 /// A real adapter (the fake runtimes) that records interrupts and deletes on their way through.
 private struct RecordingAdapter: AgentAdapter {
   let inner: any AgentAdapter
   let calls: RuntimeCalls
   var deleteDelay: Duration = .zero
+  var deleteReachability: DeleteReachability?
+  var lateCompletion: LateCompletion?
   var kind: ConnectionKind { inner.kind }
   func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
   func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
@@ -37,7 +66,16 @@ private struct RecordingAdapter: AgentAdapter {
     try await inner.loadSession(ref)
   }
   func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
-    try await inner.sendTurn(ref, input: input)
+    let receipt = try await inner.sendTurn(ref, input: input)
+    if let lateCompletion {
+      guard let nativeTurnId = receipt.nativeTurnId else {
+        throw WorkspaceError(.internalError, "Expected an acknowledged native turn.")
+      }
+      await lateCompletion.install { [inner] in
+        try await inner.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: nativeTurnId))
+      }
+    }
+    return receipt
   }
   func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
     await calls.record("interrupt:\(ref.nativeSessionId)")
@@ -52,19 +90,22 @@ private struct RecordingAdapter: AgentAdapter {
   func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
     await calls.record("delete:\(ref.nativeSessionId)")
     try await Task.sleep(for: await calls.deleteDelay(of: ref.nativeSessionId) ?? deleteDelay)
+    if let deleteReachability { try await deleteReachability.requireReachable() }
     return try await inner.deleteSession(ref)
   }
   func events() -> AsyncStream<AdapterEvent> { inner.events() }
   func dispose() async { await inner.dispose() }
 }
 
-private func recording(_ calls: RuntimeCalls, deleteDelay: Duration = .zero) -> SessionService.AdapterFactory
-{
+private func recording(
+  _ calls: RuntimeCalls, deleteDelay: Duration = .zero,
+  deleteReachability: DeleteReachability? = nil, lateCompletion: LateCompletion? = nil
+) -> SessionService.AdapterFactory {
   { connection, environment, version, secrets in
     RecordingAdapter(
       inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
       calls: calls,
-      deleteDelay: deleteDelay)
+      deleteDelay: deleteDelay, deleteReachability: deleteReachability, lateCompletion: lateCompletion)
   }
 }
 
@@ -119,7 +160,9 @@ private func markDeletedAndCaptureCursor(
 @Suite(.serialized) struct ThreadDeleteTests {
   @Test func deletingAThreadHidesItAndDeletesItInCodex() async throws {
     let calls = RuntimeCalls()
-    let h = try await Harness.start(adapterFactory: recording(calls))
+    let h = try await Harness.start(
+      adapterFactory: recording(calls),
+      inspectionObservation: InspectionRequestObservation(caseID: .deleteCodex))
     let codex = try await h.addCodex()
     let thread = try await h.newThread(codex)
     let kept = try await h.newThread(codex)
@@ -146,17 +189,16 @@ private func markDeletedAndCaptureCursor(
   }
 
   @Test func deletingStopsARunningTurnFirst() async throws {
-    let server = try await FakeB4.start()
     let calls = RuntimeCalls()
     let h = try await Harness.start(adapterFactory: recording(calls))
-    let b4 = try await h.addB4(server).connection
-    let thread = try await h.newB4Thread(b4)
+    let codex = try await h.addCodex()
+    let thread = try await h.newThread(codex)
     let turn = try await h.send(thread, "hang around")
     _ = try await h.events.waitFor {
       $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
     }
     _ = try await h.delete(thread)
-    try await eventually("tried in B4") {
+    try await eventually("tried in Codex") {
       try h.coordinator.database.threadDeleteAttempts(threadId: thread.id) == 1
     }
     #expect(await calls.calls == ["interrupt:\(thread.nativeThreadId)", "delete:\(thread.nativeThreadId)"])
@@ -164,7 +206,6 @@ private func markDeletedAndCaptureCursor(
     #expect(try h.coordinator.database.threadDeleteAttempts(threadId: thread.id) == 1)
     #expect(try await h.deleteSummary().isEmpty)
     await h.stop()
-    await server.stop()
   }
 
   @Test func aPhonesDeleteIsSweptLater() async throws {
@@ -182,12 +223,13 @@ private func markDeletedAndCaptureCursor(
   }
 
   @Test func anUnreachableRuntimeIsRetried() async throws {
-    let server = try await FakeB4.start()
+    let reachability = DeleteReachability()
     let calls = RuntimeCalls()
-    let h = try await Harness.start(adapterFactory: recording(calls))
-    let b4 = try await h.addB4(server).connection
-    let thread = try await h.newB4Thread(b4)
-    await server.stop()
+    let h = try await Harness.start(
+      adapterFactory: recording(calls, deleteReachability: reachability))
+    let codex = try await h.addCodex()
+    let thread = try await h.newThread(codex)
+    await reachability.setReachable(false)
     _ = try await h.delete(thread)
     #expect(try await h.listedIds().isEmpty)
     try await eventually("tried once") {
@@ -196,26 +238,26 @@ private func markDeletedAndCaptureCursor(
     // The try has failed by now; the retry waits 30 seconds from then. The sweeps below are timed
     // from this moment, not the wall clock, so a slow restart of the fixture can't make it due.
     let failed = Date()
-    #expect(try await h.deleteSummary() == [ThreadDeleteSummary(kind: .b4, waiting: 1, unsupported: 0)])
-    let restarted = try await FakeB4.start(port: server.port)
+    #expect(try await h.deleteSummary() == [ThreadDeleteSummary(kind: .codex, waiting: 1, unsupported: 0)])
+    await reachability.setReachable(true)
     await h.coordinator.sessions.sweepThreadDeletes(now: failed)
     #expect(await calls.deletes.count == 1)
     await h.coordinator.sessions.sweepThreadDeletes(now: failed.addingTimeInterval(31))
     #expect(await calls.deletes.count == 2)
     #expect(try await h.deleteSummary().isEmpty)
     await h.stop()
-    await restarted.stop()
   }
 
   /// The wait counts from when the try failed, not from when the sweep began: a slow failure (a request
   /// that hangs until its timeout) is not due again the moment it ends.
   @Test func aRetryWaitsFromTheFailedTry() async throws {
-    let server = try await FakeB4.start()
+    let reachability = DeleteReachability()
     let calls = RuntimeCalls()
-    let h = try await Harness.start(adapterFactory: recording(calls))
-    let b4 = try await h.addB4(server).connection
-    let thread = try await h.newB4Thread(b4)
-    await server.stop()
+    let h = try await Harness.start(
+      adapterFactory: recording(calls, deleteReachability: reachability))
+    let codex = try await h.addCodex()
+    let thread = try await h.newThread(codex)
+    await reachability.setReachable(false)
     _ = try h.coordinator.database.markThreadDeleted(id: thread.id, at: Timestamp.now())
     // A sweep that began an hour before its try failed.
     await h.coordinator.sessions.sweepThreadDeletes(now: Date().addingTimeInterval(-3600))
@@ -226,19 +268,18 @@ private func markDeletedAndCaptureCursor(
   }
 
   @Test func anUnsupportedRuntimeIsFinal() async throws {
-    let server = try await FakeB4.start(environment: ["FAKE_B4_NO_DELETE": "1"])
     let calls = RuntimeCalls()
-    let h = try await Harness.start(adapterFactory: recording(calls))
-    let b4 = try await h.addB4(server).connection
-    let thread = try await h.newB4Thread(b4)
+    let h = try await Harness.start(
+      extraEnvironment: ["FAKE_CODEX_NO_DELETE": "1"], adapterFactory: recording(calls))
+    let codex = try await h.addCodex()
+    let thread = try await h.newThread(codex)
     _ = try await h.delete(thread)
     try await eventually("unsupported") {
-      try await h.deleteSummary() == [ThreadDeleteSummary(kind: .b4, waiting: 0, unsupported: 1)]
+      try await h.deleteSummary() == [ThreadDeleteSummary(kind: .codex, waiting: 0, unsupported: 1)]
     }
     await h.coordinator.sessions.sweepThreadDeletes(now: Date().addingTimeInterval(86_400))
     #expect(await calls.deletes.count == 1)
     await h.stop()
-    await server.stop()
   }
 
   @Test func deletingAnswersBeforeASlowRuntimeDelete() async throws {
@@ -259,11 +300,10 @@ private func markDeletedAndCaptureCursor(
   }
 
   @Test func aPhonesDeleteStopsTheRunningTurn() async throws {
-    let server = try await FakeB4.start()
     let calls = RuntimeCalls()
     let h = try await Harness.start(adapterFactory: recording(calls))
-    let b4 = try await h.addB4(server).connection
-    let thread = try await h.newB4Thread(b4)
+    let codex = try await h.addCodex()
+    let thread = try await h.newThread(codex)
     let turn = try await h.send(thread, "hang around")
     _ = try await h.events.waitFor {
       $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
@@ -275,7 +315,6 @@ private func markDeletedAndCaptureCursor(
     #expect(try h.coordinator.database.activeTurn(threadId: thread.id) == nil)
     #expect(try await h.client.request(WorkspaceActiveWork.self, EmptyParams()).turns.isEmpty)
     await h.stop()
-    await server.stop()
   }
 
   @Test func aReconcilingTurnOfADeletedThreadIsEnded() async throws {
@@ -320,7 +359,7 @@ private func markDeletedAndCaptureCursor(
 
   /// A delete marked on the phone reaches the Mac by pull, and the sweep then deletes the runtime's copy.
   @Test func aPulledPhoneDeleteIsSweptToTheRuntime() async throws {
-    let base = NSTemporaryDirectory() + "b4td-\(UUID().uuidString.prefix(8))"
+    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4td-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
     var env = ProcessInfo.processInfo.environment
@@ -370,11 +409,13 @@ private func markDeletedAndCaptureCursor(
   }
 
   @Test func aLateEventDoesNotBringTheThreadBack() async throws {
-    let server = try await FakeB4.start()
-    let h = try await Harness.start()
-    let b4 = try await h.addB4(server).connection
-    let thread = try await h.newB4Thread(b4)
-    let turn = try await h.send(thread, "slow")
+    let completion = LateCompletion()
+    let calls = RuntimeCalls()
+    let h = try await Harness.start(
+      adapterFactory: recording(calls, lateCompletion: completion))
+    let codex = try await h.addCodex()
+    let thread = try await h.newThread(codex)
+    let turn = try await h.send(thread, "hang around")
     _ = try await h.events.waitFor {
       $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
     }
@@ -383,7 +424,8 @@ private func markDeletedAndCaptureCursor(
     // cursor in one actor turn, so a publication after deletion cannot enter the cutoff.
     let before = try await markDeletedAndCaptureCursor(
       threadId: thread.id, database: h.coordinator.database, eventLog: h.coordinator.eventLog)
-    try await server.waitForRunToEnd(nativeThreadId: thread.nativeThreadId)
+    let stop = try await completion.finish()
+    #expect(stop.confirmed)
     try await h.settled(thread)
     let late = await h.events.events.filter { $0.sequence > before }
     #expect(!late.contains { $0.event.threadId == thread.id })
@@ -393,6 +435,5 @@ private func markDeletedAndCaptureCursor(
     #expect(!published.contains { $0.event.threadId == thread.id })
     #expect(try await h.listedIds().isEmpty)
     await h.stop()
-    await server.stop()
   }
 }

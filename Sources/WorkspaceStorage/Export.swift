@@ -1,142 +1,209 @@
 import Foundation
 import WorkspaceProtocol
 
-/// Backups and restores as one JSON-lines archive: a header, then `{"table": ..., "row": {...}}` per
-/// row in dependency order. Written before every migration and on demand; the same archive carries
-/// data across a major PostgreSQL version (D-041: the pinned build ships no pg_dump).
-///
-/// Version 3 adds the environment tables and the clocks (migration 0004); older archives are still read. A
-/// `jsonb` cell travels as its JSON text in a string (archive version 2), so every JSON value, a
-/// scalar `"ready"` or `true` as much as an object, comes back exactly. Version 1 archives carried
-/// the parsed value instead, which made a scalar string indistinguishable from JSON text on the way
-/// back in; they are still read, with each bare value re-encoded as the JSON it was.
+/// Owner-protected, self-contained v4 archives; produced versions1–3 remain readable. Header,
+/// source context and every row share one snapshot. Restore is one exclusive atomic write; source
+/// ledger/hub context is retained in the file, never installed into the target account.
+enum ArchiveWriteStage: Sendable, Equatable {
+  case headerWritten, fileSynchronized
+}
+
 extension WorkspaceDatabase {
-  public static let archiveFormat = "b4app-export"
-  public static let archiveVersion = 3
-  public static let archiveTables = [
-    "localServers", "connections", "environments", "environmentFolders", "threads", "appFolders", "turns",
-    "displayItems",
-    "runtimeRequests", "drafts", "viewSettings", "devices", "changes", "columnClocks",
-  ]
+  public static let archiveFormat = WorkspaceArchive.format
+  public static let archiveVersion = WorkspaceArchive.version
+  public static let archiveTables = WorkspaceArchive.dataTables
 
   public struct ArchiveSummary: Sendable, Equatable {
     public var path: String
     public var rows: Int
   }
-
-  /// Row counts per archived table.
   public func tableCounts() throws -> [String: Int] {
     try read { c in
       var counts: [String: Int] = [:]
       for table in Self.archiveTables {
         counts[table] =
-          try c.execute("SELECT count(*) AS \"n\" FROM \(Rows.quote(table))").rows.first?.int("n") ?? 0
+          try c.execute("SELECT count(*) AS n FROM \(Rows.quote(table))").rows.first?.int("n") ?? 0
       }
       return counts
     }
   }
-
-  /// Write every table to `path` (mode 0600). Returns the row count.
   @discardableResult
-  public func export(to path: String) throws -> ArchiveSummary {
-    try FileManager.default.createDirectory(
-      atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true,
-      attributes: [.posixPermissions: 0o700])
-    FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
-    let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
-    defer { try? handle.close() }
-    let header: [String: Any] = [
-      "format": Self.archiveFormat, "version": Self.archiveVersion, "at": Timestamp.now(),
-      "migrations": try appliedMigrations(),
-    ]
-    try handle.write(
-      contentsOf: try JSONSerialization.data(withJSONObject: header, options: [.sortedKeys]) + Data("\n".utf8)
-    )
-    var count = 0
-    try read { c in
-      for table in Self.archiveTables {
-        let rows = try c.execute("SELECT * FROM \(Rows.quote(table)) ORDER BY 1").rows
-        for row in rows {
-          var object: [String: Any] = [:]
-          for (name, cell) in row.cells { object[name] = try Self.jsonObject(cell) }
-          let line: [String: Any] = ["table": table, "row": object]
-          try handle.write(
-            contentsOf: try JSONSerialization.data(withJSONObject: line, options: [.sortedKeys])
-              + Data("\n".utf8))
-          count += 1
+  public func export(to path: String) throws -> ArchiveSummary { try export(to: path, observe: nil) }
+
+  @discardableResult
+  func export(
+    to path: String, observe: (@Sendable (ArchiveWriteStage) throws -> Void)?
+  ) throws -> ArchiveSummary {
+    do {
+      return try read { c in
+        // Session lock precedes BEGIN: no migration/restore can pass, while normal shared writers
+        // still commit after our snapshot/header. One existing pool lease throughout.
+        try c.execute("SELECT pg_advisory_lock_shared($1::bigint)", [String(Self.remoteApplyLockKey)])
+        defer {
+          _ = try? c.execute(
+            "SELECT pg_advisory_unlock_shared($1::bigint)", [String(Self.remoteApplyLockKey)])
         }
+        try c.execute("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        do {
+          try ProtocolGrantProtection.establish(c)
+          let present = Set(
+            try c.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public'").rows
+              .compactMap { $0.text("tablename") })
+          let schema = try WorkspaceArchive.captureSchema(c, present: present)
+          var rows = 0
+          try ArchivePublication.write(
+            to: path,
+            observe: { stage in
+              if case .fileSynchronized = stage { try observe?(.fileSynchronized) }
+            }
+          ) { handle in
+            rows = try WorkspaceArchive.write(c, schema: schema, purpose: "onDemand", handle: handle) {
+              try observe?(.headerWritten)
+            }
+          }
+          try ProtocolGrantProtection.verify(c)
+          try c.execute("COMMIT")
+          return ArchiveSummary(path: path, rows: rows)
+        } catch { _ = try? c.execute("ROLLBACK"); throw error }
       }
+    } catch {
+      // Includes parser/conversion/file/privacy/callback/COMMIT errors, never a raw SQL cause.
+      throw WorkspaceError(.internalError, "The protected workspace archive could not be written.")
     }
-    return ArchiveSummary(path: path, rows: count)
   }
 
-  /// Load an archive. The database must be empty (no connections; its view settings, if any, are
-  /// replaced) unless `replace` is set, in which case every table is cleared first; the whole restore
-  /// is one transaction and records no changes.
+  /// View settings and the local protocol comparison record do not make a destination nonempty.
+  /// Restore replaces the view rows and invalidates comparison facts in the same transaction.
+  /// Every other business/private row still requires explicit replace.
   @discardableResult
   public func restore(from path: String, replace: Bool = false) throws -> ArchiveSummary {
-    let text = try String(contentsOfFile: path, encoding: .utf8)
-    var lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-    guard let first = lines.first,
-      let header = try JSONSerialization.jsonObject(with: Data(first.utf8)) as? [String: Any],
-      header["format"] as? String == Self.archiveFormat
-    else { throw WorkspaceError(.protocolInvalid, "\(path) is not a \(Self.archiveFormat) archive.") }
-    let version = header["version"] as? Int ?? 1
-    guard version <= Self.archiveVersion else {
-      throw WorkspaceError(
-        .protocolInvalid,
-        "\(path) is a version \(version) archive; this build reads up to \(Self.archiveVersion).")
-    }
-    lines.removeFirst()
-    return try write { c in
-      // Before anything else: neither the clearing nor the loading may land in the change log.
-      try c.execute("SET LOCAL b4app.replaying = 'on'")
-      let populated = try c.execute("SELECT count(*) AS \"n\" FROM \"connections\"").rows.first?.int("n") ?? 0
-      if populated > 0 {
-        guard replace else {
-          throw WorkspaceError(
-            .protocolInvalid, "The store is not empty; pass --replace to overwrite it from the archive.")
+    do {
+      let input = try WorkspaceArchive.read(Data(contentsOf: URL(fileURLWithPath: path)))
+      return try write(exclusive: true) { c in
+        try ProtocolGrantProtection.establish(c)
+        // This storage guard is authoritative for direct callers too, within the SAME exclusive TX.
+        guard try c.execute("SELECT 1 FROM \"hubLink\" LIMIT 1").rows.isEmpty else {
+          throw WorkspaceArchive.Rejection.joined
         }
-        for table in Self.archiveTables.reversed() { try c.execute("DELETE FROM \(Rows.quote(table))") }
-      } else {
-        // A store with no connections counts as empty, yet it may hold the account's view settings
-        // (set before the restore) with their changes and clocks; the archive's replace them.
-        try c.execute("DELETE FROM \"viewSettings\"")
-        try c.execute("DELETE FROM \"changes\" WHERE \"table\" = 'viewSettings'")
-        try c.execute("DELETE FROM \"columnClocks\" WHERE \"table\" = 'viewSettings'")
+        let present = Set(
+          try c.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public'").rows
+            .compactMap { $0.text("tablename") })
+        let target = try WorkspaceArchive.captureSchema(c, present: present)
+        guard target.migrations == WorkspaceArchive.migrations else {
+          throw WorkspaceArchive.Rejection.future
+        }
+        let activation = try ProtocolActivationControl.captureRestore(c)
+        var populated = false
+        for table in Self.archiveTables where table != "viewSettings" {
+          let condition =
+            table == "settings"
+            ? " WHERE \"key\" IS DISTINCT FROM $1"
+            : (table == "changes" || table == "columnClocks")
+              ? " WHERE \"table\" IS DISTINCT FROM 'viewSettings'" : ""
+          let parameters: [String?] = table == "settings" ? [ProtocolActivationControl.key] : []
+          if try !c.execute("SELECT 1 FROM \(Rows.quote(table))\(condition) LIMIT 1", parameters).rows.isEmpty
+          {
+            populated = true
+          }
+        }
+        guard replace || !populated else { throw WorkspaceArchive.Rejection.notEmpty }
+
+        // Prepare EVERY argument/JSON conversion/scalar/range/column check before any replay or
+        // material bind. Fixed catalog names are the only parameters used above and here.
+        var prepared: [String: [(sql: String, params: [String?])]] = [:]
+        for table in Self.archiveTables {
+          let known = try WorkspaceArchive.columns(table, at: WorkspaceArchive.migrations.count)
+          let json = try jsonColumns(c, of: table)
+          for record in input.records[table] ?? [] {
+            guard Set(record.row.keys).isSubset(of: known) else { throw WorkspaceArchive.Rejection.invalid }
+            if table.hasPrefix("protocol") {
+              for key in ["connectionId", "threadId"] {
+                guard let value = record.row[key] as? String, !value.isEmpty else {
+                  throw WorkspaceArchive.Rejection.invalid
+                }
+              }
+            }
+            if table == "protocolGrantSecrets" {
+              guard let reference = record.row["reference"] as? String, reference.hasPrefix("secret:"),
+                reference.count > 7,
+                let material = record.row["material"] as? String, !material.isEmpty
+              else { throw WorkspaceArchive.Rejection.invalid }
+            }
+            let columns = record.row.keys.sorted()
+            guard !columns.isEmpty else { throw WorkspaceArchive.Rejection.invalid }
+            let values = try columns.map { column -> (column: String, param: String?) in
+              if column == "seq", table == "changes" {
+                guard let value = record.sequence else { throw WorkspaceArchive.Rejection.invalid }
+                return (column, String(value))
+              }
+              let value = record.row[column]!
+              if json.contains(column) {
+                let text = try Self.jsonbParam(value, archiveVersion: input.version)
+                // JSON text stays opaque (including precision beyond Foundation numbers). Actual
+                // C-string NUL is refused; jsonb syntax/escaped-NUL validity remains atomic in PG.
+                if let text { try WorkspaceArchive.representable(text) }
+                return (column, text)
+              }
+              return (column, try WorkspaceArchive.parameter(value))
+            }
+            prepared[table, default: []].append(Rows.insert(table, values))
+          }
+        }
+        let sequence = try c.execute(
+          "SELECT min_value::text AS minimum,max_value::text AS maximum,increment_by::text AS step,cache_size::text AS cache,cycle FROM pg_sequences WHERE schemaname='public' AND sequencename='changes_seq_seq'"
+        ).rows.first
+        guard let minText = sequence?.text("minimum"), let minimum = Int64(minText),
+          let maxText = sequence?.text("maximum"), let maximum = Int64(maxText),
+          sequence?.text("step") == "1", sequence?.text("cache") == "1", sequence?.text("cycle") == "f",
+          input.nextSequence >= minimum, input.nextSequence <= maximum
+        else { throw WorkspaceArchive.Rejection.invalid }
+        try ProtocolGrantProtection.verify(c)
+        try c.execute("SET LOCAL b4app.replaying='on'")
+        // Advance only valid recorded clocks; never rewrite unknown historical strings. On a later
+        // failure memory may remain safely monotonic. Waiting local writes cannot stamp before us.
+        for stamp in input.clocks { clock.observe(stamp) }
+        if replace {
+          for table in Self.archiveTables.reversed() {
+            try ProtocolGrantProtection.verify(c)
+            try c.execute("DELETE FROM \(Rows.quote(table))")
+          }
+        }
+        if !replace {
+          // Only these admitted view-setting rows are replaced; no unrelated row is cleared.
+          try c.execute("DELETE FROM \"viewSettings\"")
+          try c.execute("DELETE FROM \"changes\" WHERE \"table\" = 'viewSettings'")
+          try c.execute("DELETE FROM \"columnClocks\" WHERE \"table\" = 'viewSettings'")
+          // Retain the captured destination chronology while replaying every source row normally.
+          try c.execute("DELETE FROM \"settings\" WHERE \"key\" = $1", [ProtocolActivationControl.key])
+        }
+        for table in Self.archiveTables {
+          try ProtocolGrantProtection.verify(c)
+          for statement in prepared[table] ?? [] { try c.execute(statement.sql, statement.params) }
+        }
+        try c.execute("UPDATE \"changes\" SET \"synced\"=false")
+        // This is a checked integer literal, never authority or user SQL. RESTART is transactional;
+        // every restored seq was explicit, so no default nextval can escape a failed transaction.
+        try c.execute("ALTER SEQUENCE \"changes_seq_seq\" RESTART WITH \(input.nextSequence)")
+        try ProtocolActivationControl.invalidateAfterRestore(c, capture: activation)
+        try ProtocolGrantProtection.verify(c)
+        return ArchiveSummary(path: path, rows: input.dataCount)
       }
-      var count = 0
-      for line in lines {
-        guard let object = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-          let table = object["table"] as? String, var row = object["row"] as? [String: Any],
-          Self.archiveTables.contains(table)
-        else { continue }
-        // An archive from before migration 0004 has no clock on its changes: derive it as the
-        // migration does, from the wall time and device.
-        if table == "changes", row["hlc"] == nil, let wall = row["wall"] as? Int,
-          let device = row["deviceId"] as? String
-        {
-          row["hlc"] = Self.wallClock(wall: wall, deviceId: device)
-        }
-        let columns = try columns(c, of: table).filter { row[$0] != nil }
-        let json = try jsonColumns(c, of: table)
-        let values = try columns.map { column in
-          json.contains(column)
-            ? try Self.jsonbParam(row[column]!, archiveVersion: version) : try Rows.param(row[column]!)
-        }
-        let statement = Rows.insert(table, Array(zip(columns, values)).map { (column: $0.0, param: $0.1) })
-        try c.execute(statement.sql, statement.params)
-        count += 1
+    } catch let refusal as WorkspaceArchive.Rejection {
+      switch refusal {
+      case .future:
+        throw WorkspaceError(
+          .incompatibleVersion, "The workspace archive requires a newer archive or schema version.")
+      case .joined:
+        throw WorkspaceError(.protocolInvalid, "Leave the hub before restoring a workspace archive.")
+      case .notEmpty:
+        throw WorkspaceError(
+          .protocolInvalid, "The store is not empty; pass --replace to overwrite it from the archive.")
+      case .invalid:
+        throw WorkspaceError(.protocolInvalid, "The workspace archive is not compatible with this store.")
       }
-      // Restored changes have reached no hub from this store: an archive taken while joined must not
-      // keep them marked synced, or a later `hub join` would never upload them. Restore is refused
-      // while joined, so nothing here races a push.
-      try c.execute("UPDATE \"changes\" SET \"synced\" = false")
-      // The changes sequence must continue past the restored rows.
-      try c.execute(
-        "SELECT setval('\"changes_seq_seq\"', coalesce((SELECT max(\"seq\") FROM \"changes\"), 0) + 1, false)"
-      )
-      return ArchiveSummary(path: path, rows: count)
+    } catch {
+      // Outer boundary includes the actual write COMMIT and all PostgreSQL DETAIL/causes.
+      throw WorkspaceError(.internalError, "The protected workspace archive could not be restored.")
     }
   }
 

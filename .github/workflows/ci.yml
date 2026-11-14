@@ -108,6 +108,7 @@ jobs:
       - name: Fetch PostgreSQL (the tests boot a private cluster from it)
         run: ./Scripts/fetch-postgres.sh
       - name: Build
+        id: package-build
         run: swift build
       # The storage and coordinator tests wait on PostgreSQL synchronously, from Swift's cooperative
       # threads (one per core). In one process with everything else they held all of the runner's
@@ -118,7 +119,18 @@ jobs:
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
         run: swift test --filter 'AccountRegistryTests/aLedgerIsCreatedOnlyWhenMissing'
+      - name: Focused socket ownership and shutdown regressions
+        id: socket-ownership-controls
+        run: swift test --filter 'SocketResponseOwnershipTests|SocketLifecycleTests|SocketClosePreservationTests|OwnedCloseConcurrencyTests|SocketServerShutdownTests'
+      - name: Focused Agent Protocol transport regressions
+        run: swift test --filter AgentProtocolTransportTests
+      - name: Focused Agent Protocol foundation regressions
+        run: swift test --filter 'AgentProtocol|ProtocolProjectionStoreTests|ProtocolActivation'
+      - name: Focused Node probe observation controls
+        id: node-probe-control
+        run: swift test --filter NodeVersionProbeObservationTests
       - name: Test
+        if: ${{ !cancelled() && (success() || steps.node-probe-control.outcome == 'failure') }}
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
         run: |
@@ -126,6 +138,376 @@ jobs:
           swift test --skip-build --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           swift test --skip-build --skip '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           exit "$status"
+      - name: Sample owner-carrier build metadata (compiler controls held)
+        id: owner-carrier-metadata
+        if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' }}
+        timeout-minutes: 1
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import math
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+          import tempfile
+
+          MAX_INPUT = 4 * 1024 * 1024
+          MAX_RECORD = 256 * 1024
+          MAX_NODES = 16384
+          MAX_DEPTH = 64
+          SOURCE_PINS = {
+              "Sources/Coordinator/HubSync/HubOwnerCarrier.swift": "217eee004c3d36fbeffc4a7efb96bc9eee955ca656eacc0e000dcb619332f51b",
+              "Sources/Coordinator/Accounts/AccountManager.swift": "06119d341433560101eca806f4497eb4ae93b9b99c06db2968ce33e8520d2cfe",
+              "Sources/Coordinator/HubSync/HubSync.swift": "1e5524a1fb3616c6ce2db218168b3c4d144ba57821c51b5c06dbdbcdc2b7338c",
+              "Sources/WorkspaceStorage/ProtocolActivation.swift": "1d0ec09f0c7e7a176761d75a597af1767d727e66490744d9947521a15d34ff2c",
+              "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "23a1c01b827d4d0ee1c533ba5c0391500efd37c28d0fa71182eecb43c70af23f",
+          }
+
+          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': '1d0ec09f0c7e7a176761d75a597af1767d727e66490744d9947521a15d34ff2c', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '4aa79857d10a9709150318c7aea4b948476f31a55ffbd0452af89ee2635e74c8', 'Sources/WorkspaceStorage/PostgresClient.swift': 'd713d50ed4183abb642f4ca6689d773c8b25306ac225ea0dd9936e0704cfc803', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '4c75114692e36b2d7f88a2c3da0c29647007df8aff89190de561a4fe45790ad6'}
+          HELPER_RELATIVE = "Scripts/check-owner-carrier-compiler-controls.py"
+          HELPER_SHA256 = "d20504aaafb5207910b671db951f2609d9518d9940f6224b8b64ab7d092c2dcc"
+
+          class Rejected(Exception):
+              pass
+
+          def require(condition):
+              if not condition:
+                  raise Rejected()
+
+          def safe_string(value):
+              require(isinstance(value, str) and len(value) <= MAX_RECORD)
+              require(not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value))
+              require(re.search(r"(?:bearer\s|secret:|secretref:|secret-reference:)", value, re.IGNORECASE) is None)
+              return value
+
+          def contained(path, anchor):
+              require(path != anchor and path.is_relative_to(anchor))
+              return path
+
+          def read_regular(path, anchor, cap=MAX_INPUT):
+              resolved = contained(path.resolve(strict=True), anchor)
+              fd = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "rb") as stream:
+                  before = os.fstat(stream.fileno())
+                  require(stat.S_ISREG(before.st_mode) and 0 <= before.st_size <= cap)
+                  data = stream.read(cap + 1)
+                  after = os.fstat(stream.fileno())
+                  require(len(data) <= cap and len(data) == before.st_size)
+                  require((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                          == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns))
+              return resolved, data
+
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  require(key not in result)
+                  result[key] = value
+              return result
+
+          def finite_float(value):
+              parsed = float(value)
+              require(math.isfinite(parsed))
+              return parsed
+
+          def reject_constant(_value):
+              raise Rejected()
+
+          def json_type(value):
+              if value is None:
+                  return "null"
+              if isinstance(value, bool):
+                  return "boolean"
+              if isinstance(value, dict):
+                  return "object"
+              if isinstance(value, list):
+                  return "array"
+              if isinstance(value, str):
+                  return "string"
+              if isinstance(value, int):
+                  return "integer"
+              if isinstance(value, float):
+                  return "number"
+              raise Rejected()
+
+          def typed_fields(value):
+              require(len(value) <= 256)
+              return [{"key": safe_string(key), "type": json_type(item)} for key, item in value.items()]
+
+          def validate_selected(value):
+              pending = [(value, 0)]
+              count = 0
+              while pending:
+                  item, depth = pending.pop()
+                  count += 1
+                  require(count <= MAX_NODES and depth <= MAX_DEPTH)
+                  if isinstance(item, dict):
+                      require(len(item) <= MAX_NODES - count)
+                      for key, child in item.items():
+                          safe_string(key)
+                          require(key.casefold() not in ("env", "environ", "environment"))
+                          pending.append((key, depth + 1))
+                          pending.append((child, depth + 1))
+                  elif isinstance(item, list):
+                      require(len(item) <= MAX_NODES - count)
+                      pending.extend((child, depth + 1) for child in item)
+                  elif isinstance(item, str):
+                      safe_string(item)
+                  elif isinstance(item, float):
+                      require(math.isfinite(item))
+                  else:
+                      json_type(item)
+                  require(len(pending) + count <= MAX_NODES)
+              return count
+
+          def main():
+              checkout = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+              require(checkout.is_dir())
+              build = contained((checkout / ".build").resolve(strict=True), checkout)
+              require(build.is_dir())
+              description_path, description_bytes = read_regular(build / "debug/description.json", build)
+              try:
+                  description = json.loads(description_bytes.decode("utf-8"), object_pairs_hook=unique_object,
+                                           parse_float=finite_float, parse_constant=reject_constant)
+              except (ValueError, UnicodeError, RecursionError):
+                  raise Rejected() from None
+              require(isinstance(description, dict))
+              top_fields = typed_fields(description)
+              commands = description.get("swiftCommands")
+              require(isinstance(commands, dict) and len(commands) <= 256)
+              require(all(isinstance(command, dict) for command in commands.values()))
+              selected = [(key, command) for key, command in commands.items()
+                          if isinstance(command.get("moduleName"), str) and command["moduleName"] == "CoordinatorTests"]
+              require(len(selected) == 1)
+              selected_key, selected_command = selected[0]
+              safe_string(selected_key)
+              selected_nodes = validate_selected(selected_command)
+              selected_fields = typed_fields(selected_command)
+
+              module_path = description_path.parent / "Modules/Coordinator.swiftmodule"
+              contained(module_path.resolve(strict=False), build)
+              module_exists = os.path.lexists(module_path)
+              if module_exists:
+                  require(stat.S_ISREG(module_path.lstat().st_mode))
+                  contained(module_path.resolve(strict=True), build)
+
+              storage_path = description_path.parent / "Modules/WorkspaceStorage.swiftmodule"
+              contained(storage_path.resolve(strict=False), build)
+              storage_exists = os.path.lexists(storage_path)
+              if storage_exists:
+                  require(stat.S_ISREG(storage_path.lstat().st_mode))
+                  contained(storage_path.resolve(strict=True), build)
+              receipt_hashes = {}
+              for relative, expected in RECEIPT_SOURCE_PINS.items():
+                  _, content = read_regular(checkout / relative, checkout)
+                  actual = hashlib.sha256(content).hexdigest()
+                  require(actual == expected)
+                  receipt_hashes[relative] = actual
+              helper_path, helper_bytes = read_regular(checkout / HELPER_RELATIVE, checkout, MAX_RECORD)
+              require(helper_path == checkout / HELPER_RELATIVE and 0 < len(helper_bytes) <= MAX_RECORD)
+              require(hashlib.sha256(helper_bytes).hexdigest() == HELPER_SHA256)
+              source_hashes = {}
+              for relative, expected in SOURCE_PINS.items():
+                  _, content = read_regular(checkout / relative, checkout)
+                  actual = hashlib.sha256(content).hexdigest()
+                  require(actual == expected)
+                  source_hashes[relative] = actual
+              _, workflow_bytes = read_regular(checkout / ".github/workflows/ci.yml", checkout)
+              sha = os.environ["GITHUB_SHA"]
+              run_id = os.environ["GITHUB_RUN_ID"]
+              attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+              require(re.fullmatch(r"[0-9a-f]{40}", sha) is not None)
+              require(re.fullmatch(r"[1-9][0-9]{0,19}", run_id) is not None)
+              require(re.fullmatch(r"[1-9][0-9]{0,9}", attempt) is not None)
+              record = {
+                  "schema_version": 2,
+                  "kind": "METADATA_ONLY_COMPILER_CONTROLS_HELD",
+                  "compiler_controls": {"count": 6, "controls_per_bundle": 3, "bundles": ["origin", "receipt"], "status": "HELD", "semantic_vectors_qualified": False},
+                  "semantic_fields_qualified": False,
+                  "github": {"sha": sha, "run_id": run_id, "run_attempt": attempt},
+                  "description": {"requested_relative_path": ".build/debug/description.json",
+                                  "resolved_relative_path": safe_string(str(description_path.relative_to(checkout))),
+                                  "sha256": hashlib.sha256(description_bytes).hexdigest(),
+                                  "bytes": len(description_bytes), "top_level_fields": top_fields,
+                                  "swift_commands_count": len(commands)},
+                  "selected_command_key": selected_key,
+                  "selected_command": selected_command,
+                  "selected_command_fields": selected_fields,
+                  "selected_tree_nodes": selected_nodes,
+                  "source_sha256": source_hashes,
+                  "receipt_source_sha256": receipt_hashes,
+                  "compiler_helper": {"relative_path": HELPER_RELATIVE, "sha256": HELPER_SHA256,
+                                      "bytes": len(helper_bytes)},
+                  "storage_module": {"relative_to_description_parent": "Modules/WorkspaceStorage.swiftmodule",
+                                     "exists": storage_exists, "freshness_proven": False, "import_proven": False},
+                  "workflow_sha256": hashlib.sha256(workflow_bytes).hexdigest(),
+                  "coordinator_module": {"relative_to_description_parent": "Modules/Coordinator.swiftmodule",
+                                         "exists": module_exists, "freshness_proven": False, "import_proven": False},
+              }
+              encoded = (json.dumps(record, ensure_ascii=True, allow_nan=False, sort_keys=True,
+                                    separators=(",", ":")) + "\n").encode("utf-8")
+              require(len(encoded) <= MAX_RECORD)
+              runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+              require(runner_temp.is_dir())
+              output_directory = Path(tempfile.mkdtemp(prefix="owner-carrier-metadata-", dir=runner_temp))
+              os.chmod(output_directory, 0o700)
+              directory_info = output_directory.lstat()
+              require(stat.S_ISDIR(directory_info.st_mode) and stat.S_IMODE(directory_info.st_mode) == 0o700)
+              sample_path = contained(output_directory / "sample.json", runner_temp)
+              safe_string(str(sample_path))
+              fd = os.open(sample_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+              with os.fdopen(fd, "wb") as stream:
+                  os.fchmod(stream.fileno(), 0o600)
+                  require(stream.write(encoded) == len(encoded))
+                  stream.flush()
+                  os.fsync(stream.fileno())
+                  info = os.fstat(stream.fileno())
+                  require(stat.S_ISREG(info.st_mode) and info.st_size == len(encoded))
+                  require(stat.S_IMODE(info.st_mode) == 0o600)
+              final_info = sample_path.lstat()
+              require(stat.S_ISREG(final_info.st_mode) and final_info.st_size == len(encoded))
+              require(stat.S_IMODE(final_info.st_mode) == 0o600)
+              require((final_info.st_dev, final_info.st_ino) == (info.st_dev, info.st_ino))
+              output_path = contained(Path(os.environ["GITHUB_OUTPUT"]).resolve(strict=True), runner_temp)
+              fd = os.open(output_path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "w", encoding="utf-8") as output:
+                  require(stat.S_ISREG(os.fstat(output.fileno()).st_mode))
+                  output_line = "sample-path=" + str(sample_path) + "\n"
+                  require(output.write(output_line) == len(output_line))
+                  output.flush()
+              print("owner_carrier_metadata_finalized")
+              print("description_sha256=" + record["description"]["sha256"])
+              print("sample_sha256=" + hashlib.sha256(encoded).hexdigest())
+              print("sample_bytes=" + str(len(encoded)))
+              print("selected_tree_nodes=" + str(selected_nodes))
+              print("swift_commands_count=" + str(len(commands)))
+              print("source_hash_count=" + str(len(source_hashes)))
+
+          try:
+              main()
+          except Rejected:
+              print("owner_carrier_metadata_rejected", file=sys.stderr)
+              sys.exit(1)
+          except Exception:
+              print("infrastructure_failure", file=sys.stderr)
+              sys.exit(1)
+          PY
+      - name: Save owner-carrier metadata sample
+        if: ${{ !cancelled() && steps.owner-carrier-metadata.outcome == 'success' }}
+        timeout-minutes: 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: owner-carrier-metadata
+          path: ${{ steps.owner-carrier-metadata.outputs.sample-path }}
+          retention-days: 7
+          if-no-files-found: error
+      - name: Owner-carrier origin compiler access controls
+        id: owner-carrier-origin-controls
+        if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' }}
+        timeout-minutes: 1
+        env:
+          OWNER_CARRIER_METADATA_SAMPLE: ${{ steps.owner-carrier-metadata.outputs.sample-path }}
+        run: |
+          python3 -I - origin <<'PY'
+          try:
+              import time
+              START = time.monotonic()
+              PARENT_END = START + 50.0
+              import hashlib
+              import os
+              from pathlib import Path
+              import stat
+              import sys
+              if len(sys.argv) != 2 or sys.argv[0] != "-" or sys.argv[1] not in ("origin", "receipt"):
+                  raise ValueError()
+              checkout = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+              if not checkout.is_dir():
+                  raise ValueError()
+              relative = "Scripts/check-owner-carrier-compiler-controls.py"
+              helper_path = (checkout / relative).resolve(strict=True)
+              if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
+                  raise ValueError()
+              cap = 262144
+              expected = "d20504aaafb5207910b671db951f2609d9518d9940f6224b8b64ab7d092c2dcc"
+              fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "rb") as stream:
+                  before = os.fstat(stream.fileno())
+                  if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= cap:
+                      raise ValueError()
+                  helper_bytes = stream.read(cap + 1)
+                  after = os.fstat(stream.fileno())
+                  if len(helper_bytes) != before.st_size or len(helper_bytes) > cap:
+                      raise ValueError()
+                  if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                          after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                      raise ValueError()
+              if hashlib.sha256(helper_bytes).hexdigest() != expected or time.monotonic() > START + 4.0:
+                  raise ValueError()
+              namespace = {"__name__": "__main__", "__file__": str(helper_path),
+                           "BOOTSTRAP_START": START, "BOOTSTRAP_PARENT_END": PARENT_END,
+                           "BOOTSTRAP_HELPER_RELATIVE": relative, "BOOTSTRAP_HELPER_SHA256": expected,
+                           "BOOTSTRAP_HELPER_BYTES": len(helper_bytes)}
+              exec(compile(helper_bytes, str(helper_path), "exec"), namespace, namespace)
+          except BaseException:
+              print('{"category":"owner_carrier_infrastructure_failure"}', flush=True)
+              raise SystemExit(1)
+          PY
+      - name: Owner-carrier receipt compiler access controls
+        id: owner-carrier-receipt-controls
+        if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' && steps.owner-carrier-origin-controls.outcome == 'success' }}
+        timeout-minutes: 1
+        env:
+          OWNER_CARRIER_METADATA_SAMPLE: ${{ steps.owner-carrier-metadata.outputs.sample-path }}
+        run: |
+          python3 -I - receipt <<'PY'
+          try:
+              import time
+              START = time.monotonic()
+              PARENT_END = START + 50.0
+              import hashlib
+              import os
+              from pathlib import Path
+              import stat
+              import sys
+              if len(sys.argv) != 2 or sys.argv[0] != "-" or sys.argv[1] not in ("origin", "receipt"):
+                  raise ValueError()
+              checkout = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+              if not checkout.is_dir():
+                  raise ValueError()
+              relative = "Scripts/check-owner-carrier-compiler-controls.py"
+              helper_path = (checkout / relative).resolve(strict=True)
+              if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
+                  raise ValueError()
+              cap = 262144
+              expected = "d20504aaafb5207910b671db951f2609d9518d9940f6224b8b64ab7d092c2dcc"
+              fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(fd, "rb") as stream:
+                  before = os.fstat(stream.fileno())
+                  if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= cap:
+                      raise ValueError()
+                  helper_bytes = stream.read(cap + 1)
+                  after = os.fstat(stream.fileno())
+                  if len(helper_bytes) != before.st_size or len(helper_bytes) > cap:
+                      raise ValueError()
+                  if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                          after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                      raise ValueError()
+              if hashlib.sha256(helper_bytes).hexdigest() != expected or time.monotonic() > START + 4.0:
+                  raise ValueError()
+              namespace = {"__name__": "__main__", "__file__": str(helper_path),
+                           "BOOTSTRAP_START": START, "BOOTSTRAP_PARENT_END": PARENT_END,
+                           "BOOTSTRAP_HELPER_RELATIVE": relative, "BOOTSTRAP_HELPER_SHA256": expected,
+                           "BOOTSTRAP_HELPER_BYTES": len(helper_bytes)}
+              exec(compile(helper_bytes, str(helper_path), "exec"), namespace, namespace)
+          except BaseException:
+              print('{"category":"owner_carrier_infrastructure_failure"}', flush=True)
+              raise SystemExit(1)
+          PY
+      - name: Focused owned protocol proof writer regressions
+        if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' && steps.owner-carrier-origin-controls.outcome == 'success' && steps.owner-carrier-receipt-controls.outcome == 'success' }}
+        run: swift test --filter OwnedProtocolProofWriteTests
 
   apps:
     name: macOS and iOS app builds
@@ -308,4 +690,4 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast

@@ -23,7 +23,7 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
   return (thread, turn)
 }
 
-@Suite struct ChangeLogTests {
+@Suite(.serialized) struct ChangeLogTests {
   @Test func everyWriteLeavesChangesAndTheLogReplaysIntoAnEqualStore() throws {
     let source = try WorkspaceDatabase.temporary()
     let (thread, turn) = try seed(source)
@@ -136,7 +136,9 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     #expect(updates.contains { $0.column == "profileRevision" && $0.value == .number(7) })
     #expect(updates.contains { $0.column == "context" && $0.value == nil })
 
-    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    let path =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     let summary = try source.export(to: path)
     let target = try WorkspaceDatabase.temporary()
     #expect(try target.restore(from: path).rows == summary.rows)
@@ -163,30 +165,13 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
       $0.pinned = true
     }
     _ = try source.updateTurn(id: turn.id) { $0.status = .terminal }
-    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
-    let summary = try source.export(to: path)
-
-    // Rewrite the archive the way the version 1 exporter wrote it: jsonb text parsed into values.
-    let jsonColumns: Set<String> = ["value", "payload", "capabilities", "routes"]
-    var lines = try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n").map(String.init)
-    var header = try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as! [String: Any]
-    #expect(header["version"] as? Int == 3)
-    header["version"] = 1
-    lines[0] = String(decoding: try JSONSerialization.data(withJSONObject: header), as: UTF8.self)
-    for index in lines.indices.dropFirst() {
-      var line = try JSONSerialization.jsonObject(with: Data(lines[index].utf8)) as! [String: Any]
-      var row = line["row"] as! [String: Any]
-      for column in jsonColumns {
-        guard let text = row[column] as? String else { continue }
-        row[column] = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
-      }
-      line["row"] = row
-      lines[index] = String(decoding: try JSONSerialization.data(withJSONObject: line), as: UTF8.self)
-    }
-    try (lines.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+    let path =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    let archivedRows = try HistoricalWorkspaceArchiveFixture.write(source, version: 1, path: path)
 
     let target = try WorkspaceDatabase.temporary()
-    #expect(try target.restore(from: path).rows == summary.rows)
+    #expect(try target.restore(from: path).rows == archivedRows)
     #expect(try target.changes(after: 0) == source.changes(after: 0))
     #expect(try target.listThreads() == source.listThreads())
     #expect(try target.displayItems(threadId: thread.id) == source.displayItems(threadId: thread.id))
@@ -195,7 +180,9 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
   @Test func exportAndRestoreRoundTrip() throws {
     let source = try WorkspaceDatabase.temporary()
     let (thread, _) = try seed(source)
-    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    let path =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     let summary = try source.export(to: path)
     #expect(summary.rows > 6)
     let mode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int
@@ -221,7 +208,9 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
     let total = try source.changes(after: 0).count
     try source.markSynced(through: Int.max)
     #expect(try source.unsyncedChangeCount() == 0)
-    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    let path =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     try source.export(to: path)
 
     let target = try WorkspaceDatabase.temporary()

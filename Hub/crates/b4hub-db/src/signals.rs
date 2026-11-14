@@ -29,6 +29,8 @@ pub const LINKS: &str = "b4hub_links";
 
 /// The channel of heartbeat echoes.
 pub const ECHO: &str = "b4hub_echo";
+/// The monotonic protocol-floor transaction committed. Payload is intentionally empty.
+pub const PROTOCOL: &str = "b4hub_protocol";
 
 /// Tells every listening instance that `org` has new changes, from `instance`. Call it after the
 /// push has committed.
@@ -59,8 +61,12 @@ async fn notify(db: &Db, channel: &str, payload: String) -> Result<()> {
 /// What [`Listener::next`] heard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
+    ProtocolFloor,
     /// `org` has new changes, announced by `instance`.
-    Changes { org: Uuid, instance: Uuid },
+    Changes {
+        org: Uuid,
+        instance: Uuid,
+    },
     /// `user`'s links should be checked again, asked by `instance`.
     Recheck {
         org: Uuid,
@@ -68,7 +74,9 @@ pub enum Signal {
         instance: Uuid,
     },
     /// `instance`'s heartbeat echo: nothing to do but note that the connection works.
-    Echo { instance: Uuid },
+    Echo {
+        instance: Uuid,
+    },
     /// The connection dropped and was re-established; signals in between are lost.
     Lost,
 }
@@ -81,7 +89,9 @@ impl Listener {
     /// Connects with `db`'s settings and starts listening.
     pub async fn connect(db: &Db) -> Result<Listener> {
         let mut listener = PgListener::connect_with(&db.dedicated().pool).await?;
-        listener.listen_all([CHANGES, LINKS, ECHO]).await?;
+        listener
+            .listen_all([CHANGES, LINKS, ECHO, PROTOCOL])
+            .await?;
         Ok(Listener(listener))
     }
 
@@ -99,6 +109,9 @@ impl Listener {
 }
 
 fn parse(channel: &str, payload: &str) -> Option<Signal> {
+    if channel == PROTOCOL {
+        return payload.is_empty().then_some(Signal::ProtocolFloor);
+    }
     let ids = payload
         .split(' ')
         .map(|id| id.parse::<Uuid>().ok())

@@ -5,6 +5,15 @@ import WorkspaceProtocol
 import WorkspaceStorage
 import WorkspaceSync
 
+// Internal, nil-default, passive test observation. No identity, SQL, errors or scheduling control.
+enum AccountMigrationPhase: Sendable {
+  case actorSignInEntered, transitionAcquired, preflightEntered, preflightReturned
+  case scopeDrainEntered, scopeDrainReturned, scopeCloseAwaitEntered
+  case scopeCloseWorkEntered, scopeCloseWorkReturned, scopeCloseAwaitReturned
+  case poolDrainEntered, poolDrainReturned, targetOpenEntered, targetOpenReturned
+}
+typealias AccountMigrationObserver = @Sendable (AccountMigrationPhase, Bool?) -> Void
+
 /// Which account this Mac is signed in as, and the only owner of its `AccountScope` (sign-in plan,
 /// Task 9). One account is signed in at a time; nobody may be.
 ///
@@ -17,8 +26,11 @@ import WorkspaceSync
 ///   says "signed out" for an account that comes back.
 /// - **Sign-in** finds or creates the registry row by `(hub URL, hub user id)`, claiming a placeholder
 ///   row whose device is the one the hub answered with, opens and migrates its
-///   database before anything else changes (a database that cannot be opened refuses the sign-in and
-///   leaves the previous account active and open), stores the token, writes the database's hub link,
+///   database before auth changes. A pending migration of the active store first quiesces its scope:
+///   a refusal before close leaves the same scope open; a failure after close leaves it temporarily
+///   unavailable with its registry and credentials intact. Other failed opens leave the previous
+///   account active and open.
+///   It then stores the token, writes the database's hub link,
 ///   activates the row, then closes the previous account and starts the new one. The first account
 ///   gets `workspace` unless it has joined a hub of its own; later ones get `workspace_<id>`.
 /// - **Sign-out** closes the scope, forgets the token (secret store and registry), and publishes
@@ -51,6 +63,8 @@ public actor AccountManager {
     /// (D-094; `LegacyAdoption.Plan.legacySecretStore`). Nil, the default and every other flavour's,
     /// reads nothing.
     public var legacySecretStore: (any SecretStore)?
+    var migrationObserver: AccountMigrationObserver? = nil
+    var migrationCloseTaskExecutor: (any TaskExecutor)? = nil
 
     public init(
       cluster: StoreCluster, registry: AccountRegistry, scope: AccountScope.Context,
@@ -68,9 +82,332 @@ public actor AccountManager {
   /// The current scope, readable without waiting for the actor (the router, diagnostics, and the sleep
   /// watcher read it on every call).
   final class Slot: Sendable {
-    private let value = Mutex<AccountScope?>(nil)
-    func get() -> AccountScope? { value.withLock { $0 } }
-    func set(_ scope: AccountScope?) { value.withLock { $0 = scope } }
+    /// Keys contain only scalar identity. Their constructors are sealed to this file.
+    struct ClosedOwnerKey: Sendable, Hashable {
+      let manager: ObjectIdentifier
+      let slot: ObjectIdentifier
+      let scope: ObjectIdentifier
+      let hub: ObjectIdentifier
+      let database: ObjectIdentifier
+      let scopeInstance: UUID
+      let origin: UUID
+
+      fileprivate init(
+        manager: AccountManager, slot: Slot, scope: AccountScope,
+        origin: HubSync.ConfiguredClientOrigin
+      ) {
+        self.manager = ObjectIdentifier(manager)
+        self.slot = ObjectIdentifier(slot)
+        self.scope = ObjectIdentifier(scope)
+        hub = ObjectIdentifier(scope.hub)
+        database = ObjectIdentifier(scope.database)
+        scopeInstance = scope.instance
+        self.origin = origin.identity
+      }
+    }
+
+    struct OwnerKey: Sendable, Hashable {
+      let closed: ClosedOwnerKey
+      let revision: UInt64
+      fileprivate init(closed: ClosedOwnerKey, revision: UInt64) {
+        self.closed = closed
+        self.revision = revision
+      }
+    }
+
+    struct OrdinaryKey: Sendable, Hashable {
+      let owner: OwnerKey
+      let producer: UUID
+      fileprivate init(owner: OwnerKey, producer: UUID) {
+        self.owner = owner
+        self.producer = producer
+      }
+    }
+
+    enum CleanupPhase: Sendable, Hashable { case finalPush, sessionDisposal }
+    struct CleanupKey: Sendable, Hashable {
+      let owner: OwnerKey
+      let transition: UUID
+      let phase: CleanupPhase
+      let operation: UUID
+      fileprivate init(owner: OwnerKey, transition: UUID, phase: CleanupPhase, operation: UUID) {
+        self.owner = owner
+        self.transition = transition
+        self.phase = phase
+        self.operation = operation
+      }
+    }
+
+    /// A checked weak value: no unchecked conformance and no owning fallback.
+    struct WeakOwner<T: AnyObject & Sendable>: Sendable {
+      private(set) weak var value: T?
+      fileprivate init(_ value: T) { self.value = value }
+    }
+
+    struct RootRegistration: Sendable {
+      let key: OrdinaryKey
+      let manager: WeakOwner<AccountManager>
+      let scope: WeakOwner<AccountScope>
+      let slot: WeakOwner<Slot>
+      fileprivate init(key: OrdinaryKey, manager: AccountManager, scope: AccountScope, slot: Slot) {
+        self.key = key
+        self.manager = WeakOwner(manager)
+        self.scope = WeakOwner(scope)
+        self.slot = WeakOwner(slot)
+      }
+    }
+
+    struct ChildRegistration: Sendable {
+      let key: OrdinaryKey
+      let manager: WeakOwner<AccountManager>
+      let scope: WeakOwner<AccountScope>
+      let slot: WeakOwner<Slot>
+      fileprivate init(key: OrdinaryKey, manager: AccountManager, scope: AccountScope, slot: Slot) {
+        self.key = key
+        self.manager = WeakOwner(manager)
+        self.scope = WeakOwner(scope)
+        self.slot = WeakOwner(slot)
+      }
+    }
+
+    struct FinalPushRegistration: Sendable {
+      let key: CleanupKey
+      let manager: WeakOwner<AccountManager>
+      let scope: WeakOwner<AccountScope>
+      let slot: WeakOwner<Slot>
+      fileprivate init(key: CleanupKey, manager: AccountManager, scope: AccountScope, slot: Slot) {
+        self.key = key
+        self.manager = WeakOwner(manager)
+        self.scope = WeakOwner(scope)
+        self.slot = WeakOwner(slot)
+      }
+    }
+
+    struct SessionDisposalRegistration: Sendable {
+      let key: CleanupKey
+      let manager: WeakOwner<AccountManager>
+      let scope: WeakOwner<AccountScope>
+      let slot: WeakOwner<Slot>
+      fileprivate init(key: CleanupKey, manager: AccountManager, scope: AccountScope, slot: Slot) {
+        self.key = key
+        self.manager = WeakOwner(manager)
+        self.scope = WeakOwner(scope)
+        self.slot = WeakOwner(slot)
+      }
+    }
+
+    private struct CleanupRecord {
+      let key: CleanupKey
+      var active: Bool
+    }
+    private struct State {
+      var current: AccountScope?
+      var currentIdentity: ObjectIdentifier?
+      var revision: UInt64 = 0
+      var owner: OwnerKey?
+      var producers: Set<UUID> = []
+      var cleanup: CleanupRecord?
+    }
+    private let value = Mutex(State())
+
+    func get() -> AccountScope? { value.withLock { $0.current } }
+
+    func set(_ scope: AccountScope?) {
+      let identity = scope.map(ObjectIdentifier.init)
+      // Transfer the old strong current out before it can run a destructor. The input also remains
+      // strongly held outside the cell while its scalar identity and ownership are exchanged.
+      let displaced = value.withLock { state -> AccountScope? in
+        guard state.currentIdentity != identity else { return nil }
+        let previous = state.current
+        state.current = scope
+        state.currentIdentity = identity
+        state.owner = nil
+        state.producers.removeAll()
+        if identity != nil { state.cleanup = nil }
+        return previous
+      }
+      withExtendedLifetime(scope) {}
+      withExtendedLifetime(displaced) {}
+    }
+
+    private func matches(_ closed: ClosedOwnerKey, manager: AccountManager, scope: AccountScope) -> Bool {
+      closed.manager == ObjectIdentifier(manager) && closed.slot == ObjectIdentifier(self)
+        && manager.slot === self && closed.scope == ObjectIdentifier(scope)
+        && closed.hub == ObjectIdentifier(scope.hub)
+        && closed.database == ObjectIdentifier(scope.database) && closed.scopeInstance == scope.instance
+    }
+
+    private static func admitsOrdinary(_ state: State, _ key: OrdinaryKey) -> Bool {
+      state.currentIdentity == key.owner.closed.scope && state.owner == key.owner
+        && state.producers.contains(key.producer)
+    }
+
+    private static func matchesCleanup(_ state: State, _ key: CleanupKey) -> Bool {
+      (state.currentIdentity == nil || state.currentIdentity == key.owner.closed.scope)
+        && state.cleanup?.key == key
+    }
+
+    fileprivate func registerOwner(
+      _ original: ClosedOwnerKey, manager: AccountManager, scope: AccountScope
+    ) throws -> RootRegistration {
+      guard matches(original, manager: manager, scope: scope) else {
+        throw HubOwnerCarrier.comparisonFailure
+      }
+      let producer = UUID()
+      let key = value.withLock { state -> OrdinaryKey? in
+        guard state.currentIdentity == original.scope else { return nil }
+        // Fresh registration revokes every older owner and cleanup, including the same objects.
+        state.owner = nil
+        state.producers.removeAll()
+        state.cleanup = nil
+        guard state.revision < UInt64.max else { return nil }
+        state.revision += 1
+        let owner = OwnerKey(closed: original, revision: state.revision)
+        let key = OrdinaryKey(owner: owner, producer: producer)
+        state.owner = owner
+        state.producers.insert(producer)
+        return key
+      }
+      guard let key else { throw HubOwnerCarrier.comparisonFailure }
+      let registration = RootRegistration(key: key, manager: manager, scope: scope, slot: self)
+      withExtendedLifetime((manager, scope)) {}
+      return registration
+    }
+
+    func registerChild(
+      parent: OrdinaryKey, manager: AccountManager, scope: AccountScope
+    ) throws -> ChildRegistration {
+      guard matches(parent.owner.closed, manager: manager, scope: scope) else {
+        throw HubOwnerCarrier.comparisonFailure
+      }
+      let producer = UUID()
+      let key = value.withLock { state -> OrdinaryKey? in
+        guard Self.admitsOrdinary(state, parent), !state.producers.contains(producer) else { return nil }
+        let key = OrdinaryKey(owner: parent.owner, producer: producer)
+        state.producers.insert(producer)
+        return key
+      }
+      guard let key else { throw HubOwnerCarrier.comparisonFailure }
+      let registration = ChildRegistration(key: key, manager: manager, scope: scope, slot: self)
+      withExtendedLifetime((manager, scope)) {}
+      return registration
+    }
+
+    func requireOrdinary(_ key: OrdinaryKey) throws {
+      let admitted = value.withLock { Self.admitsOrdinary($0, key) }
+      guard admitted else { throw HubOwnerCarrier.comparisonFailure }
+    }
+
+    @discardableResult
+    func retireOrdinary(_ owner: OwnerKey) -> Bool {
+      value.withLock { state in
+        guard state.owner == owner else { return false }
+        state.owner = nil
+        state.producers.removeAll()
+        return true
+      }
+    }
+
+    @discardableResult
+    func unregisterProducer(_ key: OrdinaryKey) -> Bool {
+      value.withLock { state in
+        guard state.owner == key.owner, state.producers.contains(key.producer) else { return false }
+        state.producers.remove(key.producer)
+        return true
+      }
+    }
+
+    func acceptCleanup(
+      _ owner: OwnerKey, manager: AccountManager, scope: AccountScope
+    ) throws -> FinalPushRegistration {
+      guard matches(owner.closed, manager: manager, scope: scope) else {
+        throw HubOwnerCarrier.comparisonFailure
+      }
+      let transition = UUID()
+      let operation = UUID()
+      let key = value.withLock { state -> CleanupKey? in
+        guard state.currentIdentity == owner.closed.scope, state.owner == owner,
+          !state.producers.isEmpty, state.cleanup == nil
+        else { return nil }
+        // Accepted cleanup permanently retires ordinary producers before any later comparison.
+        state.owner = nil
+        state.producers.removeAll()
+        let key = CleanupKey(owner: owner, transition: transition, phase: .finalPush, operation: operation)
+        state.cleanup = CleanupRecord(key: key, active: true)
+        return key
+      }
+      guard let key else { throw HubOwnerCarrier.comparisonFailure }
+      let registration = FinalPushRegistration(key: key, manager: manager, scope: scope, slot: self)
+      withExtendedLifetime((manager, scope)) {}
+      return registration
+    }
+
+    func requireFinalPush(_ key: CleanupKey) throws {
+      let admitted = value.withLock { state in
+        key.phase == .finalPush && Self.matchesCleanup(state, key) && state.cleanup?.active == true
+      }
+      guard admitted else { throw HubOwnerCarrier.comparisonFailure }
+    }
+
+    @discardableResult
+    func revokeFinalPush(_ key: CleanupKey) -> Bool {
+      value.withLock { state in
+        guard key.phase == .finalPush, Self.matchesCleanup(state, key), state.cleanup?.active == true
+        else { return false }
+        state.cleanup?.active = false
+        return true
+      }
+    }
+
+    func beginSessionDisposal(
+      _ finalPush: CleanupKey, manager: AccountManager, scope: AccountScope
+    ) throws -> SessionDisposalRegistration {
+      guard matches(finalPush.owner.closed, manager: manager, scope: scope) else {
+        throw HubOwnerCarrier.comparisonFailure
+      }
+      let operation = UUID()
+      let key = value.withLock { state -> CleanupKey? in
+        guard finalPush.phase == .finalPush, operation != finalPush.operation,
+          Self.matchesCleanup(state, finalPush), state.cleanup?.active == false
+        else { return nil }
+        let key = CleanupKey(
+          owner: finalPush.owner, transition: finalPush.transition, phase: .sessionDisposal,
+          operation: operation)
+        state.cleanup = CleanupRecord(key: key, active: true)
+        return key
+      }
+      guard let key else { throw HubOwnerCarrier.comparisonFailure }
+      let registration = SessionDisposalRegistration(key: key, manager: manager, scope: scope, slot: self)
+      withExtendedLifetime((manager, scope)) {}
+      return registration
+    }
+
+    func requireSessionDisposal(_ key: CleanupKey) throws {
+      let admitted = value.withLock { state in
+        key.phase == .sessionDisposal && Self.matchesCleanup(state, key) && state.cleanup?.active == true
+      }
+      guard admitted else { throw HubOwnerCarrier.comparisonFailure }
+    }
+
+    @discardableResult
+    func revokeSessionDisposal(_ key: CleanupKey) -> Bool {
+      value.withLock { state in
+        guard key.phase == .sessionDisposal, Self.matchesCleanup(state, key), state.cleanup?.active == true
+        else { return false }
+        state.cleanup?.active = false
+        return true
+      }
+    }
+
+    @discardableResult
+    func finishCleanup(_ key: CleanupKey) -> Bool {
+      value.withLock { state in
+        guard key.phase == .sessionDisposal, Self.matchesCleanup(state, key), state.cleanup?.active == false
+        else { return false }
+        state.cleanup = nil
+        return true
+      }
+    }
   }
 
   let registry: AccountRegistry
@@ -78,8 +415,20 @@ public actor AccountManager {
   let scopeContext: AccountScope.Context
   let flavor: Flavor
   let legacySecretStore: (any SecretStore)?
+  let migrationObserver: AccountMigrationObserver?
+  let migrationCloseTaskExecutor: (any TaskExecutor)?
   let slot = Slot()
   let logger = Log.logger("accounts")
+
+  /// The manager's cluster is fixed; the registry uniquely owns each exact database name.
+  private struct RetainedDatabaseIdentity: Hashable {
+    let accountId: String
+    let database: String
+  }
+
+  /// Closed pools only, never scopes/services/tasks or extra credential references. A failed
+  /// migration admission keeps its exact pool for the NEXT explicit open, including current schema.
+  private var migrationDatabases: [RetainedDatabaseIdentity: WorkspaceDatabase] = [:]
 
   /// The active account, set before its scope is open so the status during a restore is that account.
   var active: AccountRow?
@@ -109,6 +458,8 @@ public actor AccountManager {
     scopeContext = scope
     flavor = context.flavor
     legacySecretStore = context.legacySecretStore
+    migrationObserver = context.migrationObserver
+    migrationCloseTaskExecutor = context.migrationCloseTaskExecutor
   }
 
   /// The registry's database on the cluster whose default database is `endpoint.database`: `registry`
@@ -125,6 +476,113 @@ public actor AccountManager {
   static func isPlaceholder(_ hubUserId: String) -> Bool { hubUserId.hasPrefix("device:") }
 
   // MARK: - Reading
+
+  /// Dormant only: no lifecycle caller installs or launches a producer through this surface.
+  func prepareDormantHubOwner(
+    expectedScope: AccountScope, originalSnapshot: ProtocolVerificationSnapshot
+  ) async throws -> HubOwnerCarrier {
+    do {
+      let beforeHop = expectedScope.account
+      try requireDormantCurrent(expectedScope, account: beforeHop)
+      let origin = try await expectedScope.hub.captureConfiguredClientOrigin()
+      let account = expectedScope.account
+      try requireDormantCurrent(expectedScope, account: account)
+      guard ObjectIdentifier(expectedScope.hub) == origin.hubIdentity,
+        expectedScope.database === origin.database
+      else { throw HubOwnerCarrier.comparisonFailure }
+      try origin.requireInstalledMemory()
+      try requireDormantCurrent(expectedScope, account: account)
+      try origin.requireInstalledMemory()
+      try expectedScope.database.compareOriginalLinkedCaptureOwner(
+        expectedSnapshot: originalSnapshot, accountID: account.id,
+        databaseName: account.database, hubBase: account.hubURL)
+      try expectedScope.database.compareOriginalLinkedCaptureOwner(
+        expectedSnapshot: originalSnapshot, accountID: account.id,
+        databaseName: account.database, hubBase: origin.baseURL.absoluteString)
+      let raw = origin.rawReference
+      guard raw.hasPrefix("secret:"), raw.count > 7, !raw.utf8.contains(0),
+        let reference = SecretRef(rawValue: raw), reference.rawValue.utf8.elementsEqual(raw.utf8)
+      else { throw HubOwnerCarrier.comparisonFailure }
+      // The first of two literal native comparisons on positive ordinary construction. A Slot
+      // retirement while this SELECT waits must refuse before any fresh owner is registered.
+      try expectedScope.database.compareOriginalLinkedSyncCredentialReference(
+        expectedSnapshot: originalSnapshot, expectedTokenRef: raw)
+      let afterNative = expectedScope.account
+      try requireDormantCurrent(expectedScope, account: afterNative)
+      guard account.id.utf8.elementsEqual(afterNative.id.utf8),
+        account.database.utf8.elementsEqual(afterNative.database.utf8),
+        account.hubURL.utf8.elementsEqual(afterNative.hubURL.utf8)
+      else { throw HubOwnerCarrier.comparisonFailure }
+      try origin.requireInstalledMemory()
+      let closed = Slot.ClosedOwnerKey(manager: self, slot: slot, scope: expectedScope, origin: origin)
+      let registration = try slot.registerOwner(closed, manager: self, scope: expectedScope)
+      do {
+        let carrier = try HubOwnerCarrier.makeOrdinary(
+          registration: registration, manager: self, scope: expectedScope, origin: origin,
+          originalSnapshot: originalSnapshot)
+        try carrier.requireOrdinaryMemory()
+        return carrier
+      } catch {
+        slot.retireOrdinary(registration.key.owner)
+        throw HubOwnerCarrier.comparisonFailure
+      }
+    } catch { throw HubOwnerCarrier.comparisonFailure }
+  }
+
+  private func requireDormantCurrent(_ scope: AccountScope, account: AccountRow) throws {
+    guard slot.get() === scope, !scope.isClosing, let active,
+      active.id.utf8.elementsEqual(account.id.utf8),
+      active.database.utf8.elementsEqual(account.database.utf8),
+      active.hubURL.utf8.elementsEqual(account.hubURL.utf8)
+    else { throw HubOwnerCarrier.comparisonFailure }
+  }
+
+  func beginDormantHubCleanup(original: HubOwnerCarrier) async throws -> HubOwnerCarrier {
+    do {
+      let scope = try original.originalScope(for: self)
+      let owner = try original.originalOwnerKey(for: self)
+      let phase = try slot.acceptCleanup(owner, manager: self, scope: scope)
+      do {
+        return try HubOwnerCarrier.makeFinalPush(phase: phase, original: original)
+      } catch {
+        slot.revokeFinalPush(phase.key)
+        throw HubOwnerCarrier.comparisonFailure
+      }
+    } catch { throw HubOwnerCarrier.comparisonFailure }
+  }
+
+  func advanceDormantHubCleanupToSessionDisposal(
+    original: HubOwnerCarrier, finalPush: HubOwnerCarrier
+  ) async throws -> HubOwnerCarrier {
+    do {
+      let scope = try original.originalScope(for: self)
+      let owner = try original.originalOwnerKey(for: self)
+      let previous = try finalPush.cleanupKey(for: self)
+      guard previous.owner == owner, previous.phase == .finalPush,
+        slot.revokeFinalPush(previous)
+      else { throw HubOwnerCarrier.comparisonFailure }
+      let phase = try slot.beginSessionDisposal(previous, manager: self, scope: scope)
+      do {
+        return try HubOwnerCarrier.makeSessionDisposal(phase: phase, original: original)
+      } catch {
+        slot.revokeSessionDisposal(phase.key)
+        throw HubOwnerCarrier.comparisonFailure
+      }
+    } catch { throw HubOwnerCarrier.comparisonFailure }
+  }
+
+  func revokeDormantHubCleanupPhase(_ carrier: HubOwnerCarrier) async -> Bool {
+    guard let key = try? carrier.cleanupKey(for: self) else { return false }
+    switch key.phase {
+    case .finalPush: return slot.revokeFinalPush(key)
+    case .sessionDisposal: return slot.revokeSessionDisposal(key)
+    }
+  }
+
+  func finishDormantHubCleanup(_ carrier: HubOwnerCarrier) async -> Bool {
+    guard let key = try? carrier.cleanupKey(for: self) else { return false }
+    return slot.finishCleanup(key)
+  }
 
   /// The signed-in account's scope, or nil while nobody is signed in.
   public nonisolated var current: AccountScope? { slot.get() }
@@ -188,7 +646,8 @@ public actor AccountManager {
     // The last word on onboarding until `/v1/me` answers (the refresh below asks).
     needsOnboarding = row.needsOnboarding
     do {
-      let database = try AccountScope.openDatabase(row: row, cluster: cluster, createIfMissing: false)
+      let database = try AccountScope.openDatabase(
+        row: row, cluster: cluster, paths: scopeContext.paths, createIfMissing: false)
       await copyLegacySecrets(row: row, database: database)
       await install(row: row, database: database)
     } catch {
@@ -205,7 +664,9 @@ public actor AccountManager {
     guard try WorkspaceDatabase.linkedHubURL(endpoint: cluster.endpoint, binDir: cluster.binDir) != nil
     else { return }
     let database = try WorkspaceDatabase(
-      endpoint: cluster.endpoint, binDir: cluster.binDir, createIfMissing: false)
+      endpoint: cluster.endpoint, binDir: cluster.binDir, createIfMissing: false,
+      backupDirectory: AccountScope.backupDirectory(
+        paths: scopeContext.paths, database: cluster.endpoint.database))
     let row: AccountRow
     do {
       guard let link = try database.hubLink() else {
@@ -262,8 +723,10 @@ public actor AccountManager {
   public func signIn(
     session: AuthSession, hubURL: String, deviceName: String? = nil
   ) async throws -> AccountStatus.Result {
+    migrationObserver?(.actorSignInEntered, nil)
     await acquire()
     defer { release() }
+    migrationObserver?(.transitionAcquired, nil)
     let base = try HubURL.canonical(hubURL)
     let placeholder = Self.placeholderUserId(deviceId: session.deviceId)
     let hubUserId = session.userId ?? placeholder
@@ -283,16 +746,75 @@ public actor AccountManager {
         database: try newDatabaseName(id: id), displayName: session.user.displayName,
         orgName: session.org.name)
     }
-    // The database first: one that cannot be opened or migrated refuses the sign-in before anything
-    // else changes. A registered account's database must already exist.
+    let identity = RetainedDatabaseIdentity(accountId: row.id, database: row.database)
+    let previous = slot.get()
+    let reopening = previous?.account.id == row.id
+    migrationObserver?(.preflightEntered, nil)
+    let migration = try WorkspaceDatabase.preflightMigration(
+      endpoint: cluster.endpoint(database: row.database), binDir: cluster.binDir)
+    migrationObserver?(.preflightReturned, migration == .pending)
+    // A slot-nil retry (or an external upgrade to current schema) still owes this exact old drain.
+    // Refuse before touching any currently live B/C scope, refresh, token, registry or target open.
+    if let retained = migrationDatabases[identity],
+      !retained.closeForMigration(timeout: AccountScope.drainTimeout)
+    {
+      throw WorkspaceError(
+        .endpointUnavailable,
+        "Account migration could not drain its retained store. The existing account state is unchanged.")
+    }
+    var migrationQuiesced = false
+    if migration == .pending, reopening, let previous,
+      previous.account.database == row.database
+    {
+      // Only a genuinely pending open of this active physical store needs early quiescence.
+      // Refuse/drain before changing the live scope, its refresh, registry or credential refs.
+      previous.refuseNewWork()
+      migrationObserver?(.scopeDrainEntered, nil)
+      let scopeDrained = await previous.drain(timeout: AccountScope.drainTimeout)
+      migrationObserver?(.scopeDrainReturned, scopeDrained)
+      guard scopeDrained else {
+        previous.admitWorkAgain()
+        throw WorkspaceError(
+          .endpointUnavailable, "Account migration could not drain active work. The account remains open.")
+      }
+      guard slot.get()?.instance == previous.instance else {
+        previous.admitWorkAgain()
+        throw WorkspaceError(.endpointUnavailable, "The account changed before migration could begin.")
+      }
+      refresh?.cancel()
+      refresh = nil
+      slot.set(nil)
+      // Adapter disposal can stall. Reuse the existing close bound without claiming its canceled
+      // tasks joined; the already-drained gate needs no second wait. Preserve managed servers.
+      migrationObserver?(.scopeCloseAwaitEntered, nil)
+      await Self.close(
+        previous, stoppingServers: false, drainTimeout: .zero, within: Self.switchCloseBudget,
+        migrationObserver: migrationObserver, taskExecutor: migrationCloseTaskExecutor)
+      // Closing admission and draining ALL old leases is the local database write fence, even if
+      // service close is still finishing. This synchronous bridge returns with admission closed.
+      migrationObserver?(.poolDrainEntered, nil)
+      let drained = previous.database.closeForMigration(timeout: AccountScope.drainTimeout)
+      migrationObserver?(.poolDrainReturned, drained)
+      // The local previous owns the DB throughout the nonthrowing call. Retain ONLY that closed
+      // DB before a refusal can release the scope, with no suspension or ownership gap between.
+      migrationDatabases[identity] = previous.database
+      guard drained else {
+        throw WorkspaceError(
+          .endpointUnavailable,
+          "Account migration could not drain its store. The account is temporarily unavailable.")
+      }
+      migrationQuiesced = true
+    }
+    // Storage admission precedes new auth writes. Registered accounts must already exist. A failed
+    // pending open stays unavailable without restore/retry; it is outside the auth rollback below.
+    migrationObserver?(.targetOpenEntered, nil)
     let database = try AccountScope.openDatabase(
-      row: row, cluster: cluster, createIfMissing: existing == nil)
+      row: row, cluster: cluster, paths: scopeContext.paths, createIfMissing: existing == nil)
+    migrationObserver?(.targetOpenReturned, nil)
 
     // Signing in again as the active account replaces its scope: it is closed now, so its `HubSync`
     // cannot write the link below, and its servers stay running for the new scope to adopt.
-    let previous = slot.get()
-    let reopening = previous?.account.id == row.id
-    if reopening, let previous {
+    if reopening, let previous, !migrationQuiesced {
       refresh?.cancel()
       slot.set(nil)
       await previous.close(stoppingServers: false)
@@ -364,6 +886,9 @@ public actor AccountManager {
     await copyLegacySecrets(row: row, database: database)
     // A hub that did not say who the user is gets asked, so the placeholder is replaced.
     let scope = await install(row: row, database: database, refreshNames: Self.isPlaceholder(hubUserId))
+    // Auth/registry committed and this exact target's fresh scope installed. Other retained
+    // identities remain untouched; releasing old work alone never schedules an open.
+    migrationDatabases.removeValue(forKey: identity)
     logger.info("signed in as account \(row.id, privacy: .public)")
     // Upload whatever the database holds now (a backlog from before sign-in, or from the last session).
     Task { await scope.hub.backgroundPush(reason: "sign-in") }
@@ -503,14 +1028,19 @@ public actor AccountManager {
   /// in the background.
   static func close(
     _ scope: AccountScope, stoppingServers: Bool = true, drainTimeout: Duration = AccountScope.drainTimeout,
-    serverBudget: Duration = .seconds(10), within budget: Duration?
+    serverBudget: Duration = .seconds(10), within budget: Duration?,
+    migrationObserver: AccountMigrationObserver? = nil, taskExecutor: (any TaskExecutor)? = nil
   ) async {
     let close: @Sendable () async -> Void = {
+      migrationObserver?(.scopeCloseWorkEntered, nil)
       await scope.close(
         stoppingServers: stoppingServers, drainTimeout: drainTimeout, serverBudget: serverBudget)
+      migrationObserver?(.scopeCloseWorkReturned, nil)
     }
     guard let budget else { return await close() }
-    if await !Bounded.run(within: budget, close) {
+    let completed = await Bounded.run(within: budget, executorPreference: taskExecutor, close)
+    migrationObserver?(.scopeCloseAwaitReturned, completed)
+    if !completed {
       Log.logger("accounts").warning(
         "account \(scope.account.id, privacy: .public)'s scope was still closing when its time ran out")
     }

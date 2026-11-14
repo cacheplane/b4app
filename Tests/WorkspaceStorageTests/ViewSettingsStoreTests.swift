@@ -201,6 +201,12 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
   func theMigrationConvertsEachOldValue(
     _ row: (old: String?, quietThreads: String?, density: String?)
   ) throws {
+    let root =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "view-density-migration-" + UUID().uuidString
+    try FileManager.default.createDirectory(
+      atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    defer { try? FileManager.default.removeItem(atPath: root) }
     let endpoint = try EphemeralPostgres.endpoint()
     let lib = try LibPQ.load(binDir: endpoint.binDir!)
     let raw = try PostgresConnection(
@@ -227,24 +233,36 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
     let before = try state()
     #expect(before.changes == "1")
 
-    let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
-    #expect(try db.appliedMigrations().last == "0015_density")
-    let stored = try #require(try storedRow(db))
-    #expect(stored["quietThreads"] == .some(row.quietThreads))
-    #expect(stored["density"] == .some(row.density))
-    #expect(stored["arrangement"] == .some("byEnvironment"))
-    let after = try state()
-    #expect(after.changes == before.changes && after.clocks == before.clocks)
-    // The migration leaves replaying off: a later write is logged.
-    _ = try db.setViewSettings(showArchived: true)
-    #expect(try viewChanges(db).contains { $0.op == "update" && $0.column == "showArchived" })
+    let db = try WorkspaceDatabase(
+      endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
+    let outcome = Result<Void, any Error> { () throws -> Void in
+      let ledger = try db.appliedMigrations()
+      #expect(ledger.contains("0015_density") && ledger.last == "0016_agent_protocol")
+      #expect(ledger == AgentProtocolFoundationFixture.migrations)
+      let stored = try #require(try storedRow(db))
+      #expect(stored["quietThreads"] == .some(row.quietThreads))
+      #expect(stored["density"] == .some(row.density))
+      #expect(stored["arrangement"] == .some("byEnvironment"))
+      let after = try state()
+      #expect(after.changes == before.changes && after.clocks == before.clocks)
+      // The migration leaves replaying off: a later write is logged.
+      _ = try db.setViewSettings(showArchived: true)
+      #expect(try viewChanges(db).contains { $0.op == "update" && $0.column == "showArchived" })
+    }
+    switch outcome {
+    case .success: try db.close()
+    case .failure: try? db.close()
+    }
+    try outcome.get()
   }
 
   @Test func viewSettingsSurviveBackupAndRestore() throws {
     let source = try WorkspaceDatabase.temporary()
     let set = try source.setViewSettings(
       arrangement: .byEnvironment, quietThreads: .hidden, showArchived: true)
-    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    let path =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     defer { try? FileManager.default.removeItem(atPath: path) }
     let summary = try source.export(to: path)
     #expect(try source.tableCounts()["viewSettings"] == 1)
@@ -267,7 +285,9 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
     let source = try WorkspaceDatabase.temporary()
     _ = try source.insertConnection(Connection(id: "c1", kind: .codex, label: "Codex", target: "/bin/codex"))
     let archived = try source.setViewSettings(arrangement: .byEnvironment, quietThreads: .collapsed)
-    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    let path =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     defer { try? FileManager.default.removeItem(atPath: path) }
     let summary = try source.export(to: path)
 

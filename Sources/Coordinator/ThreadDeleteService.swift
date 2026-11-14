@@ -94,8 +94,15 @@ extension SessionService {
   }
 
   private func deleteRuntimeCopy(_ thread: ConversationThread, now: Date) async {
-    await stopTurn(of: thread, connection: try? db.connection(id: thread.connectionId))
     do {
+      let connection = try db.connection(id: thread.connectionId)
+      // Historical and unavailable protocol rows cannot settle native work through a harness path.
+      // This check must precede stopTurn, which has harness-specific terminalization behavior.
+      if connection?.isProtocolReadOnly == true || connection?.kind == .agentProtocol {
+        return try db.recordThreadDelete(
+          threadId: thread.id, outcome: .unsupported, error: nil, nextAttemptAt: nil)
+      }
+      await stopTurn(of: thread, connection: connection)
       guard !thread.nativeThreadId.isEmpty else {
         return try db.recordThreadDelete(threadId: thread.id, outcome: .done, error: nil, nextAttemptAt: nil)
       }

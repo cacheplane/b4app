@@ -125,7 +125,12 @@ struct EnvironmentHistoryMigrationTests {
     )
     // Public initialization executes its real per-file Migrator transaction and ledger path.
     // The idle raw connection retains only private TEMP oracle rows, not an open transaction.
-    let db = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir, createIfMissing: false)
+    let backup =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "store-history-" + UUID().uuidString
+      + "/backups"
+    defer { try? FileManager.default.removeItem(atPath: (backup as NSString).deletingLastPathComponent) }
+    let db = try WorkspaceDatabase(
+      endpoint: endpoint, binDir: binDir, createIfMissing: false, backupDirectory: backup)
     let outcome = Result<Void, any Error> {
       try #require(try db.appliedMigrations() == files.map(\.name))
       try raw.execute(

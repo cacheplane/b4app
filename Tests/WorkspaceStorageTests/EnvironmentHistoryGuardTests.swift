@@ -9,16 +9,24 @@ import WorkspaceProtocol
 
 private enum HistoryControlError: Error { case conditionNotObserved, missingWorkerResult }
 
-private struct HistoryControl: Sendable {
+private final class HistoryControl: Sendable {
   let endpoint: PostgresEndpoint
   let binDir: String
+  let backupDirectory: String
 
   init(endpoint supplied: PostgresEndpoint? = nil, asRole: String? = nil) throws {
     let selected = try supplied ?? EphemeralPostgres.endpoint()
     endpoint = selected
     binDir = try #require(selected.binDir)
+    backupDirectory =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "history-guard-" + UUID().uuidString
+      + "/backups"
     let raw = try connection()
-    if let asRole { try raw.execute("SET ROLE \(Rows.quote(asRole))") }
+    try raw.execute("CREATE SCHEMA guard_test")
+    if let asRole {
+      try raw.execute("GRANT USAGE,CREATE ON SCHEMA guard_test TO \(Rows.quote(asRole))")
+      try raw.execute("SET ROLE \(Rows.quote(asRole))")
+    }
     _ = try Migrator.applied(raw)
     for file in try Migrator.files() where file.name < "0011" {
       try raw.execute(file.sql)
@@ -50,15 +58,15 @@ private struct HistoryControl: Sendable {
         (107,'displayItems','opaque-scalar','update','payload','"projectId"'::jsonb),
         (108,'displayItems','opaque-null','update','payload',NULL::jsonb)
       ) s(wall,tbl,id,op,col,val);
-      CREATE TABLE public.guard_test_expected AS
+      CREATE TABLE guard_test.expected AS
         SELECT c.seq,to_jsonb(c) AS whole_row,c.value::text AS value_text,c.value AS native_value FROM public.changes c
         WHERE c."rowId" LIKE 'opaque-%';
-      CREATE TABLE public.guard_test_flags AS SELECT c.oid,c.relrowsecurity,c.relforcerowsecurity
+      CREATE TABLE guard_test.flags AS SELECT c.oid,c.relrowsecurity,c.relforcerowsecurity
         FROM pg_catalog.pg_class c WHERE c.oid IN ('public.projects'::regclass,'public."projectFolders"'::regclass,
           'public.threads'::regclass,'public.connections'::regclass,'public.changes'::regclass,'public."columnClocks"'::regclass);
       CREATE SEQUENCE public.guard_test_probe;
       CREATE FUNCTION public.guard_test_history_valid() RETURNS boolean LANGUAGE SQL SET search_path=pg_catalog AS $$
-        SELECT NOT EXISTS (SELECT 1 FROM public.guard_test_expected e LEFT JOIN public.changes c USING(seq)
+        SELECT NOT EXISTS (SELECT 1 FROM guard_test.expected e LEFT JOIN public.changes c USING(seq)
           WHERE c.seq IS NULL OR c.value::text IS DISTINCT FROM e.value_text
             OR to_jsonb(c) IS DISTINCT FROM (e.whole_row || jsonb_build_object(
               'table',CASE e.whole_row->>'table' WHEN 'projects' THEN 'environments'
@@ -70,7 +78,7 @@ private struct HistoryControl: Sendable {
       BEGIN
         FOR item IN SELECT c.relname FROM pg_catalog.pg_class c
           WHERE c.relnamespace='public'::regnamespace AND c.relkind='r'
-            AND c.relname NOT IN ('guard_test_expected','guard_test_flags') ORDER BY c.relname LOOP
+            AND true ORDER BY c.relname LOOP
           EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text),''[]''::jsonb) FROM public.%I r',item.relname) INTO value;
           result := result || jsonb_build_object(item.relname,value);
         END LOOP;
@@ -78,7 +86,7 @@ private struct HistoryControl: Sendable {
           (SELECT jsonb_agg(jsonb_build_array(a.attname,a.atttypid,a.attnotnull,a.attisdropped) ORDER BY a.attnum)
              FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0)) ORDER BY c.oid)
           INTO value FROM pg_catalog.pg_class c WHERE c.relnamespace='public'::regnamespace
-            AND c.relname NOT IN ('guard_test_expected','guard_test_flags','guard_test_probe');
+            AND c.relname <> 'guard_test_probe';
         result := result || jsonb_build_object('catalog',value);
         SELECT jsonb_agg(jsonb_build_array(t.oid,t.tgrelid,t.tgname,t.tgfoid,t.tgenabled) ORDER BY t.oid)
           INTO value FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
@@ -103,6 +111,10 @@ private struct HistoryControl: Sendable {
     )
   }
 
+  deinit {
+    try? FileManager.default.removeItem(atPath: (backupDirectory as NSString).deletingLastPathComponent)
+  }
+
   func connection(database: String? = nil) throws -> PostgresConnection {
     let lib = try LibPQ.load(binDir: binDir)
     return try PostgresConnection(
@@ -113,7 +125,8 @@ private struct HistoryControl: Sendable {
   }
 
   func open() throws -> WorkspaceDatabase {
-    try WorkspaceDatabase(endpoint: endpoint, binDir: binDir, createIfMissing: false)
+    try WorkspaceDatabase(
+      endpoint: endpoint, binDir: binDir, createIfMissing: false, backupDirectory: backupDirectory)
   }
 
   func snapshot(_ raw: PostgresConnection) throws -> String {
@@ -154,7 +167,7 @@ private func historySafeFailure(_ control: HistoryControl) throws -> WorkspaceEr
 private func historyPreserved(_ raw: PostgresConnection) throws -> Bool {
   try raw.execute(
     """
-    SELECT NOT EXISTS (SELECT 1 FROM public.guard_test_expected e LEFT JOIN public.changes c USING(seq)
+    SELECT NOT EXISTS (SELECT 1 FROM guard_test.expected e LEFT JOIN public.changes c USING(seq)
       WHERE c.seq IS NULL OR c.value::text IS DISTINCT FROM e.value_text
         OR to_jsonb(c) IS DISTINCT FROM (e.whole_row || jsonb_build_object(
           'table',CASE e.whole_row->>'table' WHEN 'projects' THEN 'environments'
@@ -220,16 +233,22 @@ struct EnvironmentHistoryGuardTests {
       (name: $0.deletingPathExtension().lastPathComponent, bytes: try Data(contentsOf: $0))
     }
     let files = try Migrator.files()
-    #expect(raw.count == 15)
+    #expect(raw.count == 16)
     #expect(files.map(\.name) == raw.map(\.name))
     #expect(try files.map(\.sql) == raw.map { try #require(String(data: $0.bytes, encoding: .utf8)) })
     let eleven = try #require(raw.first { $0.name == "0011_environments" })
     let twelve = try #require(raw.first { $0.name == "0012_app_folders" })
+    let thirteen = try #require(raw.first { $0.name == "0013_view_settings" })
+    let fourteen = try #require(raw.first { $0.name == "0014_connection_commands" })
+    let fifteen = try #require(raw.first { $0.name == "0015_density" })
     func digest(_ bytes: Data) -> String {
       SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     }
     #expect(digest(eleven.bytes) == "27e0b795663bb2a85922b0b7637cd6764c12bf3ee6e69913398c080528f58386")
     #expect(digest(twelve.bytes) == "0bd9a0cb2e6376676f3ddeaab81a4d9d1cdbffbfea7cb6a2c4395339583067fb")
+    #expect(digest(thirteen.bytes) == "ed8a49979665650eb82a218f942ac1a3fd5e5b97e37e5b21cae2d252a313e6c3")
+    #expect(digest(fourteen.bytes) == "d7bedf707fea9b87e122c408953c8f49e74b9f18deb06092b7443df934c576f6")
+    #expect(digest(fifteen.bytes) == "c992cb5920df5e323009303a7c8bcc026a43abe08edddc1d4c4f0af5a8f6d2a4")
     #expect(
       try EnvironmentHistoryMigrationGuard.checkedSQL(eleven.bytes)
         == files.first { $0.name == eleven.name }?.sql)
@@ -242,7 +261,7 @@ struct EnvironmentHistoryGuardTests {
     #expect(throws: WorkspaceError.self) {
       try StoreMigrationResource(name: eleven.name, bytes: Data([0xff])).sql()
     }
-    #expect(files.last?.name == "0015_density")
+    #expect(files.last?.name == "0016_agent_protocol")
   }
 
   @Test func opaqueAndStructuralHistoryStayDistinct() throws {
@@ -258,15 +277,15 @@ struct EnvironmentHistoryGuardTests {
     try #require(
       try raw.execute(
         """
-        SELECT count(*)::text AS n FROM pg_catalog.pg_class c JOIN public.guard_test_flags f ON f.oid=c.oid
+        SELECT count(*)::text AS n FROM pg_catalog.pg_class c JOIN guard_test.flags f ON f.oid=c.oid
         WHERE c.relrowsecurity AND c.relforcerowsecurity AND NOT pg_catalog.row_security_active(c.oid)
         """
       ).rows.first?.text("n") == "6")
     try raw.execute(
-      "UPDATE public.guard_test_flags f SET relrowsecurity=c.relrowsecurity,relforcerowsecurity=c.relforcerowsecurity FROM pg_catalog.pg_class c WHERE c.oid=f.oid"
+      "UPDATE guard_test.flags f SET relrowsecurity=c.relrowsecurity,relforcerowsecurity=c.relforcerowsecurity FROM pg_catalog.pg_class c WHERE c.oid=f.oid"
     )
     let flagsSQL =
-      "SELECT jsonb_agg(jsonb_build_array(c.oid,c.relrowsecurity,c.relforcerowsecurity) ORDER BY c.oid)::text AS value FROM pg_catalog.pg_class c JOIN public.guard_test_flags f ON f.oid=c.oid"
+      "SELECT jsonb_agg(jsonb_build_array(c.oid,c.relrowsecurity,c.relforcerowsecurity) ORDER BY c.oid)::text AS value FROM pg_catalog.pg_class c JOIN guard_test.flags f ON f.oid=c.oid"
     let beforeFlags = try #require(try raw.execute(flagsSQL).rows.first?.text("value"))
     let db = try control.open()
     let outcome = Result<Void, any Error> { () throws -> Void in
@@ -300,8 +319,32 @@ struct EnvironmentHistoryGuardTests {
     let raw = try control.connection()
     try raw.execute("CREATE TABLE public.b4app_environment_history_preimage (n int)")
     let before = try control.snapshot(raw)
-    _ = try historySafeFailure(control)
+    let refused = Result { try Migrator.migrate(raw) }
+    #expect(throws: WorkspaceError.self) { try refused.get() }
+    if case .failure(let error) = refused { _ = try historySafeError(error) }
     #expect(try control.snapshot(raw) == before)
+    // Direct raw guard control: the public constructor refuses this extra table at backup admission.
+    try historyClientsClosed(raw)
+  }
+
+  @Test func unsupportedPublicTableRefusesAtBackupAdmission() throws {
+    let control = try HistoryControl()
+    let raw = try control.connection()
+    try raw.execute("CREATE TABLE public.b4app_environment_history_rows (n int)")
+    let before = try control.snapshot(raw)
+    let outcome = Result { try control.open() }
+    if case .success(let db) = outcome { try db.close(); Issue.record("Closed backup inventory must refuse") }
+    #expect(throws: WorkspaceError.self) { try outcome.get() }
+    if case .failure(let error) = outcome {
+      let safe = try #require(error as? WorkspaceError)
+      #expect(safe.code == .internalError)
+      #expect(
+        safe.message
+          == "The required pre-migration backup could not be saved. The existing database was not migrated.")
+      #expect(safe.details == nil)
+    }
+    #expect(try control.snapshot(raw) == before)
+    #expect(!FileManager.default.fileExists(atPath: control.backupDirectory))
     try historyClientsClosed(raw)
   }
 
@@ -334,13 +377,13 @@ struct EnvironmentHistoryGuardTests {
     let body = """
       IF to_regclass('public.projects') IS NOT NULL
         OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0011_environments' AND "appliedAt"<>'then')
-        OR EXISTS (SELECT 1 FROM public.guard_test_flags f LEFT JOIN pg_catalog.pg_class c ON c.oid=f.oid
+        OR EXISTS (SELECT 1 FROM guard_test.flags f LEFT JOIN pg_catalog.pg_class c ON c.oid=f.oid
           WHERE c.oid IS NULL OR c.relrowsecurity IS DISTINCT FROM f.relrowsecurity OR c.relforcerowsecurity IS DISTINCT FROM f.relforcerowsecurity)
       THEN RAISE EXCEPTION 'Fault stage control failed'; END IF;
-      \(deferred ? "IF NOT (" : "IF NEW.value IS DISTINCT FROM (SELECT native_value FROM public.guard_test_expected WHERE seq=NEW.seq) OR NOT (")
+      \(deferred ? "IF NOT (" : "IF NEW.value IS DISTINCT FROM (SELECT native_value FROM guard_test.expected WHERE seq=NEW.seq) OR NOT (")
         EXISTS (SELECT 1 FROM public.changes WHERE "rowId"='opaque-single'))
       THEN RAISE EXCEPTION 'Restored row stage control failed'; END IF;
-      \(deferred ? "IF EXISTS (SELECT 1 FROM public.guard_test_expected e JOIN public.changes c USING(seq) WHERE c.value IS DISTINCT FROM e.native_value OR c.value::text IS DISTINCT FROM e.value_text) THEN RAISE EXCEPTION 'Deferred restoration incomplete'; END IF;" : "")
+      \(deferred ? "IF EXISTS (SELECT 1 FROM guard_test.expected e JOIN public.changes c USING(seq) WHERE c.value IS DISTINCT FROM e.native_value OR c.value::text IS DISTINCT FROM e.value_text) THEN RAISE EXCEPTION 'Deferred restoration incomplete'; END IF;" : "")
       PERFORM nextval('public.guard_test_probe');
       RAISE EXCEPTION USING ERRCODE='23514',MESSAGE='Native history fault',DETAIL='PRIVATE_HISTORY_CANARY';
       """
@@ -427,7 +470,7 @@ struct EnvironmentHistoryGuardTests {
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0011_environments' AND "appliedAt"<>'then')
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name=NEW.name AND "appliedAt"=NEW."appliedAt")
           OR EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name<'0011' AND "appliedAt"<>'then')
-          OR EXISTS (SELECT 1 FROM public.guard_test_flags f LEFT JOIN pg_catalog.pg_class c ON c.oid=f.oid
+          OR EXISTS (SELECT 1 FROM guard_test.flags f LEFT JOIN pg_catalog.pg_class c ON c.oid=f.oid
             WHERE c.oid IS NULL OR c.relrowsecurity IS DISTINCT FROM f.relrowsecurity OR c.relforcerowsecurity IS DISTINCT FROM f.relforcerowsecurity)
         THEN RAISE EXCEPTION 'Later COMMIT stage control failed'; END IF;
         PERFORM nextval('public.guard_test_probe');
@@ -619,9 +662,9 @@ extension EnvironmentHistoryGuardTests {
           ('writer',201,'threads','writer-structural','insert',NULL,'{"id":"writer-structural","projectId":"p1"}','writer'),
           ('writer',202,'displayItems','opaque-new','update','payload','{"projectId":"new opaque","environmentId":"keep"}','writer');
         INSERT INTO "columnClocks" ("table","rowId","column",hlc) VALUES ('threads','writer-structural','projectId','writer');
-        UPDATE guard_test_expected e SET whole_row=to_jsonb(c),value_text=c.value::text,native_value=c.value
+        UPDATE guard_test.expected e SET whole_row=to_jsonb(c),value_text=c.value::text,native_value=c.value
           FROM changes c WHERE c.seq=e.seq AND c."rowId"='opaque-both';
-        INSERT INTO guard_test_expected SELECT c.seq,to_jsonb(c),c.value::text,c.value FROM changes c WHERE c."rowId"='opaque-new';
+        INSERT INTO guard_test.expected SELECT c.seq,to_jsonb(c),c.value::text,c.value FROM changes c WHERE c."rowId"='opaque-new';
         """
       )
       worker = HistoryOpenWorker(control)
@@ -685,7 +728,7 @@ extension EnvironmentHistoryGuardTests {
         """
         CREATE FUNCTION public.guard_test_commit_gate() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
         BEGIN
-          IF EXISTS (SELECT 1 FROM public.guard_test_flags f LEFT JOIN pg_catalog.pg_class c ON c.oid=f.oid
+          IF EXISTS (SELECT 1 FROM guard_test.flags f LEFT JOIN pg_catalog.pg_class c ON c.oid=f.oid
             WHERE c.oid IS NULL OR c.relrowsecurity IS DISTINCT FROM f.relrowsecurity OR c.relforcerowsecurity IS DISTINCT FROM f.relforcerowsecurity)
           THEN RAISE EXCEPTION 'Commit flags changed'; END IF;
           IF to_regclass('public.projects') IS NOT NULL OR NOT EXISTS (
@@ -847,7 +890,7 @@ extension EnvironmentHistoryGuardTests {
       #expect(
         try Migrator.migrate(owner) == [
           "0011_environments", "0012_app_folders", "0013_view_settings", "0014_connection_commands",
-          "0015_density",
+          "0015_density", "0016_agent_protocol",
         ])
       #expect(try historyPreserved(owner))
     }

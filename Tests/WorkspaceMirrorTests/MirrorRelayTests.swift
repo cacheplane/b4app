@@ -409,67 +409,73 @@ struct MirrorRelayTests {
   @Test func presenceBecomesHostPresenceEvents() async throws {
     let store = try MirrorStore.inMemory()
     let h = RelayHarness()
-    // The hub's clock runs 120 s ahead of the phone's.
-    let started = Date()
-    let socket = try await h.connect(hubTime: started.addingTimeInterval(120))
-    let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
-    _ = try await client.ready()
-    let events = await client.events()
-    var iterator = events.makeAsyncIterator()
+    var ownedClient: WorkspaceClient?
+    var failure: (any Error)?
+    do {
+      // The hub's clock runs 120 s ahead of the phone's.
+      let started = Date()
+      let socket = try await h.connect(hubTime: started.addingTimeInterval(120))
+      let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
+      ownedClient = client
+      _ = try await client.ready()
+      let events = await client.events()
+      var iterator = events.makeAsyncIterator()
 
-    let setup = Date().timeIntervalSince(started)
-    let seenOnHub = started.addingTimeInterval(setup + 120 - 30)
-    socket.deliver(
-      .presence(hosts: [
-        RelayHostPresence(
-          deviceId: "mac-1", name: "Brian's MacBook Pro", online: false,
-          lastSeenAt: Timestamp.string(from: seenOnHub)),
-        RelayHostPresence(deviceId: "mac-2", name: "Studio", online: true),
-      ]))
-    var hosts: [HostPresence] = []
-    while hosts.isEmpty, let envelope = await iterator.next() {
-      #expect(envelope.event.kind == .hostPresence)
-      if let set = envelope.event.presenceHosts {
-        #expect(envelope.event.presenceLink == .connected)
-        hosts = set
+      let setup = Date().timeIntervalSince(started)
+      let seenOnHub = started.addingTimeInterval(setup + 120 - 30)
+      socket.deliver(
+        .presence(hosts: [
+          RelayHostPresence(
+            deviceId: "mac-1", name: "Brian's MacBook Pro", online: false,
+            lastSeenAt: Timestamp.string(from: seenOnHub)),
+          RelayHostPresence(deviceId: "mac-2", name: "Studio", online: true),
+        ]))
+      var hosts: [HostPresence] = []
+      while hosts.isEmpty, let envelope = await iterator.next() {
+        #expect(envelope.event.kind == .hostPresence)
+        if let set = envelope.event.presenceHosts {
+          #expect(envelope.event.presenceLink == .connected)
+          hosts = set
+        }
       }
-    }
-    #expect(hosts.map(\.deviceId) == ["mac-1", "mac-2"])
-    #expect(hosts[0].name == "Brian's MacBook Pro" && !hosts[0].online)
-    // On the phone's clock: about 30 s ago, not 90 s in the future.
-    let seen = try #require(hosts[0].lastSeenAt.flatMap(Timestamp.date(from:)))
-    // The relay measures the offset when the hello arrives, somewhere inside `setup`, so the
-    // translated time lies between 30 s before the start and 30 s before the hello plus `setup`.
-    // Bounds from the test's own clock readings hold however slow the runner is.
-    #expect(seen.timeIntervalSince(started) >= -31)
-    #expect(seen.timeIntervalSinceNow <= -30 + setup + 1)
-    #expect(hosts[1].online && hosts[1].lastSeenAt == nil)
-    // The snapshot carries the same, so a model that connects after these events still knows them.
-    let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
-    #expect(snapshot.presence == PresenceSnapshot(link: .connected, hosts: hosts))
+      try #require(hosts.map(\.deviceId) == ["mac-1", "mac-2"])
+      #expect(hosts[0].name == "Brian's MacBook Pro" && !hosts[0].online)
+      // On the phone's clock: about 30 s ago, not 90 s in the future.
+      let seen = try #require(hosts[0].lastSeenAt.flatMap(Timestamp.date(from:)))
+      // The relay measures the offset when the hello arrives, somewhere inside `setup`, so the
+      // translated time lies between 30 s before the start and 30 s before the hello plus `setup`.
+      // Bounds from the test's own clock readings hold however slow the runner is.
+      #expect(seen.timeIntervalSince(started) >= -31)
+      #expect(seen.timeIntervalSinceNow <= -30 + setup + 1)
+      #expect(hosts[1].online && hosts[1].lastSeenAt == nil)
+      // The snapshot carries the same, so a model that connects after these events still knows them.
+      let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
+      #expect(snapshot.presence == PresenceSnapshot(link: .connected, hosts: hosts))
 
-    // The next frame is the whole set again: a Mac missing from it (revoked) is gone.
-    socket.deliver(.presence(hosts: [RelayHostPresence(deviceId: "mac-2", name: "Studio", online: true)]))
-    while let envelope = await iterator.next() {
-      if let set = envelope.event.presenceHosts {
-        #expect(set.map(\.deviceId) == ["mac-2"])
-        break
+      // The next frame is the whole set again: a Mac missing from it (revoked) is gone.
+      socket.deliver(.presence(hosts: [RelayHostPresence(deviceId: "mac-2", name: "Studio", online: true)]))
+      while let envelope = await iterator.next() {
+        if let set = envelope.event.presenceHosts {
+          #expect(set.map(\.deviceId) == ["mac-2"])
+          break
+        }
       }
-    }
-    let after = try await client.request(EventsSnapshot.self, EmptyParams())
-    #expect(after.presence?.hosts.map(\.deviceId) == ["mac-2"])
+      let after = try await client.request(EventsSnapshot.self, EmptyParams())
+      #expect(after.presence?.hosts.map(\.deviceId) == ["mac-2"])
 
-    // The phone's own link going down makes every host unknown.
-    socket.closeFromHub(code: 1001)
-    while let envelope = await iterator.next() {
-      if envelope.event.kind == .hostPresence, envelope.event.presenceLink == .connecting {
-        #expect(envelope.event.presenceHost == nil)
-        break
+      // The phone's own link going down makes every host unknown.
+      socket.closeFromHub(code: 1001)
+      while let envelope = await iterator.next() {
+        if envelope.event.kind == .hostPresence, envelope.event.presenceLink == .connecting {
+          #expect(envelope.event.presenceHost == nil)
+          break
+        }
       }
-    }
-    let down = try await client.request(EventsSnapshot.self, EmptyParams())
-    #expect(down.presence == PresenceSnapshot(link: .connecting, hosts: []))
-    await client.close()
+      let down = try await client.request(EventsSnapshot.self, EmptyParams())
+      #expect(down.presence == PresenceSnapshot(link: .connecting, hosts: []))
+    } catch { failure = error }
+    await ownedClient?.close()
     await h.relay.stop()
+    if let failure { throw failure }
   }
 }

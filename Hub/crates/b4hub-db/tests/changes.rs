@@ -1887,15 +1887,39 @@ async fn stale_cursor_gets_resync_and_snapshot_restores(pool: PgPool) {
         );
     }
 
+    let connection_before = row(&app, &device, "connections", "id", "conn-1")
+        .await
+        .unwrap();
     let snapshot = b4hub_db::snapshot::take(&app, &device).await.unwrap();
     assert_eq!(snapshot.next, last);
+    assert_eq!(
+        row(&app, &device, "connections", "id", "conn-1").await,
+        Some(connection_before.clone()),
+        "legacy wire projection must not delete physical connection data"
+    );
     // Synthetic inserts in dependency order, equal to what the pushed changes leave behind.
     let got: Vec<(String, String, Value)> = snapshot
         .changes
         .iter()
         .map(|c| (c.table.clone(), c.row_id.clone(), c.value.clone().unwrap()))
         .collect();
-    let expected = expected_rows(&batch);
+    let mut expected = expected_rows(&batch);
+    // This legacy entrypoint at floor1 omits only these four staged public fields. Work from
+    // the full independent model; every removed value must actually be the expected native NULL.
+    for (table, _, value) in &mut expected {
+        if table.as_str() == "connections" {
+            let object = value.as_object_mut().unwrap();
+            for column in [
+                "peerProfile",
+                "agentId",
+                "protocolRetiredAt",
+                "protocolRetiredReason",
+            ] {
+                assert_eq!(connection_before.get(column), Some(&Value::Null));
+                assert_eq!(object.remove(column), Some(Value::Null));
+            }
+        }
+    }
     assert_eq!(got, expected);
     let tables: Vec<&str> = got.iter().map(|(t, _, _)| t.as_str()).collect();
     for table in [

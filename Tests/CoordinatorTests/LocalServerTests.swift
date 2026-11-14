@@ -1,13 +1,109 @@
 import Darwin
 import Foundation
 import NIOTransport
+import Synchronization
 import Testing
 import WorkspaceClient
-import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
 
 @testable import Coordinator
+@testable import WorkspacePlatform
+
+/// Closed case labels; neither the collector nor formatter accepts request or executable text.
+enum ServerNodeProbeLabel: String, Sendable {
+  case addsAProjectAndInspectsItsRoutes
+  case startsToReadyInSourceModeAndIsIdempotent
+  case logsAreTailedRedactedAndFollowable
+  case managedConnectionRefusesWhileStopped
+  case localB4ThreadsUseTheServerEnvironmentAndRemoteHaveNone
+}
+
+private func nodeProbeLine(
+  label: ServerNodeProbeLabel, observation: NodeVersionProbeObservation
+) -> String {
+  func flag(_ value: Bool?) -> String {
+    guard let value else { return "unavailable" }
+    return value ? "true" : "false"
+  }
+  func number(_ value: Int32?) -> String {
+    guard let value else { return "unavailable" }
+    return String(value)
+  }
+  return "node-explicit-probe case=\(label.rawValue)"
+    + " commandThrew=\(flag(observation.commandThrew))"
+    + " returnedTimedOut=\(flag(observation.returnedTimedOut))"
+    + " returnedExitCode=\(number(observation.returnedExitCode))"
+    + " returnedSignal=\(number(observation.returnedSignal))"
+    + " returnedSucceeded=\(flag(observation.returnedSucceeded))"
+    + " stdoutShape=\(observation.stdoutShape.rawValue)"
+    + " versionPrefixAccepted=\(flag(observation.versionPrefixAccepted))"
+    + " minimumAccepted=\(flag(observation.minimumAccepted))"
+    + " resolveAccepted=\(flag(observation.resolveAccepted))"
+    + " callerCancelledAtReturn=\(flag(observation.callerCancelledAtReturn))"
+    + " probeParentElapsedMilliseconds=\(observation.probeParentElapsedMilliseconds)"
+}
+
+private final class ServerNodeProbeCollector: Sendable {
+  private let records = Mutex<[NodeVersionProbeObservation]>([])
+  private let label: ServerNodeProbeLabel
+
+  init(label: ServerNodeProbeLabel) { self.label = label }
+
+  func append(_ observation: NodeVersionProbeObservation) {
+    records.withLock { $0.append(observation) }
+  }
+
+  func emitSnapshot() {
+    let snapshot = records.withLock { $0 }
+    for observation in snapshot { print(nodeProbeLine(label: label, observation: observation)) }
+  }
+}
+
+struct NodeProbeDiagnosticFormattingTests {
+  @Test func rawPrivateTextIsDroppedByTheSameProjectionBeforeFixedFormatting() {
+    let rawError = "error: TOKEN=private-example /private/example/stderr"
+    let samples: [(String, NodeVersionProbeObservation.StdoutShape)] = [
+      ("/private/example/node TOKEN=private-example", .other),
+      ("error: private-example --private-argument", .other),
+      ("v/private/example/version", .vPrefixOther),
+      ("v24.0.0\n", .exactFake24),
+    ]
+    for (rawStdout, expectedShape) in samples {
+      let result = CommandResult(stdout: rawStdout, stderr: rawError, exitCode: 0)
+      let shape = NodeVersionProbeObservation.classifyStdout(of: result)
+      #expect(shape == expectedShape)
+      let observation = NodeVersionProbeObservation(
+        commandThrew: false, returnedTimedOut: result.timedOut, returnedExitCode: result.exitCode,
+        returnedSignal: result.signal, returnedSucceeded: result.succeeded, stdoutShape: shape,
+        versionPrefixAccepted: nil, minimumAccepted: nil, resolveAccepted: false,
+        callerCancelledAtReturn: false, probeParentElapsedMilliseconds: 123)
+      let line = nodeProbeLine(label: .addsAProjectAndInspectsItsRoutes, observation: observation)
+      let leakedRawText = line.contains(rawStdout) || line.contains(rawError)
+      #expect(!leakedRawText)
+    }
+  }
+
+  @Test func formatterUsesOnlyClosedLabelsShapesAndPrimitiveFacts() {
+    let shapes: [NodeVersionProbeObservation.StdoutShape] = [
+      .unavailable, .empty, .exactFake24, .vPrefixOther, .other,
+    ]
+    for shape in shapes {
+      let observation = NodeVersionProbeObservation(
+        commandThrew: false, returnedTimedOut: false, returnedExitCode: 0, returnedSignal: nil,
+        returnedSucceeded: true, stdoutShape: shape, versionPrefixAccepted: true,
+        minimumAccepted: true, resolveAccepted: true, callerCancelledAtReturn: false,
+        probeParentElapsedMilliseconds: 123)
+      let line = nodeProbeLine(label: .addsAProjectAndInspectsItsRoutes, observation: observation)
+      #expect(
+        line == "node-explicit-probe case=addsAProjectAndInspectsItsRoutes"
+          + " commandThrew=false returnedTimedOut=false returnedExitCode=0 returnedSignal=unavailable"
+          + " returnedSucceeded=true stdoutShape=\(shape.rawValue) versionPrefixAccepted=true"
+          + " minimumAccepted=true resolveAccepted=true callerCancelledAtReturn=false"
+          + " probeParentElapsedMilliseconds=123")
+    }
+  }
+}
 
 /// A coordinator on scratch directories whose Node is the fake shim, plus a scratch B4 project.
 struct ServerHarness {
@@ -16,8 +112,11 @@ struct ServerHarness {
   let paths: PlatformPaths
   let base: String
   let events: EventCollector
+  private let nodeProbeCollector: ServerNodeProbeCollector?
 
-  static func start(paths existing: PlatformPaths? = nil) async throws -> ServerHarness {
+  static func start(
+    paths existing: PlatformPaths? = nil, nodeProbeLabel: ServerNodeProbeLabel? = nil
+  ) async throws -> ServerHarness {
     let base: String
     let paths: PlatformPaths
     if let existing {
@@ -29,8 +128,10 @@ struct ServerHarness {
     }
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = fakeNodePath()
-    let outcome = try await Coordinator.startSignedIn(
-      options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
+    let collector = nodeProbeLabel.map { ServerNodeProbeCollector(label: $0) }
+    var options = CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore())
+    if let collector { options.nodeVersionProbeObservation = { collector.append($0) } }
+    let outcome = try await Coordinator.startSignedIn(options: options)
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }
@@ -38,8 +139,13 @@ struct ServerHarness {
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     let events = EventCollector(await client.events())
-    return ServerHarness(coordinator: coordinator, client: client, paths: paths, base: base, events: events)
+    return ServerHarness(
+      coordinator: coordinator, client: client, paths: paths, base: base, events: events,
+      nodeProbeCollector: collector)
   }
+
+  /// Snapshot only; the existing deferred Task cleanup is not joined by this method.
+  func emitNodeProbeObservations() { nodeProbeCollector?.emitSnapshot() }
 
   func project(
     _ name: String = "proj", cliVersion: String? = "0.15.8", withConfig: Bool = true
@@ -105,7 +211,8 @@ struct ServerHarness {
 
 @Suite(.serialized) struct LocalServerRegistryTests {
   @Test func addsAProjectAndInspectsItsRoutes() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(nodeProbeLabel: .addsAProjectAndInspectsItsRoutes)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)
@@ -210,7 +317,8 @@ struct ServerHarness {
   }
 
   @Test func startsToReadyInSourceModeAndIsIdempotent() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(nodeProbeLabel: .startsToReadyInSourceModeAndIsIdempotent)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let added = try await h.add(try h.project())
     let started = try await h.start(added)
@@ -461,7 +569,8 @@ struct ServerHarness {
 
 @Suite(.serialized) struct LocalServerLogTests {
   @Test func logsAreTailedRedactedAndFollowable() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(nodeProbeLabel: .logsAreTailedRedactedAndFollowable)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let path = try h.project()
     try "OPENAI_API_KEY=sk-proj-abcdefghijklmnop\nFAKE_B4_ECHO_ENV=1\n".write(
@@ -524,7 +633,8 @@ struct ServerHarness {
   }
 
   @Test func managedConnectionRefusesWhileStopped() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(nodeProbeLabel: .managedConnectionRefusesWhileStopped)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let server = try await h.add(try h.project())
     let result = try await connect(h, server)

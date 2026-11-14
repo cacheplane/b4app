@@ -12,6 +12,7 @@ pub mod instances;
 pub mod logging;
 pub mod maintenance;
 pub mod notify;
+pub mod protocol;
 pub mod push;
 pub mod relay;
 pub mod request_log;

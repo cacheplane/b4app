@@ -5,6 +5,7 @@ import WorkspaceStorage
 import WorkspaceSync
 
 public struct CoordinatorOptions: Sendable {
+  var nodeVersionProbeObservation: (@Sendable (NodeVersionProbeObservation) -> Void)? = nil
   public var paths: PlatformPaths
   public var environment: [String: String]
   public var secretStore: any SecretStore
@@ -75,7 +76,7 @@ public final class RunningCoordinator: Sendable {
   /// The PostgreSQL cluster this coordinator started (nil when it adopted a running one).
   public let postgres: PostgresServer?
   private let lock: SingletonLock
-  private let closed = Flag()
+  private let closeCompletion = CoordinatorCloseCompletion()
 
   public var epoch: String { eventLog.epoch }
 
@@ -104,24 +105,45 @@ public final class RunningCoordinator: Sendable {
   /// Stop everything. The signed-in account stays signed in, and its managed servers keep running for
   /// the next start to adopt.
   public func close() async {
-    guard await closed.setIfClear() else { return }
-    await sleepWatcher.stop()
-    await server.close()
-    await accounts.shutdown()
-    await eventLog.finish()
-    if let postgres { try? await postgres.stop() }
-    lock.release()
-    Log.logger("coordinator").info(
-      "stopped pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public)")
+    await close(lifecycleObserver: nil)
+  }
+
+  func close(lifecycleObserver: CoordinatorLifecycleObserver?) async {
+    await closeCompletion.close(observer: lifecycleObserver) {
+      [sleepWatcher, server, accounts, eventLog, postgres, lock, lifecycleObserver] in
+      await lifecycleObserver?(.cleanupStarted)
+      await sleepWatcher.stop()
+      await server.close()
+      await accounts.shutdown()
+      await eventLog.finish()
+      if let postgres { try? await postgres.stop() }
+      lock.release()
+      await lifecycleObserver?(.lockReleased)
+      Log.logger("coordinator").info(
+        "stopped pid \(ProcessInfo.processInfo.processIdentifier, privacy: .public)")
+      await lifecycleObserver?(.cleanupFinished)
+    }
   }
 }
 
-private actor Flag {
-  private var value = false
-  func setIfClear() -> Bool {
-    if value { return false }
-    value = true
-    return true
+enum CoordinatorLifecycleEvent: String, Sendable {
+  case existingCompletion, cleanupStarted, lockReleased, cleanupFinished
+}
+typealias CoordinatorLifecycleObserver = @Sendable (CoordinatorLifecycleEvent) async -> Void
+
+private actor CoordinatorCloseCompletion {
+  private var task: Task<Void, Never>?
+  func close(
+    observer: CoordinatorLifecycleObserver?, _ cleanup: @escaping @Sendable () async -> Void
+  ) async {
+    if let task {
+      await observer?(.existingCompletion)
+      await task.value
+      return
+    }
+    let closing = Task { await cleanup() }
+    task = closing
+    await closing.value
   }
 }
 
@@ -186,15 +208,17 @@ public enum Coordinator {
       context: DiagnosticsService.Context(
         paths: paths, startedAt: startedAt, environment: options.environment,
         secretStore: options.secretStore, eventLog: eventLog))
+    var scopeContext = AccountScope.Context(
+      paths: paths, environment: options.environment, secretStore: options.secretStore,
+      eventLog: eventLog, diagnostics: diagnostics, adapterFactory: options.adapterFactory,
+      hubAPIFactory: options.hubAPIFactory, hubLinkConnection: options.hubLinkConnection,
+      powerAssertions: options.powerAssertions, checkRetryDelays: options.checkRetryDelays,
+      threadDeleteSweep: options.threadDeleteSweep)
+    scopeContext.nodeVersionProbeObservation = options.nodeVersionProbeObservation
     let accounts = AccountManager(
       context: AccountManager.Context(
         cluster: cluster, registry: registry,
-        scope: AccountScope.Context(
-          paths: paths, environment: options.environment, secretStore: options.secretStore,
-          eventLog: eventLog, diagnostics: diagnostics, adapterFactory: options.adapterFactory,
-          hubAPIFactory: options.hubAPIFactory, hubLinkConnection: options.hubLinkConnection,
-          powerAssertions: options.powerAssertions, checkRetryDelays: options.checkRetryDelays,
-          threadDeleteSweep: options.threadDeleteSweep),
+        scope: scopeContext,
         flavor: options.flavor, legacySecretStore: options.legacyAdoption?.legacySecretStore))
     await diagnostics.attachAccounts { [accounts] in accounts.current }
     // Restore the active account (or adopt a joined `workspace`) before the socket opens, so the first
@@ -237,7 +261,9 @@ public enum Coordinator {
   /// which the first account then adopts. Without such a file nothing is opened.
   private static func importPre02Store(paths: PlatformPaths, cluster: StoreCluster) throws {
     guard FileManager.default.fileExists(atPath: paths.databasePath) else { return }
-    let database = try WorkspaceDatabase(endpoint: cluster.endpoint, binDir: cluster.binDir)
+    let database = try WorkspaceDatabase(
+      endpoint: cluster.endpoint, binDir: cluster.binDir,
+      backupDirectory: AccountScope.backupDirectory(paths: paths, database: cluster.endpoint.database))
     defer { try? database.close() }
     if let imported = try StoreBoot.importLegacySQLite(paths: paths, into: database) {
       Log.logger("coordinator").notice(

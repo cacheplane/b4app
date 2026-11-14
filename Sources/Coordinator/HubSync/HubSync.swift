@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
@@ -39,6 +40,56 @@ public actor HubSync {
   /// Builds the relay link for a hub URL and the device token's reader.
   public typealias LinkFactory = @Sendable (URL, @escaping @Sendable () async throws -> String?) -> HubLink
 
+  /// Created only by this actor's real start/join factory paths. The marker owns no payload.
+  final class ConfiguredClientOrigin: Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible, CustomReflectable
+  {
+    private enum Installation: Equatable { case pending, installed, retired }
+    private let installation = Mutex(Installation.pending)
+    let identity = UUID()
+    let hubIdentity: ObjectIdentifier
+    let database: WorkspaceDatabase
+    let baseURL: URL
+    let rawReference: String
+    let token: HubToken
+    let api: any HubAPI
+
+    fileprivate init(
+      hub: HubSync, database: WorkspaceDatabase, baseURL: URL, reference: SecretRef,
+      store: any SecretStore, makeAPI: APIFactory
+    ) {
+      hubIdentity = ObjectIdentifier(hub)
+      self.database = database
+      self.baseURL = baseURL
+      rawReference = reference.rawValue
+      let token = HubToken(store: store, ref: reference)
+      self.token = token
+      api = makeAPI(baseURL, { try await token.value() })
+    }
+
+    var description: String { "ConfiguredClientOrigin(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+
+    func requireInstalledMemory() throws {
+      let installed = installation.withLock { $0 == .installed }
+      guard installed else { throw HubOwnerCarrier.comparisonFailure }
+    }
+
+    fileprivate func installMemory() throws {
+      let installed = installation.withLock { state -> Bool in
+        guard state == .pending else { return false }
+        state = .installed
+        return true
+      }
+      guard installed else { throw HubOwnerCarrier.comparisonFailure }
+    }
+
+    fileprivate func retireMemory() {
+      installation.withLock { $0 = .retired }
+    }
+  }
+
   static let batchRows = 500
   static let batchBytes = 8 * 1024 * 1024
 
@@ -50,16 +101,17 @@ public actor HubSync {
   private let onUnauthorized: (@Sendable () async -> Void)?
   private let logger = Log.logger("hub")
 
-  private var api: (any HubAPI)?
+  private var configuredClient: ConfiguredClientOrigin?
+  private var api: (any HubAPI)? { configuredClient?.api }
   /// The joined hub's base URL, for the relay link.
-  private var baseURL: URL?
+  private var baseURL: URL? { configuredClient?.baseURL }
   /// Whose site a pairing link names, and whose hub that site implies.
   private let flavor: Flavor
   /// The relay link while joined (kept after a 401 stops it, so `status` says why); nil when not joined
   /// or when no `makeLink` was given.
   private var link: HubLink?
   /// The link's token, kept in memory once read (`HubToken`); nil when not joined.
-  private var token: HubToken?
+  private var token: HubToken? { configuredClient?.token }
   /// Set by a 401; cleared by `join`. Background pushes skip while it is set.
   private var suspended = false
   /// Set once a 401 has been reported through `onUnauthorized`, so it is reported once.
@@ -104,6 +156,37 @@ public actor HubSync {
     self.keepAwake = KeepAwake(assertions: powerAssertions)
   }
 
+  private func makeConfiguredClient(baseURL: URL, reference: SecretRef) -> ConfiguredClientOrigin {
+    ConfiguredClientOrigin(
+      hub: self, database: database, baseURL: baseURL, reference: reference,
+      store: secretStore, makeAPI: makeAPI)
+  }
+
+  private func installConfiguredClient(_ origin: ConfiguredClientOrigin) throws {
+    guard origin.hubIdentity == ObjectIdentifier(self), origin.database === database else {
+      throw HubOwnerCarrier.comparisonFailure
+    }
+    let displaced = configuredClient
+    displaced?.retireMemory()
+    try origin.installMemory()
+    configuredClient = origin
+    withExtendedLifetime(displaced) {}
+  }
+
+  @discardableResult
+  private func clearConfiguredClient() -> ConfiguredClientOrigin? {
+    let displaced = configuredClient
+    displaced?.retireMemory()
+    configuredClient = nil
+    return displaced
+  }
+
+  func captureConfiguredClientOrigin() throws -> ConfiguredClientOrigin {
+    guard !closed, let origin = configuredClient else { throw HubOwnerCarrier.comparisonFailure }
+    try origin.requireInstalledMemory()
+    return origin
+  }
+
   // MARK: - Lifecycle
 
   /// Load the link (if this Mac has joined), tag local writes with its device id, re-announce this
@@ -115,10 +198,8 @@ public actor HubSync {
       if let link = try database.hubLink() {
         if let url = URL(string: link.url), let ref = SecretRef(rawValue: link.tokenRef) {
           database.deviceId = link.deviceId
-          let token = HubToken(store: secretStore, ref: ref)
-          self.token = token
-          baseURL = url
-          api = makeAPI(url, { try await token.value() })
+          let origin = makeConfiguredClient(baseURL: url, reference: ref)
+          try installConfiguredClient(origin)
         } else {
           logger.error("the stored hub link is unreadable; not pushing")
         }
@@ -171,12 +252,11 @@ public actor HubSync {
   /// ends at its current request.
   public func close() async {
     closed = true
+    configuredClient?.retireMemory()
     // A push the hub never answers is not waited for: its request is cancelled.
     inFlight?.cancel()
     await stop()
-    api = nil
-    token = nil
-    baseURL = nil
+    clearConfiguredClient()
   }
 
   /// `GET /v1/me` with this Mac's token (the account manager refreshes the account's names with it).
@@ -222,8 +302,8 @@ public actor HubSync {
     let name = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !name.isEmpty else { throw WorkspaceError(.protocolInvalid, "The device name is empty.") }
     let ref = SecretRef.make()
-    let token = HubToken(store: secretStore, ref: ref)
-    let api = makeAPI(base, { try await token.value() })
+    let origin = makeConfiguredClient(baseURL: base, reference: ref)
+    let api = origin.api
     let enrolled: EnrollResponse
     do {
       enrolled = try await api.enroll(EnrollRequest(code: code, deviceName: name, platform: "macos"))
@@ -249,10 +329,8 @@ public actor HubSync {
     }
     database.deviceId = enrolled.deviceId
     // The token was just stored, so it is known without asking the Keychain.
-    token.remember(enrolled.token)
-    self.token = token
-    self.api = api
-    baseURL = base
+    origin.token.remember(enrolled.token)
+    try installConfiguredClient(origin)
     displayName = enrolled.user.displayName
     suspended = false
     reportedUnauthorized = false
@@ -375,11 +453,10 @@ public actor HubSync {
     await stopPull()
     await self.link?.stop()
     self.link = nil
-    baseURL = nil
-    let api = self.api
-    self.api = nil
+    let originalClient = clearConfiguredClient()
+    defer { withExtendedLifetime(originalClient) {} }
+    let api = originalClient?.api
     displayName = nil
-    token = nil
     suspended = false
     refreshKeepAwake()
     await pairing.reset()

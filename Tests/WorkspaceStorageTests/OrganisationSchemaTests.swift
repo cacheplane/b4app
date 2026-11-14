@@ -27,7 +27,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
   }
 }
 
-@Suite struct OrganisationSchemaTests {
+@Suite(.serialized) struct OrganisationSchemaTests {
   @Test func everyChangeCarriesAClockAndOneTransactionSharesIt() throws {
     let db = try WorkspaceDatabase.temporary()
     _ = try db.write { c in
@@ -241,7 +241,13 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       "UPDATE \"changes\" SET \"deviceId\" = 'dev-9', \"wall\" = 1761900001000 WHERE \"seq\" = 2")
     try raw.execute("UPDATE \"changes\" SET \"wall\" = 4096 WHERE \"seq\" = 1")
 
-    let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+    let backups =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-organisation-upgrade-backups-"
+      + endpoint.database
+    defer { try? FileManager.default.removeItem(atPath: backups) }
+    let db = try WorkspaceDatabase(
+      endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
+    defer { try? db.close() }
     #expect(try db.appliedMigrations().contains("0004_organisation"))
     let old = try db.changes(after: 0)
     #expect(old.map(\.hlc) == ["000000001000-0000-local", "019a396c76e8-0000-dev-9"])
@@ -292,7 +298,13 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     }
     let before = try raw.execute("SELECT max(\"seq\") AS \"m\" FROM \"changes\"").rows.first?.text("m")
 
-    let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+    let backups =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-organisation-upgrade-backups-"
+      + endpoint.database
+    defer { try? FileManager.default.removeItem(atPath: backups) }
+    let db = try WorkspaceDatabase(
+      endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
+    defer { try? db.close() }
     #expect(try db.appliedMigrations().contains("0004_organisation"))
     func state(_ id: String) throws -> ThreadState {
       Attention.state(of: try #require(try db.thread(id: id)))
@@ -352,8 +364,19 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
     let maxSeq =
       Int(try raw.execute("SELECT max(\"seq\") AS \"n\" FROM \"changes\"").rows.first?.text("n") ?? "0") ?? 0
 
-    let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
-    #expect(try db.appliedMigrations().contains("0011_environments"))
+    let backups =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a4-environment-upgrade-backups-"
+      + endpoint.database
+    defer { try? FileManager.default.removeItem(atPath: backups) }
+    let db = try WorkspaceDatabase(
+      endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
+    defer { try? db.close() }
+    #expect(
+      Array(try db.appliedMigrations().suffix(6)) == [
+        "0011_environments", "0012_app_folders", "0013_view_settings", "0014_connection_commands",
+        "0015_density",
+        "0016_agent_protocol",
+      ])
     func scalar(_ sql: String) throws -> Int {
       try db.read { c in try c.execute(sql).rows.first?.text("n").flatMap(Int.init) ?? -1 }
     }
@@ -418,7 +441,9 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       try c.execute(
         "UPDATE \"threads\" SET \"environmentId\" = 'p1', \"readTurnId\" = 'u1' WHERE \"id\" = 't1'")
     }
-    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    let path =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
     try source.export(to: path)
     let target = try WorkspaceDatabase.temporary()
     try target.restore(from: path)
@@ -434,20 +459,10 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
   @Test func restoreReadsAnArchiveWithoutClocks() throws {
     let source = try WorkspaceDatabase.temporary()
     try seedThread(source)
-    let path = NSTemporaryDirectory() + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
-    try source.export(to: path)
-    var lines = try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n").map(String.init)
-    var header = try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as! [String: Any]
-    header["version"] = 2
-    lines[0] = String(decoding: try JSONSerialization.data(withJSONObject: header), as: UTF8.self)
-    for index in lines.indices.dropFirst() {
-      var line = try JSONSerialization.jsonObject(with: Data(lines[index].utf8)) as! [String: Any]
-      guard line["table"] as? String == "changes", var row = line["row"] as? [String: Any] else { continue }
-      row["hlc"] = nil
-      line["row"] = row
-      lines[index] = String(decoding: try JSONSerialization.data(withJSONObject: line), as: UTF8.self)
-    }
-    try (lines.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+    let path =
+      try AgentProtocolResourceFixture.physicalTemporaryDirectory()
+      + "b4export-\(UUID().uuidString.prefix(6)).jsonl"
+    _ = try HistoricalWorkspaceArchiveFixture.write(source, version: 2, path: path, omitChangeClocks: true)
 
     let target = try WorkspaceDatabase.temporary()
     try target.restore(from: path)

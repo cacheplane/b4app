@@ -131,7 +131,7 @@ private struct AccountRig {
   var accounts: AccountManager { coordinator.accounts }
 
   static func paths() throws -> PlatformPaths {
-    let base = NSTemporaryDirectory() + "b4a-\(UUID().uuidString.prefix(8))"
+    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4a-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
     return try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
   }
@@ -614,7 +614,7 @@ private let acme = AuthSession(
   }
 
   @Test func aServerStartRacingSignOutLeavesNoServerRunning() async throws {
-    let base = NSTemporaryDirectory() + "b4as-\(UUID().uuidString.prefix(8))"
+    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4as-\(UUID().uuidString.prefix(8))"
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
     var environment = ProcessInfo.processInfo.environment
     environment["B4APP_NODE_PATH"] = fakeNodePath()

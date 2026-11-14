@@ -18,6 +18,7 @@ public struct RequestOptions: Sendable {
 /// cursor, and fan-out streams for events and desync signals.
 public actor WorkspaceClient {
   private let transport: any WorkspaceTransport
+  private let lifecycleObserver: ClientLifecycleObserver?
   private var pending: [String: CheckedContinuation<ResponseEnvelope, any Error>] = [:]
   private var cursor = EventCursor()
   private var counter = 0
@@ -28,14 +29,23 @@ public actor WorkspaceClient {
   private var eventContinuations: [UUID: AsyncStream<EventEnvelope>.Continuation] = [:]
   private var desyncContinuations: [UUID: AsyncStream<DesyncReason>.Continuation] = [:]
   private var readerTask: Task<Void, Never>?
+  private var closeTask: Task<Void, Never>?
+  private var sendTasks: [String: Task<Void, Never>] = [:]
 
   public init(transport: any WorkspaceTransport) {
     self.transport = transport
+    lifecycleObserver = nil
+    Task { await self.startReading() }
+  }
+
+  init(transport: any WorkspaceTransport, lifecycleObserver: ClientLifecycleObserver?) {
+    self.transport = transport
+    self.lifecycleObserver = lifecycleObserver
     Task { await self.startReading() }
   }
 
   private func startReading() {
-    guard readerTask == nil else { return }
+    guard !closed, readerTask == nil else { return }
     readerTask = Task { [transport] in
       for await line in transport.incoming {
         self.handle(line: line)
@@ -46,8 +56,8 @@ public actor WorkspaceClient {
 
   /// Resolves once the coordinator's hello has been received.
   public func ready() async throws -> HelloEnvelope {
-    if let hello { return hello }
     if let closeError { throw closeError }
+    if let hello { return hello }
     return try await withCheckedThrowingContinuation { continuation in
       helloContinuations.append(continuation)
     }
@@ -76,7 +86,10 @@ public actor WorkspaceClient {
     let line = try NDJSON.encodeLine(envelope)
     let response: ResponseEnvelope = try await withCheckedThrowingContinuation { continuation in
       pending[requestId] = continuation
-      Task {
+      sendTasks[requestId] = Task {
+        defer { sendTasks[requestId] = nil }
+        // This actor turn is the last admission check before calling a foreign transport.
+        guard !closed, !Task.isCancelled else { return }
         do {
           try await transport.send(line)
         } catch {
@@ -125,8 +138,22 @@ public actor WorkspaceClient {
   }
 
   public func close() async {
-    await transport.close()
+    if let closeTask {
+      await lifecycleObserver?(.existingCompletion)
+      await closeTask.value
+      return
+    }
     handleClosed(error: nil)
+    readerTask?.cancel()
+    let reader = readerTask
+    let task = Task { [transport, lifecycleObserver] in
+      await lifecycleObserver?(.cleanupStarted)
+      await transport.close()
+      await reader?.value
+      await lifecycleObserver?(.cleanupFinished)
+    }
+    closeTask = task
+    await task.value
   }
 
   // MARK: - Internals
@@ -141,7 +168,7 @@ public actor WorkspaceClient {
   }
 
   private func handle(line: Data) {
-    guard let message = ServerEnvelope.decode(line) else { return }
+    guard !closed, let message = ServerEnvelope.decode(line) else { return }
     switch message {
     case .hello(let hello):
       self.hello = hello
@@ -174,6 +201,8 @@ public actor WorkspaceClient {
       .endpointUnavailable,
       error.map { String(describing: $0) } ?? transport.unavailableReason ?? "Coordinator connection closed.")
     closeError = failure
+    // Retain raw sends until they finish, but do not join arbitrary custom transports.
+    for task in sendTasks.values { task.cancel() }
     for continuation in pending.values { continuation.resume(throwing: failure) }
     pending = [:]
     for continuation in helloContinuations { continuation.resume(throwing: failure) }
@@ -184,3 +213,9 @@ public actor WorkspaceClient {
     desyncContinuations = [:]
   }
 }
+
+// Module-internal witnesses; production initialization supplies nil.
+enum ClientLifecycleEvent: String, Sendable {
+  case existingCompletion, cleanupStarted, cleanupFinished
+}
+typealias ClientLifecycleObserver = @Sendable (ClientLifecycleEvent) async -> Void

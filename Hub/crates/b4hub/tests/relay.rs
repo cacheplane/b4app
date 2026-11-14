@@ -34,7 +34,10 @@ fn hello_of(frame: RelayMessage) -> (Role, u32, sqlx::types::Uuid) {
             device_id,
             ..
         } => {
-            assert_eq!(protocol, 1);
+            assert_eq!(
+                protocol,
+                b4hub_core::protocol::ClientProtocol::SUPPORTED.value()
+            );
             (role, heartbeat_seconds, device_id)
         }
         other => panic!("expected hello, got {other:?}"),
@@ -859,6 +862,7 @@ impl World {
         let blove = hub.user("cacheplane", "blove").await;
         let (mac_token, mac_id) = hub.enroll(&blove, "macos", "Brian's Mac").await;
         let (phone_token, phone_id) = hub.enroll(&blove, "ios", "iPhone").await;
+        hub.seed_connection(&blove, mac_id, "conn-1").await;
         hub.seed_thread(&blove, mac_id, "thread-1").await;
         hub.seed_request(&blove, mac_id, "request-1", "thread-1", "pending")
             .await;
@@ -1884,7 +1888,7 @@ async fn a_reply_waits_for_room_in_the_callers_full_queue(pool: PgPool) {
     mac.expect_command().await;
 
     // The phone stops reading until its queue is full, and the Mac answers meanwhile.
-    fill_queue(&world.hub.state.relay, world.phone_id).await;
+    fill_queue(&world.hub.state.relay, &world.hub.state.db, world.phone_id).await;
     mac.reply("send-1", json!({"turn": {"id": "turn-1"}})).await;
     real_sleep(Duration::from_millis(500)).await;
 
@@ -1902,7 +1906,7 @@ async fn a_mac_whose_queue_stays_full_is_relay_timeout_not_offline(pool: PgPool)
     let clock = pause_clock();
     let _mac = world.mac().await; // links, then never reads
     let mut phone = world.phone().await;
-    fill_queue(&world.hub.state.relay, world.mac_id).await;
+    fill_queue(&world.hub.state.relay, &world.hub.state.db, world.mac_id).await;
 
     phone
         .command(
@@ -2078,22 +2082,31 @@ async fn a_fifth_watch_is_refused(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn watching_a_thread_again_needs_no_lookup(pool: PgPool) {
+async fn a_live_repeat_watch_is_idempotent_and_a_deleted_thread_is_not_found(pool: PgPool) {
     let world = World::new(spawn_hub(&pool).await).await;
     let mut mac = world.mac().await;
     let mut phone = world.phone().await;
     phone.watch("thread-1").await;
     assert_eq!(mac.expect_watching().await, ["thread-1"]);
 
-    // With the row gone, a lookup would answer `not_found`; a repeated watch makes none.
+    // A repeat against the same live owned row adds neither a watch nor another host frame.
+    phone.watch("thread-1").await;
+    phone.expect_no_frame(QUIET).await;
+    mac.expect_no_frame(QUIET).await;
+    assert_eq!(world.hub.state.relay.watched_by(world.mac_id), ["thread-1"]);
+
+    // A cached subscription cannot authorize a missing native parent on the next request.
     sqlx::query("DELETE FROM threads WHERE id = 'thread-1'")
         .execute(&world.hub.admin.pool)
         .await
         .unwrap();
     phone.watch("thread-1").await;
-    phone.expect_no_frame(QUIET).await;
+    assert_eq!(
+        phone.expect_error_details().await,
+        ("not_found".into(), Some(json!({"threadId":"thread-1"})))
+    );
     mac.expect_no_frame(QUIET).await;
-    assert_eq!(world.hub.state.relay.watched_by(world.mac_id), ["thread-1"]);
+    phone.ping().await;
 }
 
 #[sqlx::test(migrations = false)]
@@ -2164,7 +2177,7 @@ async fn a_slow_phone_gets_a_stream_gap(pool: PgPool) {
     mac.expect_watching().await;
 
     // The phone stops reading until its queue is full; the Mac streams meanwhile.
-    fill_queue(&world.hub.state.relay, world.phone_id).await;
+    fill_queue(&world.hub.state.relay, &world.hub.state.db, world.phone_id).await;
     mac.event("thread-1", "message.delta", "lost one").await;
     mac.event("thread-1", "message.delta", "lost two").await;
     settle().await;
@@ -2202,7 +2215,7 @@ async fn presence_is_sent_when_the_queue_has_room_again(pool: PgPool) {
 
     // The phone stops reading until its queue is full. The Mac drops and comes back meanwhile:
     // two changes, neither of which fits.
-    let backlog = fill_queue(&world.hub.state.relay, world.phone_id).await;
+    let backlog = fill_queue(&world.hub.state.relay, &world.hub.state.db, world.phone_id).await;
     mac.close().await;
     let mac_id = world.mac_id;
     eventually("the Mac to go offline", || async {
@@ -2221,7 +2234,7 @@ async fn presence_is_sent_when_the_queue_has_room_again(pool: PgPool) {
     assert!(presences[0][0].online, "{presences:?}");
 
     // The same when the last change is the Mac going away.
-    let backlog = fill_queue(&world.hub.state.relay, world.phone_id).await;
+    let backlog = fill_queue(&world.hub.state.relay, &world.hub.state.db, world.phone_id).await;
     mac.close().await;
     eventually("the Mac to go offline again", || async {
         (!world.hub.state.relay.online(mac_id)).then_some(())
@@ -2724,6 +2737,20 @@ async fn maintenance_refuses_link_writes_and_keeps_reads(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn a_deleted_token_refuses_the_next_json_ping_without_waiting_for_a_minute(pool: PgPool) {
+    let world = World::new(spawn_hub(&pool).await).await;
+    let mut phone = world.phone().await;
+    sqlx::query("DELETE FROM device_tokens WHERE device_id = $1")
+        .bind(world.phone_id)
+        .execute(&world.hub.admin.pool)
+        .await
+        .unwrap();
+    // No clock advance: this is the fresh incoming JSON boundary, not the minute fallback.
+    phone.send_text_regardless(r#"{"type":"ping"}"#).await;
+    assert_eq!(phone.expect_close_without_text().await, close_code::REVOKED);
+}
+
+#[sqlx::test(migrations = false)]
 async fn a_link_whose_token_is_deleted_behind_its_back_closes_within_a_minute(pool: PgPool) {
     // A one-minute heartbeat makes the signal listener's silence window four minutes. At the
     // default (20 s) two 10 s steps of the paused clock can pass before a heartbeat's echo comes
@@ -2738,19 +2765,24 @@ async fn a_link_whose_token_is_deleted_behind_its_back_closes_within_a_minute(po
     let world = World::new(hub).await;
     let clock = pause_clock();
     let mut phone = world.phone().await;
-    // The token goes without a request to the hub, so nothing signals: only the link's own
-    // once-a-minute check can notice.
+    // No application frame is sent after deletion. Transport control pings keep the link from
+    // going silent; they bypass JSON admission, but still exercise the minute session fallback.
+    // A server-owned checked output may also correctly close it earlier.
     sqlx::query("DELETE FROM device_tokens WHERE device_id = $1")
         .bind(world.phone_id)
         .execute(&world.hub.admin.pool)
         .await
         .unwrap();
-    clock
-        .advance_alive(Duration::from_secs(50), &mut [&mut phone])
-        .await;
-    clock.advance(Duration::from_secs(11)).await;
-    phone.send(&RelayMessage::Ping).await;
-    assert_eq!(phone.expect_close().await, close_code::REVOKED);
+    for step in 1..=6 {
+        clock.advance(Duration::from_secs(10)).await;
+        if let Some(code) = phone.transport_ping_or_close(step).await {
+            assert_eq!(code, close_code::REVOKED);
+            return;
+        }
+    }
+    // Exactly sixty paused seconds, with no JSON ping/pong or other business text. Do not
+    // require the revoked session to stay alive until this point if another check finds it.
+    assert_eq!(phone.expect_close_without_text().await, close_code::REVOKED);
 }
 
 #[sqlx::test(migrations = false)]

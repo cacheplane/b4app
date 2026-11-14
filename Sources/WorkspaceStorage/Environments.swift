@@ -306,7 +306,8 @@ extension WorkspaceDatabase {
   /// This Mac's own setting `key`, nil when it was never set. Settings are never synced and never in the
   /// change log.
   public func settings(key: String) throws -> JSONValue? {
-    try read { c in
+    try ProtocolActivationControl.requireGenericSettingKey(key)
+    return try read { c in
       guard
         let text = try c.execute(
           "SELECT \"value\"::text AS \"value\" FROM \"settings\" WHERE \"key\" = $1", [key]
@@ -319,6 +320,7 @@ extension WorkspaceDatabase {
 
   /// Store (replace) the setting `key`.
   public func setSetting(key: String, value: JSONValue) throws {
+    try ProtocolActivationControl.requireGenericSettingKey(key)
     let json = String(decoding: try JSONCoding.encoder.encode(value), as: UTF8.self)
     try write { c in
       _ = try c.execute(

@@ -9,6 +9,7 @@ import WorkspaceStorage
 /// logs on disk. Attached endpoints are never touched here.
 public actor LocalServerService {
   public struct Context: Sendable {
+    var nodeVersionProbeObservation: (@Sendable (NodeVersionProbeObservation) -> Void)? = nil
     public var database: WorkspaceDatabase
     public var eventLog: EventLog
     public var environment: [String: String]
@@ -38,7 +39,14 @@ public actor LocalServerService {
 
   public func add(_ params: ServerAdd.Params) async throws -> ServerAdd.Result {
     let project = try B4ProjectInspector.locate(projectPath: params.projectPath)
-    guard let node = await NodeLocator.resolve(environment: context.environment) else {
+    let resolvedNode: NodeExecutable?
+    if let observation = context.nodeVersionProbeObservation {
+      resolvedNode = await NodeLocator.resolveObservingExplicitProbe(
+        environment: context.environment, observation: observation)
+    } else {
+      resolvedNode = await NodeLocator.resolve(environment: context.environment)
+    }
+    guard let node = resolvedNode else {
       throw WorkspaceError(
         .missingExecutable,
         "No Node \(NodeLocator.minimumMajor)+ executable was found. Install Node 24 or set B4APP_NODE_PATH.")
@@ -371,6 +379,9 @@ public actor LocalServerService {
   /// alone and the row is marked stopped (spec 10.3).
   public func startAll() async {
     for server in (try? db.listLocalServers()) ?? [] where server.pid != nil {
+      // Cached legacy-only history cannot authorize ownership checks, health probes or adoption.
+      guard let references = try? db.connections(localServerId: server.id) else { continue }
+      if !references.isEmpty, references.allSatisfy(\.isProtocolReadOnly) { continue }
       let pid = server.pid!
       if verifyOwnership(server), let identity = ProcessInspector.identity(pid: pid) {
         let healthy = await isHealthy(server)
@@ -511,7 +522,7 @@ public actor LocalServerService {
     await notifyConnections(serverId: id, ready: health == .ready)
   }
 
-  private func markStopped(_ server: LocalServer, message: String) throws -> LocalServer {
+  func markStopped(_ server: LocalServer, message: String) throws -> LocalServer {
     try db.updateLocalServer(id: server.id) {
       $0.pid = nil
       $0.processStartedAt = nil
@@ -544,7 +555,8 @@ public actor LocalServerService {
   /// goes through the session service's projection (`events()`), which also marks running turns
   /// `reconciling` and expires prompts when the transport is gone, exactly as for a harness exit.
   private func notifyConnections(serverId: String, ready: Bool) async {
-    for connection in (try? db.connections(localServerId: serverId)) ?? [] {
+    for connection in (try? db.connections(localServerId: serverId)) ?? []
+    where !connection.isProtocolReadOnly {
       let status: ConnectionStatus = ready ? .ready : .offline
       guard connection.status != status || !ready else { continue }
       _ = try? db.updateConnection(id: connection.id) { $0.status = status }

@@ -323,6 +323,7 @@ async fn maintenance_pauses_writes_and_keeps_reads_and_readiness(pool: PgPool) {
             "ok": true,
             "migrations": "current",
             "minClientProtocol": 1,
+            "supportedClientProtocol": 2,
             "relay": "ok",
             "instances": "ok",
             "maintenance": "read_only",

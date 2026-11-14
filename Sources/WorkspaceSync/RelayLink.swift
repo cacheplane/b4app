@@ -34,7 +34,7 @@ public enum RelayLinkState: Sendable, Equatable {
 ///   read: hand slow work to another task.
 public actor RelayLink {
   /// The link protocol this build speaks, sent as `B4-Protocol`.
-  public static let protocolVersion = 1
+  public static let protocolVersion = HubReadiness.clientProtocolVersion
 
   /// How many `409 relocated` upgrades in a row are retried at once before the backoff applies.
   public static let maxImmediateRelocations = 3
@@ -277,13 +277,18 @@ public actor RelayLink {
         // A frame from a newer hub: it still proves the link is alive. A stale run must not touch
         // the current run's watchdog.
         guard runID == id else { return .retry("cancelled") }
+        guard connected else { return .stop("protocol_invalid") }
         armWatchdog(id)
         continue
+      } catch HubLinkError.invalidHello {
+        guard runID == id else { return .retry("cancelled") }
+        return .stop("protocol_invalid")
       } catch HubLinkError.unknownCommand(let commandId, let method) {
         // A command this build cannot run (the phone and hub are newer than this Mac). A Mac answers
         // it at once, so the phone says why instead of waiting out the hub's reply timeout; a client
         // is never sent commands and ignores one.
         guard runID == id else { return .retry("cancelled") }
+        guard connected else { return .stop("protocol_invalid") }
         armWatchdog(id)
         if role == .host { try? await socket.send(Self.unknownCommandReply(id: commandId, method: method)) }
         continue
@@ -293,8 +298,21 @@ public actor RelayLink {
       guard runID == id else { return .retry("cancelled") }
       armWatchdog(id)
 
+      // A link cannot deliver application work before its one validated greeting.
+      if !connected {
+        switch message {
+        case .hello: break
+        case .error(let code, _, _) where code == "client_too_old" || code == "link_replaced": break
+        default: return .stop("protocol_invalid")
+        }
+      }
       switch message {
-      case .hello(_, _, _, let role, _, let hubTime):
+      case .hello(let version, let minimum, let deviceId, let role, let heartbeat, let hubTime):
+        guard !connected, (1...Self.protocolVersion).contains(version),
+          (1...version).contains(minimum), minimum <= Self.protocolVersion,
+          !deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          heartbeat == RelayLimits.heartbeatSeconds, Self.parse(hubTime) != nil
+        else { return .stop("protocol_invalid") }
         noteHubTime(hubTime)
         self.role = role
         if !connected {

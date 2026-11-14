@@ -16,7 +16,9 @@ public struct StoreBoot: Sendable {
   public static func open(paths: PlatformPaths, environment: [String: String]) async throws -> StoreBoot {
     let cluster = try await StoreCluster.start(paths: paths, environment: environment)
     do {
-      let database = try WorkspaceDatabase(endpoint: paths.postgres, binDir: cluster.binDir)
+      let database = try WorkspaceDatabase(
+        endpoint: paths.postgres, binDir: cluster.binDir,
+        backupDirectory: backupDirectory(paths: paths, database: paths.postgres.database))
       let imported: SQLiteImporter.Summary?
       do {
         imported = try importLegacySQLite(paths: paths, into: database)
@@ -31,6 +33,16 @@ public struct StoreBoot: Sendable {
       await cluster.stopIfOwned()
       throw error
     }
+  }
+
+  /// Resolve only; directory creation belongs to pending migration admission after future checks.
+  private static func backupDirectory(paths: PlatformPaths, database: String) throws -> String {
+    guard !database.isEmpty,
+      let component = database.addingPercentEncoding(
+        withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "_-")))
+    else { throw WorkspaceError(.protocolInvalid, "A database name is required for its backup path.") }
+    return URL(fileURLWithPath: paths.dataDir).appendingPathComponent("backups")
+      .appendingPathComponent(component).path
   }
 
   /// Import the pre-0.2 SQLite file at `paths.databasePath` into `database` once, then rename it

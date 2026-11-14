@@ -100,49 +100,83 @@ extension WorkspaceDatabase {
   ) throws -> RemoteApplied {
     try write(exclusive: true) { c in
       try didLock(c)
-      try c.execute("SET LOCAL b4app.replaying = 'on'")
-      var result = RemoteApplied()
-      let wall = epochMillis()
-      // `local` is this Mac's id before it joined; a phone always stamps its enrolled id.
-      let macs = macDeviceIds.union([ownDeviceId, "local"])
-      for change in changes {
-        guard let parsed = HLC(rawValue: change.hlc) else {
-          result.skipped += 1
-          continue
-        }
-        let hlc = parsed.clamped(toWall: wall)
-        clock.observe(hlc)
-        // The view settings row's source of truth is the hub, not a Mac, so it is the one table a Mac
-        // accepts from a Mac (its own echo included): its merge is by column clock, so an echo is a
-        // no-op and an older write loses.
-        if change.table != "viewSettings", macs.contains(change.deviceId) || macs.contains(hlc.deviceId) {
-          result.skipped += 1
-          continue
-        }
-        try c.execute("SAVEPOINT \"remoteChange\"")
-        do {
-          let wrote = try merge(c, change, at: hlc.rawValue)
-          try c.execute("RELEASE SAVEPOINT \"remoteChange\"")
-          guard wrote else {
-            result.skipped += 1
-            continue
-          }
-          result.applied += 1
-          switch change.table {
-          case "threads": result.touchedThreadIds.insert(change.rowId)
-          case "environments": result.touchedEnvironmentIds.insert(change.rowId)
-          case "viewSettings": result.touchedViewSettings = true
-          default: result.touchedDraftThreadIds.insert(change.rowId)
-          }
-        } catch  where Self.isDataError(error) {
-          try c.execute("ROLLBACK TO SAVEPOINT \"remoteChange\"")
-          try c.execute("RELEASE SAVEPOINT \"remoteChange\"")
-          result.skipped += 1
-        }
-      }
-      try c.execute("UPDATE \"hubLink\" SET \"cursor\" = $1::bigint WHERE \"id\" = 1", [String(cursor)])
-      return result
+      return try applyRemoteBatch(
+        c, changes, ownDeviceId: ownDeviceId, macDeviceIds: macDeviceIds, cursor: cursor)
     }
+  }
+
+  /// Merge against the original compatibility snapshot; the snapshot grants no runtime authority.
+  @discardableResult
+  public func applyRemote(
+    _ changes: [RemoteChange], ownDeviceId: String, macDeviceIds: Set<String>, cursor: Int,
+    expectedProtocolSnapshot: ProtocolVerificationSnapshot
+  ) throws -> RemoteApplied {
+    try writeProtocolSyncEffect(expectedSnapshot: expectedProtocolSnapshot) { c in
+      try applyRemoteBatch(
+        c, changes, ownDeviceId: ownDeviceId, macDeviceIds: macDeviceIds, cursor: cursor)
+    }
+  }
+
+  /// Merge only while the original linked snapshot and explicit opaque reference both match.
+  @discardableResult
+  package func applyRemote(
+    _ changes: [RemoteChange], ownDeviceId: String, macDeviceIds: Set<String>, cursor: Int,
+    expectedProtocolSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String
+  ) throws -> RemoteApplied {
+    try writeProtocolSyncEffect(
+      expectedSnapshot: expectedProtocolSnapshot, expectedTokenRef: expectedTokenRef
+    ) { c in
+      try applyRemoteBatch(
+        c, changes, ownDeviceId: ownDeviceId, macDeviceIds: macDeviceIds, cursor: cursor)
+    }
+  }
+
+  private func applyRemoteBatch(
+    _ c: PostgresConnection, _ changes: [RemoteChange], ownDeviceId: String,
+    macDeviceIds: Set<String>, cursor: Int
+  ) throws -> RemoteApplied {
+    try c.execute("SET LOCAL b4app.replaying = 'on'")
+    var result = RemoteApplied()
+    let wall = epochMillis()
+    // `local` is this Mac's id before it joined; a phone always stamps its enrolled id.
+    let macs = macDeviceIds.union([ownDeviceId, "local"])
+    for change in changes {
+      guard let parsed = HLC(rawValue: change.hlc) else {
+        result.skipped += 1
+        continue
+      }
+      let hlc = parsed.clamped(toWall: wall)
+      clock.observe(hlc)
+      // The view settings row's source of truth is the hub, not a Mac, so it is the one table a Mac
+      // accepts from a Mac (its own echo included): its merge is by column clock, so an echo is a
+      // no-op and an older write loses.
+      if change.table != "viewSettings", macs.contains(change.deviceId) || macs.contains(hlc.deviceId) {
+        result.skipped += 1
+        continue
+      }
+      try c.execute("SAVEPOINT \"remoteChange\"")
+      do {
+        let wrote = try merge(c, change, at: hlc.rawValue)
+        try c.execute("RELEASE SAVEPOINT \"remoteChange\"")
+        guard wrote else {
+          result.skipped += 1
+          continue
+        }
+        result.applied += 1
+        switch change.table {
+        case "threads": result.touchedThreadIds.insert(change.rowId)
+        case "environments": result.touchedEnvironmentIds.insert(change.rowId)
+        case "viewSettings": result.touchedViewSettings = true
+        default: result.touchedDraftThreadIds.insert(change.rowId)
+        }
+      } catch  where Self.isDataError(error) {
+        try c.execute("ROLLBACK TO SAVEPOINT \"remoteChange\"")
+        try c.execute("RELEASE SAVEPOINT \"remoteChange\"")
+        result.skipped += 1
+      }
+    }
+    try c.execute("UPDATE \"hubLink\" SET \"cursor\" = $1::bigint WHERE \"id\" = 1", [String(cursor)])
+    return result
   }
 
   /// The clock of a merged column's latest write here, nil when it has none.

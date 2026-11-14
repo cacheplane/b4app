@@ -14,8 +14,11 @@ import WorkspaceProtocol
     let handoff = ShutdownGate()
     let server = try await SocketServer.start(
       socketPath: root.appendingPathComponent("s").path, eventLog: EventLog(),
-      dispatch: { _ in ResponseEnvelope.success("unexpected", result: .object([:])) },
-      observer: { probe.record($0) }, handoff: { _ in await handoff.holdFirst() })
+      plainDispatch: { _ in ResponseEnvelope.success("unexpected", result: .object([:])) },
+      lifecycleObserver: { event in
+        probe.record(event)
+        if case .connectionDequeued = event { await handoff.holdFirst() }
+      }, acceptanceObserver: { probe.record($0) })
     var peers: [UnixSocketTransport] = []
     var closing: Task<Void, Never>?
     var failure: (any Error)?
@@ -55,8 +58,9 @@ import WorkspaceProtocol
     let rawRead = BlockingShutdownGate()
     let server = try await SocketServer.start(
       socketPath: root.appendingPathComponent("s").path, eventLog: EventLog(),
-      dispatch: { _ in ResponseEnvelope.success("unexpected", result: .object([:])) },
-      observer: { event in
+      plainDispatch: { _ in ResponseEnvelope.success("unexpected", result: .object([:])) },
+      lifecycleObserver: { probe.record($0) },
+      acceptanceObserver: { event in
         probe.record(event)
         if case .rawRead = event { rawRead.holdFirst() }
       })
@@ -88,18 +92,19 @@ import WorkspaceProtocol
     try probe.expectBefore(.acceptFinished, .groupShutdownStarted)
   }
 
-  @Test func closeJoinsAnActualDispatchBeforeShuttingDownTheLoop() async throws {
+  @Test func socketShutdownPreservesAnIndependentlyOwnedDispatch() async throws {
     let root = try directory()
     defer { try? FileManager.default.removeItem(at: root) }
     let probe = ShutdownProbe()
     let dispatch = ShutdownGate()
     let server = try await SocketServer.start(
       socketPath: root.appendingPathComponent("s").path, eventLog: EventLog(),
-      dispatch: { _ in
-        // This actual handler deliberately ignores task cancellation until its owner releases it.
+      plainDispatch: { _ in
+        // The plain handler is owned by SocketInvocations, independently of socket IO. Its
+        // captures contain no channel, writer or server; the gate releases its actual work.
         await dispatch.holdFirst()
         return ResponseEnvelope.success("held", result: .object([:]))
-      }, observer: { probe.record($0) })
+      }, lifecycleObserver: { probe.record($0) }, acceptanceObserver: { probe.record($0) })
     var peer: UnixSocketTransport?
     var closing: Task<Void, Never>?
     var failure: (any Error)?
@@ -110,19 +115,34 @@ import WorkspaceProtocol
       try await waitFor { dispatch.reached }
       let task = Task { await server.close() }
       closing = task
-      try await waitFor { probe.contains(.sourceFinished) }
-      #expect(!probe.contains(.acceptFinished) && !probe.contains(.groupShutdownStarted))
-      dispatch.release()
       await task.value
+      let token = try #require(probe.admitted.first)
+      #expect(probe.admitted.count == 1)
+      #expect(server.invocationSnapshot.tokens == [token])
+      #expect(!server.invocationSnapshot.accepting)
+      #expect(probe.finished.isEmpty)
+      #expect(probe.contains(.sourceFinished) && probe.contains(.groupShutdownStarted))
+      dispatch.release()
+      try await waitFor { probe.finished.count == 1 }
+      #expect(probe.finished.first?.token == token && probe.finished.first?.dropped == true)
+      #expect(server.invocationSnapshot.tokens.isEmpty)
     } catch { failure = error }
     dispatch.release()
     if let closing { await closing.value } else { await server.close() }
     if let peer { await peer.close() }
+    // On every error path release real handler work and observe its completion before returning.
+    if dispatch.reached || !server.invocationSnapshot.tokens.isEmpty || !probe.admitted.isEmpty {
+      do {
+        try await waitFor { probe.finished.count == 1 && server.invocationSnapshot.tokens.isEmpty }
+      } catch { if failure == nil { failure = error } }
+    }
     if let failure { throw failure }
     let child = try #require(probe.dequeued.first)
-    try probe.expectBefore(.sourceFinished, .served(child))
+    let token = try #require(probe.admitted.first)
+    try probe.expectBefore(.sourceFinished, .acceptFinished)
     try probe.expectBefore(.served(child), .acceptFinished)
     try probe.expectBefore(.acceptFinished, .groupShutdownStarted)
+    try probe.expectBefore(.groupShutdownStarted, .handlerFinished(token, dropped: true))
   }
 
   private func directory() throws -> URL {
@@ -144,19 +164,66 @@ import WorkspaceProtocol
 
 private enum ShutdownTestError: Error { case deadline }
 
+// Adapt the current client's two existing identity-only witness streams. The production registry
+// never receives an acceptance observer, and this probe retains no NIO object.
+private enum ShutdownEvent: Sendable, Equatable {
+  case rawRead(ObjectIdentifier), initialized(ObjectIdentifier), dequeued(ObjectIdentifier)
+  case served(ObjectIdentifier), sourceFinished, acceptFinished, groupShutdownStarted
+  case firstCloseTurnQueued, firstCloseTurnExecuting, listenerCloseInvoked, listenerClosed
+  case handlerAdmitted(UUID), handlerFinished(UUID, dropped: Bool)
+}
+
 private final class ShutdownProbe: Sendable {
-  private let state = Mutex<[SocketShutdownEvent]>([])
-  func record(_ event: SocketShutdownEvent) { state.withLock { $0.append(event) } }
-  var events: [SocketShutdownEvent] { state.withLock { $0 } }
+  private struct State {
+    var events: [ShutdownEvent] = []
+    var children: [UUID: ObjectIdentifier] = [:]
+  }
+  private let state = Mutex(State())
+  func record(_ event: SocketAcceptanceEvent) {
+    state.withLock { state in
+      switch event {
+      case .rawRead(let child): state.events.append(.rawRead(child))
+      case .initialized(let child): state.events.append(.initialized(child))
+      case .dequeued(let child, let connection):
+        state.children[connection] = child
+        state.events.append(.dequeued(child))
+      case .sourceFinished: state.events.append(.sourceFinished)
+      case .firstCloseTurnQueued: state.events.append(.firstCloseTurnQueued)
+      case .firstCloseTurnExecuting: state.events.append(.firstCloseTurnExecuting)
+      case .listenerCloseInvoked: state.events.append(.listenerCloseInvoked)
+      case .listenerClosed: state.events.append(.listenerClosed)
+      case .rawReadForwarded, .parentReadComplete, .active: break
+      }
+    }
+  }
+  func record(_ event: SocketLifecycleEvent) {
+    state.withLock { state in
+      switch event {
+      case .connectionFinished(let connection):
+        if let child = state.children[connection] { state.events.append(.served(child)) }
+      case .acceptFinished: state.events.append(.acceptFinished)
+      case .groupShutdownStarted: state.events.append(.groupShutdownStarted)
+      case .handlerAdmitted(let token, _): state.events.append(.handlerAdmitted(token))
+      case .handlerFinished(let token, let dropped):
+        state.events.append(.handlerFinished(token, dropped: dropped))
+      case .connectionDequeued, .existingCompletion, .cleanupStarted, .cleanupFinished: break
+      }
+    }
+  }
+  var events: [ShutdownEvent] { state.withLock { $0.events } }
+  var admitted: [UUID] { events.compactMap { if case .handlerAdmitted(let id) = $0 { id } else { nil } } }
+  var finished: [(token: UUID, dropped: Bool)] {
+    events.compactMap { if case .handlerFinished(let id, let dropped) = $0 { (id, dropped) } else { nil } }
+  }
   var initialized: [ObjectIdentifier] {
     events.compactMap { if case .initialized(let id) = $0 { id } else { nil } }
   }
   var dequeued: [ObjectIdentifier] {
     events.compactMap { if case .dequeued(let id) = $0 { id } else { nil } }
   }
-  func contains(_ event: SocketShutdownEvent) -> Bool { events.contains(event) }
-  func count(_ event: SocketShutdownEvent) -> Int { events.filter { $0 == event }.count }
-  func expectBefore(_ first: SocketShutdownEvent, _ second: SocketShutdownEvent) throws {
+  func contains(_ event: ShutdownEvent) -> Bool { events.contains(event) }
+  func count(_ event: ShutdownEvent) -> Int { events.filter { $0 == event }.count }
+  func expectBefore(_ first: ShutdownEvent, _ second: ShutdownEvent) throws {
     let events = events
     let a = try #require(events.firstIndex(of: first))
     let b = try #require(events.firstIndex(of: second))

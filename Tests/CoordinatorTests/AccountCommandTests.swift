@@ -263,7 +263,7 @@ struct CommandRig {
   var accounts: AccountManager { coordinator.accounts }
 
   static func paths() throws -> PlatformPaths {
-    let base = NSTemporaryDirectory() + "b4ac-\(UUID().uuidString.prefix(8))"
+    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4ac-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
     return try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
   }
@@ -518,7 +518,7 @@ private func sha256Hex(_ text: String) -> String {
   }
 
   @Test func logoutStopWorkStopsTurnsAndServers() async throws {
-    let base = NSTemporaryDirectory() + "b4al-\(UUID().uuidString.prefix(8))"
+    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4al-\(UUID().uuidString.prefix(8))"
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
     var environment = ProcessInfo.processInfo.environment
     environment["B4APP_NODE_PATH"] = fakeNodePath()
@@ -756,7 +756,7 @@ private func sha256Hex(_ text: String) -> String {
 
   /// M6: a server whose start is still in flight is stopped by a log-out, within its bounds.
   @Test func logoutStopsAServerStartInFlight() async throws {
-    let base = NSTemporaryDirectory() + "b4af-\(UUID().uuidString.prefix(8))"
+    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4af-\(UUID().uuidString.prefix(8))"
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
     var environment = ProcessInfo.processInfo.environment
     environment["B4APP_NODE_PATH"] = fakeNodePath()
@@ -1524,6 +1524,7 @@ final class StubbornAdapters: Sendable {
   private struct State {
     var interrupts = 0
     var disposes = 0
+    var completedDisposes = 0
     var released = false
     var held: [CheckedContinuation<Void, Never>] = []
   }
@@ -1531,10 +1532,12 @@ final class StubbornAdapters: Sendable {
   private let state = Mutex(State())
   var interrupts: Int { state.withLock { $0.interrupts } }
   var disposes: Int { state.withLock { $0.disposes } }
+  var completedDisposes: Int { state.withLock { $0.completedDisposes } }
   func make() -> any AgentAdapter { StubbornAdapter(owner: self) }
 
   func interrupted() { state.withLock { $0.interrupts += 1 } }
   func disposed() { state.withLock { $0.disposes += 1 } }
+  func completedDispose() { state.withLock { $0.completedDisposes += 1 } }
 
   /// Wait, ignoring cancellation, until `release()`.
   func hold() async {
@@ -1590,5 +1593,6 @@ private actor StubbornAdapter: AgentAdapter {
   func dispose() async {
     owner.disposed()
     await owner.hold()
+    owner.completedDispose()
   }
 }

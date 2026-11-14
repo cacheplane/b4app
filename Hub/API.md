@@ -114,8 +114,26 @@ broken or hostile client's change. The hub rejects; it never truncates.
 
 ### Protocol version
 
-`GET /readyz` reports `minClientProtocol` (currently `1`), the oldest client protocol this hub
-speaks. A client whose own protocol is older than that must refuse the hub.
+`GET /readyz` reports the database-authoritative `minClientProtocol`, initially `1`, and
+`supportedClientProtocol`, currently `2`. Support advertisement does not activate protocol 2.
+A client below the effective minimum must refuse the hub. Missing, malformed or unsupported
+stored floors fail readiness rather than silently reverting to 1.
+
+Authenticated change pushes, pulls and snapshots accept `B4-Protocol`; missing means 1 and a
+malformed value is `400 invalid_request`. Authentication retains precedence. A client below the
+floor receives `409 request_error` with `details.code: "client_too_old"` and
+`details.minClientProtocol`. The actual sync transaction rechecks admission, including empty
+pushes and each long-poll requery. At floor 1, new protocol profiles/retirement and their affected
+graphs refuse the whole batch before sequence allocation, even with a header advertising 2.
+Unrelated legacy sync remains supported. Private authentication fields and protocol authority
+state have no sync representation.
+
+Owner CLI `b4hub protocol status` reads the floor. `b4hub protocol raise 2` is monotonic and
+requires all registered instances to have left normally; stale heartbeat expiry is not proof
+of shutdown. The first production cut also requires a verified finite fleet/rollback inventory,
+ingress freeze and completed HTTP/link/command drain. This intermediate branch still lacks the
+relay, client and Mirror activation integration; raising the production floor remains held until
+those gates qualify. No operator HTTP endpoint is added.
 
 ## Routes
 
@@ -136,7 +154,7 @@ load balancer's health check call.
 `200`:
 
 ```json
-{"ok": true, "migrations": "current", "minClientProtocol": 1, "relay": "ok", "instances": "ok"}
+{"ok": true, "migrations": "current", "minClientProtocol": 1, "supportedClientProtocol": 2, "relay": "ok", "instances": "ok"}
 ```
 
 `relay` is an in-process probe: the hub runs its own link task over an in-memory socket with a
