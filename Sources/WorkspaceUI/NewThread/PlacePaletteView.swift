@@ -3,10 +3,11 @@ import WorkspaceProtocol
 
 #if os(macOS)
   /// Where a new thread starts, on the Mac (the thread list and environments design, "Starting a
-  /// thread"): a palette centred over the veiled main view. A "Start in…" filter, one row per
-  /// environment (and per folder of one with several) with its path at the right, and a footer with
-  /// "Choose folder… ⌘O" and "No folder". Up and Down (or the pointer) move one sliding highlight,
-  /// Return chooses it, Escape closes. The new-thread view hosts it, the veil, and the folder panel.
+  /// thread"): a palette centred over the veiled main view, drawn with the parts the command palette
+  /// uses (D-228). A "Start in…" filter, one row per environment (and per folder of one with
+  /// several) with its path at the right, and a footer with "No folder", "Choose folder… ⌘O" and
+  /// what Return does. Up and Down (or the pointer) move one sliding highlight, Return chooses it,
+  /// Escape closes. The new-thread view hosts it, the veil, and the folder panel.
   struct PlacePaletteView: View {
     @Bindable var model: WorkspaceModel
     let draft: NewThreadDraft
@@ -26,11 +27,11 @@ import WorkspaceProtocol
     @Environment(\.isInFloatingPanel) private var inPanel
 
     static let width: CGFloat = 420
-    static let radius: CGFloat = 14
-    static let rowHeight: CGFloat = 36
-    static let fieldHeight: CGFloat = 40
-    static let footerHeight: CGFloat = 48
-    static let listInset: CGFloat = 6
+    static let radius = PickerMetrics.radius
+    static let rowHeight = PickerMetrics.rowHeight
+    static let fieldHeight = PickerMetrics.fieldHeight
+    static let footerHeight = PickerMetrics.footerHeight
+    static let listInset = PickerMetrics.inset
     /// The list scrolls past about five rows.
     static let listMaxHeight: CGFloat = rowHeight * 5 + listInset * 2
     /// The palette at its tallest. The host gives it this much room, top-aligned, so its field stays
@@ -51,14 +52,7 @@ import WorkspaceProtocol
         footer
       }
       .frame(width: Self.width)
-      .background(LLA.Color.bg)
-      .clipShape(RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: Self.radius, style: .continuous).strokeBorder(LLA.Color.rule)
-      )
-      .shadow(
-        color: LLA.Color.ink.opacity(inPanel ? 0 : 0.12), radius: inPanel ? 0 : 18, x: 0, y: inPanel ? 0 : 8
-      )
+      .pickerCard(shadow: !inPanel)
       .onAppear {
         highlighted = PlacePalette.initialHighlight(rows)
         highlightedId = rows.indices.contains(highlighted) ? rows[highlighted].id : nil
@@ -88,34 +82,38 @@ import WorkspaceProtocol
     }
 
     private func field(_ rows: [PlacePalette.Row]) -> some View {
-      TextField("Start in…", text: $filter)
-        .textFieldStyle(.plain)
-        .font(LLAFont.sans(15, relativeTo: .body))
-        .foregroundStyle(LLA.Color.ink)
-        .focused($focused)
-        .onSubmit { if rows.indices.contains(highlighted) { choose(rows[highlighted]) } }
-        .onKeyPress(.downArrow) {
-          keysMoved = true
-          withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) {
-            highlighted = PlacePalette.step(highlighted, by: 1, count: rows.count)
+      HStack(spacing: LLA.Space.s) {
+        Image(systemName: "magnifyingglass").foregroundStyle(LLA.Color.muted).accessibilityHidden(true)
+        TextField("Start in…", text: $filter)
+          .textFieldStyle(.plain)
+          .font(LLAFont.body)
+          .foregroundStyle(LLA.Color.ink)
+          .focused($focused)
+          .onSubmit { if rows.indices.contains(highlighted) { choose(rows[highlighted]) } }
+          .onKeyPress(.downArrow) {
+            keysMoved = true
+            withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) {
+              highlighted = PlacePalette.step(highlighted, by: 1, count: rows.count)
+            }
+            return .handled
           }
-          return .handled
-        }
-        .onKeyPress(.upArrow) {
-          keysMoved = true
-          withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) {
-            highlighted = PlacePalette.step(highlighted, by: -1, count: rows.count)
+          .onKeyPress(.upArrow) {
+            keysMoved = true
+            withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) {
+              highlighted = PlacePalette.step(highlighted, by: -1, count: rows.count)
+            }
+            return .handled
           }
-          return .handled
-        }
-        .onKeyPress(.escape) {
-          close()
-          return .handled
-        }
-        .padding(.horizontal, LLA.Space.l)
-        .frame(height: Self.fieldHeight)
-        .accessibilityLabel("Filter")
-        .accessibilityIdentifier("place-filter")
+          .onKeyPress(.escape) {
+            close()
+            return .handled
+          }
+          .accessibilityLabel("Filter")
+          .accessibilityIdentifier("place-filter")
+        KeyCaps([.escape]).help("Close (Escape)")
+      }
+      .padding(.horizontal, LLA.Space.l)
+      .frame(height: Self.fieldHeight)
     }
 
     @ViewBuilder private func list(_ rows: [PlacePalette.Row]) -> some View {
@@ -163,31 +161,15 @@ import WorkspaceProtocol
       Button {
         choose(row)
       } label: {
-        HStack(spacing: LLA.Space.s) {
-          Image(systemName: "checkmark")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(LLA.Color.ink)
-            .opacity(row.checked ? 1 : 0)
-            .frame(width: 12)
-            .accessibilityHidden(true)
-          Text(row.title)
-            .font(LLAFont.sans(14, relativeTo: .body))
-            .foregroundStyle(LLA.Color.ink)
-            .lineLimit(1)
-          Spacer(minLength: LLA.Space.m)
-          if let path = row.path {
-            Text(PlacePalette.shownPath(path))
-              .font(LLAFont.mono(11, relativeTo: .caption))
-              .foregroundStyle(LLA.Color.muted)
-              .lineLimit(1)
-              .truncationMode(.head)
-          }
+        PickerRow(
+          selected: highlighted, highlight: highlight, trailing: row.path.map { PlacePalette.shownPath($0) },
+          trailingFont: LLAFont.codeSmall, trailingTruncation: .head, trailingWidth: nil,
+          isCurrent: row.checked, indent: row.indented ? LLA.Space.l + LLA.Space.s : 0
+        ) {
+          PickerSymbol(name: "folder")
+        } title: {
+          Text(row.title).font(LLAFont.row).foregroundStyle(LLA.Color.ink)
         }
-        .padding(.leading, row.indented ? 10 + 20 : 10)
-        .padding(.trailing, 10)
-        .frame(height: Self.rowHeight)
-        .selectionHighlight(highlighted, in: highlight)
-        .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .accessibilityLabel(row.title)
@@ -198,36 +180,30 @@ import WorkspaceProtocol
     }
 
     private var footer: some View {
-      HStack(spacing: LLA.Space.s) {
-        Button {
-          close()
-          chooseFolder()
-        } label: {
-          HStack(spacing: 6) {
-            Text("Choose folder…")
-            Text("⌘O").foregroundStyle(LLA.Color.muted)
-          }
-        }
-        .keyboardShortcut("o", modifiers: .command)
-        // A Mac that relays through the hub cannot browse its folders here.
-        .disabled(model.relaysThroughHub)
-        .accessibilityIdentifier("choose-folder")
-        Button("No folder") {
+      let rows = self.rows
+      return PickerFooter(context: "", contextIdentifier: "place-context") {
+        PickerHint("No folder", strong: draft.isNoFolder) {
           draft.selectNoFolder()
           close()
         }
         .accessibilityAddTraits(draft.isNoFolder ? .isSelected : [])
         .accessibilityIdentifier("no-folder")
-        Spacer(minLength: LLA.Space.s)
-        Text("esc to close")
-          .font(LLAFont.caption)
-          .foregroundStyle(LLA.Color.muted)
-          .fixedSize()
+        PickerHint("Choose folder…", keys: [.command, .character("O")]) {
+          close()
+          chooseFolder()
+        }
+        .keyboardShortcut("o", modifiers: .command)
+        // A Mac that relays through the hub cannot browse its folders here.
+        .disabled(model.relaysThroughHub)
+        .opacity(model.relaysThroughHub ? 0.45 : 1)
+        .accessibilityIdentifier("choose-folder")
+        PickerHint("Start here", keys: [.return], strong: true) {
+          if rows.indices.contains(highlighted) { choose(rows[highlighted]) }
+        }
+        .disabled(rows.isEmpty)
+        .opacity(rows.isEmpty ? 0.45 : 1)
+        .accessibilityIdentifier("place-primary")
       }
-      .buttonStyle(FooterButtonStyle())
-      .padding(.horizontal, LLA.Space.m)
-      .frame(height: Self.footerHeight)
-      .background(LLA.Color.surface)
     }
 
     private func choose(_ row: PlacePalette.Row) {
@@ -236,27 +212,6 @@ import WorkspaceProtocol
     }
   }
 
-  /// The footer's two actions: equal bordered buttons on the window colour.
-  private struct FooterButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-      configuration.label
-        .font(LLAFont.small)
-        .foregroundStyle(LLA.Color.ink)
-        .lineLimit(1)
-        .frame(width: 136, height: 28)
-        .background(
-          RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous)
-            .fill(configuration.isPressed ? LLA.Color.surfaceRaised : LLA.Color.bg)
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous).strokeBorder(LLA.Color.rule)
-        )
-        .contentShape(Rectangle())
-        .opacity(isEnabled ? 1 : 0.45)
-    }
-  }
 #else
   /// Where a new thread starts, on the phone: the palette's list as a sheet, without "Choose folder…"
   /// (the phone cannot browse the Mac), then "No folder".

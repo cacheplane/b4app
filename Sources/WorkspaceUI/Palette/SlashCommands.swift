@@ -23,6 +23,12 @@ final class SlashController {
     /// How many leading characters of `command` the typed token matched.
     var matchedPrefix = 0
     var title: String
+    /// A quieter note beside the title, as the palette shows it.
+    var secondary: String?
+    /// The command's SF Symbol.
+    var symbol: String?
+    /// The heading the row is listed under while nothing is typed.
+    var section: String?
     var trailing: String?
     /// The command's key in the menu bar's glyphs, drawn as caps when the row has no value to show.
     var shortcut: String?
@@ -35,6 +41,13 @@ final class SlashController {
     /// The footer's words while a runtime command is selected.
     var note: String?
     fileprivate var action: Action
+  }
+
+  /// Rows under one heading.
+  struct Section: Identifiable, Equatable {
+    var title: String?
+    var items: [Item]
+    var id: String { title ?? "" }
   }
 
   fileprivate enum Action: Equatable {
@@ -102,18 +115,40 @@ final class SlashController {
     failure = nil
   }
 
-  var items: [Item] {
+  var items: [Item] { sections.flatMap(\.items) }
+
+  /// The rows as they are drawn: under headings while nothing is typed (the thread's or the draft's
+  /// commands, the workspace's, the runtime's), one plain list once a token narrows them, and a
+  /// command's values under its name.
+  var sections: [Section] {
     switch state {
     case .closed: return []
-    case .commands: return commandItems
-    case .choices(let id):
-      return workspace.choices(for: id, target: target).map { choice in
-        Item(
-          id: "choice:\(choice.id)", title: choice.title, trailing: choice.detail,
-          isCurrent: choice.isCurrent,
-          primary: choice.isCurrent ? "Keep \(choice.title)" : "Use \(choice.title)",
-          action: .choice(choice.value))
+    case .commands:
+      let items = commandItems
+      guard token.isEmpty else { return items.isEmpty ? [] : [Section(title: nil, items: items)] }
+      var sections: [Section] = []
+      for item in items {
+        if let index = sections.firstIndex(where: { $0.title == item.section }) {
+          sections[index].items.append(item)
+        } else {
+          sections.append(Section(title: item.section, items: [item]))
+        }
       }
+      return sections
+    case .choices(let id):
+      let items = choiceItems(id)
+      return items.isEmpty ? [] : [Section(title: choiceTitle, items: items)]
+    }
+  }
+
+  private func choiceItems(_ id: CommandID) -> [Item] {
+    let symbol = CommandCatalog.definition(id).symbol
+    return workspace.choices(for: id, target: target).map { choice in
+      Item(
+        id: "choice:\(choice.id)", title: choice.title, secondary: choice.detail, symbol: symbol,
+        isCurrent: choice.isCurrent,
+        primary: choice.isCurrent ? "Keep \(choice.title)" : "Use \(choice.title)",
+        action: .choice(choice.value))
     }
   }
 
@@ -128,7 +163,9 @@ final class SlashController {
       let availability = workspace.availability(of: id, target: commandTarget)
       var item = Item(
         id: id.rawValue, command: "/\(name)",
-        title: CommandCatalog.plain(workspace.title(of: id, target: commandTarget)),
+        title: workspace.title(of: id, target: commandTarget),
+        secondary: workspace.detail(of: id, target: commandTarget), symbol: definition.symbol,
+        section: sectionTitle(commandTarget),
         trailing: workspace.currentValue(of: id, target: commandTarget),
         isAvailable: availability == .available, reason: availability.reason,
         primary: workspace.primaryLabel(of: id, target: commandTarget), action: .command(id))
@@ -141,6 +178,15 @@ final class SlashController {
       }
     }
     return named + aliased + runtimeItems
+  }
+
+  /// The heading a target's commands are listed under, as the palette names them.
+  private func sectionTitle(_ target: CommandTarget) -> String? {
+    switch target {
+    case .thread(let id): workspace.thread(id: id).map(ThreadSearch.shownTitle)
+    case .draft: "New thread"
+    default: "Workspace"
+    }
   }
 
   /// The runtime's own commands after the app's: a name that starts with the token first, then a
@@ -166,7 +212,8 @@ final class SlashController {
       ranks[rank].append(
         Item(
           id: "runtime:\(name)", command: "/\(name)", matchedPrefix: rank == 0 ? token.count + 1 : 0,
-          title: command.description, trailing: command.argumentHint,
+          title: command.description, symbol: "terminal", section: connection.label,
+          trailing: command.argumentHint,
           primary: takesMore ? "Add to message" : "Run /\(name)", isRuntime: true,
           note: takesMore
             ? "\(connection.label) runs it when you send the message"
@@ -284,115 +331,110 @@ struct SlashCompletions: View {
   let slash: SlashController
   /// Runs a pick and applies what it does to the draft's text.
   let choose: () -> Void
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Namespace private var highlight
+  /// The pointer moved the highlight: the list does not scroll to follow it.
+  @State private var byPointer = false
 
   var body: some View {
-    let items = slash.items
+    let sections = slash.sections
     let selected = slash.selected?.id
     VStack(alignment: .leading, spacing: 0) {
-      if let title = slash.choiceTitle {
-        LLABadge(title, raised: true)
-          .padding(.horizontal, LLA.Space.s).padding(.top, LLA.Space.xs).padding(.bottom, LLA.Space.s)
-      }
       // A runtime can list a hundred commands: the rows scroll past `visibleRows`, following the
       // selection, and the panel never grows beyond that.
       ScrollViewReader { proxy in
         ScrollView {
           VStack(alignment: .leading, spacing: 0) {
-            ForEach(items) { item in
-              Button {
-                slash.select(item.id)
-                choose()
-              } label: {
-                row(item, selected: item.id == selected)
+            ForEach(sections) { section in
+              if let title = section.title { PickerSectionTitle(title) }
+              ForEach(section.items) { item in
+                Button {
+                  slash.select(item.id)
+                  choose()
+                } label: {
+                  row(item, selected: item.id == selected)
+                }
+                .buttonStyle(.plain)
+                .pickerHover {
+                  guard item.id != slash.selected?.id else { return }
+                  byPointer = true
+                  slash.select(item.id)
+                }
+                .accessibilityLabel(
+                  [
+                    item.command, item.title, item.secondary, item.trailing,
+                    item.shortcut.map { HintKey.spoken(HintKey.keys(in: $0)) },
+                    item.isCurrent ? "Current" : nil, item.reason,
+                  ]
+                  .compactMap { $0 }.joined(separator: ", ")
+                )
+                .accessibilityAddTraits(item.id == selected ? [.isButton, .isSelected] : .isButton)
+                .accessibilityIdentifier("slash-row")
+                .id(item.id)
               }
-              .buttonStyle(.plain)
-              .accessibilityLabel(
-                [
-                  item.command, item.title, item.trailing,
-                  item.shortcut.map { HintKey.spoken(HintKey.keys(in: $0)) },
-                  item.isCurrent ? "Current" : nil, item.reason,
-                ]
-                .compactMap { $0 }.joined(separator: ", ")
-              )
-              .accessibilityAddTraits(item.id == selected ? [.isButton, .isSelected] : .isButton)
-              .accessibilityIdentifier("slash-row")
-              .id(item.id)
             }
           }
+          .padding(PickerMetrics.inset)
         }
         .scrollBounceBehavior(.basedOnSize)
-        .frame(height: CGFloat(min(items.count, Self.visibleRows)) * Self.rowHeight)
+        .frame(height: Self.listHeight(sections))
         .onChange(of: selected) { _, id in
-          if let id { proxy.scrollTo(id) }
+          if byPointer { byPointer = false } else if let id { proxy.scrollTo(id) }
         }
       }
-      Hairline().padding(.top, LLA.Space.s)
-      HStack(spacing: LLA.Space.l) {
-        Text(slash.context)
-          .font(LLAFont.caption)
-          .foregroundStyle(slash.failure == nil ? LLA.Color.muted : LLA.Color.danger)
-          .lineLimit(1)
-          .frame(maxWidth: .infinity, alignment: .leading)
+      Hairline()
+      PickerFooter(
+        context: slash.context, isFailure: slash.failure != nil, contextIdentifier: "slash-context"
+      ) {
         if let primary = slash.selected?.primary {
-          HStack(spacing: LLA.Space.s) {
-            Text(primary).font(LLAFont.caption).foregroundStyle(LLA.Color.ink).lineLimit(1)
-            #if os(macOS)
-              KeyCaps([.return])
-            #endif
-          }
-          .opacity(slash.selected?.isAvailable == true ? 1 : 0.45)
+          PickerHint(primary, keys: [.return], strong: true, action: choose)
+            .opacity(slash.selected?.isAvailable == true ? 1 : 0.45)
         }
       }
-      .padding(.horizontal, LLA.Space.s)
-      .padding(.top, LLA.Space.s)
     }
-    .padding(LLA.Space.s)
-    .background(LLA.Color.bg, in: RoundedRectangle(cornerRadius: LLA.Radius.menu, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: LLA.Radius.menu, style: .continuous).strokeBorder(LLA.Color.rule)
-    )
-    .llaPopoverShadow()
+    .pickerCard()
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Commands")
     .accessibilityIdentifier("slash-completions")
   }
 
   static let visibleRows = 8
-  static var rowHeight: CGFloat { max(LLA.Metrics.row, 32) }
+  static var rowHeight: CGFloat { max(LLA.Metrics.row, PickerMetrics.rowHeight) }
+
+  /// The list's height: its rows and headings, up to `visibleRows` rows under three headings (the
+  /// thread's commands, the workspace's and the runtime's).
+  static func listHeight(_ sections: [SlashController.Section]) -> CGFloat {
+    let rows = CGFloat(sections.reduce(0) { $0 + $1.items.count })
+    let headings = CGFloat(sections.filter { $0.title != nil }.count)
+    let most = CGFloat(visibleRows) * rowHeight + 3 * PickerMetrics.sectionHeight
+    return min(rows * rowHeight + headings * PickerMetrics.sectionHeight, most) + 2 * PickerMetrics.inset
+  }
+
+  /// The whole card's height, for placing it before it is drawn.
+  static func height(_ sections: [SlashController.Section]) -> CGFloat {
+    listHeight(sections) + 1 + PickerMetrics.footerHeight
+  }
 
   private func row(_ item: SlashController.Item, selected: Bool) -> some View {
-    HStack(spacing: LLA.Space.s) {
-      if let command = item.command {
-        (Text(command.prefix(item.matchedPrefix)).font(LLAFont.mono(LLAFont.scale.code, weight: .semibold))
-          + Text(command.dropFirst(item.matchedPrefix)).font(LLAFont.code))
-          .foregroundStyle(item.isAvailable ? LLA.Color.ink : LLA.Color.muted)
-          .lineLimit(1)
-          .frame(minWidth: 104, alignment: .leading)
-          .layoutPriority(1)
-      }
-      Text(item.title).font(LLAFont.row)
-        .foregroundStyle(item.isAvailable && !item.isRuntime ? LLA.Color.ink : LLA.Color.muted)
-        .lineLimit(1).truncationMode(.tail)
-      Spacer(minLength: LLA.Space.s)
-      if let trailing = item.trailing {
-        Text(trailing).font(item.isRuntime ? LLAFont.codeSmall : LLAFont.caption)
-          .foregroundStyle(LLA.Color.muted).lineLimit(1)
-      }
-      if let shortcut = item.shortcut {
-        KeyCaps(label: shortcut)
-      }
-      if item.isCurrent {
-        Text("Current").llaCaption().fixedSize()
-        Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(LLA.Color.ink).accessibilityHidden(true)
+    PickerRow(
+      selected: selected, highlight: highlight, height: Self.rowHeight, secondary: item.secondary,
+      trailing: item.trailing, trailingFont: item.isRuntime ? LLAFont.codeSmall : LLAFont.caption,
+      isCurrent: item.isCurrent, shortcut: item.shortcut
+    ) {
+      if let symbol = item.symbol { PickerSymbol(name: symbol) }
+    } title: {
+      HStack(spacing: LLA.Space.s) {
+        // What is typed, in the mono face: the one part the palette's row does not have.
+        if let command = item.command {
+          (Text(command.prefix(item.matchedPrefix)).font(LLAFont.mono(LLAFont.scale.code, weight: .semibold))
+            + Text(command.dropFirst(item.matchedPrefix)).font(LLAFont.code))
+            .foregroundStyle(item.isAvailable ? LLA.Color.ink : LLA.Color.muted)
+            .frame(minWidth: 104, alignment: .leading)
+            .layoutPriority(1)
+        }
+        Text(item.title).font(LLAFont.row)
+          .foregroundStyle(item.isAvailable && !item.isRuntime ? LLA.Color.ink : LLA.Color.muted)
       }
     }
-    .padding(.horizontal, LLA.Space.s)
-    .frame(height: Self.rowHeight)
-    .selectionHighlight(selected, in: highlight)
-    .contentShape(Rectangle())
   }
 }
 
@@ -426,8 +468,7 @@ private struct SlashCompletionsLayer: View {
         let field = proxy[shown.field]
         // Below the field when it was asked for and fits; a short window puts the list above instead
         // of cutting it.
-        let rows = CGFloat(min(shown.slash.items.count, SlashCompletions.visibleRows))
-        let needed = rows * SlashCompletions.rowHeight + 96
+        let needed = SlashCompletions.height(shown.slash.sections) + LLA.Space.l
         let roomBelow = proxy.size.height - field.maxY - LLA.Space.s
         let above =
           shown.placement == .above || (roomBelow < needed && field.minY - LLA.Space.s > roomBelow)

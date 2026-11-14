@@ -112,7 +112,8 @@ private func connected(
   }
 }
 
-/// D-221: every key a hint shows is an SF Symbol or a printed character, and is said in words.
+/// D-221, D-226: every key a hint shows is an SF Symbol, the word esc or a printed character, and is
+/// said in words.
 struct HintKeyTests {
   @Test func aLabelsGlyphsBecomeKeysInTheOrderWritten() {
     #expect(HintKey.keys(in: "\u{21E7}\u{2318}P") == [.shift, .command, .character("P")])
@@ -125,7 +126,7 @@ struct HintKeyTests {
 
   #if os(macOS)
     @Test func everyNamedKeyHasASymbolTheSystemCanDraw() {
-      let named: [HintKey] = [.command, .shift, .option, .control, .tab, .return, .escape]
+      let named: [HintKey] = [.command, .shift, .option, .control, .tab, .return]
       for key in named {
         let symbol = try? #require(key.symbol)
         #expect(
@@ -133,8 +134,20 @@ struct HintKeyTests {
       }
       #expect(HintKey.tab.symbol == "arrow.right.to.line.compact")
       #expect(HintKey.character("K").symbol == nil)
+      // Escape is the word on the key, and is still said in full.
+      #expect(HintKey.escape.symbol == nil)
+      #expect(HintKey.escape.legend == "esc")
+      #expect(HintKey.escape.name == "Escape")
+      #expect(HintKey.character("k").legend == "K")
     }
   #endif
+
+  /// D-226: the Commands row names the slash typed in the palette, and keeps its global key.
+  @MainActor @Test func commandsShowsASlashAndKeepsShiftCommandP() {
+    let commands = CommandCatalog.definition(.commands)
+    #expect(commands.shortcutLabel == "/")
+    #expect(commands.shortcut == KeyboardShortcut("p", modifiers: [.command, .shift]))
+  }
 
   /// Every command's key is drawn from its label, so each label must be keys the caps can draw.
   @MainActor @Test func everyCommandsShortcutIsModifiersThenOnePrintedKey() {
@@ -317,6 +330,29 @@ struct SelectionMotionTests {
     await model.disconnect()
   }
 
+  /// D-226: Return on a thread closes the palette at once; the thread's read does not hold it open.
+  @Test func openingAThreadFinishesBeforeTheThreadIsRead() async throws {
+    let (model, transport) = try await connected()
+    let palette = PaletteModel(workspace: model, purpose: .find)
+    var finished: [String] = []
+    palette.onFinish = { finished.append($0) }
+    palette.setQuery("relay")
+    transport.script(.threadRead, [.hold])
+    await palette.activate()
+    #expect(finished == ["Opened Relay reconnect backoff"])
+    #expect(model.selectedThreadId == "quiet")
+    #expect(model.detail?.thread.id != "quiet")
+    // The read was asked for behind the close, and the thread shows once it answers.
+    for _ in 0..<200 where transport.heldCount(.threadRead) == 0 {
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    let read = ThreadRead.Result(thread: fixtureThreads[0], turns: [], items: [], requests: [])
+    #expect(transport.release(.threadRead, with: .result(try JSONValue(encoding: read))))
+    for _ in 0..<200 where model.detail?.thread.id != "quiet" { try await Task.sleep(for: .milliseconds(5)) }
+    #expect(model.detail?.thread.id == "quiet")
+    await model.disconnect()
+  }
+
   @Test func aFailureKeepsThePageTheTextAndTheSelection() async throws {
     let (model, transport) = try await connected()
     let palette = PaletteModel(workspace: model, purpose: .find)
@@ -471,6 +507,28 @@ struct SelectionMotionTests {
     slash.textChanged(from: "/modex", to: "/mode x")
     #expect(slash.state == .closed)
     await model.disconnect()
+  }
+
+  /// D-228: the `/` list's rows carry what the palette's do, under the palette's headings.
+  @Test func commandsAreListedUnderThePalettesHeadingsUntilATokenNarrowsThem() async throws {
+    let (workspace, _) = try await connected()
+    let slash = SlashController(workspace: workspace, target: .thread("quiet"))
+    slash.textChanged(from: "", to: "/")
+    #expect(slash.sections.map(\.title) == ["Relay reconnect backoff", "Workspace"])
+    #expect(slash.sections.flatMap(\.items) == slash.items)
+    let first = try #require(slash.items.first)
+    #expect(first.command == "/model")
+    #expect(first.title == "Choose model\u{2026}")
+    #expect(first.symbol == CommandCatalog.definition(.threadModel).symbol)
+    // A typed token is one plain list, as a typed palette query is.
+    slash.textChanged(from: "/", to: "/pe")
+    #expect(slash.sections.map(\.title) == [nil])
+    // A command's values are listed under its name, each with the command's symbol.
+    slash.textChanged(from: "/pe", to: "/mo")
+    #expect(await slash.choose() == .text(""))
+    #expect(slash.sections.map(\.title) == ["Choose model"])
+    #expect(slash.items.allSatisfy { $0.symbol == CommandCatalog.definition(.threadModel).symbol })
+    await workspace.disconnect()
   }
 
   @Test func pickingASettingListsItsValuesAndEscapeStepsBack() async throws {
