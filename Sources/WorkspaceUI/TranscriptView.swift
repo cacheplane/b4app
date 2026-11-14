@@ -85,6 +85,8 @@ struct TranscriptView: View {
       .onChange(of: detail.items.count) { _, _ in follow(proxy) }
       .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in follow(proxy) }
       .onChange(of: detail.liveText) { _, _ in follow(proxy) }
+      // Normal density has no lines to hold open, so a switch lets go and normal scrolls as it always has.
+      .onChange(of: dense) { _, _ in folds.reset() }
       // The reader sent something: back to the end, as today.
       .onChange(of: pending?.id) { _, _ in
         folds.release()
@@ -215,7 +217,6 @@ struct StepsLineRow: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .accessibilityElement(children: .ignore)
     .accessibilityLabel(label)
     .accessibilityIdentifier("steps-line")
   }
@@ -242,17 +243,24 @@ struct StepsLineRow: View {
     return segments
   }
 
-  /// The segments; the text is the only part that shrinks, cut at its tail.
-  private var parts: some View {
-    let stacked = typeSize.isAccessibilitySize
-    return HStack(spacing: 0) {
-      ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
-        let text = Text(segment.text)
-          .foregroundStyle(segment.tone == .danger ? LLA.Color.danger : LLA.Color.muted)
-        if index == 0, line.text != nil {
-          text.lineLimit(stacked ? nil : 1).truncationMode(.tail)
-        } else {
-          text.fixedSize()
+  private func styled(_ segment: Segment) -> Text {
+    Text(segment.text).foregroundStyle(segment.tone == .danger ? LLA.Color.danger : LLA.Color.muted)
+  }
+
+  /// The segments. On one line the text is the only part that shrinks, cut at its tail; stacked they
+  /// are one text that wraps as a whole, so no part is squeezed by the ones beside it.
+  @ViewBuilder private var parts: some View {
+    if typeSize.isAccessibilitySize {
+      segments.dropFirst().reduce(styled(segments[0])) { Text("\($0)\(styled($1))") }
+        .fixedSize(horizontal: false, vertical: true)
+    } else {
+      HStack(spacing: 0) {
+        ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
+          if index == 0, line.text != nil {
+            styled(segment).lineLimit(1).truncationMode(.tail)
+          } else {
+            styled(segment).fixedSize()
+          }
         }
       }
     }

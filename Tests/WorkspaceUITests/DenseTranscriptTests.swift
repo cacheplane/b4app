@@ -21,8 +21,10 @@ import WorkspaceProtocol
   private func user(_ id: String, turn: String? = "t1") -> DisplayItem {
     item(id, turn: turn, role: .user, type: "userMessage")
   }
-  private func message(_ id: String, turn: String? = "t1") -> DisplayItem {
-    item(id, turn: turn, role: .assistant, type: "agentMessage")
+  private func message(_ id: String, turn: String? = "t1", text: String? = nil) -> DisplayItem {
+    item(
+      id, turn: turn, role: .assistant, type: "agentMessage",
+      payload: ["text": .string(text ?? "Reply \(id).")])
   }
   private func reasoning(_ id: String, turn: String? = "t1") -> DisplayItem {
     item(id, turn: turn, role: .assistant, type: "reasoning")
@@ -124,17 +126,23 @@ import WorkspaceProtocol
   @Test func planAndCapabilityItemsAreNotSteps() throws {
     let plan = item(
       "p1", role: .tool, type: "plan_update", payload: ["event": .string("plan_update")])
-    let items = [
-      user("u1"), plan, tool("e1", type: "enteredReviewMode"), toolUse("td", name: "TodoWrite"),
-      tool("f1", type: "functionCallOutput"), tool("t-call"),
+    let working = [
+      "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "ExitPlanMode", "AskUserQuestion",
     ]
+    let items =
+      [user("u1"), plan, tool("e1", type: "enteredReviewMode")]
+      + working.map { toolUse("td-\($0)", name: $0) }
+      + [tool("f1", type: "functionCallOutput"), tool("t-call")]
     let result = entries(items, turns: [turn()])
     let steps = try #require(line(result))
     #expect(steps.counted == 1)
-    #expect(steps.folded.map(\.id) == ["p1", "e1", "td", "f1", "t-call"])
+    #expect(steps.folded.map(\.id) == ["p1", "e1"] + working.map { "td-\($0)" } + ["f1", "t-call"])
+    for name in working {
+      #expect(!DenseTranscript.isCountedStep(toolUse("x", name: name)), "\(name)")
+    }
     for type in [
       "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "imageView",
-      "toolCall", "toolUse",
+      "toolCall", "toolUse", "collabAgentToolCall", "imageGeneration",
     ] {
       #expect(DenseTranscript.isCountedStep(tool("x", type: type)), "\(type)")
     }
@@ -178,6 +186,15 @@ import WorkspaceProtocol
     let result = entries(
       [user("u1"), tool("k1"), message("a1")], turns: [turn("t1", .terminal, .cancelled)])
     #expect(ids(result) == ["u1", "steps-t1", "a1", "note-t1"])
+  }
+
+  @Test func anEmptyMessageIsNeverTheAnswer() {
+    for empty in ["", "  \n "] {
+      let result = entries(
+        [user("u1"), tool("k1"), message("m1", text: "Done so far."), message("m2", text: empty)],
+        turns: [turn("t1", .terminal, .cancelled)])
+      #expect(ids(result) == ["u1", "steps-t1", "m1", "note-t1"])
+    }
   }
 
   @Test func aStoppedTurnsUnfinishedStepReadsStopped() throws {
@@ -225,6 +242,18 @@ import WorkspaceProtocol
     #expect(cut.count == 120)
     #expect(cut.hasSuffix("…"))
     #expect(try name(command("c2", status: "inProgress", command: "echo one\necho two")) == "echo one")
+  }
+
+  @Test func anUnlabelledCallWithAnObjectInputIsNamedAlone() throws {
+    let running = turn("t1", .running, nil)
+    func name(_ input: JSONValue) throws -> String? {
+      let call = item(
+        "k1", role: .tool, type: "toolCall", status: "inProgress",
+        payload: ["name": .string("search"), "input": input])
+      return try #require(line(entries([user("u1"), call], turns: [running]))).text
+    }
+    #expect(try name(.object(["query": .string("swift")])) == "search")
+    #expect(try name(.string("swift")) == "search: swift")
   }
 
   @Test func aBlankStepNameReadsWorking() throws {

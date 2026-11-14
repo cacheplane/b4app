@@ -95,13 +95,20 @@ enum DenseTranscript {
 
   private static let toolTypes: Set<String> = [
     "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "imageView",
-    "toolCall", "toolUse",
+    "toolCall", "toolUse", "collabAgentToolCall", "imageGeneration",
+  ]
+
+  /// Claude Code tools that keep a plan, a task list or the conversation, rather than act.
+  private static let workingToolNames: Set<String> = [
+    "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "ExitPlanMode", "AskUserQuestion",
   ]
 
   /// A counted step is a tool call, by type; plan and capability items are working, not steps.
   static func isCountedStep(_ item: DisplayItem) -> Bool {
     guard item.role == .tool, toolTypes.contains(item.type) else { return false }
-    if item.type == "toolUse", item.payload["name"]?.stringValue == "TodoWrite" { return false }
+    if item.type == "toolUse", let name = item.payload["name"]?.stringValue, workingToolNames.contains(name) {
+      return false
+    }
     return true
   }
 
@@ -172,12 +179,16 @@ enum DenseTranscript {
     let systems = shown.filter { $0.role == .system }
     let rest = shown.filter { $0.role != .user && $0.role != .system }
     func isMessage(_ item: DisplayItem) -> Bool { item.role == .assistant && item.type == "agentMessage" }
+    // A message with no text is never the answer: it would stand after the line as an empty row.
+    func hasText(_ item: DisplayItem) -> Bool {
+      !(item.payload["text"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     // The messages the closed group draws after its line.
     var visible: [DisplayItem]
     if running {
       visible = rest.filter(isMessage)
-    } else if let last = rest.last(where: isMessage),
+    } else if let last = rest.last(where: { isMessage($0) && hasText($0) }),
       !rest.drop(while: { $0.id != last.id }).contains(where: isCountedStep)
     {
       visible = [last]
@@ -205,13 +216,23 @@ enum DenseTranscript {
     return entries
   }
 
-  /// The newest in-progress step's name: B4's label, else the card's title; first line, trimmed, cut.
+  /// The newest in-progress step's name: B4's label, else the card's title (a B4 call whose input is
+  /// not a string: its name alone); first line, trimmed, cut.
   private static func runningName(of steps: [DisplayItem]) -> String? {
     guard let step = steps.last(where: { $0.payload["status"]?.stringValue == "inProgress" }) else {
       return nil
     }
     let label = step.payload["label"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let source = (label?.isEmpty == false ? label : nil) ?? title(of: step)
+    let source: String
+    if let label, !label.isEmpty {
+      source = label
+    } else if step.type == "toolCall", let input = step.payload["input"], !input.isNull,
+      input.stringValue == nil
+    {
+      source = step.payload["name"]?.stringValue ?? "Tool"
+    } else {
+      source = title(of: step)
+    }
     let firstLine =
       source.split(separator: "\n", omittingEmptySubsequences: false).first.map(String.init) ?? ""
     let name = firstLine.trimmingCharacters(in: .whitespacesAndNewlines)

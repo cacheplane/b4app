@@ -194,6 +194,25 @@
       }
       // "Hide working" alone on a row narrower than it takes a second line instead of running past it.
       #expect(stacked(width: 40) > stacked(width: 400))
+
+      // A line with every part wraps as one text: the count is not squeezed by the parts after it.
+      let both = lineRow(
+        DenseTranscript.StepsLine(
+          group: "t1", folded: [], counted: 4, failed: 1, declined: 1, running: false, waiting: false,
+          runningName: nil)
+      )
+      .environment(\.dynamicTypeSize, .accessibility5)
+      let oneLine = height(
+        Text("Show").font(LLAFont.small).environment(\.dynamicTypeSize, .accessibility5), width: 320)
+      // macOS does not scale the type with `dynamicTypeSize`, so 320 pt holds the whole line here; 100 pt
+      // is as tight for the Mac's type as 320 pt is for the phone's largest.
+      for width: CGFloat in [320, 100] {
+        let tall = height(both, width: width)
+        #expect(tall <= oneLine * 5 + LLA.Space.xs, "\(width) pt: \(tall) pt against a line of \(oneLine) pt")
+        let fitting = NSHostingController(rootView: both).sizeThatFits(
+          in: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+        #expect(fitting.width <= width, "\(width) pt: \(fitting.width) pt wide")
+      }
     }
 
     @Test func anAnswerKeepsItsRowWhenItsTurnEnds() throws {
@@ -343,14 +362,17 @@
 
     @Observable @MainActor final class Host {
       var detail: ThreadDetail
-      init(_ detail: ThreadDetail) { self.detail = detail }
+      var dense: Bool
+      init(_ detail: ThreadDetail, dense: Bool) {
+        self.detail = detail
+        self.dense = dense
+      }
     }
 
     private struct HostView: View {
       let host: Host
       let folds: TranscriptFolds
-      let dense: Bool
-      var body: some View { TranscriptView(detail: host.detail, dense: dense, folds: folds) }
+      var body: some View { TranscriptView(detail: host.detail, dense: host.dense, folds: folds) }
     }
 
     /// The window, the scroll view AppKit made for the transcript's `ScrollView`, and its clip view's
@@ -363,10 +385,10 @@
       let scroll: NSScrollView
 
       init(_ detail: ThreadDetail, dense: Bool = true) throws {
-        host = Host(detail)
+        host = Host(detail, dense: dense)
         folds = TranscriptFolds()
         let snapshot = SnapshotWindow(
-          rootView: HostView(host: host, folds: folds, dense: dense).frame(width: 720, height: 480),
+          rootView: HostView(host: host, folds: folds).frame(width: 720, height: 480),
           untitled: true, size: CGSize(width: 720, height: 480))
         root = snapshot.host
         window = snapshot.window
@@ -609,6 +631,25 @@
       try await view.settle()
       #expect(!view.folds.holds)
       #expect(view.atEnd, "below the viewport: \(view.below)")
+    }
+
+    @Test func switchingDensityLetsGoOfTheHold() async throws {
+      let view = try Hosted(twelveAndARunningTurn())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      view.folds.toggle("t10")
+      try await view.settle()
+      #expect(view.folds.holds)
+
+      view.host.dense = false
+      try await view.settle()
+      let height = view.documentHeight
+      view.host.detail.liveText["n13"] = lines(20)
+      try await view.until("the reply grows") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(view.atEnd, "below the viewport: \(view.below)")
+      #expect(!view.folds.holds)
     }
 
     @Test func aShortThreadStillFollowsItsStream() async throws {
