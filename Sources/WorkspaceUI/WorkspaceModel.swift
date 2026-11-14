@@ -26,14 +26,15 @@ public enum ThreadRowState: String, Sendable, Equatable, CaseIterable {
 
 /// A page of the Settings window (the Mac) or sheet (the iPhone).
 public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
-  case account, connections, servers, remoteAccess, diagnostics
+  case account, display, connections, servers, remoteAccess, diagnostics
 
-  /// The pages this platform shows. "Account" comes first (sign-in plan, Task 12). "Remote access" is
-  /// the Mac's: it mints the pairing code and holds the Mac awake, neither of which the phone does. The
-  /// phone's Account page reads its host's account (Task 14).
+  /// The pages this platform shows. "Account" comes first (sign-in plan, Task 12). "Display" and "Remote
+  /// access" are the Mac's: Dense draws only the Mac's sidebar tight, and the Mac mints the pairing code
+  /// and holds itself awake, neither of which the phone does. The phone's Account page reads its host's
+  /// account (Task 14).
   nonisolated public static var allCases: [SettingsPage] {
     #if os(macOS)
-      [.account, .connections, .servers, .remoteAccess, .diagnostics]
+      [.account, .display, .connections, .servers, .remoteAccess, .diagnostics]
     #else
       [.account, .connections, .servers, .diagnostics]
     #endif
@@ -44,6 +45,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
   public var title: String {
     switch self {
     case .account: return "Account"
+    case .display: return "Display"
     case .connections: return "Connections"
     case .servers: return "B4 projects"
     case .remoteAccess: return "Remote access"
@@ -54,6 +56,7 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
   public var systemImage: String {
     switch self {
     case .account: return "person.crop.circle"
+    case .display: return "textformat.size"
     case .connections: return "link"
     case .servers: return "server.rack"
     case .remoteAccess: return "iphone"
@@ -101,7 +104,9 @@ public final class WorkspaceModel {
   public private(set) var link: LinkState = .connecting
   public private(set) var linkMessage: String?
   public private(set) var connections: [Connection] = []
-  public private(set) var threads: [ConversationThread] = [] {
+  /// Set only by the model itself; open to the module so a test can give a model a large list
+  /// without sending it through a transport.
+  public internal(set) var threads: [ConversationThread] = [] {
     didSet { holdSelectedState() }
   }
   public private(set) var diagnostics: DiagnosticsReport?
@@ -203,8 +208,18 @@ public final class WorkspaceModel {
   /// selected thread is not in the live list (unknown yet, or archived). Only the order uses it: the
   /// mark, the badge, and the arrivals keep the real state.
   private(set) var selectionHold: ThreadState?
-  /// The search palette (⌘K on the Mac, the list's search button on the iPhone).
+  /// The palette is up (⌘K and ⇧⌘P on the Mac, the list's search button on the iPhone).
   public var showSearch = false
+  /// What the palette opens for, and a counter that moves an open palette to it (`presentPalette`).
+  public internal(set) var palettePurpose: PalettePurpose = .find
+  public internal(set) var paletteRequest = 0
+  /// Counts each request to put the cursor back in the open thread's composer; `ComposerView`
+  /// focuses its field on a change.
+  public internal(set) var composerFocusRequest = 0
+  /// The last `composerFocusRequest` a composer answered. A request made while no composer is on
+  /// screen (the palette opened a thread whose view is still loading) is answered by the composer
+  /// that appears next.
+  @ObservationIgnored var answeredComposerFocusRequest = 0
   /// The profile menu above the sidebar's profile button.
   public var showProfileMenu = false
   public var connectionFilter: String? {
@@ -400,12 +415,11 @@ public final class WorkspaceModel {
   /// quiet, pinned first and then newest activity first inside each (`Attention.ordered`).
   public var orderedThreads: [ConversationThread] { Attention.ordered(filtered(archived: false)) }
 
-  /// What the list draws: the threads under the connection filter, arranged by the view settings
-  /// this device shows (`shownSettings`).
+  /// What the list draws: the threads under the connection filter, arranged by the view settings.
   var listLayout: ListLayout {
     ListLayout.build(
       threads: threads.filter { connectionFilter == nil || $0.connectionId == connectionFilter },
-      environments: environments, settings: shownSettings,
+      environments: environments, settings: viewSettings,
       selection: selectedThreadId.map { ListLayout.Selection(threadId: $0, held: selectionHold) })
   }
 
@@ -643,6 +657,9 @@ public final class WorkspaceModel {
       }
     }
   }
+
+  /// Moves the iPhone to the thread column (the root view watches `detailRequest`).
+  func showDetailColumn() { detailRequest += 1 }
 
   /// Open Settings, at `page` when given.
   public func openSettings(_ page: SettingsPage? = nil) {
@@ -1164,10 +1181,6 @@ public final class WorkspaceModel {
 
   // MARK: - View settings
 
-  /// What this device draws for `viewSettings`: the phone shows Tiny as Collapsed (decision 5). The
-  /// stored value is never rewritten for it.
-  public var shownSettings: ViewSettings { viewSettings.shown(on: relaysThroughHub ? .phone : .mac) }
-
   public func setArrangement(_ arrangement: ViewSettings.Arrangement) async {
     await setViewSetting(\.arrangement, arrangement, ViewSettingsSet.Params(arrangement: arrangement))
   }
@@ -1179,6 +1192,14 @@ public final class WorkspaceModel {
   public func setShowArchived(_ showArchived: Bool) async {
     await setViewSetting(\.showArchived, showArchived, ViewSettingsSet.Params(showArchived: showArchived))
   }
+
+  public func setDensity(_ density: ViewSettings.Density) async {
+    await setViewSetting(\.density, density, ViewSettingsSet.Params(density: density))
+  }
+
+  /// Whether the Mac's sidebar draws the threads that do not need the owner as tight rows: Dense, on the
+  /// Mac. The phone (which relays through the hub) keeps its 44 pt rows at either density.
+  var tightQuietRows: Bool { viewSettings.density == .dense && !relaysThroughHub }
 
   /// One setting, written optimistically (decision 12): shown at once, then sent with only that field.
   /// The answer's row may predate a later set or a change from elsewhere, so only this field is taken

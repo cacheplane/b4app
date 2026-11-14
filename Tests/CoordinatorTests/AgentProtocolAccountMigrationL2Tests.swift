@@ -493,7 +493,7 @@ private struct L2AccountAPI: HubAPI {
           try await H.completed(H.begin(fixture, cleanup))
         }).get()
       try H.assertArchive(fixture, expected: fixture.before)
-      try H.assertHistory(fixture.before, after: H.snapshot(fixture.raw))
+      try H.assertHistory(fixture.before, after: H.snapshot(fixture.raw), raw: fixture.raw)
       #expect(fixture.manager.current != nil)
     }
   }
@@ -526,7 +526,7 @@ private struct L2AccountAPI: HubAPI {
         }).get()
       #expect(fixture.manager.current != nil)
       #expect(!FileManager.default.fileExists(atPath: H.directory(fixture)))
-      try H.assertHistory(current, after: H.snapshot(fixture.raw))
+      try H.assertHistory(current, after: H.snapshot(fixture.raw), raw: fixture.raw)
     }
   }
 
@@ -590,7 +590,7 @@ private struct L2AccountAPI: HubAPI {
         _ = try await H.completed(H.begin(fixture, cleanup)).get()
         #expect(fixture.manager.current?.account.database == fixture.endpoint.database)
         try H.assertArchive(fixture, expected: fixture.before)
-        try H.assertHistory(fixture.before, after: H.snapshot(fixture.raw))
+        try H.assertHistory(fixture.before, after: H.snapshot(fixture.raw), raw: fixture.raw)
         cleanup.own(otherScope)
       }
     }
@@ -738,6 +738,7 @@ private final class L2LifetimeOwner: Sendable {
         let files = try AgentProtocolFoundationFixture.knownFiles()
         try H.reconstructOldStore(raw, files: files)
         try H.seedHistory(raw, accountRef: accountRef, endpointRef: endpointRef)
+        _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: 8)
       } catch { scope.admitWorkAgain(); throw error }
       scope.admitWorkAgain()  // No persistent reopen closure captures scope.
       let before = try H.snapshot(raw)
@@ -867,7 +868,7 @@ private final class L2LifetimeOwner: Sendable {
         } else {
           _ = try result.get()
           try H.assertArchive(fixture, expected: fixture.before)
-          try H.assertHistory(fixture.before, after: H.snapshot(fixture.raw))
+          try H.assertHistory(fixture.before, after: H.snapshot(fixture.raw), raw: fixture.raw)
           #expect(fixture.manager.current?.instance != fixture.scope.instance)
         }
       }
@@ -1002,7 +1003,7 @@ private final class L2LifetimeOwner: Sendable {
       }
       for pump in pumps { await pump.value }
       try H.assertArchive(fixture, expected: fixture.before)
-      try H.assertHistory(fixture.before, after: H.snapshot(fixture.raw))
+      try H.assertHistory(fixture.before, after: H.snapshot(fixture.raw), raw: fixture.raw)
       #expect(fixture.manager.current?.instance != instance)
     }
   }
@@ -1080,7 +1081,7 @@ private final class L2LifetimeOwner: Sendable {
           $0.scope == "projection" && $0.message.contains("store is closed")
         })
       try H.assertArchive(fixture, expected: beforeMigration)
-      try H.assertHistory(beforeMigration, after: H.snapshot(fixture.raw))
+      try H.assertHistory(beforeMigration, after: H.snapshot(fixture.raw), raw: fixture.raw)
     }
     try await H.withFixture { fixture, cleanup in
       let semaphore = DispatchSemaphore(value: 0)

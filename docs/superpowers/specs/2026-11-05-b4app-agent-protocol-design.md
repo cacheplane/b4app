@@ -552,3 +552,34 @@ The approved new kind/protocol-v2 activation and B4 wire names are design
 choices, not changes performed in this branch. This standalone client spec is
 ready for task planning; it is not an implementation plan or
 permission to publish, upgrade projects or delete old data.
+
+
+## Current allocation addendum — published commands, density and client foundation (2026-11-13)
+
+Published commands occupy Store `0014_connection_commands.sql`, Hub
+`0021_connection_commands.sql` and phone Mirror9. Published density occupies Store
+`0015_density.sql`, Hub `0022_density.sql` and phone Mirror10. Only the unpublished protocol
+resources move, byte for byte, to Store `0016_agent_protocol.sql` and Hub
+`0023_client_protocol.sql`. Future protocol phone Mirror11 remains documentation only. Published
+SQL, the complete current Mirror1–10 and Infra SQL stay immutable. Binary support2/minimum1
+remain unchanged. The current unpublished decisions are protocol D-225 and relay D-224;
+published D-218 density, D-220 phone Return and D-221 keycaps are unchanged, and separate picker
+work D-222 is not appropriated. Historical private protocol14/15 and Hub21/22 labels above and in
+dated receipts remain historical labels, never accepted migration aliases.
+
+The closed v4 archive contract remains format4: prefix13 excludes commands/density/protocol;
+prefix14 adds opaque commands; prefix15 adds nullable raw density; only prefix16 adds six profile
+fields, seven private tables and the exact `generation_epochs_v1` marker, even when empty. Native
+13/14 migration executes SQL15 once using its literal old-value conversion, with no history or
+clock writes. Raw legacy v3/v4 restore into16 does not run SQL15, the setter or RemoteApply:
+quiet values remain raw and introduced density is SQL NULL. Genuine15 quiet/density remains raw,
+including unknown/empty text and tiny plus SQL NULL. Current16 roundtrips compare full rows.
+Legacy archive commands remain opaque native JSON cell text. Old private protocol13/14/15
+aliases refuse. Native startup command discovery remains limited to enabled Codex/Claude.
+
+Historical B4 and staged Agent Protocol execution refusals, trusted owner/authentication work,
+current native qualification, A4–A10, production floor, publication and coordinated release holds
+remain unchanged. Combined-source compiler/native qualification is unobserved; current24 still
+requires48 individual aggregate/dedicated receipts, compiler6, all seven actual outcomes/five full
+raw logs, all four App builds and a new failure census. Existing140 issues/two recovery failures,
+Task5 source, SDK PR1131/npm, coordinated activation and new production deployment remain held.

@@ -38,10 +38,11 @@ struct ListLayout: Equatable {
     var mostUrgent: ThreadState? { threads.map(Attention.state(of:)).min() }
   }
 
-  /// The threads that do not need the owner, as `quietThreads` draws them.
+  /// The threads that do not need the owner, as `quietThreads` draws them. Row size is not the layout's:
+  /// the Mac's views draw these rows tight under Dense (`WorkspaceModel.tightQuietRows`).
   enum Lower: Equatable {
-    /// Small or Tiny: every row.
-    case rows([ConversationThread], tiny: Bool)
+    /// Shown: every row.
+    case rows([ConversationThread])
     /// One row standing for the stowed threads, working ones included; it opens to show them.
     /// `selected` is the selected thread when it would otherwise be stowed: an ordinary row where the
     /// lower list starts, above the stowed row, and in neither `count`, `working`, nor `threads`.
@@ -55,7 +56,7 @@ struct ListLayout: Equatable {
     /// Nothing at all is drawn: no rows, nothing stowed, nothing working, no selected row.
     var drawsNothing: Bool {
       switch self {
-      case .rows(let threads, _): threads.isEmpty
+      case .rows(let threads): threads.isEmpty
       case .collapsed(let count, _, _, let selected): count == 0 && selected == nil
       case .hidden(let working, let selected): working.isEmpty && selected == nil
       }
@@ -127,8 +128,7 @@ struct ListLayout: Equatable {
       let working = stowed.filter { Attention.state(of: $0) == .working }
       let lower: Lower =
         switch settings.quietThreads {
-        case .small: .rows(rest, tiny: false)
-        case .tiny: .rows(rest, tiny: true)
+        case .shown: .rows(rest)
         case .collapsed:
           .collapsed(count: stowed.count, working: working.count, threads: stowed, selected: selected)
         case .hidden: .hidden(working: working, selected: selected)
@@ -181,7 +181,7 @@ struct ListLayout: Equatable {
   }
 
   /// The mode whose row stows threads now: Collapsed with something below the top list, or Hidden while
-  /// something works; nil under Small or Tiny, under "By environment", and when nothing is stowed.
+  /// something works; nil under Shown, under "By environment", and when nothing is stowed.
   var stowing: ViewSettings.QuietThreads? {
     switch body {
     case .needsYouFirst(_, .collapsed(let count, _, _, _)) where count > 0: .collapsed

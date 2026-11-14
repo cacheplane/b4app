@@ -29,7 +29,7 @@ import WorkspaceProtocol
     }
     defer { try? db.close() }
     #expect(try db.appliedMigrations() == F.fourteen)
-    try F.assertMainTenRowsRetained(before, after: F.snapshot(fixture.raw))
+    try F.assertMainTenRowsRetained(before, after: F.snapshot(fixture.raw), raw: fixture.raw)
     try F.assertArchive(
       F.onlyArchive(fixture.backup), source: before, migrations: F.ten,
       dataTables: F.oldTables, purpose: "preMigration")
@@ -58,7 +58,7 @@ import WorkspaceProtocol
         .locked, .contentsWritten, .fileSynchronized, .renamed, .directorySynchronized, .willMigrate,
       ])
     #expect(try Migrator.recorded(fixture.raw) == F.fourteen)
-    try F.assertMainTenRowsRetained(before, after: F.snapshot(inspector))
+    try F.assertMainTenRowsRetained(before, after: F.snapshot(inspector), raw: inspector)
   }
 
   @Test func successorPrivateArchiveRoundTripsWithoutInstallingSourceOwnedContext() async throws {
@@ -134,7 +134,11 @@ private enum MainSchemaAdmissionFixture {
   ]
   static let ten = nine + ["0010_owned_rows"]
   static let fourteen =
-    ten + ["0011_environments", "0012_app_folders", "0013_view_settings", "0014_agent_protocol"]
+    ten + [
+      "0011_environments", "0012_app_folders", "0013_view_settings", "0014_connection_commands",
+      "0015_density",
+      "0016_agent_protocol",
+    ]
   static let oldTables = [
     "localServers", "projects", "projectFolders", "connections", "threads", "turns", "displayItems",
     "runtimeRequests", "drafts", "devices", "changes", "columnClocks", "settings", "usageReadings",
@@ -167,6 +171,7 @@ private enum MainSchemaAdmissionFixture {
     var triggers: [String]
     var functions: [String]
     var sequences: [String]
+    var archiveFacts: AgentProtocolFoundationFixture.ArchiveFacts
   }
   static func directory() throws -> String {
     let path = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "main4723-" + UUID().uuidString
@@ -204,6 +209,7 @@ private enum MainSchemaAdmissionFixture {
           == Set(oldTables + ["schemaMigrations", "hubLink"]),
         try raw.execute(#"SELECT "ownedAs" FROM "hubLink""#).rows.first?.text("ownedAs") == "source-owner"
       else { throw Failure.canonicalMainSchema }
+      _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: 10)
       return Fixture(endpoint: endpoint, raw: raw, root: root)
     } catch {
       try? FileManager.default.removeItem(atPath: root)
@@ -336,16 +342,26 @@ private enum MainSchemaAdmissionFixture {
       ),
       functions: try facts(
         "SELECT p.proname||':'||pg_get_functiondef(p.oid) AS fact FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' ORDER BY 1"
-      ), sequences: sequences)
+      ), sequences: sequences, archiveFacts: try AgentProtocolFoundationFixture.archiveFacts(c))
   }
-  static func assertMainTenRowsRetained(_ before: Snapshot, after: Snapshot) throws {
+  static func assertMainTenRowsRetained(_ before: Snapshot, after: Snapshot, raw: PostgresConnection) throws {
+    let source = try AgentProtocolFoundationFixture.preservationPrefix(
+      AgentProtocolFoundationFixture.ledgerNames(before.rows), expectedCount: 10)
+    try AgentProtocolFoundationFixture.requireNativeJSONRetained(
+      before.archiveFacts,
+      after: after.archiveFacts, tables: (oldTables + ["hubLink"]).filter { $0 != "changes" })
     #expect(Set(after.rows.keys) == Set(allTables + ["schemaMigrations", "hubLink"]))
     for table in oldTables + ["hubLink"] {
+      try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+        raw, source: source,
+        table: table, originalRows: before.rows[table] ?? [])
       let currentTable = AgentProtocolFoundationFixture.currentTable(old: table)
       let rows = try #require(after.rows[currentTable]).map { text -> String in
         var row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
         if table == "connections" {
-          for field in apFields { #expect(row[field] is NSNull); row.removeValue(forKey: field) }
+          for field in AgentProtocolFoundationFixture.projectionColumns(after: source, table: table) {
+            #expect(row[field] is NSNull); row.removeValue(forKey: field)
+          }
         }
         // Normalize only the spelling of SQL-text JSON. Current schema names must already be exact.
         if table == "changes", row["op"] as? String == "insert",
@@ -368,14 +384,18 @@ private enum MainSchemaAdmissionFixture {
     let oldLedger = try #require(before.rows["schemaMigrations"])
     let newLedger = try #require(after.rows["schemaMigrations"])
     #expect(Set(oldLedger).isSubset(of: Set(newLedger)))
-    #expect(newLedger.count == oldLedger.count + 4)
+    #expect(newLedger.count == oldLedger.count + 6)
     let addedNames = try Set(newLedger).subtracting(oldLedger).map { text in
       let row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
       return try #require(row["name"] as? String)
     }
     #expect(
       Set(addedNames)
-        == Set(["0011_environments", "0012_app_folders", "0013_view_settings", "0014_agent_protocol"]))
+        == Set([
+          "0011_environments", "0012_app_folders", "0013_view_settings", "0014_connection_commands",
+          "0015_density",
+          "0016_agent_protocol",
+        ]))
     #expect(after.sequences == before.sequences)
     for table in protocolTables { #expect(after.rows[table]?.isEmpty == true) }
     #expect(after.rows["appFolders"]?.isEmpty == true)
@@ -412,7 +432,7 @@ private enum MainSchemaAdmissionFixture {
     var headerFields: Set<String> = [
       "format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables",
     ]
-    if migrations.count == 14 {
+    if migrations.count == 16 {
       headerFields.insert("protocolSchema")
       #expect(header["protocolSchema"] as? String == "generation_epochs_v1")
     }

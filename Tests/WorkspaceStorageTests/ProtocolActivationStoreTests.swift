@@ -812,7 +812,7 @@ import WorkspaceProtocol
             OR NEW.value#>>'{observation,reportedVersion}' IS DISTINCT FROM '3'
             OR NEW.value#>>'{observation,healthy}' IS DISTINCT FROM 'true'
             OR NOT EXISTS (SELECT 1 FROM public.settings s WHERE s.key=NEW.key AND s.value=NEW.value)
-            OR NOT EXISTS (SELECT 1 FROM public.\"schemaMigrations\" WHERE name='0014_agent_protocol')
+            OR NOT EXISTS (SELECT 1 FROM public.\"schemaMigrations\" WHERE name='0016_agent_protocol')
           THEN RAISE EXCEPTION 'ACTIVATION_DEFERRED_STAGE_NOT_REACHED'; END IF;
           UPDATE public.settings SET value='"mutated-inside-commit"'::jsonb WHERE key='activation-unrelated';
           PERFORM nextval('activation_test.probe');

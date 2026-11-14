@@ -268,6 +268,12 @@ extension WorkspaceDatabase {
   /// Columns of the view settings row from another device, each merged at `hlc`; the row is created
   /// first (its id alone, every other column null) when this Mac has none, so a change to one column
   /// never needs the others. True when the row was created or any column written.
+  ///
+  /// When the merge replaces a stored `quietThreads` that implied a density (`tiny` with no density:
+  /// `ViewSettings.impliedDensity`) and leaves no density stored, that density is stored too, as the
+  /// local write does: the hub's log may still end in a `tiny` no migration rewrote. It is a local
+  /// reading of the old value, so it claims no clock (any real density change still wins) and, under
+  /// `b4app.replaying`, logs nothing.
   private func mergeViewSettings(
     _ c: PostgresConnection, _ columns: [String: JSONValue], at hlc: String
   ) throws -> Bool {
@@ -277,6 +283,12 @@ extension WorkspaceDatabase {
       try advanceClock(c, table: "viewSettings", rowId: ViewSettings.rowId, column: "id", to: hlc)
       wrote = true
     }
+    let implied =
+      columns["quietThreads"] == nil
+      ? nil
+      : try Self.storedSidebar(c).flatMap {
+        ViewSettings.impliedDensity(storedQuietThreads: $0.quietThreads, storedDensity: $0.density)
+      }
     for (column, value) in columns.sorted(by: { $0.key < $1.key })
     where SyncColumns.isPhoneWritable(table: "viewSettings", column: column) {
       if try mergeColumn(
@@ -285,7 +297,23 @@ extension WorkspaceDatabase {
         wrote = true
       }
     }
+    if let implied, wrote, let after = try Self.storedSidebar(c), after.density == nil,
+      ViewSettings.impliedDensity(storedQuietThreads: after.quietThreads, storedDensity: nil) == nil
+    {
+      try c.execute(
+        "UPDATE \"viewSettings\" SET \"density\" = $1 WHERE \"id\" = $2",
+        [implied.rawValue, ViewSettings.rowId])
+    }
     return wrote
+  }
+
+  /// The view settings row's stored `quietThreads` and `density` texts; nil when there is no row.
+  private static func storedSidebar(
+    _ c: PostgresConnection
+  ) throws -> (quietThreads: String?, density: String?)? {
+    try c.execute(
+      "SELECT \"quietThreads\", \"density\" FROM \"viewSettings\" WHERE \"id\" = $1", [ViewSettings.rowId]
+    ).rows.first.map { ($0.text("quietThreads"), $0.text("density")) }
   }
 
   /// Writes one column when `hlc` is newer than its stored clock, then advances the clock.

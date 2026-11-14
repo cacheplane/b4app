@@ -96,6 +96,47 @@ extension SessionService {
     await context.eventLog.publish(event)
   }
 
+  // MARK: - Runtime commands
+
+  /// The commands to store after a check; nil keeps what is stored. A runtime that names its
+  /// commands in the check (Codex) replaces the list. One that reports them only from a session
+  /// (Claude Code) is asked once, while the connection has no list; its sessions keep it after that.
+  func commandsToStore(
+    _ connection: Connection, inspection: ConnectionInspection, adapter: any AgentAdapter
+  ) async -> [RuntimeCommand]? {
+    guard inspection.status == .ready, inspection.authStatus == .authenticated else { return nil }
+    if let commands = inspection.commands { return RuntimeCommand.normalized(commands) }
+    guard connection.commands == nil, let lister = adapter as? any CommandListing else { return nil }
+    return try? await lister.readCommands()
+  }
+
+  /// Coordinator start: a Codex or Claude Code connection with no command list (one added before the
+  /// list existed, so after an upgrade) is checked in the background, which reads it. One that has a
+  /// list is left alone; its checks and sessions keep it.
+  func readMissingCommands() {
+    let missing =
+      (try? db.listConnections(includeDisabled: false))?.filter {
+        ($0.kind == .codex || $0.kind == .claude) && $0.commands == nil
+      }
+      ?? []
+    for connection in missing { _ = inspectInBackground(connection) }
+  }
+
+  /// A session reported what it can run (`commands.changed`). Stored when it names a command the
+  /// connection's list does not have (`RuntimeCommand.replacement`), and announced with the connection.
+  func storeCommands(_ event: AdapterEvent) async throws {
+    guard let reported = try event.payload["commands"]?.decode([RuntimeCommand].self),
+      let connection = try db.connection(id: event.connectionId),
+      let commands = RuntimeCommand.replacement(stored: connection.commands, reported: reported),
+      let updated = try db.updateConnection(id: connection.id, { $0.commands = commands })
+    else { return }
+    await context.eventLog.publish(
+      try AdapterEvent.connectionChanged(
+        connectionId: updated.id, status: updated.status, authStatus: updated.authStatus,
+        transport: .disconnected
+      ).carrying(updated))
+  }
+
   // MARK: - Checks
 
   /// Inspect, retrying while the runtime is unreachable (offline, or `endpoint_unavailable`), after each

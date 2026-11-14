@@ -1,5 +1,6 @@
 import Foundation
 import NIOTransport
+import Synchronization
 import Testing
 import WorkspaceClient
 import WorkspacePlatform
@@ -556,6 +557,97 @@ actor EventCollector {
     let listed = try await h.client.request(ConnectionList.self, ConnectionList.Params())
     #expect(
       listed.connections.first { $0.id == claude.id }?.models?.map(\.id) == ["opus", "sonnet", "haiku"])
+    await h.stop()
+  }
+
+  /// The first check reads the commands (no session has run yet); a session that names one the
+  /// list lacks replaces it, and clients hear of it as a change to the connection.
+  @Test func commandsReachTheConnectionAndFollowItsSessions() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    #expect(claude.commands?.map(\.name) == ["context", "compact", "superpowers:brainstorming"])
+    // A folder with a command of its own, as Claude Code reads `.claude/commands`.
+    try FileManager.default.createDirectory(
+      atPath: h.workDir + "/.claude/commands", withIntermediateDirectories: true)
+    try Data("Ship it.".utf8).write(to: URL(fileURLWithPath: h.workDir + "/.claude/commands/ship.md"))
+    let thread = try await h.newThread(claude)
+    let changed = try await h.events.waitFor {
+      $0.kind == .connectionChanged
+        && (try? $0.payload["connection"]?.decode(Connection.self))?.commands?.count == 4
+    }
+    #expect(changed.connectionId == claude.id)
+    let listed = try await h.client.request(ConnectionList.self, ConnectionList.Params())
+    #expect(
+      listed.connections.first { $0.id == claude.id }?.commands?.map(\.name) == [
+        "context", "compact", "superpowers:brainstorming", "ship",
+      ])
+    // The adapter's own event stays inside the coordinator.
+    #expect(await h.events.events.allSatisfy { $0.event.kind != .commandsChanged })
+
+    // A command is a message: the runtime answers it as a turn.
+    let turn = try await h.send(thread, "/context")
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    let read = try await h.read(thread)
+    #expect(read.items.map(\.role) == [.user, .assistant])
+    #expect(read.items[0].payload["text"]?.stringValue == "/context")
+    #expect(read.items[1].payload["text"]?.stringValue?.hasPrefix("## Context Usage") == true)
+    await h.stop()
+  }
+
+  /// A connection added before the list existed (an upgrade) has none; the coordinator reads it as it
+  /// starts, with no check asked for and no session started.
+  @Test func aConnectionWithNoCommandsIsCheckedWhenTheCoordinatorStarts() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    let claude = try await h.addClaude()
+    for id in [codex.id, claude.id] {
+      _ = try h.coordinator.database.updateConnection(id: id) { $0.commands = nil }
+    }
+    let paths = h.coordinator.paths
+    await h.stop()
+    var env = ProcessInfo.processInfo.environment
+    env["B4APP_NODE_PATH"] = "/nonexistent/node"
+    env["ANTHROPIC_API_KEY"] = nil
+    guard
+      case .running(let restarted) = try await Coordinator.startSignedIn(
+        options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
+    else { throw WorkspaceError(.internalError, "expected running") }
+    let client = try await UnixSocketTransport.client(path: paths.socketPath)
+    var names: [String: [String]] = [:]
+    let deadline = ContinuousClock.now + .seconds(60)
+    while names.count < 2, ContinuousClock.now < deadline {
+      let listed = try await client.request(ConnectionList.self, ConnectionList.Params())
+      names = Dictionary(
+        uniqueKeysWithValues: listed.connections.compactMap { connection in
+          connection.commands.map { (connection.id, $0.map(\.name)) }
+        })
+      if names.count < 2 { try await Task.sleep(for: .milliseconds(100)) }
+    }
+    #expect(names[codex.id] == ["review", "compact"])
+    #expect(names[claude.id] == ["context", "compact", "superpowers:brainstorming"])
+    await client.close()
+    await restarted.close()
+  }
+
+  @Test func codexCommandsRunAsTurns() async throws {
+    let h = try await Harness.start()
+    let codex = try await h.addCodex()
+    #expect(codex.commands?.map(\.name) == ["review", "compact"])
+    let thread = try await h.newThread(codex)
+    let review = try await h.send(thread, "/review")
+    let reviewed = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == review.id }
+    #expect(reviewed.payload["outcome"]?.stringValue == "completed")
+    // `thread/compact/start` names no turn; the runtime's `turn/started` does.
+    let compact = try await h.send(thread, "/compact")
+    #expect(compact.submission == .acknowledged)
+    let compacted = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == compact.id }
+    #expect(compacted.payload["outcome"]?.stringValue == "completed")
+    let read = try await h.read(thread)
+    #expect(read.turns.map(\.id) == [review.id, compact.id])
+    #expect(read.turns.allSatisfy { $0.nativeTurnId != nil })
+    #expect(
+      read.items.contains { $0.payload["text"]?.stringValue == "Reviewed uncommittedChanges." })
     await h.stop()
   }
 
@@ -1943,5 +2035,138 @@ actor EventCollector {
     #expect(!everything.contains("sk-proj-ABCDEFGHIJKLMNOP"))
     #expect(!everything.contains("SECRETCODE"))
     await h.stop()
+  }
+}
+
+@Suite(.serialized) struct RuntimeCommandProfileFoundationTests {
+  @Test func commandRoundTripRetainsCompleteProfileAuthAndRetirement() throws {
+    let value = Connection(
+      id: "staged-roundtrip", kind: .agentProtocol, label: "Staged",
+      enabled: false, profileRevision: 7, target: "https://example.invalid/deployment",
+      authReference: "secret:roundtrip", nativeScope: "retained-native-scope",
+      peerProfile: .agentProtocol, agentId: "exact-agent", authMode: .header,
+      authHeaderName: "X-Retained-Key", protocolRetiredAt: "retained-at",
+      protocolRetiredReason: .agentProtocolCutover,
+      ownerDeviceId: "retained-owner-device",
+      models: [RuntimeModel(id: "model", label: "Retained model")],
+      commands: [
+        RuntimeCommand(
+          name: "review", description: "Retained description",
+          argumentHint: "<path>", aliases: ["rv"])
+      ], createdAt: "created", updatedAt: "updated")
+    let restored = try JSONDecoder().decode(Connection.self, from: JSONEncoder().encode(value))
+    #expect(restored == value)
+    #expect(restored.commands?.first?.aliases == ["rv"])
+    #expect(restored.ownerDeviceId == "retained-owner-device")
+    #expect(restored.peerProfile == .agentProtocol && restored.agentId == "exact-agent")
+    #expect(restored.authMode == .header && restored.authHeaderName == "X-Retained-Key")
+    #expect(
+      restored.protocolRetiredAt == "retained-at" && restored.protocolRetiredReason == .agentProtocolCutover)
+  }
+
+  @Test func startupReadsNativeCommandsWithoutInspectingHistoricalOrStagedProfiles() async throws {
+    let h = try await Harness.start()
+    var initialStopped = false
+    do {
+      let codex = try await h.addCodex(), claude = try await h.addClaude()
+      for id in [codex.id, claude.id] {
+        _ = try h.coordinator.database.updateConnection(id: id) { $0.commands = nil }
+      }
+      let historical = Connection(
+        id: "commands-historical", kind: .b4, label: "Retained",
+        target: "https://example.invalid/retained", routeKey: "/old#agent", b4Mode: .remote,
+        nativeScope: "retained-scope", createdAt: "created", updatedAt: "updated")
+      let staged = Connection(
+        id: "commands-staged", kind: .agentProtocol, label: "Staged",
+        target: "https://example.invalid/deployment", nativeScope: "staged-scope",
+        peerProfile: .agentProtocol, agentId: "staged-agent", authMode: ConnectionAuthMode.none,
+        createdAt: "created", updatedAt: "updated")
+      _ = try h.coordinator.database.insertConnection(historical)
+      _ = try h.coordinator.database.insertConnection(staged)
+      try h.coordinator.database.write { raw in
+        try raw.execute(
+          """
+          SET b4app.replaying='on';
+          INSERT INTO threads (id,"connectionId","nativeThreadId",title,"createdAt","updatedAt")
+            VALUES ('commands-old-thread','commands-historical','old-native','Retained history','created','updated'),
+              ('commands-staged-thread','commands-staged','staged-native','Staged history','created','updated');
+          INSERT INTO turns (id,"threadId","operationId",status,submission,"createdAt","updatedAt")
+            VALUES ('commands-old-turn','commands-old-thread','old-operation','reconciling','unknown','created','updated'),
+              ('commands-staged-turn','commands-staged-thread','staged-operation','reconciling','unknown','created','updated');
+          INSERT INTO drafts ("threadId",text,"updatedAt") VALUES
+            ('commands-old-thread','Retained unsent draft','updated'),('commands-staged-thread','Staged draft','updated');
+          RESET b4app.replaying;
+          """)
+      }
+      func retained(_ db: WorkspaceDatabase) throws -> [String: [String]] {
+        try db.read { raw in
+          var result: [String: [String]] = [:]
+          for (table, predicate) in [
+            ("connections", "id IN ('commands-historical','commands-staged')"),
+            ("threads", "id IN ('commands-old-thread','commands-staged-thread')"),
+            ("turns", "id IN ('commands-old-turn','commands-staged-turn')"),
+            ("drafts", "\"threadId\" IN ('commands-old-thread','commands-staged-thread')"),
+          ] {
+            result[table] = try raw.execute(
+              "SELECT to_jsonb(t)::text AS row FROM \(table) t WHERE \(predicate) ORDER BY 1"
+            )
+            .rows.compactMap { $0.text("row") }
+          }
+          return result
+        }
+      }
+      let before = try retained(h.coordinator.database), paths = h.coordinator.paths
+      await h.stop()
+      initialStopped = true
+      let factories = Mutex<[ConnectionKind]>([])
+      var environment = ProcessInfo.processInfo.environment
+      environment["B4APP_NODE_PATH"] = "/nonexistent/node"
+      environment["ANTHROPIC_API_KEY"] = nil
+      let factory: SessionService.AdapterFactory = { connection, env, version, secrets in
+        factories.withLock { $0.append(connection.kind) }
+        return try SessionService.defaultAdapterFactory(connection, env, version, secrets)
+      }
+      let restarted = try await Harness.start(
+        paths: paths, extraEnvironment: environment, adapterFactory: factory)
+      var failure: (any Error)?
+      do {
+        let deadline = ContinuousClock.now + .seconds(60)
+        while ContinuousClock.now < deadline {
+          if try restarted.coordinator.database.connection(id: codex.id)?.commands != nil,
+            try restarted.coordinator.database.connection(id: claude.id)?.commands != nil
+          {
+            break
+          }
+          try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(
+          try restarted.coordinator.database.connection(id: codex.id)?.commands?.map(\.name) == [
+            "review", "compact",
+          ])
+        #expect(
+          try restarted.coordinator.database.connection(id: claude.id)?.commands?.map(\.name) == [
+            "context", "compact", "superpowers:brainstorming",
+          ])
+        #expect(Set(factories.withLock { $0 }).isSuperset(of: [.codex, .claude]))
+        #expect(factories.withLock { !$0.contains(.b4) && !$0.contains(.agentProtocol) })
+        for connection in [historical, staged] {
+          var refusal: WorkspaceError?
+          do {
+            _ = try await restarted.coordinator.sessions.connectionInspect(
+              ConnectionInspect.Params(connectionId: connection.id))
+          } catch { refusal = WorkspaceError.from(error) }
+          #expect(refusal?.code == .unsupportedCapability)
+        }
+        #expect(try retained(restarted.coordinator.database) == before)
+        #expect(try restarted.coordinator.database.connection(id: historical.id)?.commands == nil)
+        #expect(try restarted.coordinator.database.connection(id: staged.id)?.commands == nil)
+        #expect(factories.withLock { !$0.contains(.b4) && !$0.contains(.agentProtocol) })
+      } catch { failure = error }
+      await restarted.stop()
+      if let failure { throw failure }
+    } catch {
+      if !initialStopped { await h.stop() }
+      throw error
+    }
   }
 }

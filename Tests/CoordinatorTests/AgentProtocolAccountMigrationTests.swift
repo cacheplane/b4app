@@ -400,6 +400,108 @@ final class L1FactoryCalls: Sendable {
       let ninthStart = ninthSQL.range(of: "CREATE OR REPLACE FUNCTION b4app_record_change()"),
       let ninthEnd = ninthSQL[ninthStart.lowerBound...].range(of: "\n$$;")
     else { throw SetupFailure.canonicalMismatch }
+    // Native catalog proof precedes all inverse DDL. Published14 only adds this column.
+    let commands = try c.execute(
+      """
+      SELECT t.typname, n.nspname, a.attnotnull::text AS not_null,
+        a.atttypmod::text AS typmod,a.attgenerated::text AS generated,a.attidentity::text AS identity,
+        (d.oid IS NULL)::text AS no_default
+      FROM pg_attribute a JOIN pg_class r ON r.oid=a.attrelid
+      JOIN pg_namespace rn ON rn.oid=r.relnamespace JOIN pg_type t ON t.oid=a.atttypid
+      JOIN pg_namespace n ON n.oid=t.typnamespace
+      LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+      WHERE rn.nspname='public' AND r.relname='connections' AND a.attname='commands'
+        AND a.attnum>0 AND NOT a.attisdropped
+      """
+    ).rows
+    guard commands.count == 1, commands[0].text("typname") == "jsonb",
+      commands[0].text("nspname") == "pg_catalog", commands[0].text("not_null") == "false",
+      commands[0].text("no_default") == "true", commands[0].text("typmod") == "-1",
+      commands[0].text("generated") == "", commands[0].text("identity") == "",
+      allApplied["0014_connection_commands"] != nil,
+      try c.execute(#"SELECT 1 FROM "connections" WHERE commands IS NOT NULL"#).rows.isEmpty
+    else { throw SetupFailure.canonicalMismatch }
+    let density = try c.execute(
+      """
+      SELECT t.typname,n.nspname,a.attnotnull::text AS not_null,
+        a.atttypmod::text AS typmod,a.attgenerated::text AS generated,a.attidentity::text AS identity,
+        (d.oid IS NULL)::text AS no_default
+      FROM pg_attribute a JOIN pg_class r ON r.oid=a.attrelid
+      JOIN pg_namespace rn ON rn.oid=r.relnamespace JOIN pg_type t ON t.oid=a.atttypid
+      JOIN pg_namespace n ON n.oid=t.typnamespace
+      LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+      WHERE rn.nspname='public' AND r.relname='viewSettings' AND a.attname='density'
+        AND a.attnum>0 AND NOT a.attisdropped
+      """
+    ).rows
+    guard density.count == 1, density[0].text("typname") == "text",
+      density[0].text("nspname") == "pg_catalog", density[0].text("not_null") == "false",
+      density[0].text("no_default") == "true", density[0].text("typmod") == "-1",
+      density[0].text("generated") == "", density[0].text("identity") == "",
+      allApplied["0015_density"] != nil,
+      let thirteenth = files.first(where: { $0.name == "0013_view_settings" })?.sql,
+      let oldStart = thirteenth.range(of: "CREATE OR REPLACE FUNCTION b4app_record_change()"),
+      let oldEnd = thirteenth[oldStart.lowerBound...].range(of: "\n$$;"),
+      let publishedDensity = files.first(where: { $0.name == "0015_density" })?.sql,
+      let bodyStart = publishedDensity.range(of: "AS $$"),
+      let bodyEnd = publishedDensity[bodyStart.upperBound...].range(of: "$$;")
+    else { throw SetupFailure.canonicalMismatch }
+    let oldViewFunction = String(thirteenth[oldStart.lowerBound..<oldEnd.upperBound])
+    let expectedBody = Data(publishedDensity[bodyStart.upperBound..<bodyEnd.lowerBound].utf8)
+    let functions = try c.execute(
+      """
+      SELECT p.prosrc,l.lanname,p.pronargs::text AS args,p.prorettype::regtype::text AS result,
+        p.prokind::text AS kind,p.provolatile::text AS volatility,
+        p.prosecdef::text AS definer,p.proretset::text AS returns_set,(p.proconfig IS NULL)::text AS no_config
+      FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+      JOIN pg_language l ON l.oid=p.prolang
+      WHERE n.nspname='public' AND p.proname='b4app_record_change'
+      """
+    ).rows
+    guard functions.count == 1, functions[0].text("lanname") == "plpgsql",
+      functions[0].text("args") == "0", functions[0].text("result") == "trigger",
+      functions[0].text("kind") == "f", functions[0].text("volatility") == "v",
+      functions[0].text("definer") == "false", functions[0].text("returns_set") == "false",
+      functions[0].text("no_config") == "true",
+      functions[0].text("prosrc").map({ Data($0.utf8) }) == expectedBody
+    else { throw SetupFailure.canonicalMismatch }
+    let triggers = try c.execute(
+      """
+      SELECT t.tgname,t.tgtype::text AS kind,t.tgenabled::text AS enabled,
+        encode(t.tgargs,'hex') AS argument_bytes,
+        t.tgnargs::text AS args,(t.tgqual IS NULL)::text AS no_when,
+        (t.tgconstraint=0)::text AS ordinary,t.tgattr::text AS columns,
+        (t.tgfoid='public.b4app_record_change()'::regprocedure)::text AS recorder
+      FROM pg_trigger t
+      WHERE t.tgrelid='public."viewSettings"'::regclass AND NOT t.tgisinternal
+      """
+    ).rows
+    guard triggers.count == 1, triggers[0].text("tgname") == "viewSettingsChanges",
+      triggers[0].text("kind") == "29",
+      triggers[0].text("enabled") == "O", triggers[0].text("args") == "1",
+      triggers[0].text("argument_bytes") == "696400",
+      triggers[0].text("no_when") == "true", triggers[0].text("ordinary") == "true",
+      triggers[0].text("columns") == "", triggers[0].text("recorder") == "true"
+    else { throw SetupFailure.canonicalMismatch }
+    for table in [
+      "turns", "displayItems", "runtimeRequests", "drafts", "localServers",
+      "usageReadings", "tokenUsage", "connectionUsage", "threadDeletes",
+    ] {
+      guard try c.execute("SELECT 1 FROM \(Rows.quote(table)) LIMIT 1").rows.isEmpty
+      else { throw SetupFailure.canonicalMismatch }
+    }
+    for table in ["changes", "columnClocks"] {
+      guard
+        try c.execute(
+          "SELECT 1 FROM \(Rows.quote(table)) WHERE \"table\"='viewSettings' OR \"column\" IN ('quietThreads','density') LIMIT 1"
+        ).rows.isEmpty
+      else { throw SetupFailure.canonicalMismatch }
+    }
+    guard
+      try c.execute(
+        #"SELECT 1 FROM "changes" WHERE jsonb_typeof(value)='object' AND (value ? 'quietThreads' OR value ? 'density') LIMIT 1"#
+      ).rows.isEmpty
+    else { throw SetupFailure.canonicalMismatch }
     let ninthFunction = String(ninthSQL[ninthStart.lowerBound..<ninthEnd.upperBound])
     try c.execute("BEGIN")
     do {
@@ -427,7 +529,16 @@ final class L1FactoryCalls: Sendable {
       try c.execute(
         #"ALTER TABLE "connections" ADD CONSTRAINT "connections_kind_check" CHECK ("kind" IN ('codex', 'claude', 'b4'))"#
       )
-      guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0014_agent_protocol'"#).affected == 1
+      guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0016_agent_protocol'"#).affected == 1
+      else { throw SetupFailure.malformedLedger }
+      try c.execute(#"ALTER TABLE "viewSettings" DROP COLUMN "density""#)
+      try c.execute(oldViewFunction)
+      guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0015_density'"#).affected == 1
+      else { throw SetupFailure.malformedLedger }
+      try c.execute(#"ALTER TABLE "connections" DROP COLUMN "commands""#)
+      guard
+        try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0014_connection_commands'"#).affected
+          == 1
       else { throw SetupFailure.malformedLedger }
       try c.execute(#"DROP TABLE "viewSettings""#)
       guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0013_view_settings'"#).affected == 1
@@ -601,6 +712,7 @@ final class L1FactoryCalls: Sendable {
     if pending { try reconstructOldStore(raw, files: files) }
     try seedHistory(
       raw, accountRef: accountRef, endpointRef: endpointRef, hubURL: hubURL, currentSchema: !pending)
+    _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: pending ? 8 : 16)
     reopenSetupGate.run()
     let expected: WorkspaceDatabase.MigrationState = pending ? .pending : .current
     guard try WorkspaceDatabase.preflightMigration(endpoint: endpoint, binDir: endpoint.binDir!) == expected
@@ -741,7 +853,21 @@ final class L1FactoryCalls: Sendable {
     #expect(!FileManager.default.fileExists(atPath: directory(fixture)))
   }
 
-  static func assertHistory(_ before: Snapshot, after: Snapshot) throws {
+  static func assertHistory(_ before: Snapshot, after: Snapshot, raw: PostgresConnection) throws {
+    let source = try AgentProtocolFoundationFixture.preservationPrefix(
+      before.migrations,
+      expectedCount: before.migrations.count)
+    guard try AgentProtocolFoundationFixture.ledgerNames(before.rows) == source.names else {
+      throw SetupFailure.malformedLedger
+    }
+    try AgentProtocolFoundationFixture.requireNativeJSONRetained(
+      before.archiveFacts,
+      after: after.archiveFacts,
+      tables: [
+        "connections", "projects", "projectFolders", "threads",
+        "turns", "displayItems", "runtimeRequests", "drafts", "columnClocks",
+      ])
+    for (key, value) in before.additiveSQLNull { #expect(value); #expect(after.additiveSQLNull[key] == true) }
     #expect(after.migrations == AgentProtocolFoundationFixture.migrations)
     try AgentProtocolFoundationFixture.assertCurrentLedgerAndInventory(after.rows, oldRows: before.rows)
     for (table, columns) in AgentProtocolFoundationFixture.addedColumns {
@@ -754,10 +880,15 @@ final class L1FactoryCalls: Sendable {
       let beforeTable =
         before.rows[table] == nil ? AgentProtocolFoundationFixture.currentTable(old: table) : table
       let currentTable = AgentProtocolFoundationFixture.currentTable(old: beforeTable)
+      try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+        raw, source: source,
+        table: beforeTable, originalRows: before.rows[beforeTable] ?? [])
       func normalize(_ values: [String], table: String, renameLegacy: Bool) throws -> [String] {
         try values.map { text in
           var row = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
-          for column in AgentProtocolFoundationFixture.addedColumns[table] ?? [] {
+          for column in renameLegacy
+            ? [] : AgentProtocolFoundationFixture.projectionColumns(after: source, table: table)
+          {
             if let value = row[column] { #expect(value is NSNull) }
             row.removeValue(forKey: column)
           }
@@ -870,7 +1001,7 @@ final class L1FactoryCalls: Sendable {
       let result = try await Self.completedTimedMigration(run, trace: trace)
       _ = try result.get()
       try Self.assertArchive(fixture, expected: expected)
-      try Self.assertHistory(expected, after: Self.snapshot(fixture.raw))
+      try Self.assertHistory(expected, after: Self.snapshot(fixture.raw), raw: fixture.raw)
       #expect(
         try WorkspaceDatabase.preflightMigration(
           endpoint: fixture.endpoint, binDir: fixture.endpoint.binDir!) == .current)
@@ -963,7 +1094,7 @@ final class L1FactoryCalls: Sendable {
       let result = try await Self.completed(Self.begin(fixture, cleanup))
       _ = try result.get()
       #expect(!FileManager.default.fileExists(atPath: Self.directory(fixture)))
-      try Self.assertHistory(fixture.before, after: Self.snapshot(fixture.raw))
+      try Self.assertHistory(fixture.before, after: Self.snapshot(fixture.raw), raw: fixture.raw)
       #expect(try await fixture.secrets.read(fixture.endpointRef) == Self.endpointValue)
       release.run()
       _ = try await borrower.value

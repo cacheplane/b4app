@@ -20,6 +20,7 @@ pub const PHONE_WRITABLE: &[(&str, &str)] = &[
     ("viewSettings", "quietThreads"),
     ("viewSettings", "showArchived"),
     ("viewSettings", "updatedAt"),
+    ("viewSettings", "density"),
 ];
 
 /// `(table, column)` pairs that merge by clock: the phone-writable ones plus `threads.environmentId`,
@@ -42,6 +43,7 @@ pub const CLOCKED: &[(&str, &str)] = &[
     ("viewSettings", "quietThreads"),
     ("viewSettings", "showArchived"),
     ("viewSettings", "updatedAt"),
+    ("viewSettings", "density"),
 ];
 
 /// `(table, column)` pairs that are set once and never cleared: no device may set them to null.
@@ -68,7 +70,7 @@ mod tests {
 
     #[test]
     fn the_phone_may_write_exactly_the_documented_columns() {
-        assert_eq!(PHONE_WRITABLE.len(), 16);
+        assert_eq!(PHONE_WRITABLE.len(), 17);
         for (table, column) in [
             ("threads", "title"),
             ("threads", "pinned"),
@@ -86,6 +88,7 @@ mod tests {
             ("viewSettings", "quietThreads"),
             ("viewSettings", "showArchived"),
             ("viewSettings", "updatedAt"),
+            ("viewSettings", "density"),
         ] {
             assert!(is_phone_writable(table, column), "{table}.{column}");
         }
@@ -99,6 +102,7 @@ mod tests {
             ("connections", "label"),
             ("connections", "environmentId"),
             ("connections", "models"),
+            ("connections", "commands"),
             ("connectionUsage", "tokens"),
         ] {
             assert!(!is_phone_writable(table, column), "{table}.{column}");

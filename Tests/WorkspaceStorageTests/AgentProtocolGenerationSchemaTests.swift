@@ -42,7 +42,7 @@ import WorkspaceProtocol
     try Migrator.ensureLedger(f.raw, table: Migrator.table)
     for file in try Migrator.files().prefix(count) {
       try f.raw.execute(
-        oldThirteen && file.name == "0014_agent_protocol" ? oldThirteenSQL : file.sql)
+        oldThirteen && file.name == "0016_agent_protocol" ? oldThirteenSQL : file.sql)
       try f.raw.execute(
         "INSERT INTO public.\"schemaMigrations\" (name,\"appliedAt\") VALUES ($1,'fixed-source')",
         [file.name])
@@ -125,7 +125,7 @@ import WorkspaceProtocol
 
   @Test func segmentKeysSeparateGenerationLocalEpochAndNamespace() throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 14)
+      try Self.seed(f, count: 16)
       try Self.seedOwner(f)
       let identities = [
         ("b4", "generation-a", #"["a/b"]"#),
@@ -162,7 +162,7 @@ import WorkspaceProtocol
 
   @Test func subscriptionsRequireExactlyOneNativeOrLocalEpoch() throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 14)
+      try Self.seed(f, count: 16)
       try Self.seedOwner(f)
       let insert =
         #"INSERT INTO public."protocolSubscriptions" ("threadId","connectionId","nativeThreadId","generation","localObservationEpoch","channels","namespaces","coverage","updatedAt") VALUES ('t','c','raw-native-thread',$1,$2,'[]','[[]]','{}','then')"#
@@ -200,9 +200,35 @@ import WorkspaceProtocol
     }
   }
 
+  @Test func oldPrivateFourteenAliasRefusesEvenWithNoProtocolRows() throws {
+    try Self.withFixture { f in
+      try Self.seed(f, count: 13)
+      try f.raw.execute(Self.oldThirteenSQL)
+      try f.raw.execute(
+        #"INSERT INTO "schemaMigrations" (name,"appliedAt") VALUES ('0014_agent_protocol','old-private14')"#)
+      try Self.assertRefusal(f, oldAlias: true)
+    }
+    var lines = String(decoding: try Self.archive(prefix: 14), as: UTF8.self)
+    lines = lines.replacingOccurrences(of: "0014_connection_commands", with: "0014_agent_protocol")
+    #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(Data(lines.utf8)) }
+  }
+
+  @Test func oldPrivateFifteenAliasRefusesEvenWhenEmpty() throws {
+    try Self.withFixture { f in
+      try Self.seed(f, count: 14)
+      try f.raw.execute(Self.oldThirteenSQL)
+      try f.raw.execute(
+        #"INSERT INTO "schemaMigrations" (name,"appliedAt") VALUES ('0015_agent_protocol','old-private15')"#)
+      try Self.assertRefusal(f, oldAlias: true)
+    }
+    let archive = String(decoding: try Self.archive(prefix: 15), as: UTF8.self)
+      .replacingOccurrences(of: "0015_density", with: "0015_agent_protocol")
+    #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(Data(archive.utf8)) }
+  }
+
   @Test func oldGenerationShapeUnderCanonicalFourteenRefusesWithoutMutation() throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 14, oldThirteen: true)
+      try Self.seed(f, count: 16, oldThirteen: true)
       try Self.seedOwner(f)
       #expect(try Migrator.recorded(f.raw) == AgentProtocolFoundationFixture.migrations)
       try Self.assertRefusal(f)
@@ -215,7 +241,7 @@ import WorkspaceProtocol
   ])
   func currentFourteenShapeDamageRefusesWithoutMutation(damage: String) throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 14)
+      try Self.seed(f, count: 16)
       switch damage {
       case "old-primary":
         try f.raw.execute(
@@ -243,7 +269,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test(arguments: [0, 12, 13, 14])
+  @Test(arguments: [0, 12, 13, 14, 15, 16])
   func freshPublishedTwelveThirteenAndCurrentReopensRemainValid(prefix: Int) throws {
     try Self.withFixture { f in
       if prefix > 0 { try Self.seed(f, count: prefix) }
@@ -264,7 +290,8 @@ import WorkspaceProtocol
         try db.close()
         try outcome.get()
       }
-      #expect(try Self.files(f).count == ((prefix == 12 || prefix == 13) ? 1 : 0))
+      #expect(
+        try Self.files(f).count == ((prefix == 12 || prefix == 13 || prefix == 14 || prefix == 15) ? 1 : 0))
     }
   }
 
@@ -307,20 +334,20 @@ import WorkspaceProtocol
 
   @Test func v4ProtocolSchemaMarkerHasExactValue() throws {
     #expect(throws: WorkspaceArchive.Rejection.self) {
-      try WorkspaceArchive.read(Self.archive(prefix: 14))
+      try WorkspaceArchive.read(Self.archive(prefix: 16))
     }
     for wrong in ["", "unknown", 1, NSNull()] as [Any] {
       #expect(throws: WorkspaceArchive.Rejection.self) {
-        try WorkspaceArchive.read(Self.archive(prefix: 14, marker: wrong))
+        try WorkspaceArchive.read(Self.archive(prefix: 16, marker: wrong))
       }
     }
-    let input = try WorkspaceArchive.read(Self.archive(prefix: 14, marker: "generation_epochs_v1"))
+    let input = try WorkspaceArchive.read(Self.archive(prefix: 16, marker: "generation_epochs_v1"))
     #expect(input.version == 4)
     #expect(input.dataCount == 0)
   }
 
   @Test func publishedThroughThirteenArchivesKeepTheirClosedHeader() throws {
-    for prefix in [8, 9, 10, 11, 12, 13] {
+    for prefix in [8, 9, 10, 11, 12, 13, 14, 15] {
       #expect(try WorkspaceArchive.read(Self.archive(prefix: prefix)).dataCount == 0)
       #expect(throws: WorkspaceArchive.Rejection.self) {
         try WorkspaceArchive.read(Self.archive(prefix: prefix, marker: "generation_epochs_v1"))

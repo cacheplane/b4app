@@ -435,7 +435,7 @@ async fn complete_ledger(conn: &mut PgConnection) -> Result {
     .await?;
     let head = versions.len() as i64;
     require(
-        head == 21 && versions == (1..=head).collect::<Vec<i64>>(),
+        head == 23 && versions == (1..=head).collect::<Vec<i64>>(),
         "one complete legitimate ledger through twenty-one",
     )?;
     let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM public._sqlx_migrations")

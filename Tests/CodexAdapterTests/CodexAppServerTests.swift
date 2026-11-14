@@ -354,4 +354,60 @@ private func paramsFile() -> URL {
     #expect(finished.payload["errorCode"]?.stringValue == "allowance_exceeded")
     await adapter.dispose()
   }
+
+  // MARK: Commands
+
+  @Test func inspectionNamesTheCommandsTheAppServerCanRun() async throws {
+    let adapter = makeAdapter()
+    let inspection = try await adapter.inspectConnection()
+    #expect(inspection.commands?.map(\.name) == ["review", "compact"])
+    #expect(inspection.commands?.first?.argumentHint == "[what to review]")
+    await adapter.dispose()
+  }
+
+  @Test func onlyAnAdvertisedCommandIsNotATurn() {
+    let review = CodexProtocol.commandRequest(threadId: "t", text: "/review")
+    #expect(review?.method == "review/start")
+    #expect(review?.params == ["threadId": "t", "target": ["type": "uncommittedChanges"]])
+    let custom = CodexProtocol.commandRequest(threadId: "t", text: "/review only the auth change")
+    #expect(custom?.params["target"] == ["type": "custom", "instructions": "only the auth change"])
+    #expect(CodexProtocol.commandRequest(threadId: "t", text: "/compact")?.method == "thread/compact/start")
+    // Anything else, a path or a command Codex's terminal has and the app-server does not, is a message.
+    #expect(CodexProtocol.commandRequest(threadId: "t", text: "/compact everything") == nil)
+    #expect(CodexProtocol.commandRequest(threadId: "t", text: "/status") == nil)
+    #expect(CodexProtocol.commandRequest(threadId: "t", text: "/usr/bin/true") == nil)
+    #expect(CodexProtocol.commandRequest(threadId: "t", text: "review") == nil)
+  }
+
+  @Test func reviewRunsAsATurnWithItsOwnId() async throws {
+    let adapter = makeAdapter()
+    let collector = EventCollector(adapter.events())
+    let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
+    let receipt = try await adapter.sendTurn(
+      ref, input: TurnInput(operationId: "op1", text: "/review only the auth change"))
+    #expect(receipt.acknowledged)
+    #expect(receipt.nativeTurnId == "turn_1")
+    let finished = try await collector.waitFor { $0.kind == .turnFinished }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    let completed = await collector.events.first {
+      $0.kind == .messageCompleted && $0.payload["type"]?.stringValue == "agentMessage"
+    }
+    #expect(completed?.payload["item"]?["text"]?.stringValue == "Reviewed only the auth change.")
+    await adapter.dispose()
+  }
+
+  @Test func compactIsAcknowledgedAndItsTurnIsNamedByTheRuntime() async throws {
+    let adapter = makeAdapter()
+    let collector = EventCollector(adapter.events())
+    let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
+    let receipt = try await adapter.sendTurn(ref, input: TurnInput(operationId: "op1", text: "/compact"))
+    #expect(receipt.acknowledged)
+    #expect(receipt.nativeTurnId == nil)
+    let started = try await collector.waitFor { $0.kind == .turnAcknowledged }
+    #expect(started.nativeIds["turnId"] == "turn_1")
+    let finished = try await collector.waitFor { $0.kind == .turnFinished }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    #expect(finished.nativeIds["turnId"] == "turn_1")
+    await adapter.dispose()
+  }
 }

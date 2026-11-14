@@ -76,6 +76,7 @@ import WorkspaceProtocol
         VALUES ('old-thread', 'Unsent retained draft', 'updated');
       """)
     let backup = (endpoint.dataDir! as NSString).deletingLastPathComponent + "/backups/" + endpoint.database
+    _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: 8)
     return Fixture(endpoint: endpoint, raw: raw, backupDirectory: backup)
   }
 
@@ -123,13 +124,23 @@ import WorkspaceProtocol
       at: URL(fileURLWithPath: directory), includingPropertiesForKeys: nil)
   }
 
-  private static func assertRetainedRows(_ before: Snapshot, _ after: Snapshot) throws {
+  private static func assertRetainedRows(
+    _ before: Snapshot, _ after: Snapshot, raw: PostgresConnection
+  ) throws {
+    let source = try AgentProtocolFoundationFixture.preservationPrefix(
+      AgentProtocolFoundationFixture.ledgerNames(before.rows), expectedCount: 8)
+    try AgentProtocolFoundationFixture.requireNativeJSONRetained(
+      before.archiveFacts,
+      after: after.archiveFacts, tables: Array(before.rows.keys).filter { $0 != "changes" })
     for (table, original) in before.rows {
+      try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+        raw, source: source,
+        table: table, originalRows: original)
       let currentTable = AgentProtocolFoundationFixture.currentTable(old: table)
       let restored = try #require(after.rows[currentTable])
       if table == Migrator.table {
         #expect(Set(original).isSubset(of: Set(restored)))  // Preserve each original appliedAt exactly.
-        #expect(restored.count == original.count + 6)
+        #expect(restored.count == original.count + 8)
         let addedNames = try Set(restored).subtracting(original).map { text in
           let row = try #require(
             try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
@@ -139,7 +150,7 @@ import WorkspaceProtocol
           Set(addedNames)
             == Set([
               "0009_thread_runtime_choice", "0010_owned_rows", "0011_environments", "0012_app_folders",
-              "0013_view_settings", "0014_agent_protocol",
+              "0013_view_settings", "0014_connection_commands", "0015_density", "0016_agent_protocol",
             ]))
         continue
       }
@@ -147,7 +158,9 @@ import WorkspaceProtocol
         try rows.map { text in
           var object = try #require(
             try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
-          for column in AgentProtocolFoundationFixture.addedColumns[table] ?? [] {
+          for column in renameLegacy
+            ? [] : AgentProtocolFoundationFixture.projectionColumns(after: source, table: table)
+          {
             if let value = object[column] { #expect(value is NSNull) }
             object.removeValue(forKey: column)
           }
@@ -282,7 +295,7 @@ import WorkspaceProtocol
       ])
     #expect(try Migrator.recorded(fixture.raw) == AgentProtocolFoundationFixture.migrations)
     #expect(try Self.snapshot(fixture.raw) != before)
-    try Self.assertRetainedRows(before, Self.snapshot(fixture.raw))
+    try Self.assertRetainedRows(before, Self.snapshot(fixture.raw), raw: fixture.raw)
     try AgentProtocolFoundationFixture.assertCurrentPreservesOld(fixture.raw, oldRows: before.rows)
   }
 
@@ -368,7 +381,7 @@ import WorkspaceProtocol
     try Self.assertOldArchive(fixture, expected: before)
     #expect(try Migrator.recorded(fixture.raw).filter { $0 == "0009_thread_runtime_choice" }.count == 1)
     #expect(try Migrator.recorded(fixture.raw) == AgentProtocolFoundationFixture.migrations)
-    try Self.assertRetainedRows(before, Self.snapshot(fixture.raw))
+    try Self.assertRetainedRows(before, Self.snapshot(fixture.raw), raw: fixture.raw)
     try AgentProtocolFoundationFixture.assertCurrentPreservesOld(fixture.raw, oldRows: before.rows)
   }
 
@@ -414,7 +427,7 @@ import WorkspaceProtocol
     let expected = try committedOld.get()
     try Self.assertOldArchive(fixture, label: "Committed before migration", expected: expected)
     #expect(try Migrator.recorded(fixture.raw) == AgentProtocolFoundationFixture.migrations)
-    try Self.assertRetainedRows(expected, Self.snapshot(fixture.raw))
+    try Self.assertRetainedRows(expected, Self.snapshot(fixture.raw), raw: fixture.raw)
     try AgentProtocolFoundationFixture.assertCurrentPreservesOld(fixture.raw, oldRows: expected.rows)
   }
 }

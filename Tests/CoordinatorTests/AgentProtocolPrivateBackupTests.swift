@@ -56,6 +56,7 @@ import WorkspaceProtocol
     let endpointValue: String
     let endpointSecrets: MemorySecretStore
     let before: Snapshot
+    let preservationFacts: AgentProtocolFoundationFixture.ArchiveFacts
   }
   private static func connection(_ endpoint: PostgresEndpoint) throws -> PostgresConnection {
     try PostgresConnection(
@@ -130,12 +131,14 @@ import WorkspaceProtocol
       try raw.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'")
         .rows.compactMap { $0.text("tablename") })
     guard actualTables == expectedTables else { throw FixtureFailure.unexpectedSchema }
+    _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: current ? 16 : 9)
     let before = try snapshot(raw)
     guard before.rows.values.allSatisfy({ !$0.isEmpty }) else { throw FixtureFailure.unexpectedSchema }
     let fixture = Fixture(
       endpoint: endpoint, raw: raw, root: root, backup: root + "/backups/" + endpoint.database,
       material: material, endpointReference: reference, endpointValue: endpointValue,
-      endpointSecrets: secrets, before: before)
+      endpointSecrets: secrets, before: before,
+      preservationFacts: try AgentProtocolFoundationFixture.archiveFacts(raw))
     var failure: (any Error)?
     do { try await body(fixture) } catch {
       let text = String(describing: error)
@@ -337,7 +340,7 @@ import WorkspaceProtocol
     let purpose = header["purpose"] as? String == "preMigration"
     #expect(purpose)
     let migrations = try Migrator.recorded(f.raw)
-    if migrations.count == 14 {
+    if migrations.count == 16 {
       #expect(header["protocolSchema"] as? String == "generation_epochs_v1")
     } else {
       #expect(header["protocolSchema"] == nil)
@@ -478,10 +481,19 @@ import WorkspaceProtocol
       #expect(
         recorded == Self.canonicalNine + [
           "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
-          "0014_agent_protocol",
+          "0014_connection_commands", "0015_density", "0016_agent_protocol",
         ])
       let after = try Self.snapshot(f.raw)
+      let source = try AgentProtocolFoundationFixture.preservationPrefix(
+        AgentProtocolFoundationFixture.ledgerNames(f.before.rows), expectedCount: 9)
+      try AgentProtocolFoundationFixture.requireNativeJSONRetained(
+        f.preservationFacts,
+        after: AgentProtocolFoundationFixture.archiveFacts(f.raw),
+        tables: Array(f.before.rows.keys).filter { $0 != "changes" })
       for (table, expected) in f.before.rows {
+        try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+          f.raw, source: source,
+          table: table, originalRows: expected)
         let currentTable = AgentProtocolFoundationFixture.currentTable(old: table)
         let expectedRows = try expected.map { text -> String in
           let object = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
@@ -492,7 +504,7 @@ import WorkspaceProtocol
           else { throw FixtureFailure.invalidRecord }
           if table == "connections" {
             for name in [
-              "peerProfile", "agentId", "authMode", "authHeaderName", "protocolRetiredAt",
+              "commands", "peerProfile", "agentId", "authMode", "authHeaderName", "protocolRetiredAt",
               "protocolRetiredReason",
             ] {
               object.removeValue(forKey: name)
@@ -506,7 +518,7 @@ import WorkspaceProtocol
         }.sorted()
         let valuesRetained =
           table == Migrator.table
-          ? Set(expected).isSubset(of: Set(rows)) && rows.count == expected.count + 5 : rows == expectedRows
+          ? Set(expected).isSubset(of: Set(rows)) && rows.count == expected.count + 7 : rows == expectedRows
         if table == Migrator.table {
           let addedNames = try Set(rows).subtracting(expected).map { text in
             let row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
@@ -516,7 +528,7 @@ import WorkspaceProtocol
             Set(addedNames)
               == Set([
                 "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
-                "0014_agent_protocol",
+                "0014_connection_commands", "0015_density", "0016_agent_protocol",
               ]))
         }
         #expect(valuesRetained, "Original values changed for \(table)")

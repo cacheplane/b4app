@@ -73,6 +73,7 @@ const TABLES: [TableSpec; 10] = [
             "environmentId",
             "capabilities",
             "models",
+            "commands",
             "status",
             "authStatus",
             "createdAt",
@@ -196,6 +197,7 @@ const TABLES: [TableSpec; 10] = [
             "quietThreads",
             "showArchived",
             "updatedAt",
+            "density",
         ],
         parent: None,
     },
@@ -568,7 +570,8 @@ mod tests {
                 "arrangement",
                 "quietThreads",
                 "showArchived",
-                "updatedAt"
+                "updatedAt",
+                "density"
             ]
         );
         assert_eq!(SYNCED_TABLES.last(), Some(&"viewSettings"));

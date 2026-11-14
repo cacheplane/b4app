@@ -8,7 +8,7 @@ import WorkspaceProtocol
 
 /// Only real private PostgreSQL storage; no account, service, provider, listener or adapter starts.
 @Suite(.serialized) struct AgentProtocolProfileSchemaTests {
-  private static let migration = "0014_agent_protocol"
+  private static let migration = "0016_agent_protocol"
   private static let profileColumns = [
     "peerProfile", "agentId", "authMode", "authHeaderName", "protocolRetiredAt", "protocolRetiredReason",
   ]
@@ -103,6 +103,7 @@ import WorkspaceProtocol
         VALUES ('thread-old', 'Deliberately unsent draft', 'updated');
 
       """)
+    _ = try AgentProtocolFoundationFixture.preservationPrefix(c, expectedCount: 9)
     try body(
       Fixture(
         endpoint: endpoint, raw: c, backup: root + "/backups/" + endpoint.database,
@@ -209,21 +210,38 @@ import WorkspaceProtocol
   }
   private static func assertOldRows(_ fixture: Fixture, allowNewRows: Bool = false) throws {
     let after = try snapshot(fixture.raw)
+    let source = try AgentProtocolFoundationFixture.preservationPrefix(
+      AgentProtocolFoundationFixture.ledgerNames(fixture.before.rows), expectedCount: 9)
+    try AgentProtocolFoundationFixture.requireNativeJSONRetained(
+      fixture.archiveFacts,
+      after: AgentProtocolFoundationFixture.archiveFacts(fixture.raw),
+      tables: Array(fixture.before.rows.keys).filter { $0 != "changes" })
     #expect(try Migrator.recorded(fixture.raw) == AgentProtocolFoundationFixture.migrations)
     for (table, before) in fixture.before.rows {
+      try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+        fixture.raw, source: source,
+        table: table, originalRows: before)
       let currentTable = AgentProtocolFoundationFixture.currentTable(old: table)
       let normalizedBefore = try before.map { text in
         let row = try #require(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
         return try normalized(AgentProtocolFoundationFixture.currentRow(table: table, row: row))
       }
+      let introduced = AgentProtocolFoundationFixture.projectionColumns(after: source, table: table)
+      let originalIDs = try Set(
+        introduced.isEmpty
+          ? [] : before.map { try AgentProtocolFoundationFixture.rowIdentifier($0, key: "id") })
       let normalizedAfter = try (after.rows[currentTable] ?? []).map { text in
         var row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
-        if table == "connections" { for column in profileColumns { row.removeValue(forKey: column) } }
+        if !introduced.isEmpty,
+          originalIDs.contains(try AgentProtocolFoundationFixture.rowIdentifier(text, key: "id"))
+        {
+          for column in introduced { row.removeValue(forKey: column) }
+        }
         return try normalized(row)
       }
       if table == Migrator.table {
         #expect(Set(normalizedBefore).isSubset(of: Set(normalizedAfter)))
-        #expect(normalizedAfter.count == before.count + 5)
+        #expect(normalizedAfter.count == before.count + 7)
         let addedNames = try Set(normalizedAfter).subtracting(normalizedBefore).map { text in
           let row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
           return try #require(row["name"] as? String)
@@ -232,7 +250,7 @@ import WorkspaceProtocol
           Set(addedNames)
             == Set([
               "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
-              "0014_agent_protocol",
+              "0014_connection_commands", "0015_density", "0016_agent_protocol",
             ]))
       } else if allowNewRows {
         #expect(Set(normalizedBefore).isSubset(of: Set(normalizedAfter)))
@@ -240,6 +258,14 @@ import WorkspaceProtocol
         #expect(normalizedBefore.sorted() == normalizedAfter.sorted())
       }
     }
+    #expect(
+      try fixture.raw.execute(
+        #"SELECT 1 FROM connections WHERE id IN ('legacy-b4','codex-old','claude-old') AND models IS NOT NULL"#
+      ).rows.isEmpty)
+    #expect(
+      try fixture.raw.execute(
+        #"SELECT 1 FROM threads WHERE id='thread-old' AND (model IS NOT NULL OR permission IS NOT NULL)"#
+      ).rows.isEmpty)
     #expect(
       try fixture.raw.execute(
         #"SELECT 1 FROM "connections" WHERE "id" IN ('legacy-b4','codex-old','claude-old') AND ("peerProfile" IS NOT NULL OR "agentId" IS NOT NULL OR "authMode" IS NOT NULL OR "authHeaderName" IS NOT NULL OR "protocolRetiredAt" IS NOT NULL OR "protocolRetiredReason" IS NOT NULL)"#

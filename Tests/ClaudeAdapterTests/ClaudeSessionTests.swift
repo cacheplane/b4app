@@ -167,7 +167,7 @@ func values(of flag: String, in argv: [String]) -> [String] {
     #expect(finished.nativeIds["threadId"] == ref.nativeSessionId)
     #expect(finished.nativeIds["turnId"] == receipt.nativeTurnId)
     let kinds = await rig.collector.events.map(\.kind).filter {
-      $0 != .turnStateChanged && $0 != .usageChanged
+      $0 != .turnStateChanged && $0 != .usageChanged && $0 != .commandsChanged
     }
     #expect(kinds == [.messageStarted, .messageDelta, .messageDelta, .messageCompleted, .turnFinished])
     let completed = await rig.collector.events.first { $0.kind == .messageCompleted }
@@ -458,6 +458,51 @@ func values(of flag: String, in argv: [String]) -> [String] {
       $0.kind == .connectionChanged && $0.payload["transport"]?.stringValue == "disconnected"
     }
     #expect(exits.isEmpty)
+    await rig.adapter.dispose()
+  }
+
+  // MARK: Commands
+
+  @Test func aStartedSessionReportsItsCommands() async throws {
+    let rig = try Rig()
+    _ = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
+    let event = try await rig.collector.waitFor { $0.kind == .commandsChanged }
+    let commands = try #require(try event.payload["commands"]?.decode([RuntimeCommand].self))
+    // The entry no composer token can spell is dropped; a description keeps its first line.
+    #expect(commands.map(\.name) == ["context", "compact", "superpowers:brainstorming"])
+    #expect(commands[1].description == "Summarize the conversation so far")
+    #expect(commands[1].argumentHint == "[instructions]")
+    #expect(commands[0].argumentHint == nil)
+    #expect(commands[2].aliases == ["brainstorming"])
+    #expect(event.connectionId == "c1")
+    #expect(event.nativeIds.isEmpty)
+    await rig.adapter.dispose()
+  }
+
+  @Test func readsCommandsWithoutSendingAMessage() async throws {
+    let rig = try Rig()
+    let commands = try await rig.adapter.readCommands()
+    #expect(commands.map(\.name) == ["context", "compact", "superpowers:brainstorming"])
+    // One launch, and no user message.
+    #expect(try rig.logLines().filter { $0["commandRead"] != nil }.count == 1)
+    #expect(try rig.launches().isEmpty)
+    #expect(try rig.logLines().allSatisfy { $0["user"] == nil })
+    // The fixture opens its transcript at launch; nothing was written to it.
+    let written = FileManager.default.enumerator(atPath: rig.projects)?.compactMap { $0 as? String } ?? []
+    for file in written where file.hasSuffix(".jsonl") {
+      #expect(try Data(contentsOf: URL(fileURLWithPath: rig.projects + "/" + file)).isEmpty)
+    }
+    await rig.adapter.dispose()
+  }
+
+  /// As 2.1.282 answers a local command live: one synthetic message, no inference, a plain result.
+  @Test func aCommandSentAsAMessageRunsAsATurn() async throws {
+    let rig = try Rig()
+    let ref = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
+    try await rig.completedTurn(ref, "/context")
+    let completed = await rig.collector.events.first { $0.kind == .messageCompleted }
+    #expect(completed?.payload["item"]?["text"]?.stringValue?.hasPrefix("## Context Usage") == true)
+    #expect(await rig.collector.events.filter { $0.kind == .messageCompleted }.count == 1)
     await rig.adapter.dispose()
   }
 }

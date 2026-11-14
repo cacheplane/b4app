@@ -233,18 +233,22 @@ struct EnvironmentHistoryGuardTests {
       (name: $0.deletingPathExtension().lastPathComponent, bytes: try Data(contentsOf: $0))
     }
     let files = try Migrator.files()
-    #expect(raw.count == 14)
+    #expect(raw.count == 16)
     #expect(files.map(\.name) == raw.map(\.name))
     #expect(try files.map(\.sql) == raw.map { try #require(String(data: $0.bytes, encoding: .utf8)) })
     let eleven = try #require(raw.first { $0.name == "0011_environments" })
     let twelve = try #require(raw.first { $0.name == "0012_app_folders" })
     let thirteen = try #require(raw.first { $0.name == "0013_view_settings" })
+    let fourteen = try #require(raw.first { $0.name == "0014_connection_commands" })
+    let fifteen = try #require(raw.first { $0.name == "0015_density" })
     func digest(_ bytes: Data) -> String {
       SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
     }
     #expect(digest(eleven.bytes) == "27e0b795663bb2a85922b0b7637cd6764c12bf3ee6e69913398c080528f58386")
     #expect(digest(twelve.bytes) == "0bd9a0cb2e6376676f3ddeaab81a4d9d1cdbffbfea7cb6a2c4395339583067fb")
     #expect(digest(thirteen.bytes) == "ed8a49979665650eb82a218f942ac1a3fd5e5b97e37e5b21cae2d252a313e6c3")
+    #expect(digest(fourteen.bytes) == "d7bedf707fea9b87e122c408953c8f49e74b9f18deb06092b7443df934c576f6")
+    #expect(digest(fifteen.bytes) == "c992cb5920df5e323009303a7c8bcc026a43abe08edddc1d4c4f0af5a8f6d2a4")
     #expect(
       try EnvironmentHistoryMigrationGuard.checkedSQL(eleven.bytes)
         == files.first { $0.name == eleven.name }?.sql)
@@ -257,7 +261,7 @@ struct EnvironmentHistoryGuardTests {
     #expect(throws: WorkspaceError.self) {
       try StoreMigrationResource(name: eleven.name, bytes: Data([0xff])).sql()
     }
-    #expect(files.last?.name == "0014_agent_protocol")
+    #expect(files.last?.name == "0016_agent_protocol")
   }
 
   @Test func opaqueAndStructuralHistoryStayDistinct() throws {
@@ -885,7 +889,8 @@ extension EnvironmentHistoryGuardTests {
       )
       #expect(
         try Migrator.migrate(owner) == [
-          "0011_environments", "0012_app_folders", "0013_view_settings", "0014_agent_protocol",
+          "0011_environments", "0012_app_folders", "0013_view_settings", "0014_connection_commands",
+          "0015_density", "0016_agent_protocol",
         ])
       #expect(try historyPreserved(owner))
     }

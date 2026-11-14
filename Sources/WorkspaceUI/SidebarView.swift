@@ -132,7 +132,7 @@ struct SidebarView: View {
       .toolbar {
         ToolbarItemGroup(placement: .topBarTrailing) {
           MoreMenu(model: model)
-          Button("Search", systemImage: "magnifyingglass") { model.showSearch = true }
+          Button("Search", systemImage: "magnifyingglass") { model.presentPalette(.find) }
             .accessibilityIdentifier("list-search")
         }
       }
@@ -217,6 +217,8 @@ struct SidebarActionRow: View {
 enum ViewOptions {
   static let arrangements = ViewSettings.Arrangement.allCases
   static let quietThreads = ViewSettings.QuietThreads.allCases
+  /// The heading of the three ways of drawing the threads that do not need the owner.
+  static let quietThreadsTitle = "Threads that don\u{2019}t need you"
 
   static func title(_ arrangement: ViewSettings.Arrangement) -> String {
     switch arrangement {
@@ -227,18 +229,10 @@ enum ViewOptions {
 
   static func title(_ quietThreads: ViewSettings.QuietThreads) -> String {
     switch quietThreads {
-    case .small: return "Small"
-    case .tiny: return "Tiny"
+    case .shown: return "Shown"
     case .collapsed: return "Collapsed"
     case .hidden: return "Hidden"
     }
-  }
-
-  /// The secondary line under an item that this device draws as something else (decision 5).
-  static func note(_ quietThreads: ViewSettings.QuietThreads, onPhone: Bool) -> String? {
-    guard onPhone else { return nil }
-    let stored = ViewSettings(quietThreads: quietThreads)
-    return stored.shown(on: .phone).quietThreads == quietThreads ? nil : "Shown collapsed on this device"
   }
 
   /// "By environment" draws every thread in its environment's group, so how quiet threads are drawn does
@@ -275,18 +269,11 @@ struct MoreMenu: View {
         ForEach(ViewOptions.arrangements, id: \.self) { Text(ViewOptions.title($0)).tag($0) }
       }
       .pickerStyle(.inline)
-      Picker("Threads that don\u{2019}t need you", selection: quietThreads) {
-        ForEach(ViewOptions.quietThreads, id: \.self) { option in
-          // A second text is the menu item's secondary line.
-          VStack(alignment: .leading) {
-            Text(ViewOptions.title(option))
-            if let note = ViewOptions.note(option, onPhone: model.relaysThroughHub) { Text(note) }
-          }
-          .tag(option)
-        }
+      Picker(ViewOptions.quietThreadsTitle, selection: quietThreads) {
+        ForEach(ViewOptions.quietThreads, id: \.self) { Text(ViewOptions.title($0)).tag($0) }
       }
       .pickerStyle(.inline)
-      .disabled(ViewOptions.quietThreadsDisabled(model.shownSettings))
+      .disabled(ViewOptions.quietThreadsDisabled(model.viewSettings))
       Divider()
       Toggle("Show archived", isOn: showArchived)
       connectionPicker

@@ -1141,7 +1141,7 @@ These columns merge last-writer-wins: `threads.title`, `threads.pinned`, `thread
 `threads.readTurnId`, `threads.environmentId`, `threads.userDeletedAt`, `threads.model`,
 `threads.permission`, `environments.name`, `drafts.threadId`, `drafts.text`, `drafts.updatedAt`,
 `viewSettings.id`, `viewSettings.arrangement`, `viewSettings.quietThreads`,
-`viewSettings.showArchived`, `viewSettings.updatedAt`. The hub remembers, per row and column, the clock of the change that last set
+`viewSettings.showArchived`, `viewSettings.updatedAt`, `viewSettings.density`. The hub remembers, per row and column, the clock of the change that last set
 it (`column_clocks`); an `update` of such a column applies only when its clock is greater, and
 an `insert` counts as setting every such column it carries, at its clock. A change that loses is
 still recorded in the feed (it is history) but writes nothing. Every other column applies
@@ -1151,7 +1151,7 @@ A `macos` device may write any column. An `ios` or `cli` device may only `update
 columns, and `insert` rows of `drafts` and `viewSettings`: `threads.title`, `threads.pinned`, `threads.archived`,
 `threads.readTurnId`, `threads.userDeletedAt`, `threads.model`, `threads.permission`, `environments.name`,
 `drafts.threadId`, `drafts.text`, `drafts.updatedAt`, `viewSettings.id`, `viewSettings.arrangement`,
-`viewSettings.quietThreads`, `viewSettings.showArchived`, `viewSettings.updatedAt`. Anything else (including every `delete`) is rejected with
+`viewSettings.quietThreads`, `viewSettings.showArchived`, `viewSettings.updatedAt`, `viewSettings.density`. Anything else (including every `delete`) is rejected with
 `column_not_writable`. A draft is cleared by setting `text` to `""`, never by deleting it. A thread is
 deleted by setting `userDeletedAt` (never cleared), and its row stays. The `view` row of
 `viewSettings` is never deleted. Its `rowId` is always `view` (`invalid_row_id` otherwise).
@@ -1285,7 +1285,7 @@ other fourteen applied; do not paste it whole.
 | --- | --- | --- |
 | `deviceSeq` | integer | The change's sequence on the device that wrote it: unique per device, increasing. The idempotency key together with the authenticated device. |
 | `wall` | integer | Milliseconds since the epoch on the origin device. |
-| `table` | string | One of `connections`, `environments`, `environmentFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`, `connectionUsage`, `viewSettings`. Any other name (including `localServers`, which never syncs) is recorded and skipped. `connectionUsage` (migration 0010) holds a connection's latest plan reading and B4 token totals as JSON documents (`reading`, `tokens`); only a Mac writes it. `viewSettings` (migration 0019) holds how the user's thread list is arranged, one row per user; see *View settings* below. |
+| `table` | string | One of `connections`, `environments`, `environmentFolders`, `threads`, `turns`, `displayItems`, `runtimeRequests`, `drafts`, `connectionUsage`, `viewSettings`. Any other name (including `localServers`, which never syncs) is recorded and skipped. `connectionUsage` (migration 0010) holds a connection's latest plan reading and B4 token totals as JSON documents (`reading`, `tokens`); only a Mac writes it. `viewSettings` (migration 0019, `density` added by 0022) holds how the user's thread list is arranged, one row per user; see *View settings* below. |
 | `rowId` | string | The row's key: its `id`, `threadId` for `drafts`, or `connectionId` for `connectionUsage`. Client-chosen text; unique per org within a table (`viewSettings`: always `view`, one row per user). |
 | `op` | `"insert"`, `"update"`, or `"delete"` | |
 | `column` | string or `null` | For `update`, the column being set; otherwise absent or `null`. |
@@ -1309,9 +1309,10 @@ table under any other row id is rejected with `invalid_row_id`. Its columns:
 | --- | --- | --- |
 | `id` | text | `view`. |
 | `arrangement` | text | `needsYouFirst` (the default) or `byEnvironment`. |
-| `quietThreads` | text | `small` (the default), `tiny`, `collapsed`, or `hidden`. |
+| `quietThreads` | text | `shown` (the default), `collapsed`, or `hidden`. `small` and `tiny` are old values every current reader understands (`small` reads as `shown`; `tiny` reads as `shown`, and as dense when the row has no `density`). |
 | `showArchived` | boolean | Default `false`. |
 | `updatedAt` | text | When a device last changed the row (ISO 8601). |
+| `density` | text | `normal` (the default) or `dense`. Added by migration 0022. |
 
 Any device writes it: a phone may `insert` the row and `update` any of its columns, and every
 column merges by clock, so two devices that each insert `view` before seeing the other's end
@@ -1322,7 +1323,10 @@ device does not know reads as the default on that device, and the stored value i
 The change log keeps the id `view`, as pushed, so a device that replays the feed sees the same
 settings. A snapshot leaves out any `viewSettings` row that is not the reader's own, and returns
 the reader's as `view`. Migration 0020 moved the rows a hub already held to `view:<userId>`,
-with their column clocks.
+with their column clocks. Migration 0022 added `density` and split the old four-way
+`quietThreads` of the rows a hub already held: `small` became `normal` and `shown`, `tiny` became
+`dense` and `shown`, and `collapsed` and `hidden` kept their value with `normal`. Each `density` it
+set carries the clock of the row's `quietThreads`, when it had one; the change log was left as it was.
 
 ### `StoredChange` (the feed shape)
 

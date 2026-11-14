@@ -1,7 +1,7 @@
 import Foundation
 import WorkspaceProtocol
 
-/// The account's view settings (migration 0013): one synced row, id `ViewSettings.rowId`.
+/// The account's view settings (migrations 0013 and 0015): one synced row, id `ViewSettings.rowId`.
 extension WorkspaceDatabase {
   /// The stored settings, read leniently: no row, a null, or a value this build does not know is the
   /// field's default. Writes nothing.
@@ -11,18 +11,33 @@ extension WorkspaceDatabase {
 
   /// Write the given fields and `updatedAt`, inserting the row when it is missing; a field not given
   /// keeps its stored value, known or not. With no field given nothing is written. Returns the result.
+  ///
+  /// Setting `quietThreads` without `density` on a stored row whose old value implied a density
+  /// (`tiny`, with no density stored: `ViewSettings.impliedDensity`) also writes that density, so the
+  /// rows keep their size when the old value is replaced. A stored density this build does not know is
+  /// never replaced that way.
   @discardableResult
   public func setViewSettings(
     arrangement: ViewSettings.Arrangement? = nil, quietThreads: ViewSettings.QuietThreads? = nil,
-    showArchived: Bool? = nil
+    showArchived: Bool? = nil, density: ViewSettings.Density? = nil
   ) throws -> ViewSettings {
     var fields: [(column: String, param: String?)] = []
     if let arrangement { fields.append(("arrangement", arrangement.rawValue)) }
     if let quietThreads { fields.append(("quietThreads", quietThreads.rawValue)) }
     if let showArchived { fields.append(("showArchived", showArchived ? "true" : "false")) }
+    if let density { fields.append(("density", density.rawValue)) }
     guard !fields.isEmpty else { return try viewSettings() }
     fields.append(("updatedAt", Timestamp.now()))
     return try write { c in
+      if quietThreads != nil, density == nil,
+        let stored = try c.execute(
+          "SELECT \"quietThreads\", \"density\" FROM \"viewSettings\" WHERE \"id\" = $1", [ViewSettings.rowId]
+        ).rows.first,
+        let implied = ViewSettings.impliedDensity(
+          storedQuietThreads: stored.text("quietThreads"), storedDensity: stored.text("density"))
+      {
+        fields.append(("density", implied.rawValue))
+      }
       // One statement, so two first writes cannot both insert. A conflict fires only the update trigger,
       // which logs the columns whose value changed.
       let names = fields.map { Rows.quote($0.column) }
@@ -44,6 +59,6 @@ extension WorkspaceDatabase {
     else { return ViewSettings() }
     return ViewSettings(
       arrangement: row.text("arrangement"), quietThreads: row.text("quietThreads"),
-      showArchived: row.text("showArchived").map { $0 == "t" })
+      showArchived: row.text("showArchived").map { $0 == "t" }, density: row.text("density"))
   }
 }

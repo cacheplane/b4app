@@ -59,10 +59,18 @@ import WorkspaceProtocol
       INSERT INTO "drafts" ("threadId", "text", "updatedAt")
         VALUES ('thread-old', 'Deliberately unsent draft', 'updated');
       """)
+    _ = try AgentProtocolFoundationFixture.preservationPrefix(c, expectedCount: 9)
+    #expect(try c.execute(#"SELECT 1 FROM connections WHERE models IS NOT NULL"#).rows.isEmpty)
+    #expect(
+      try c.execute(#"SELECT 1 FROM threads WHERE model IS NOT NULL OR permission IS NOT NULL"#).rows.isEmpty)
     return (endpoint, try snapshot(c))
   }
 
-  private func snapshot(_ c: PostgresConnection) throws -> [String: [String]] {
+  private func snapshot(
+    _ c: PostgresConnection,
+    source: AgentProtocolFoundationFixture.PreservationPrefix? = nil,
+    originalRows: [String: [String]] = [:]
+  ) throws -> [String: [String]] {
     var result: [String: [String]] = [:]
     let present = Set(
       try c.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'").rows.compactMap {
@@ -74,13 +82,20 @@ import WorkspaceProtocol
     ] {
       let table =
         present.contains(oldTable) ? oldTable : AgentProtocolFoundationFixture.currentTable(old: oldTable)
+      if let source {
+        let destination = AgentProtocolFoundationFixture.currentTable(old: oldTable)
+        try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+          c, source: source,
+          table: table, originalRows: originalRows[destination] ?? [])
+      }
+      let columns =
+        source.map { AgentProtocolFoundationFixture.projectionColumns(after: $0, table: table) } ?? []
+      let expression = columns.isEmpty ? "to_jsonb(t)" : "to_jsonb(t) - $1::text[]"
+      let parameters: [String?] = columns.isEmpty ? [] : ["{" + columns.joined(separator: ",") + "}"]
       let rows = try c.execute(
-        """
-        SELECT (to_jsonb(t) - ARRAY['peerProfile','agentId','authMode','authHeaderName',
-          'protocolRetiredAt','protocolRetiredReason'])::text AS row
-        FROM \(Rows.quote(table)) t ORDER BY 1
-        """
-      ).rows.compactMap { $0.text("row") }
+        "SELECT (\(expression))::text AS row FROM \(Rows.quote(table)) t ORDER BY 1", parameters
+      )
+      .rows.compactMap { $0.text("row") }
       let destination = AgentProtocolFoundationFixture.currentTable(old: oldTable)
       if present.contains("projects") {
         result[destination] = try rows.map { text in
@@ -108,8 +123,16 @@ import WorkspaceProtocol
     let db = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backupDirectory(endpoint))
     defer { try? db.close() }
-    #expect(try db.appliedMigrations().last == "0014_agent_protocol")
-    #expect(try db.read { try snapshot($0) } == before)
+    #expect(try db.appliedMigrations().last == "0016_agent_protocol")
+    try db.read { raw in
+      #expect(try raw.execute(#"SELECT 1 FROM connections WHERE models IS NOT NULL"#).rows.isEmpty)
+      #expect(
+        try raw.execute(#"SELECT 1 FROM threads WHERE model IS NOT NULL OR permission IS NOT NULL"#).rows
+          .isEmpty)
+    }
+    let prefix = try AgentProtocolFoundationFixture.preservationPrefix(
+      Array(AgentProtocolFoundationFixture.migrations.prefix(9)), expectedCount: 9)
+    #expect(try db.read { try snapshot($0, source: prefix, originalRows: before) } == before)
     let legacy = try #require(try db.connection(id: "legacy-b4"))
     #expect(legacy.kind == .b4)
     #expect(legacy.nativeScope == "https://example.invalid")

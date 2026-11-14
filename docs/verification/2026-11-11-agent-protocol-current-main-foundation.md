@@ -550,3 +550,87 @@ Current finite scopes differ from the prior run: retained-current fails its firs
 The unchanged App-only retry now actually passes all four API build steps and prints four build-success markers at raw6790/11258/20615/25597. Checkout raw124 is the same verified c8bc771d source. Complete App raw is5,391,786bytes/SHA256 `4962863f33313f550575e78114fbca8f0883b5dba80dadde660357ffac35a285`. All seven latest outcomes are complete (five PASS, Package/recovery FAIL), and all five actual detailed logs are rehashed/preserved. The original capacity cancellations/404s remain separate; six copied completed records earn no new execution credit. Root managed preservation SHA256 is `3290a730fd326667230384343dfb0196fd223b0e10365aa189bf94936f64c08f`. This closes evidence preservation only.
 
 Fresh independent T11 SOURCE QUALITY passes with zero blockers after a complete4313-line candidate read, full relevant production/SQL/plan review and27 independent static checks. Root reads the complete14,334-byte review,4997-byte scope and3587-byte checks, verifies all four payloads and971 input pins, and accepts it at SHA256 `c52cc77cbd4942a84ae8645858a5839e2436216d22541d7cef339e1a7bf7e4d4`. New24 compilation/native behavior remains unobserved; source review cannot transfer current22 execution. Main c762 integration, subsequent full combined-tree managed qualification and all full-App/release gates remain open.
+
+
+## Published command integration source record (2026-11-13)
+
+Source implementation incorporates the published command train while retaining the staged
+protocol foundation. Current allocations are Store15 and Hub22, after immutable commands14/21
+and the exact published phone Mirror9. Protocol Mirror10 remains documentation only. The
+unpublished client decision is D-221; published D-220 remains the phone composer-focus decision.
+Historical private14/21 labels and all earlier receipts above retain their historical identities.
+
+The source contract separates closed archive prefixes13/14/15 and keeps format4 and the exact
+`generation_epochs_v1` marker at15. Preservation fixtures validate original literal prefixes and
+native catalogs, prove introduced target cells are SQL NULL on retained original IDs before
+projection, and compare source-existing opaque JSON through PostgreSQL text and keyed NULL
+facts. The genuine published14 fixture includes populated models/choices/commands and sensitivity
+controls; its new protocol fields remain NULL and private tables empty by that fixture contract.
+The empty current15 account fixture inverse explicitly removes commands14 only after the existing
+quiescence, emptiness, catalog and ledger guards, before the full canonical9 and8 comparisons.
+
+Status: source implemented; compiler, formatting, native and combined-tree CI qualification are
+UNOBSERVED in this source-author pass. This record claims no runtime PASS and transfers no
+historical native or EF results to the combined source. Root source/spec and independent source
+quality reviews, then the separately owned qualification gates, remain required. No production
+floor, owner/auth execution guard, activation, publication or coordinated release was authorized
+or performed by this source integration.
+
+
+### Root source review and static checks (2026-11-13)
+
+Root completed the combined source specification review against main `b4171ae2` and the
+unchanged complete24-method proof source. Three new startup-test issues were corrected before
+qualification: explicit throwing-call handling, awaited initial-harness cleanup on setup failure,
+and populated owner-field roundtrip coverage. The source-review receipt is SHA256
+`e72e6d90606c524515328e67513116c959e3de5df5661c50b1785482ba3e3a8e`.
+
+Scoped installed Swift formatting completed; all30 scoped files retain matching normalized code
+tokens and literal payloads under the separate static text check (SHA256
+`74194372f772d2be87328fdea3840bc9b5a7f35339acdc3d5c2434034e54249a`). This is not compiler
+or module-freshness evidence. Full strict Swift format lint, offline Rust1.93.1 format check,
+actionlint and diff checks pass. The documentation check reports211 decisions and130 verification
+records; the unpublished allocation note is nested in its one decision entry.
+
+Fresh independent review of the formatted source remains pending. No integration commit, current24
+compiler/native qualification, whole-App acceptance, activation, SDK publication or new production
+deployment is claimed. Old EF22 evidence remains historical; the combined candidate still needs
+24 aggregate plus24 dedicated individual passes, six compiler controls, all seven managed outcomes,
+five actual detailed raw logs and a new source-bound failure inventory.
+
+
+### Published density integration: source review and static checks (2026-11-13)
+
+This source candidate integrates main `846c633f` over the preserved protocol foundation.
+Published Store commands14/density15, Hub commands21/density22 and the complete phone Mirror10
+remain unchanged. Only unpublished protocol resources move to Store16 and Hub23; future protocol
+Mirror11 remains documentation only. Archive format4 and `generation_epochs_v1` are unchanged;
+only prefix16 carries the protocol marker. Binary support2 and production minimum1 remain.
+The current unpublished decisions are protocol D-225 and relay D-224. D-223 is reserved by
+another open pull request; published decision numbers and all earlier dated receipts remain intact.
+
+Root completed the full combined source specification review, including literal prefix8–16
+admission, distinct native migration versus raw restore density oracles, SQL NULL/native JSON
+preservation, empty-account inverse guards, both actual deferred migration-failure chronologies,
+and the published density test's explicit private backup and exception-safe close. A restore-refusal
+comparison was corrected to its own original snapshot before final source acceptance. The final
+source-specification receipt is SHA256
+`ad5ac9386b090ccd6eb481f69bf76f5f9ac239e2290405bc9426a021325abda1`.
+
+Root scoped Swift formatting to28 integration files; seven changed mechanically. The complete
+format diff was read, and a separate static text comparison retains normalized code tokens and
+literal payloads in all28 files (SHA256
+`44dd35e322f8012c3e071e0a6162a9fccfd6a243ea403c4c2acb91d149314b3f`). This is not a compiler,
+SwiftSyntax or type-check result. Full strict Swift format lint, pinned offline Rust1.93.1 format
+check and actionlint pass. The complete24-method owned-proof file, compiler helper/workflow and
+all other protected inputs remain exact. The frozen source inventory contains478 Swift files,
+including Apps and Package.swift; older451-file package inventories retain their historical scope.
+
+Fresh independent review of the final formatted source is the next gate. No integration commit
+or push, current24 compiler/native pass, whole-App acceptance, SDK publication, coordinated
+activation or new production deployment is claimed. The earlier EF22 run remains five passing
+and two failing jobs, with140 issues and two recovery failures still open. Current24 still needs
+48 individual aggregate/dedicated passes, six compiler controls, all seven actual managed outcomes,
+five complete detailed logs, all four App builds and a new source-bound failure census. Task5
+source and SDK PR1131/npm remain held. Later main `acef750c` was read as a seven-path UI/docs delta;
+it is not imported into this frozen candidate and earns no current native qualification.

@@ -24,7 +24,9 @@ enum WorkspaceArchive {
   static let migrations = [
     "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay", "0006_usage",
     "0007_connection_usage", "0008_thread_delete", "0009_thread_runtime_choice", "0010_owned_rows",
-    "0011_environments", "0012_app_folders", "0013_view_settings", "0014_agent_protocol",
+    "0011_environments", "0012_app_folders", "0013_view_settings", "0014_connection_commands",
+    "0015_density",
+    "0016_agent_protocol",
   ]
   enum Rejection: Error { case invalid, future, joined, notEmpty }
   struct Schema {
@@ -33,7 +35,7 @@ enum WorkspaceArchive {
     let context: [String]
     var tables: [String] { context + data }
   }
-  // Fixed inventory from bundled0001–0014 column declarations; no SQL parser runs in production.
+  // Fixed inventory from bundled0001–0016 column declarations; no SQL parser runs in production.
   // Missing/unknown columns fail closed rather than silently discarding owner obligations.
   private static let currentColumns: [String: String] = [
     "appFolders": "path threadId createdAt",
@@ -41,7 +43,7 @@ enum WorkspaceArchive {
     "columnClocks": "table rowId column hlc",
     "connectionUsage": "connectionId reading tokens updatedAt",
     "connections":
-      "id kind label enabled profileRevision target routeKey b4Mode localServerId authReference nativeScope capabilities status authStatus createdAt updatedAt environmentId models peerProfile agentId authMode authHeaderName protocolRetiredAt protocolRetiredReason",
+      "id kind label enabled profileRevision target routeKey b4Mode localServerId authReference nativeScope capabilities status authStatus createdAt updatedAt environmentId models commands peerProfile agentId authMode authHeaderName protocolRetiredAt protocolRetiredReason",
     "devices": "id name createdAt",
     "displayItems": "id threadId turnId nativeItemId role type payload sequence provenance createdAt",
     "drafts": "threadId text updatedAt",
@@ -74,7 +76,7 @@ enum WorkspaceArchive {
     "tokenUsage": "turnId connectionId recordedAt totalTokens",
     "turns": "id threadId operationId nativeTurnId inputRef status submission outcome createdAt updatedAt",
     "usageReadings": "connectionId reading observedAt",
-    "viewSettings": "id arrangement quietThreads showArchived updatedAt",
+    "viewSettings": "id arrangement quietThreads showArchived updatedAt density",
   ]
   private static let tableSince: [String: Int] = [
     "appFolders": 12,
@@ -89,13 +91,13 @@ enum WorkspaceArchive {
     "localServers": 1,
     "environmentFolders": 4,
     "environments": 4,
-    "protocolGrantSecrets": 14,
-    "protocolGrants": 14,
-    "protocolHistoryAnchors": 14,
-    "protocolOperations": 14,
-    "protocolPromptAnswers": 14,
-    "protocolRunSegments": 14,
-    "protocolSubscriptions": 14,
+    "protocolGrantSecrets": 16,
+    "protocolGrants": 16,
+    "protocolHistoryAnchors": 16,
+    "protocolOperations": 16,
+    "protocolPromptAnswers": 16,
+    "protocolRunSegments": 16,
+    "protocolSubscriptions": 16,
     "runtimeRequests": 1,
     "schemaMigrations": 0,
     "settings": 5,
@@ -108,9 +110,11 @@ enum WorkspaceArchive {
   ]
   private static let columnSince: [String: [String: Int]] = [
     "changes": ["hlc": 4],
+    "viewSettings": ["density": 15],
     "connections": [
-      "environmentId": 5, "models": 9, "peerProfile": 14, "agentId": 14, "authMode": 14, "authHeaderName": 14,
-      "protocolRetiredAt": 14, "protocolRetiredReason": 14,
+      "environmentId": 5, "models": 9, "commands": 14, "peerProfile": 16, "agentId": 16, "authMode": 16,
+      "authHeaderName": 16,
+      "protocolRetiredAt": 16, "protocolRetiredReason": 16,
     ],
     "hubLink": ["ownedAs": 10],
     "threads": ["environmentId": 4, "readTurnId": 4, "userDeletedAt": 8, "model": 9, "permission": 9],
@@ -214,7 +218,7 @@ enum WorkspaceArchive {
     guard try Migrator.files().map(\.name) == migrations else { throw Rejection.future }
     let schema = try schema(Migrator.recorded(c))
     guard present == Set(schema.tables) else { throw Rejection.invalid }
-    if schema.migrations.count == 14 { try Migrator.validateProtocolGenerationSchema(c) }
+    if schema.migrations.count == 16 { try Migrator.validateProtocolGenerationSchema(c) }
     for table in schema.tables {
       let actual = Set(
         try c.execute(
@@ -239,7 +243,7 @@ enum WorkspaceArchive {
       "format": format, "version": version, "at": Timestamp.now(), "purpose": purpose,
       "migrations": schema.migrations, "requiredTables": schema.data, "sourceContextTables": schema.context,
     ]
-    if schema.migrations.count == 14 { header["protocolSchema"] = protocolSchema }
+    if schema.migrations.count == 16 { header["protocolSchema"] = protocolSchema }
     try line(header)
     try headerWritten?()
     var counts = Dictionary(uniqueKeysWithValues: schema.tables.map { ($0, 0) })
@@ -299,7 +303,7 @@ enum WorkspaceArchive {
       var headerFields: Set<String> = [
         "format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables",
       ]
-      if schema.migrations.count == 14 {
+      if schema.migrations.count == 16 {
         headerFields.insert("protocolSchema")
         guard header.object["protocolSchema"] as? String == protocolSchema else { throw Rejection.invalid }
       }
@@ -341,6 +345,9 @@ enum WorkspaceArchive {
       let fields = try line.fields(in: rowRange)  // duplicate provided columns refuse, not last-value-wins
       guard Set(fields.keys) == Set(row.keys) else { throw Rejection.invalid }
       try representable(row)
+      if table == "viewSettings", let density = row["density"] {
+        guard density is String || density is NSNull else { throw Rejection.invalid }
+      }
       if let source {
         guard Set(row.keys) == (try columns(table, at: source.migrations.count)) else {
           throw Rejection.invalid
@@ -352,10 +359,11 @@ enum WorkspaceArchive {
         }
       } else {
         let historical = table == "projects" || table == "projectFolders" || row["projectId"] != nil
-        let count = historical ? 10 : (table == "appFolders" ? 12 : (table == "viewSettings" ? 13 : 11))
+        let count = historical ? 10 : (table == "appFolders" ? 12 : (table == "viewSettings" ? 15 : 11))
         var allowed = try columns(table, at: count)
         if table == "connections" {
-          allowed.formUnion((columnSince["connections"] ?? [:]).filter { $0.value == 14 }.keys)
+          allowed.insert("commands")
+          allowed.formUnion((columnSince["connections"] ?? [:]).filter { $0.value == 16 }.keys)
         }
         guard Set(row.keys).isSubset(of: allowed) else { throw Rejection.invalid }
         let canonical = currentTable(table)
@@ -369,7 +377,7 @@ enum WorkspaceArchive {
         }
         if table == "connections" {
           guard row["kind"] as? String != "agentProtocol" else { throw Rejection.invalid }
-          let newFields = (columnSince["connections"] ?? [:]).filter { $0.value == 14 }.keys
+          let newFields = (columnSince["connections"] ?? [:]).filter { $0.value == 16 }.keys
           for key in newFields {
             if let value = row[key], !(value is NSNull) { throw Rejection.invalid }
           }

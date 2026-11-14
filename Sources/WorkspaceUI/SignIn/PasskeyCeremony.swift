@@ -251,10 +251,12 @@ final class AuthorizationRun: NSObject, ASAuthorizationControllerDelegate,
     preconditionFailure("A sign-in sheet asked for a window while the app has none.")
   }
 
-  /// The key window, else the first visible window that can be a main window; never a hidden one.
+  /// The key window when it can be a main window, else the first visible window that can; never a
+  /// hidden one, and never a panel that only has the keyboard (the palette, which closes when a sheet
+  /// takes it).
   static func anchor() -> ASPresentationAnchor? {
     #if canImport(AppKit)
-      if let key = NSApplication.shared.keyWindow, key.isVisible { return key }
+      if let key = NSApplication.shared.keyWindow, key.isVisible, key.canBecomeMain { return key }
       return NSApplication.shared.windows.first { $0.isVisible && $0.canBecomeMain }
     #else
       let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(

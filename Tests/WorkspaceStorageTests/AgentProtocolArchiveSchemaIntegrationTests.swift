@@ -27,15 +27,15 @@ import Testing
   }
 
   @Test func successorFourteenDeclaresOwnedAsAndAgentProtocolObligations() throws {
-    let schema = try WorkspaceArchive.schema(F.fourteen)
+    let schema = try WorkspaceArchive.schema(F.sixteen)
     #expect(WorkspaceArchive.version == 4)
-    #expect(schema.migrations == F.fourteen)
+    #expect(schema.migrations == F.sixteen)
     #expect(schema.data == F.viewSettingsTables + F.protocolTables)
     #expect(schema.context == ["schemaMigrations", "hubLink"])
     #expect(try WorkspaceArchive.columns("hubLink", at: 12) == F.hubColumns.union(["ownedAs"]))
     #expect(
-      try WorkspaceArchive.columns("connections", at: 14)
-        == F.environmentConnectionColumns.union(F.protocolFields.map { $0.name }))
+      try WorkspaceArchive.columns("connections", at: 16)
+        == F.environmentConnectionColumns.union(["commands"]).union(F.protocolFields.map { $0.name }))
   }
 
   @Test func ownedAsAndProtocolColumnsUseDifferentMigrationOrdinals() throws {
@@ -48,9 +48,9 @@ import Testing
     #expect(try WorkspaceArchive.columns("connections", at: 10) == F.connectionColumns)
     for table in F.protocolTables {
       let before = try WorkspaceArchive.columns(table, at: 13)
-      let after = try WorkspaceArchive.columns(table, at: 14)
+      let after = try WorkspaceArchive.columns(table, at: 16)
       #expect(before.isEmpty, "Protocol table columns must not exist in published13: \(table)")
-      #expect(!after.isEmpty, "Protocol table columns begin in successor14: \(table)")
+      #expect(!after.isEmpty, "Protocol table columns begin in successor16: \(table)")
     }
   }
 
@@ -183,7 +183,7 @@ import Testing
   }
 
   @Test func versionFourValidatesEachSourcePrefixBeforeRelationalMapping() throws {
-    for names in [F.nine, F.ten, F.eleven, F.twelve, F.thirteen, F.fourteen] {
+    for names in [F.nine, F.ten, F.eleven, F.twelve, F.thirteen, F.fourteen, F.fifteen, F.sixteen] {
       let renamed = names.count >= 11
       let dataTables = F.tables(at: names.count)
       let table = renamed ? "environmentFolders" : "projectFolders"
@@ -201,7 +201,7 @@ import Testing
         "format": "b4app-export", "version": 4, "at": "then", "purpose": "preMigration", "migrations": names,
         "requiredTables": dataTables, "sourceContextTables": ["schemaMigrations", "hubLink"],
       ]
-      if names.count == 14 { header["protocolSchema"] = "generation_epochs_v1" }
+      if names.count == 16 { header["protocolSchema"] = "generation_epochs_v1" }
       let footer: [String: Any] = [
         "format": "b4app-export-end", "version": 4, "rows": records.count, "tableRows": counts,
       ]
@@ -213,7 +213,7 @@ import Testing
   }
 
   @Test func versionFourRejectsReferencesFromTheOtherRelationalSchemaFamily() throws {
-    for names in [F.nine, F.ten, F.eleven, F.twelve, F.thirteen, F.fourteen] {
+    for names in [F.nine, F.ten, F.eleven, F.twelve, F.thirteen, F.fourteen, F.fifteen, F.sixteen] {
       let current = names.count >= 11
       let association = current ? "environmentId" : "projectId"
       let wrong = current ? "projectId" : "environmentId"
@@ -349,7 +349,9 @@ private enum ArchiveSchemaIntegrationFixture {
   static let eleven = ten + ["0011_environments"]
   static let twelve = eleven + ["0012_app_folders"]
   static let thirteen = twelve + ["0013_view_settings"]
-  static let fourteen = thirteen + ["0014_agent_protocol"]
+  static let fourteen = thirteen + ["0014_connection_commands"]
+  static let fifteen = fourteen + ["0015_density"]
+  static let sixteen = fifteen + ["0016_agent_protocol"]
   static let environmentTables = preProtocolTables.map {
     $0 == "projects" ? "environments" : ($0 == "projectFolders" ? "environmentFolders" : $0)
   }
@@ -362,7 +364,7 @@ private enum ArchiveSchemaIntegrationFixture {
       count < 11
       ? preProtocolTables
       : (count < 12 ? environmentTables : (count < 13 ? appFolderTables : viewSettingsTables))
-    return base + (count >= 14 ? protocolTables : [])
+    return base + (count >= 16 ? protocolTables : [])
   }
   static var environmentConnectionColumns: Set<String> {
     connectionColumns.subtracting(["projectId"]).union(["environmentId"])
@@ -410,7 +412,7 @@ private enum ArchiveSchemaIntegrationFixture {
       "format": "b4app-export", "version": 4, "at": "then", "purpose": "preMigration", "migrations": names,
       "requiredTables": dataTables, "sourceContextTables": context,
     ]
-    if names.count == 14 { header["protocolSchema"] = "generation_epochs_v1" }
+    if names.count == 16 { header["protocolSchema"] = "generation_epochs_v1" }
     let footer: [String: Any] = [
       "format": "b4app-export-end", "version": 4, "rows": body.count, "tableRows": counts,
     ]
