@@ -142,6 +142,13 @@ struct HintKeyTests {
     }
   #endif
 
+  /// D-226: the Commands row names the slash typed in the palette, and keeps its global key.
+  @MainActor @Test func commandsShowsASlashAndKeepsShiftCommandP() {
+    let commands = CommandCatalog.definition(.commands)
+    #expect(commands.shortcutLabel == "/")
+    #expect(commands.shortcut == KeyboardShortcut("p", modifiers: [.command, .shift]))
+  }
+
   /// Every command's key is drawn from its label, so each label must be keys the caps can draw.
   @MainActor @Test func everyCommandsShortcutIsModifiersThenOnePrintedKey() {
     for label in CommandCatalog.all.compactMap(\.shortcutLabel) {
@@ -502,7 +509,7 @@ struct SelectionMotionTests {
     await model.disconnect()
   }
 
-  /// D-227: the `/` list's rows carry what the palette's do, under the palette's headings.
+  /// D-228: the `/` list's rows carry what the palette's do, under the palette's headings.
   @Test func commandsAreListedUnderThePalettesHeadingsUntilATokenNarrowsThem() async throws {
     let (workspace, _) = try await connected()
     let slash = SlashController(workspace: workspace, target: .thread("quiet"))

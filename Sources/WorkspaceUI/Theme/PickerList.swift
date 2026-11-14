@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The parts the keyboard-driven lists share (D-227): the command palette, the composer's `/` list
+/// The parts the keyboard-driven lists share (D-228): the command palette, the composer's `/` list
 /// and the folder picker draw the same card, section heading, row and footer, so the three read as
 /// one control. Each list keeps its own model and keys; only the drawing is here.
 enum PickerMetrics {

@@ -4,7 +4,7 @@ import WorkspaceProtocol
 #if os(macOS)
   /// Where a new thread starts, on the Mac (the thread list and environments design, "Starting a
   /// thread"): a palette centred over the veiled main view, drawn with the parts the command palette
-  /// uses (D-227). A "Start in…" filter, one row per environment (and per folder of one with
+  /// uses (D-228). A "Start in…" filter, one row per environment (and per folder of one with
   /// several) with its path at the right, and a footer with "No folder", "Choose folder… ⌘O" and
   /// what Return does. Up and Down (or the pointer) move one sliding highlight, Return chooses it,
   /// Escape closes. The new-thread view hosts it, the veil, and the folder panel.

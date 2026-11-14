@@ -134,7 +134,9 @@ public enum CommandCatalog {
       shortcut: KeyboardShortcut("k"), shortcutLabel: "\u{2318}K"),
     CommandDefinition(
       .commands, "Commands", symbol: "slash.circle", aliases: ["actions", "command palette"],
-      shortcut: KeyboardShortcut("p", modifiers: [.command, .shift]), shortcutLabel: "\u{21E7}\u{2318}P"),
+      // The row shows the slash that opens Commands from inside the palette; Shift-Command-P still
+      // opens it from anywhere (D-226).
+      shortcut: KeyboardShortcut("p", modifiers: [.command, .shift]), shortcutLabel: "/"),
     CommandDefinition(
       .newThread, "New thread", symbol: "square.and.pencil", aliases: ["compose", "start", "new chat"],
       slash: "new", shortcut: KeyboardShortcut("n"), shortcutLabel: "\u{2318}N"),
