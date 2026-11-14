@@ -27,7 +27,7 @@ public struct B4TurnTranslator: Sendable {
   private var currentReasoning: (id: String, text: String)?
   private var toolCalls: [String: (name: String, input: JSONValue, args: String, label: String?)] = [:]
   private var toolOrder: [String] = []
-  /// Tool calls whose permission the app refused; a result for one is "declined", not "failed" (D-226).
+  /// Tool calls whose permission the app refused; a result for one is "declined", not "failed" (D-227).
   private var declinedCalls: Set<String> = []
   private var sawInterrupt = false
   private var streamedText = false

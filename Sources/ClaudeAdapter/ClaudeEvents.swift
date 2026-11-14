@@ -20,7 +20,7 @@ public struct ClaudeTurnTracker: Sendable {
   private var unfinished: [String: [(type: String, itemId: String)]] = [:]
   private var toolUses: [String: (name: String, input: JSONValue)] = [:]
   /// Tool uses whose permission the app refused (the user's "Deny", a decline, a stop). Claude Code
-  /// reports each as an error result; it is the user's refusal, not the tool's failure (D-226).
+  /// reports each as an error result; it is the user's refusal, not the tool's failure (D-227).
   private var declinedToolUses: Set<String> = []
   private var lastErrorCode: ErrorCode?
 
