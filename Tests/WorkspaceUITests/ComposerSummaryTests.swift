@@ -98,7 +98,7 @@ import WorkspaceProtocol
     let (draft, model) = try await Self.draft(runtime: nil, connections: [])
     #expect(draft.connection == nil)
     let summary = ComposerSummary.draft(draft, in: model)
-    #expect(summary.runtime == "No runtime")
+    #expect(summary.runtime == nil)
     #expect(summary.spoken == "Runs in Borealis, no runtime")
     await model.disconnect()
   }
@@ -140,7 +140,7 @@ import WorkspaceProtocol
     let thread = Self.thread("deleted", model: "opus")
     let model = try await Phone.macModel(ScriptedTransport(), threads: [thread])
     let summary = ComposerSummary.thread(thread, in: model)
-    #expect(summary.runtime == "No runtime")
+    #expect(summary.runtime == nil)
     #expect(summary.spoken == "No runtime")
     await model.disconnect()
   }
