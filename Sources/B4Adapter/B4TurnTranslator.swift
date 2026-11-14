@@ -118,10 +118,11 @@ public struct B4TurnTranslator: Sendable {
     return output.stringValue.map(JSONValue.string) ?? output
   }
 
-  /// B4 refused the call itself (a route's permission policy, a delegation rule): the result's text
-  /// starts with B4's permission code (D-229).
+  /// B4 refused the call itself (a route's permissions, a rule, the permission mode): the result's
+  /// step says `denied` (D-229).
   static func toolRefused(_ output: JSONValue) -> Bool {
-    toolOutput(output).stringValue.map(B4Protocol.isPermissionDenial) ?? false
+    guard output["lc"] != nil, let kwargs = output["kwargs"] else { return false }
+    return B4Protocol.stepStatus(ofToolMessage: kwargs) == "denied"
   }
 
   static func toolFailed(_ output: JSONValue) -> Bool {
@@ -253,6 +254,8 @@ public struct B4TurnTranslator: Sendable {
       // the call's card instead of becoming an item of its own.
       guard let callId = data["toolCallId"]?.stringValue, let call = toolCalls[callId] else { return [] }
       toolCalls[callId]?.label = data["label"]?.stringValue ?? call.label
+      // B4 settled the call as refused; the result that follows is declined, whatever its shape.
+      if data["status"]?.stringValue == "denied" { declinedCalls.insert(callId) }
       if data["status"]?.stringValue == "running" {
         return [event(.toolStarted, toolPayload(id: callId, status: "inProgress"), itemId: callId)]
       }

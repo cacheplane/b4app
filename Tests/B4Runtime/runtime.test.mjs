@@ -65,6 +65,30 @@ test('real B4 executes a tool and sends its actual result to the next model roun
   assert.ok(events.indexOf(results[0]) < events.findIndex((e) => e.event === 'chunk'));
 });
 
+test('real B4 settles a tool its permissions refuse as denied, on the stream and in history', { timeout: 60_000 }, async (t) => {
+  const fixture = await startRuntimeFixture();
+  t.after(() => fixture.close());
+  const thread = await fixture.createThread();
+  const events = await Array.fromAsync(fixture.send(thread.id, 'smoke-denied'));
+  assert.equal(events.some((e) => e.event === 'interrupt'), false, 'a denied tool must not prompt');
+  const results = events.filter((e) => e.event === 'tool_result');
+  assert.equal(results.length, 1);
+  // What `B4TurnTranslator.toolRefused` reads: the step B4 stamps on the serialized ToolMessage.
+  const message = results[0].data.output;
+  assert.equal(message.lc, 1, JSON.stringify(results[0].data));
+  assert.equal(message.kwargs.additional_kwargs.b4_step.status, 'denied');
+  assert.equal(message.kwargs.status, 'success');
+  assert.deepEqual(await fixture.toolCalls(), [], 'the refused tool must not run');
+  assert.equal(text(events), 'The guarded tool was refused.');
+  assertCompleted(events);
+  // What `B4Protocol.snapshotItems` reads: the same step on the checkpointed message.
+  const state = await fixture.get(`/threads/${thread.id}/state`);
+  const stored = state.values.messages.map((m) => m.kwargs ?? m).find((m) => m.tool_call_id === 'call_fixture_guarded');
+  assert.ok(stored, JSON.stringify(state.values.messages));
+  assert.equal(stored.additional_kwargs.b4_step.status, 'denied');
+  fixture.assertProviderRequests();
+});
+
 test('real B4 restart retains the same thread and continues without replaying a turn', { timeout: 90_000 }, async (t) => {
   const fixture = await startRuntimeFixture();
   t.after(() => fixture.close());
