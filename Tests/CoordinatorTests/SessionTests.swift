@@ -5,9 +5,9 @@ import Testing
 import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
-import WorkspaceStorage
 
 @testable import Coordinator
+@testable import WorkspaceStorage
 
 /// The fake runtimes shipped with the adapter tests.
 private let fakeCodex =
