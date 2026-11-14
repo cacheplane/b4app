@@ -378,7 +378,7 @@ struct PaletteLead: View {
         if palette.canShowActions {
           hint("Actions", keys: [.tab]) { palette.showActions() }
         } else if palette.depth > 1 {
-          hint("Back", keys: [.shift, .tab]) { back() }
+          hint("Back", keys: [.escape]) { back() }
         }
         Button {
           Task { await palette.activate() }

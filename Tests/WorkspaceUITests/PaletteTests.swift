@@ -112,7 +112,8 @@ private func connected(
   }
 }
 
-/// D-221: every key a hint shows is an SF Symbol or a printed character, and is said in words.
+/// D-221, D-226: every key a hint shows is an SF Symbol, the word esc or a printed character, and is
+/// said in words.
 struct HintKeyTests {
   @Test func aLabelsGlyphsBecomeKeysInTheOrderWritten() {
     #expect(HintKey.keys(in: "\u{21E7}\u{2318}P") == [.shift, .command, .character("P")])
@@ -125,7 +126,7 @@ struct HintKeyTests {
 
   #if os(macOS)
     @Test func everyNamedKeyHasASymbolTheSystemCanDraw() {
-      let named: [HintKey] = [.command, .shift, .option, .control, .tab, .return, .escape]
+      let named: [HintKey] = [.command, .shift, .option, .control, .tab, .return]
       for key in named {
         let symbol = try? #require(key.symbol)
         #expect(
@@ -133,6 +134,11 @@ struct HintKeyTests {
       }
       #expect(HintKey.tab.symbol == "arrow.right.to.line.compact")
       #expect(HintKey.character("K").symbol == nil)
+      // Escape is the word on the key, and is still said in full.
+      #expect(HintKey.escape.symbol == nil)
+      #expect(HintKey.escape.legend == "esc")
+      #expect(HintKey.escape.name == "Escape")
+      #expect(HintKey.character("k").legend == "K")
     }
   #endif
 
@@ -314,6 +320,29 @@ struct SelectionMotionTests {
     #expect(palette.back())
     #expect(palette.query == "relay")
     #expect(!palette.back())
+    await model.disconnect()
+  }
+
+  /// D-226: Return on a thread closes the palette at once; the thread's read does not hold it open.
+  @Test func openingAThreadFinishesBeforeTheThreadIsRead() async throws {
+    let (model, transport) = try await connected()
+    let palette = PaletteModel(workspace: model, purpose: .find)
+    var finished: [String] = []
+    palette.onFinish = { finished.append($0) }
+    palette.setQuery("relay")
+    transport.script(.threadRead, [.hold])
+    await palette.activate()
+    #expect(finished == ["Opened Relay reconnect backoff"])
+    #expect(model.selectedThreadId == "quiet")
+    #expect(model.detail?.thread.id != "quiet")
+    // The read was asked for behind the close, and the thread shows once it answers.
+    for _ in 0..<200 where transport.heldCount(.threadRead) == 0 {
+      try await Task.sleep(for: .milliseconds(5))
+    }
+    let read = ThreadRead.Result(thread: fixtureThreads[0], turns: [], items: [], requests: [])
+    #expect(transport.release(.threadRead, with: .result(try JSONValue(encoding: read))))
+    for _ in 0..<200 where model.detail?.thread.id != "quiet" { try await Task.sleep(for: .milliseconds(5)) }
+    #expect(model.detail?.thread.id == "quiet")
     await model.disconnect()
   }
 

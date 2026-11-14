@@ -7,7 +7,7 @@ public enum HintKey: Hashable, Sendable {
   case character(String)
 
   /// The SF Symbol of a key that has one. Tab is the compact arrow, which sits in a cap with room
-  /// either side where the full one touches its edges.
+  /// either side where the full one touches its edges. Escape has none: it is the word on the key.
   public var symbol: String? {
     switch self {
     case .command: "command"
@@ -16,8 +16,16 @@ public enum HintKey: Hashable, Sendable {
     case .control: "control"
     case .tab: "arrow.right.to.line.compact"
     case .return: "return"
-    case .escape: "escape"
-    case .character: nil
+    case .escape, .character: nil
+    }
+  }
+
+  /// What the cap prints for a key with no symbol: the word on the Escape key (D-226), or the
+  /// character.
+  public var legend: String {
+    switch self {
+    case .escape: "esc"
+    default: name
     }
   }
 
@@ -57,7 +65,7 @@ public enum HintKey: Hashable, Sendable {
   }
 }
 
-/// A key drawn as a small cap: its SF Symbol, or its character, at the weight of the text beside it.
+/// A key drawn as a small cap: its SF Symbol, or its word or character, at the weight of the text beside it.
 public struct KeyCap: View {
   let key: HintKey
 
@@ -71,7 +79,7 @@ public struct KeyCap: View {
       if let symbol = key.symbol {
         Image(systemName: symbol).font(.system(size: 10.5, weight: .medium))
       } else {
-        Text(key.name).font(.system(size: 11, weight: .medium))
+        Text(key.legend).font(.system(size: 11, weight: .medium))
       }
     }
     .foregroundStyle(LLA.Color.muted)

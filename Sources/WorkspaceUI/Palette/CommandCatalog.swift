@@ -630,7 +630,9 @@ extension WorkspaceModel {
     case .threadOpen:
       selectedThreadId = threadId
       showDetailColumn()
-      await openThread(id: threadId)
+      // The thread is chosen now and read behind the palette's close: waiting for the read held
+      // the palette on screen after Return (D-226).
+      Task { await openThread(id: threadId) }
       return .completed("Opened \(ThreadSearch.shownTitle(thread))")
     case .threadRename:
       let title = (argument ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
