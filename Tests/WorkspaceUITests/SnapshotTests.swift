@@ -760,6 +760,125 @@ private final class BackgroundWindow: NSWindow {
       .padding(.horizontal, ThreadRow.fillInset)
     }
   }
+
+  // MARK: a dense thread
+
+  private func scripted(
+    _ id: String, turn: String? = "t1", _ role: DisplayItemRole, _ type: String,
+    status: String? = nil, native: String? = nil, _ payload: [String: JSONValue] = [:]
+  ) -> DisplayItem {
+    var members = payload
+    if let status { members["status"] = .string(status) }
+    return DisplayItem(
+      id: id, threadId: "th", turnId: turn, nativeItemId: native, role: role, type: type,
+      payload: .object(members), sequence: 0, provenance: .live)
+  }
+
+  private func message(
+    _ id: String, _ text: String, turn: String? = "t1", native: String? = nil
+  )
+    -> DisplayItem
+  { scripted(id, turn: turn, .assistant, "agentMessage", native: native, ["text": .string(text)]) }
+
+  private func ask(_ id: String, _ text: String, turn: String? = "t1") -> DisplayItem {
+    scripted(id, turn: turn, .user, "userMessage", ["text": .string(text)])
+  }
+
+  private func step(
+    _ id: String, _ command: String, status: String = "completed", turn: String? = "t1",
+    output: String? = nil
+  ) -> DisplayItem {
+    var payload: [String: JSONValue] = ["command": .string(command)]
+    if let output { payload["aggregatedOutput"] = .string(output) }
+    return scripted(id, turn: turn, .tool, "commandExecution", status: status, payload)
+  }
+
+  private func thought(_ id: String, turn: String? = "t1") -> DisplayItem {
+    scripted(
+      id, turn: turn, .assistant, "reasoning",
+      ["text": .string("The failure is in the second target; check how it links before changing it.")])
+  }
+
+  private func detail(
+    _ items: [DisplayItem], _ status: TurnStatus = .terminal, _ outcome: TurnOutcome? = .completed,
+    turns: [Turn]? = nil, live: [String: String] = [:]
+  ) -> ThreadDetail {
+    let numbered = items.enumerated().map { index, item -> DisplayItem in
+      var copy = item
+      copy.sequence = index + 1
+      return copy
+    }
+    var result = ThreadDetail(
+      thread: ListFixture.threads[0],
+      turns: turns ?? [Turn(id: "t1", threadId: "th", operationId: "op", status: status, outcome: outcome)],
+      items: numbered, requests: [])
+    result.liveText = live
+    return result
+  }
+
+  private func transcript(_ detail: ThreadDetail, dense: Bool = true, open: Set<String> = []) -> some View {
+    TranscriptView(detail: detail, dense: dense, folds: TranscriptFolds(open: open))
+  }
+
+  /// A thread at dense density, from scripted details: closed, open, failed, running, waiting, only
+  /// working, and a history; and the first one at normal density for comparison.
+  @Test func denseThreads() async throws {
+    let size = CGSize(width: 720, height: 560)
+    let finished = detail([
+      ask("u1", "The build fails on the second target. Can you fix it?"), thought("r1"),
+      step("c1", "swift build 2>&1 | tail -40", output: "error: undefined symbol _main"),
+      step("c2", "git diff --stat"), step("c3", "swift build"),
+      message(
+        "a1",
+        "The second target had no entry point. I added `main.swift` and the build passes now; the tests were not touched."
+      ),
+    ])
+    try await render("dense-thread-closed", size: size) { transcript(finished) }
+    try await render("dense-thread-open", size: size) { transcript(finished, open: ["t1"]) }
+    try await render("thread-normal", size: size) { transcript(finished, dense: false) }
+
+    let failed = detail(
+      [
+        ask("u1", "Run the migration against staging."),
+        step("c1", "migrate up --env staging", status: "failed"),
+        scripted("k1", .tool, "commandExecution", status: "declined", ["command": .string("rm -rf data")]),
+        step("c2", "migrate status"),
+      ], .terminal, .failed)
+    try await render("dense-thread-failed", size: size) { transcript(failed) }
+
+    let running = detail(
+      [
+        ask("u1", "Find out why the sync is slow."),
+        message("a1", "I will start with the timings.", native: "n1"),
+        step("c1", "swift test --filter SyncTests", status: "inProgress"),
+        message("a2", "Two tests dominate the time", native: "n2"),
+      ], .running, nil,
+      live: ["n2": "Two tests dominate the time, both waiting on the same lock."])
+    try await render("dense-thread-running", size: size) { transcript(running) }
+
+    let waiting = detail(
+      [
+        ask("u1", "Clean up the old build products."),
+        step("c1", "rm -rf .build/old", status: "inProgress"),
+      ], .waitingForUser, nil)
+    try await render("dense-thread-waiting", size: size) { transcript(waiting) }
+
+    let working = detail([
+      ask("u1", "What does the coordinator do on start?"), thought("r1"),
+      message("a1", "It takes the singleton lock, opens the account's database and starts the relay."),
+    ])
+    try await render("dense-thread-working", size: size) { transcript(working) }
+
+    let history = detail(
+      [
+        ask("u1", "List the open pull requests.", turn: nil), step("c1", "gh pr list", turn: nil),
+        message("a1", "There are three open.", turn: nil),
+        ask("u2", "Merge the second.", turn: nil), step("c2", "gh pr merge 2", turn: nil),
+        step("c3", "gh pr view 2", turn: nil), message("a2", "Merged.", turn: nil),
+        ask("u3", "Thanks.", turn: nil), message("a3", "Any time.", turn: nil),
+      ], turns: [])
+    try await render("dense-thread-history", size: size) { transcript(history) }
+  }
 }
 
 /// A fixed set of threads in every state but approve (`approving`, added with `extra`), across two environments, "Other", and one empty manual environment.

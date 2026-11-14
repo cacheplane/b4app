@@ -322,6 +322,21 @@ import WorkspaceProtocol
     await phone.disconnect()
   }
 
+  /// A dense thread is the setting's, on either platform's model.
+  @Test func aDenseThreadIsTheStoredDensity() async throws {
+    for phone in [false, true] {
+      let transport = ScriptedTransport()
+      transport.set(threads: [Self.thread("t1")])
+      transport.script(.viewSettingsGet, [try Self.reply(ViewSettings(density: .dense))])
+      let model = try await Self.connected(transport, phone: phone)
+      #expect(model.denseThread, "phone: \(phone)")
+      transport.emit(try .viewSettingsChanged(ViewSettings()))
+      try await waitUntil("normal") { model.viewSettings.density == .normal }
+      #expect(!model.denseThread, "phone: \(phone)")
+      await model.disconnect()
+    }
+  }
+
   @Test func quietThreadsIsDisabledByEnvironment() {
     #expect(!ViewOptions.quietThreadsDisabled(ViewSettings()))
     #expect(!ViewOptions.quietThreadsDisabled(ViewSettings(quietThreads: .hidden)))
