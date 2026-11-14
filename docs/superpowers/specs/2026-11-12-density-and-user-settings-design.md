@@ -113,8 +113,8 @@ The count line:
 - Reads "4 steps" or, when any step failed, "4 steps, 1 failed", then "Show". Opened, the last word is "Hide". Small muted type; "failed" in the danger colour.
 - A turn with nothing but its answer has no line. A turn with reasoning or interim messages but no counted step still gets a line, reading "Show working", so nothing the agent produced is unreachable. (Builder's call.)
 - Opening it shows that turn's steps in place, as the normal density draws them (the reasoning and tool cards, the interim messages), between the user's message and the answer. Closing it puts the line back. Whether a turn is open is remembered while the thread is on screen, not stored. (Builder's call.)
-- What counts as a step for the number: tool calls, command runs and file changes. Reasoning and interim messages are shown when opened but not counted, so the number matches what the agent did. A step is "failed" when its status says failed or declined, the two values today's cards draw in the danger colour. (Builder's call.)
-- A turn with no answer (it failed or was stopped before one) shows its line and its note, and nothing in the answer's place. Items that belong to no turn, and system items, are drawn as at normal density.
+- What counts as a step for the number: tool calls, command runs and file changes. Reasoning and interim messages are shown when opened but not counted, so the number matches what the agent did. A step is "failed" when its status says failed. (Builder's call.)
+- A turn with no answer (it failed or was stopped before one) shows its line and its note, and nothing in the answer's place. System items are drawn as at normal density.
 - Opening a turn must not move what the user is looking at: the line stays where it is on screen and the steps open beneath it. Today's transcript pins its bottom edge when its height changes, which would push the line away; the builder handles that for this case.
 
 What dense never hides:
@@ -123,7 +123,16 @@ What dense never hides:
 - "Turn failed." and "Turn stopped." notes, and the notice for a turn whose outcome is unknown. Today these notes are drawn after all the items, at the end of the transcript. In dense each is drawn with its own turn, after the count line, so a failed turn reads as failed where it happened. Normal density keeps today's placement. (Builder's call.)
 - The phone's own message that is still on its way.
 
-A turn that is still running, in dense: the user's message, the count line updating as steps finish ("3 steps so far"), and the agent's message as it streams. When the turn ends, its last agent message is the answer and earlier ones fold into the steps. (Builder's call; this is the part most likely to need a look in the running app.)
+A turn that is still running, in dense: the user's message, the line, and the agent's messages as they stream. The line names what the agent is doing ("swift test", "Searching b4"), or reads "Working" between steps and "Waiting for you" when the turn waits on an approval or a question; it does not count. When the turn ends, the line counts, its last agent message is the answer and earlier ones fold into the steps. (Builder's call; this is the part most likely to need a look in the running app.)
+
+Amended 2026-11-13, after research into how other tools draw an agent's progress (the owner's b4run and hashbrown designs, threadplane, and shipping coding agents), approved by the owner:
+
+- The running line names the current step, as above. It used to read "3 steps so far".
+- A step the user declined is counted apart from a failed one: "4 steps, 1 declined", with "declined" in muted type.
+- Plan updates, todo lists and other items that are not tool calls are shown when the line is opened but are not counted, and one that follows the answer does not hide it.
+- A turn that has ended never shows a step as still running; such a step reads "stopped".
+- Items that belong to no turn (a thread read from history) are grouped at each user message and drawn as ended turns, so a thread from history is dense too. They used to be drawn as at normal density.
+- An opened turn stays where it is on screen until the reader scrolls back to the end, sends a message or shows another thread; until then the transcript does not follow the stream.
 
 Normal density is today's transcript, unchanged.
 
@@ -150,6 +159,8 @@ What stays at either density: the field, Send, and the line under the field that
 This part depends on work that is not on main. The command palette is being built on `blove/b4-command-palette-spec-ba5790`. The composer has three pickers: the place, the permission, and the runtime with its model. The dense composer needs a command for each: one that opens the place picker for a new thread, one that changes the permission, and one that changes the runtime and model (for a thread, the model only, as today). Until those exist, hiding the pickers would strand the user, which is an anti-goal.
 
 So: parts 1 to 3 can be built and shipped without part 4. In that state dense leaves the composer's pickers in place. Part 4 follows the command palette's merge, and its plan names the commands it found there. On the phone, where there is no command palette, the pickers stay at either density unless the owner says otherwise.
+
+Built 2026-11-13 (D-224): the palette already had `draft.environment` (`/environment`), `draft.runtime` and `thread.model` (`/model`), and `draft.permission` and `thread.permission` (`/permissions`); the one missing was the folder panel, now `draft.chooseFolder` (`/browse`, Mac only). Two of the plan's rulings changed in the build: only "Starting…" takes the line's row, and a failed start sits under the line (it would hide the line while the place is being changed); and "Choose folder…" is refused unless the new-thread screen is showing. No shortcut for the model or permission, and the phone keeps its pickers.
 
 ## Build order
 

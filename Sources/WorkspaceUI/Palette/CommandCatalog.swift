@@ -31,6 +31,7 @@ public nonisolated struct CommandID: RawRepresentable, Hashable, Sendable {
   public static let threadCheckAgain = CommandID("thread.checkAgain")
   public static let threadAbandon = CommandID("thread.abandon")
   public static let draftEnvironment = CommandID("draft.environment")
+  public static let draftChooseFolder = CommandID("draft.chooseFolder")
   public static let draftRuntime = CommandID("draft.runtime")
   public static let draftPermission = CommandID("draft.permission")
 }
@@ -172,6 +173,9 @@ public enum CommandCatalog {
       aliases: ["environment", "folder", "place"], slash: "environment", slashAliases: ["env", "folder"],
       argument: .choice),
     CommandDefinition(
+      .draftChooseFolder, "Choose folder\u{2026}", symbol: "folder.badge.plus",
+      aliases: ["browse", "open folder", "other folder"], slash: "browse"),
+    CommandDefinition(
       .draftRuntime, "Choose runtime and model\u{2026}", symbol: "cube",
       aliases: ["model", "runtime", "codex", "claude"], slash: "model", slashAliases: ["runtime"],
       argument: .choice),
@@ -224,8 +228,14 @@ extension WorkspaceModel {
     case .environment: return [.environmentNewThread]
     case .connection: return [.connectionOpen]
     case .draft:
+      // The folder panel is the Mac's own: the phone has no folders to browse.
+      #if os(macOS)
+        let place: [CommandID] = [.draftEnvironment, .draftChooseFolder]
+      #else
+        let place: [CommandID] = [.draftEnvironment]
+      #endif
       return newThreadDraft.connection?.kind == .b4
-        ? [.draftEnvironment, .draftRuntime] : [.draftEnvironment, .draftRuntime, .draftPermission]
+        ? place + [.draftRuntime] : place + [.draftRuntime, .draftPermission]
     case .thread(let id):
       guard let thread = thread(id: id) else { return [] }
       var list: [CommandID] = [.threadOpen, .threadRename, .threadPin, .threadArchive, .threadMarkUnread]
@@ -365,9 +375,22 @@ extension WorkspaceModel {
       return .unavailable("This thread is no longer here.")
     }
     let thread = target.threadId.flatMap(thread(id:))
+    // The panel browses this Mac's folders; a Mac that relays through the hub has none to browse. It
+    // does not need the coordinator link, so it is settled before the cases that answer at once.
+    if id == .draftChooseFolder {
+      #if os(macOS)
+        if relaysThroughHub {
+          return .unavailable("This Mac\u{2019}s folders cannot be browsed from here.")
+        }
+        // The request is answered by `NewThreadView`; with another screen up nothing would open.
+        if !newThreadViewIsShowing { return .unavailable("Open a new thread first.") }
+      #else
+        return .unavailable("Folders are chosen on your Mac.")
+      #endif
+    }
     switch id {
     case .find, .commands, .openSettings, .connectionOpen, .threadOpen, .showArchived,
-      .draftEnvironment, .draftRuntime, .draftPermission:
+      .draftEnvironment, .draftChooseFolder, .draftRuntime, .draftPermission:
       return .available
     case .newThread, .threadNewWithRuntime:
       return newThreadEntryReason.map(CommandAvailability.unavailable) ?? .available
@@ -475,11 +498,13 @@ extension WorkspaceModel {
         for folder in folders {
           let name = folder.map { "\(environment.displayName) \u{00B7} \(ComposerPickerRow.folderName($0))" }
           let value = [environment.id, folder ?? ""].joined(separator: Self.choiceSeparator)
+          // Folders of one environment can share a last component; the path tells them apart.
           list.append(
             CommandChoice(
               id: value, title: name ?? environment.displayName, value: value,
               isCurrent: draft.chosenFolder == nil && draft.environmentId == environment.id
-                && (folder == nil || draft.folder == folder)))
+                && (folder == nil || draft.folder == folder),
+              detail: folder.map { PlacePalette.shownPath($0) }))
         }
       }
       list.append(CommandChoice(id: "", title: "No folder", value: "", isCurrent: draft.isNoFolder))
@@ -577,6 +602,10 @@ extension WorkspaceModel {
         newThreadDraft.selectNoFolder()
       }
       return .completed("Starts in \(currentValue(of: id, target: target) ?? "No folder")")
+    case (.draftChooseFolder, _):
+      // NewThreadView answers by opening the system folder panel.
+      chooseFolderRequest += 1
+      return .completed("Choose a folder")
     case (.draftRuntime, _):
       let parts = (argument ?? "").components(separatedBy: Self.choiceSeparator)
       guard parts.count == 2 else { return .failed("That runtime is no longer offered.") }

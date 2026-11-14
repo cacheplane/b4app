@@ -20,6 +20,21 @@ extension XCTestCase {
     }
   }
 
+  /// Launches the harness and waits for its window, opening one with New Window only when none comes.
+  /// The harness presents a window at launch (`defaultLaunchBehavior(.presented)`), but on a slow
+  /// runner it can come a few seconds late: a check that did not wait opened a second window beside
+  /// it, which had no command centre, and the palette test then opened the palette where it would
+  /// sit without one and dragged it into the Dock.
+  @MainActor func launchWithWindow(_ app: XCUIApplication) throws {
+    app.launch()
+    app.activate()
+    if !app.windows.firstMatch.waitForExistence(timeout: 15) {
+      app.menuBars.menuBarItems["File"].click()
+      app.menuItems["New Window"].click()
+    }
+    try requireElement(app.windows.firstMatch, in: app)
+  }
+
   @MainActor func requireElement(_ element: XCUIElement, in app: XCUIApplication, timeout: Double = 10) throws
   {
     guard element.waitForExistence(timeout: timeout) else {

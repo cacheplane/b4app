@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "class": "WorkspaceLayoutTests/BannerLayoutTests",
+  "component_bundle": "WorkspaceLayoutComponentTests",
+  "shards": [
+    {
+      "component": true,
+      "ui": [
+        "testSecondaryNoticeJourneys",
+        "testDarkRefusalJourney",
+        "testMaximumTextJourneys",
+        "testConnectionNoticeJourney"
+      ]
+    },
+    {
+      "component": false,
+      "ui": [
+        "testWorkspaceNavigationJourney",
+        "testHealthyComposerJourney",
+        "testSyncCopyJourneys",
+        "testStartupAndEmptyJourneys",
+        "testLandscapeJourney",
+        "testRecoveryJourneys",
+        "testEntryRootJourneys",
+        "testNotificationOpenJourneys",
+        "testNotificationCancelJourney"
+      ]
+    }
+  ]
+}

@@ -26,6 +26,8 @@ struct ThreadsView: View {
     }
   #endif
 
+  /// The branches, in order, are the ones `WorkspaceModel.newThreadViewIsShowing` repeats for the last;
+  /// change the two together.
   @ViewBuilder private var threadOrComposer: some View {
     if let thread = model.threads.first(where: { $0.id == model.selectedThreadId }) {
       ThreadDetailView(model: model, thread: thread)
@@ -136,7 +138,7 @@ struct ThreadDetailView: View {
   private func transcript(_ detail: ThreadDetail) -> some View {
     TranscriptView(
       detail: detail, pending: model.pendingMessage(for: thread.id),
-      pendingStatus: model.sendStatus(for: thread.id))
+      pendingStatus: model.sendStatus(for: thread.id), dense: model.denseThread)
   }
 
   /// Pending requests, the continuity banner, and the composer, under the transcript.

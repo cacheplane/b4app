@@ -444,6 +444,33 @@
       try await settle()
     }
 
+    /// The panel ends a drag where the pointer was released, when no drag event came from there: a
+    /// busy machine drops the last ones, and CI's screen test found the palette one step short.
+    @Test func aDragEndsWhereThePointerIsReleased() async throws {
+      let state = PanelState()
+      let host = try shortWindow(state)
+      defer { host.window.close() }
+      state.shown = true
+      try await settle()
+      let panel = try #require(host.window.childWindows?.first as? PalettePanel)
+      let home = panel.frame.origin
+      let grip = CGPoint(x: panel.frame.minX + 60, y: panel.frame.maxY - 20)
+      try send(.leftMouseDown, at: grip, to: panel)
+      // Fourteen of fifteen steps arrive; the release is at the fifteenth.
+      for step in 1...14 {
+        try send(
+          .leftMouseDragged, at: CGPoint(x: grip.x + CGFloat(step) * 12, y: grip.y - CGFloat(step) * 9),
+          to: panel)
+        pump()
+      }
+      try send(.leftMouseUp, at: CGPoint(x: grip.x + 180, y: grip.y - 135), to: panel)
+      try await settle()
+      #expect(abs(panel.frame.origin.x - home.x - 180) < 0.5)
+      #expect(abs(panel.frame.origin.y - home.y + 135) < 0.5)
+      state.shown = false
+      try await settle()
+    }
+
     /// The real palette, in its panel, is dragged by the empty part of its field, by its header's
     /// glyph, and by its footer; a click on the field's empty part still puts the cursor in it. In
     /// the palette's header SwiftUI answers for every spot, so a press there hits the hosting view
@@ -539,6 +566,8 @@
   /// The title bar's resting control is the palette's top row, as wide as the palette where the
   /// window has the room.
   @Suite @MainActor struct CommandCenterTests {
+    private static func pump() { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+
     @Test func theRestingControlIsThePalettesWidthWhereTheWindowHasRoom() {
       #expect(CommandCenterButton.height == MacPalette.fieldHeight)
       #expect(CommandCenterButton.width(inWindow: 1200) == MacPalette.width)
@@ -547,6 +576,39 @@
       #expect(CommandCenterButton.width(inWindow: 1000) == 460)
       #expect(CommandCenterButton.width(inWindow: 900) == 360)
       #expect(CommandCenterButton.width(inWindow: 700) == CommandCenterButton.minWidth)
+    }
+
+    /// The button comes with its window even when nothing else changes after: a window opened while
+    /// the workspace is already showing (New Window in the screen-test harness, a window reopened from
+    /// the Dock) had no button, because the presenter's first try came before the view had a window
+    /// and nothing asked it again. The palette then opened where it sits without one.
+    /// Turns of the run loop and the main queue, as the app has between events.
+    private func turns(_ count: Int) async throws {
+      for _ in 0..<count {
+        Self.pump()
+        try await Task.sleep(for: .milliseconds(20))
+      }
+    }
+
+    @Test func theButtonComesWithAWindowThatArrivesLater() async throws {
+      let model = WorkspaceModel(transportProvider: { ScriptedTransport() })
+      let anchor = CommandCenterAnchor()
+      let host = NSHostingView(
+        rootView: CommandCenterPresenter(model: model, anchor: anchor, isActive: true)
+          .frame(width: 100, height: 20))
+      host.frame = CGRect(x: 0, y: 0, width: 100, height: 20)
+      host.layoutSubtreeIfNeeded()
+      try await turns(4)
+      #expect(anchor.panel == nil)
+      let window = NSWindow(
+        contentRect: CGRect(x: 0, y: 0, width: 1200, height: 800),
+        styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      defer { window.close() }
+      window.contentView = host
+      try await turns(8)
+      #expect(anchor.panel != nil, "no button panel for a window that came after the first update")
+      #expect(window.childWindows?.contains { $0 === anchor.panel } == true)
     }
   }
 #endif

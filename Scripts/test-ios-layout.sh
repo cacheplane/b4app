@@ -73,6 +73,19 @@ print((pro or phones)[0]["identifier"], runtime["identifier"])
   xcrun simctl bootstatus "$device" -b >/dev/null
   destination="platform=iOS Simulator,id=$device"
 fi
+# One shard of the reviewed plan (Tests/iOSLayout/UITests/shards.json): CI runs each in its own job.
+# The plan names the tests, so no caller's count or selection applies.
+shard=${B4APP_LAYOUT_SHARD:-}
+if [ -n "$shard" ]; then
+  shard_args=$(python3 Scripts/ios_layout_shards.py xcodebuild-args "$shard")
+  old_ifs=$IFS
+  IFS='
+'
+  set -f
+  for arg in $shard_args; do set -- "$@" "$arg"; done
+  set +f
+  IFS=$old_ifs
+fi
 results=${B4APP_LAYOUT_RESULTS:-"$PWD/.build/iOSLayout/Results-$(date -u +%Y%m%dT%H%M%S).xcresult"}
 if xcodebuild test -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -scheme WorkspaceLayout \
   -destination "$destination" -parallel-testing-enabled NO \
@@ -83,10 +96,15 @@ if xcodebuild test -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -s
   # xcodebuild has already consumed the caller's arguments; only parser flags follow here.
   focused_flag=
   if [ "${B4APP_LAYOUT_FOCUSED_COVERAGE:-0}" = 1 ]; then focused_flag=--focused-coverage; fi
-  python3 Scripts/verify_ios_layout_results.py "$results.summary.json" "$results.tests.json" \
-    --result-bundle "$results" ${focused_flag:+"$focused_flag"} \
-    --ui-count "${B4APP_LAYOUT_EXPECTED_UI_TESTS:-13}" \
-    --component-count "${B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS:-3}"
+  if [ -n "$shard" ]; then
+    python3 Scripts/verify_ios_layout_results.py "$results.summary.json" "$results.tests.json" \
+      --result-bundle "$results" --shard "$shard"
+  else
+    python3 Scripts/verify_ios_layout_results.py "$results.summary.json" "$results.tests.json" \
+      --result-bundle "$results" ${focused_flag:+"$focused_flag"} \
+      --ui-count "${B4APP_LAYOUT_EXPECTED_UI_TESTS:-13}" \
+      --component-count "${B4APP_LAYOUT_EXPECTED_COMPONENT_TESTS:-3}"
+  fi
 else
   result=$?
   if [ -d "$results" ]; then

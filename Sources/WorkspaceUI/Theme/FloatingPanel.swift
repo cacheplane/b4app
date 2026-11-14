@@ -178,21 +178,16 @@
           dragEvents += 1
           trace += dragEvents <= 3 ? " | drag \(pointer)" : ""
         #endif
-        let travel = CGSize(width: pointer.x - current.pointer.x, height: pointer.y - current.pointer.y)
-        if !current.moving, hypot(travel.width, travel.height) > FloatingPanelGeometry.dragThreshold {
-          current.moving = true
-        }
-        if current.moving {
-          // Measured from the press each time, not from where the panel is: a panel held on a line
-          // leaves it as soon as the pointer has carried it far enough, and not before.
-          setFrameOrigin(
-            snap(CGPoint(x: current.origin.x + travel.width, y: current.origin.y + travel.height)))
-        }
+        follow(pointer, &current)
         press = current
         return
       case .leftMouseUp:
-        guard let current = press else { break }
+        guard var current = press else { break }
         press = nil
+        // The release is where the drag ends, whether or not a drag event came from that place. A
+        // busy machine drops the last of them: on CI the palette stopped one step (12 pt) short of
+        // the pointer (run 43534874181).
+        follow(pointer(event), &current)
         #if DEBUG
           trace += " | up after \(dragEvents) drags moving \(current.moving) frame \(frame)"
         #endif
@@ -213,6 +208,19 @@
         break
       }
       super.sendEvent(event)
+    }
+
+    /// Take the panel to where the pointer has carried it since the press, once it has travelled far
+    /// enough to be a drag.
+    private func follow(_ pointer: CGPoint, _ current: inout Press) {
+      let travel = CGSize(width: pointer.x - current.pointer.x, height: pointer.y - current.pointer.y)
+      if !current.moving, hypot(travel.width, travel.height) > FloatingPanelGeometry.dragThreshold {
+        current.moving = true
+      }
+      guard current.moving else { return }
+      // Measured from the press each time, not from where the panel is: a panel held on a line
+      // leaves it as soon as the pointer has carried it far enough, and not before.
+      setFrameOrigin(snap(CGPoint(x: current.origin.x + travel.width, y: current.origin.y + travel.height)))
     }
 
     private func clickPastText(_ down: NSEvent) {

@@ -19,13 +19,7 @@ final class PaletteSmokeTests: XCTestCase {
       "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": "1100", "SMOKE_DARK": "0", "SMOKE_HEIGHT": "700",
       "SWIFTNIO_STRICT": "1",
     ]
-    app.launch()
-    app.activate()
-    if !app.windows.firstMatch.exists {
-      app.menuBars.menuBarItems["File"].click()
-      app.menuItems["New Window"].click()
-    }
-    try requireElement(app.windows.firstMatch, in: app)
+    try launchWithWindow(app)
     try requireElement(app.buttons.matching(identifier: "thread-row").firstMatch, in: app, timeout: 30)
 
     let palette = app.descendants(matching: .any)["search-palette"]
@@ -201,12 +195,7 @@ final class PaletteSmokeTests: XCTestCase {
       "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": String(width), "SMOKE_DARK": "0", "SMOKE_HEIGHT": "600",
       "SWIFTNIO_STRICT": "1",
     ]
-    app.launch()
-    app.activate()
-    if !app.windows.firstMatch.exists {
-      app.menuBars.menuBarItems["File"].click()
-      app.menuItems["New Window"].click()
-    }
+    try launchWithWindow(app)
     let row = app.buttons.matching(identifier: "thread-row").firstMatch
     try requireElement(row, in: app, timeout: 30)
     row.click()
@@ -412,12 +401,7 @@ final class PaletteSmokeTests: XCTestCase {
       "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": "1200", "SMOKE_DARK": "0", "SMOKE_HEIGHT": "600",
       "SWIFTNIO_STRICT": "1",
     ]
-    app.launch()
-    app.activate()
-    if !app.windows.firstMatch.exists {
-      app.menuBars.menuBarItems["File"].click()
-      app.menuItems["New Window"].click()
-    }
+    try launchWithWindow(app)
     let row = app.buttons.matching(identifier: "thread-row").firstMatch
     try requireElement(row, in: app, timeout: 30)
     row.click()

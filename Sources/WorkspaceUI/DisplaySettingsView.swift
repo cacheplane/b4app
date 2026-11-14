@@ -1,14 +1,20 @@
 import SwiftUI
 import WorkspaceProtocol
 
-/// Settings, Display (the Mac's): the Dense switch, which draws the threads that do not need the owner
-/// as tight rows in the Mac's sidebar. It is the account's stored density, written for every device;
-/// the phone keeps its rows at either density.
+/// Settings, Display: the Dense switch. On the Mac it draws the threads that do not need the owner as
+/// tight rows in the sidebar, a thread without the steps, and the composer with one line for its
+/// pickers; on the phone it is the thread alone, which keeps its rows and pickers at either density. It
+/// is the account's stored density, written for every device.
 struct DisplaySettingsView: View {
   @Bindable var model: WorkspaceModel
 
   static let denseLabel = "Dense"
-  static let denseDescription = "Tighter rows for the threads that don\u{2019}t need you."
+  #if os(macOS)
+    static let denseDescription =
+      "Tighter rows for the threads that don\u{2019}t need you, answers without the steps in a thread, and a composer without its pickers."
+  #else
+    static let denseDescription = "Answers without the steps in a thread."
+  #endif
 
   init(model: WorkspaceModel) {
     self.model = model

@@ -187,7 +187,23 @@ class SimulatorWorkflowTests(unittest.TestCase):
         self.assertIn('B4APP_LAYOUT_SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}', workflow)
         self.assertIn('B4APP_LAYOUT_DESTINATION: ${{ steps.simulator.outputs.destination }}', workflow)
         self.assertIn('set -euo pipefail\n          xcrun simctl bootstatus', workflow)
-        self.assertIn('timeout-minutes: 40', workflow[job:])
+        self.assertIn('timeout-minutes: 30', workflow[job:])
+
+    def test_both_shards_run_and_the_required_check_needs_them(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        shards = workflow[workflow.index('\n  ios-layout:'):workflow.index('\n  ios-layout-result:')]
+        plan = json.loads((ROOT / 'Tests/iOSLayout/UITests/shards.json').read_text())
+        numbers = ', '.join(str(n) for n in range(1, len(plan['shards']) + 1))
+        self.assertIn(f'shard: [{numbers}]', shards)
+        self.assertIn('fail-fast: false', shards)
+        self.assertIn('B4APP_LAYOUT_SHARD: ${{ matrix.shard }}', shards)
+        self.assertNotIn('B4APP_LAYOUT_EXPECTED', shards)
+        result = workflow[workflow.index('\n  ios-layout-result:'):workflow.index('\n  macos-smoke:')]
+        # The name the branch protection requires, on a job that cannot be skipped.
+        self.assertIn('name: iOS navigation and banner regression tests\n', result)
+        self.assertIn('needs: ios-layout\n', result)
+        self.assertIn('if: always()\n', result)
+        self.assertIn('test "$SHARDS" = success', result)
 
 if __name__ == '__main__':
     unittest.main()
