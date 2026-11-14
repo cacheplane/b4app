@@ -6,12 +6,14 @@ import WorkspaceProtocol
 /// One private cluster per test process, started on first use from the fetched binaries and stopped
 /// at exit; every caller gets its own fresh database. Production code never calls this.
 ///
-/// Every caller waits on the start, and the callers are synchronous tests on Swift's cooperative
-/// threads, one per core: while the cluster starts, as many waiting tests as the machine has cores
-/// stop every other test in the process, timers included. On CI no test finished in the first 50 to
-/// 70 s, and tests that wait on a clock timed out. So the start should be done before the tests run: with
+/// The callers are synchronous tests on Swift's cooperative threads (one per core), so anything they
+/// wait for here holds a thread every other test in the process needs: as many waiting callers as
+/// cores and nothing else runs, timers included. The start is one such wait, and so is every
+/// `CREATE DATABASE` (on CI the storage and coordinator tests' databases held every thread for the
+/// first minute, which is why CI runs those suites in a process of their own). With
 /// `B4APP_TEST_POSTGRES_DIR` set, the cluster lives in that directory and outlives the process, and a
-/// later process that finds it running uses it at once (CI starts it with one test before the run).
+/// later process that finds it running uses it at once: CI's two test processes share one cluster
+/// that a single test starts first, and a local run skips the start.
 public enum EphemeralPostgres {
   private static let state = Mutex<Shared?>(nil)
   /// Suites run in parallel; the one-time initdb and start happen under this lock.

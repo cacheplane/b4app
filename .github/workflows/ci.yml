@@ -109,9 +109,11 @@ jobs:
         run: ./Scripts/fetch-postgres.sh
       - name: Build
         run: swift build
-      # The tests' shared PostgreSQL cluster, started by one test before the run and used by the
-      # rest: while a test process starts it, every test waiting for it holds one of the runner's
-      # few cooperative threads (one per core), and the whole process stood still for 50 to 70 s.
+      # The storage and coordinator tests wait on PostgreSQL synchronously, from Swift's cooperative
+      # threads (one per core). In one process with everything else they held all of the runner's
+      # threads for the first minute (CI's samples: every thread in libpq, most in CREATE DATABASE),
+      # so no other test ran and those that wait on a clock (MirrorSyncTests) timed out. They run in
+      # a process of their own, then the rest, both on one cluster that a single test starts first.
       - name: Start the tests' PostgreSQL
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
@@ -119,34 +121,11 @@ jobs:
       - name: Test
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
-        # Temporary diagnostics: where the test process's threads are while no test finishes.
         run: |
-          mkdir -p "$RUNNER_TEMP/samples"
-          swift test &
-          tests=$!
-          (
-            for _ in $(seq 1 600); do
-              pgrep -f 'swiftpm-testing-helper.*b4appPackageTests' >/dev/null && break
-              sleep 0.5
-            done
-            last=0
-            for at in 5 15 30 45; do
-              sleep $((at - last))
-              last=$at
-              helper=$(pgrep -n -f 'swiftpm-testing-helper.*b4appPackageTests' || true)
-              if [ -n "$helper" ]; then
-                sample "$helper" 2 -file "$RUNNER_TEMP/samples/sample-$at.txt" >/dev/null 2>&1 || true
-              fi
-            done
-          ) &
-          wait "$tests"
-      - name: Save the test process samples
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: package-test-samples
-          path: ${{ runner.temp }}/samples
-          retention-days: 3
+          status=0
+          swift test --skip-build --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
+          swift test --skip-build --skip '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
+          exit "$status"
 
   apps:
     name: macOS and iOS app builds
