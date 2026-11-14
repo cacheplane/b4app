@@ -12,7 +12,7 @@ extension BannerLayoutTests {
     app.navigationBars.buttons.element(boundBy: 0).tap()
     // All callers return to the list. Wait for that state before the next navigation action,
     // as checkLayout does on other journeys; a tap alone does not prove the pop has settled.
-    XCTAssertTrue(app.buttons["new-thread-dock"].waitForExistence(timeout: 60), app.debugDescription)
+    XCTAssertTrue(app.buttons["new-thread-dock"].appears(within: 60), app.debugDescription)
   }
 
   @MainActor func testWorkspaceNavigationJourney() {
@@ -36,9 +36,9 @@ extension BannerLayoutTests {
     // The sheet is the palette (D-207), opened for Find; its field says what Find searches.
     XCTAssertFalse(app.searchFields.firstMatch.exists)
     app.buttons["list-search"].tap()
-    XCTAssertTrue(app.descendants(matching: .any)["search-palette"].firstMatch.waitForExistence(timeout: 5))
+    XCTAssertTrue(app.descendants(matching: .any)["search-palette"].firstMatch.appears(within: 5))
     let search = app.searchFields["Threads, environments, commands"]
-    XCTAssertTrue(search.waitForExistence(timeout: 5))
+    XCTAssertTrue(search.appears(within: 5))
     XCTAssertTrue(search.isHittable)
     done(id("testSearchWithBannerPresent"))
     app.terminate()
@@ -142,7 +142,7 @@ extension BannerLayoutTests {
       XCTAssertTrue(dismiss.isHittable)
       dismiss.tap()
       // Re-query after dismissal; an indexed handle is not an immutable snapshot.
-      XCTAssertTrue(query.firstMatch.waitForNonExistence(timeout: 5))
+      XCTAssertTrue(query.firstMatch.disappears(within: 5))
       checkLayout(
         app, screen: screen, hasBanner: syncFailure,
         covering: [point("testOtherNoticeImplementations", legacyIndex, 2)])
@@ -195,7 +195,7 @@ extension BannerLayoutTests {
     ] {
       if screen == "detail" { app.buttons["thread-row"].firstMatch.tap() }
       let notice = app.descendants(matching: .any).matching(identifier: identifier).firstMatch
-      XCTAssertTrue(notice.waitForExistence(timeout: 10), app.debugDescription)
+      XCTAssertTrue(notice.appears(within: 10), app.debugDescription)
       checkLayout(app, screen: screen, covering: [point(method)])
       XCTAssertEqual(notice.frame.minX, 16, accuracy: 0.5, "Connection notice uses one page gutter")
       done(id(method))
@@ -293,12 +293,12 @@ extension BannerLayoutTests {
       recover.tap()
       // The Simulator can lose a tap: on main f4ca23d it left this button pressed and the status
       // unchanged. The control exists only in the fixture, so a second tap checks no less of the app.
-      if !recover.waitForNonExistence(timeout: 3), recover.isHittable { recover.tap() }
+      if !recover.disappears(within: 3), recover.isHittable { recover.tap() }
       // The control goes once the fixture's status has changed, so a lost tap fails here, not as a
       // banner that seemed not to clear.
-      XCTAssertTrue(recover.waitForNonExistence(timeout: 10), "The fixture did not take the tap")
+      XCTAssertTrue(recover.disappears(within: 10), "The fixture did not take the tap")
       let banners = app.descendants(matching: .any).matching(identifier: "sync.banner")
-      XCTAssertTrue(banners.firstMatch.waitForNonExistence(timeout: 10), app.debugDescription)
+      XCTAssertTrue(banners.firstMatch.disappears(within: 10), app.debugDescription)
       checkLayout(
         app, screen: screen, hasBanner: false,
         covering: [point("testBannerClearsOnHomeAndDetail", index + 1, 2)])
@@ -311,11 +311,11 @@ extension BannerLayoutTests {
     for (index, screen) in ["sign-in", "sign-in-no-camera", "onboarding"].enumerated() {
       let app = launch(screen)
       if screen == "onboarding" {
-        XCTAssertTrue(app.staticTexts["onboarding.title"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["onboarding.title"].appears(within: 10))
       } else if screen == "sign-in-no-camera" {
-        XCTAssertTrue(app.buttons["Sign in with a passkey"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Sign in with a passkey"].appears(within: 10))
       } else {
-        XCTAssertTrue(app.buttons["Other ways to sign in"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Other ways to sign in"].appears(within: 10))
       }
       XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "sync.banner").firstMatch.exists)
       done(id("testSignInAndOnboardingDoNotShowWorkspaceNotices", index + 1))
@@ -328,14 +328,14 @@ extension BannerLayoutTests {
       let app = launch(screen, notice: "healthy")
       if screen == "notification-warm" { app.buttons["fixture.open-notification"].tap() }
       XCTAssertTrue(
-        app.descendants(matching: .any)["thread-opening"].firstMatch.waitForExistence(timeout: 10))
+        app.descendants(matching: .any)["thread-opening"].firstMatch.appears(within: 10))
       let loading = XCTAttachment(screenshot: app.screenshot())
       loading.name = "\(screen)-loading"
       loading.lifetime = .keepAlways
       add(loading)
       XCTAssertFalse(app.staticTexts["New thread"].isHittable)
       app.buttons["fixture.finish-sync"].tap()
-      XCTAssertTrue(app.navigationBars.staticTexts["Fix the login bug"].waitForExistence(timeout: 10))
+      XCTAssertTrue(app.navigationBars.staticTexts["Fix the login bug"].appears(within: 10))
       checkLayout(
         app, screen: "detail", hasBanner: false,
         covering: [point("testNotificationWaitsForThreadToSync", index + 1)])
@@ -351,9 +351,9 @@ extension BannerLayoutTests {
     let app = launch("notification-warm", notice: "healthy", holdThreadOpen: true)
     app.buttons["fixture.open-notification"].tap()
     let opening = app.descendants(matching: .any)["thread-opening"].firstMatch
-    XCTAssertTrue(opening.waitForExistence(timeout: 10))
+    XCTAssertTrue(opening.appears(within: 10))
     back(app)
-    XCTAssertTrue(opening.waitForNonExistence(timeout: 10))
+    XCTAssertTrue(opening.disappears(within: 10))
     app.buttons["fixture.finish-sync"].tap()
     checkLayout(
       app, screen: "list", hasBanner: false, covering: [point("testBackCancelsNotificationWaitingForSync")])

@@ -10,6 +10,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Whether this change needs the macOS jobs. A pull request that touches only Hub/, Infra/, docs/ or
+  # a root Markdown file does not: nothing those jobs build or test reads them (Scripts/ci_scope.py).
+  # GitHub runs five macOS jobs at once for the whole organisation, so a run that needs none leaves
+  # the runners to the runs that do. A push to main always runs everything, and so does any change
+  # this job is not sure about: the jobs below skip only on an explicit "false".
+  scope:
+    name: Change scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      apple: ${{ steps.scope.outputs.apple }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Decide
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "apple=true" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/changed.txt"
+          python3 Scripts/ci_scope.py --expected "$CHANGED_FILES" < "$RUNNER_TEMP/changed.txt" \
+            | tee -a "$GITHUB_OUTPUT"
+
   b4-runtime:
     name: B4 runtime integration (aimock)
     runs-on: ubuntu-latest
@@ -86,6 +119,10 @@ jobs:
     name: Package build and tests
     runs-on: macos-26
     timeout-minutes: 45
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.apple != 'false' }}
+    outputs:
+      ios-apps: ${{ steps.ios-app.outcome }}/${{ steps.ios-beta.outcome }}
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
@@ -126,50 +163,72 @@ jobs:
           swift test --skip-build --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           swift test --skip-build --skip '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           exit "$status"
-
-  apps:
-    name: macOS and iOS app builds
-    runs-on: macos-26
-    # With the layout job's 40 this keeps the 60 minutes the two shared as one job.
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v5
-      - name: Select Xcode 26.6
-        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      # The two iOS app builds, which had a macOS job of their own with the two macOS builds (those
+      # are in the smoke job). They run whatever the tests did, and the "apps" job below reports all
+      # four under the required name from these steps' outcomes, not from this job's result.
       - name: Install XcodeGen
+        if: ${{ !cancelled() }}
         run: brew install xcodegen
       - name: Generate project
+        if: ${{ !cancelled() }}
         run: ./Scripts/generate-project.sh
       - name: Cache SwiftPM (xcodebuild)
+        if: ${{ !cancelled() }}
         uses: actions/cache@v4
         with:
           path: .spm
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: spm-xcode-${{ runner.os }}-
-      - name: Build macOS app
-        run: >
-          xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
+      # DerivedData stays out of .build, which the SwiftPM cache above saves.
       - name: Build iOS app (simulator)
+        id: ios-app
+        if: ${{ !cancelled() }}
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
-      - name: Build macOS app (beta)
-        run: >
-          xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS-Beta -destination 'platform=macOS'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
+          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
       - name: Build iOS app (beta, simulator)
+        id: ios-beta
+        if: ${{ !cancelled() }}
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
+          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
 
-  # The fixture app builds from the package, not from the four app builds, so it runs beside them.
+  # The required check for the four app builds. The builds are steps of two jobs that already hold
+  # a macOS runner (iOS in "package", macOS in "macos-smoke"), so a run asks for four macOS runners
+  # where it asked for five. This job always runs and reads the build steps' own outcomes: a failed
+  # test in either job does not fail it, and a build that failed, was cancelled or never ran does.
+  apps:
+    name: macOS and iOS app builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [scope, package, macos-smoke]
+    if: always()
+    permissions: {}
+    steps:
+      - name: Every app build passed
+        env:
+          APPLE: ${{ needs.scope.outputs.apple }}
+          JOBS: ${{ needs.package.result }}/${{ needs.macos-smoke.result }}
+          IOS: ${{ needs.package.outputs.ios-apps }}
+          MACOS: ${{ needs.macos-smoke.outputs.macos-apps }}
+        run: |
+          echo "scope: apple=$APPLE; jobs: $JOBS; iOS builds: $IOS; macOS builds: $MACOS"
+          if [ "$APPLE" = false ] && [ "$JOBS" = skipped/skipped ]; then
+            echo "This change touches nothing the apps are built from."
+            exit 0
+          fi
+          test "$IOS" = success/success
+          test "$MACOS" = success/success
+
+  # The fixture app builds from the package, not from the app builds, so it runs beside them.
   # Two shards of the reviewed plan (Tests/iOSLayout/UITests/shards.json), each checked against the
   # whole plan; "ios-layout-result" below reports them under the name the branch protection requires.
   ios-layout:
     name: iOS layout tests (shard ${{ matrix.shard }} of 2)
     runs-on: macos-26
     timeout-minutes: 30
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.apple != 'false' }}
     strategy:
       # A failure in one shard says nothing about the other's tests: let both report.
       fail-fast: false
@@ -212,26 +271,37 @@ jobs:
           retention-days: 7
 
   # The required check. It always runs, so a cancelled or skipped shard fails it instead of leaving
-  # it skipped, which the branch protection would take for a pass.
+  # it skipped, which the branch protection would take for a pass. The one skip it accepts is the
+  # scope job's: a change that touches nothing these tests read.
   ios-layout-result:
     name: iOS navigation and banner regression tests
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: ios-layout
+    needs: [scope, ios-layout]
     if: always()
     permissions: {}
     steps:
       - name: Every shard passed
         env:
+          APPLE: ${{ needs.scope.outputs.apple }}
           SHARDS: ${{ needs.ios-layout.result }}
         run: |
-          echo "iOS layout shards: $SHARDS"
+          echo "scope: apple=$APPLE; iOS layout shards: $SHARDS"
+          if [ "$APPLE" = false ] && [ "$SHARDS" = skipped ]; then
+            echo "This change touches nothing the layout tests read."
+            exit 0
+          fi
           test "$SHARDS" = success
 
   macos-smoke:
     name: macOS recovery smoke tests
     runs-on: macos-26
-    timeout-minutes: 20
+    # 20 for the smoke tests as before, and the two app builds.
+    timeout-minutes: 30
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.apple != 'false' }}
+    outputs:
+      macos-apps: ${{ steps.macos-app.outcome }}/${{ steps.macos-beta.outcome }}
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
@@ -265,6 +335,22 @@ jobs:
           name: macos-smoke-results
           path: .build/macOSSmoke/Results-*.xcresult
           retention-days: 7
+      # The two macOS app builds (see "apps" above). They run whatever the smoke tests did.
+      - name: Generate project
+        if: ${{ !cancelled() }}
+        run: ./Scripts/generate-project.sh
+      - name: Build macOS app
+        id: macos-app
+        if: ${{ !cancelled() }}
+        run: >
+          xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
+      - name: Build macOS app (beta)
+        id: macos-beta
+        if: ${{ !cancelled() }}
+        run: >
+          xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS-Beta -destination 'platform=macOS'
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
 
   hub:
     name: Hub (Rust)

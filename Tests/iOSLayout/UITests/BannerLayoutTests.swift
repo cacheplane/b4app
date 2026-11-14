@@ -52,7 +52,7 @@ final class BannerLayoutTests: XCTestCase {
     // Slow CI app/Simulator startup can stall accessibility queries beyond ten seconds while the
     // requested detail is still opening. Wait for that screen before judging layout; every
     // rendered-title, banner and control assertion below remains required.
-    XCTAssertTrue(heading.waitForExistence(timeout: 60), app.debugDescription)
+    XCTAssertTrue(heading.appears(within: 60), app.debugDescription)
     let banners = app.descendants(matching: .any).matching(identifier: "sync.banner")
     let banner = hasBanner ? waitForVisible(banners) : visible(banners)
     XCTAssertEqual(banner != nil, hasBanner, app.debugDescription)
@@ -163,7 +163,7 @@ final class BannerLayoutTests: XCTestCase {
   @MainActor
   func checkComposerAlignment(_ app: XCUIApplication) {
     let editor = app.textFields["composer"]
-    XCTAssertTrue(editor.waitForExistence(timeout: 5))
+    XCTAssertTrue(editor.appears(within: 5))
     XCTAssertEqual(editor.frame.minX, 32, accuracy: 0.5, "Draft text uses the page and field insets")
     let environment = app.descendants(matching: .any).matching(identifier: "picker-place").firstMatch
     let runtime = app.descendants(matching: .any).matching(identifier: "picker-runtime").firstMatch
@@ -185,14 +185,14 @@ final class BannerLayoutTests: XCTestCase {
     XCTAssertEqual(place.value as? String, "No folder")
     place.tap()
     let sheet = app.descendants(matching: .any).matching(identifier: "place-sheet").firstMatch
-    XCTAssertTrue(sheet.waitForExistence(timeout: 5), "The place opens the Start in sheet")
+    XCTAssertTrue(sheet.appears(within: 5), "The place opens the Start in sheet")
     XCTAssertTrue(app.navigationBars["Start in"].exists)
     let environment = app.buttons["place-row-project-1"]
     XCTAssertTrue(environment.exists)
     XCTAssertTrue(app.buttons["no-folder"].isSelected)
     XCTAssertFalse(app.buttons["choose-folder"].exists)
     environment.tap()
-    XCTAssertTrue(sheet.waitForNonExistence(timeout: 5), "Choosing closes the sheet")
+    XCTAssertTrue(sheet.disappears(within: 5), "Choosing closes the sheet")
     XCTAssertEqual(place.value as? String, "Layout environment")
   }
 

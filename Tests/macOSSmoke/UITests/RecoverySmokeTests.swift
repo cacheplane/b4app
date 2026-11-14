@@ -90,7 +90,7 @@ final class RecoverySmokeTests: XCTestCase {
     XCTAssertEqual(composer.value as? String, SmokeFixture.draft)
     try await fixture.assertFailedAttempt(in: self)
     app.buttons["recovery-dismiss"].click()
-    XCTAssertTrue(app.descendants(matching: .any)["error-banner"].waitForNonExistence(timeout: 5))
+    XCTAssertTrue(app.descendants(matching: .any)["error-banner"].disappears(within: 5))
     XCTAssertEqual(composer.value as? String, SmokeFixture.draft)
     app.typeKey("q", modifierFlags: .command)
     XCTAssertTrue(app.wait(for: .notRunning, timeout: 10))
@@ -98,7 +98,7 @@ final class RecoverySmokeTests: XCTestCase {
     // The harness tests workspace interactions, independently of macOS's saved-window policy.
     try launchWithWindow(app)
     try await checkContentSize(app, root: fixture.root, width: width, height: height)
-    XCTAssertTrue(row.waitForExistence(timeout: 15), app.debugDescription)
+    XCTAssertTrue(row.appears(within: 15), app.debugDescription)
     row.click()
     try requireElement(composer, in: app)
     XCTAssertEqual(composer.value as? String, SmokeFixture.draft)
