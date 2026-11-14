@@ -113,7 +113,11 @@ final class BannerLayoutTests: XCTestCase {
       if let shown = visible(query) { return shown }
       RunLoop.current.run(until: Date.now.addingTimeInterval(0.25))
     } while Date.now < deadline
-    return nil
+    // One look after the deadline. A look is a snapshot of the app, and on a stalled runner one took
+    // 18 s and reported the app as it was when the look began: the wait ended after two looks with
+    // the element on screen (main c15be6d, run 43563885132). The element must still be drawn and
+    // hittable; a slow look no longer ends the wait on its own.
+    return visible(query)
   }
 
   @MainActor
