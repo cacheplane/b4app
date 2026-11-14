@@ -164,31 +164,14 @@ struct ComposerPickerRow: View {
     }
   }
 
-  /// The environment's name, with the starting folder's name when it has several; a chosen folder (the
-  /// Mac's "Choose folder…") by its own name until Send finds its environment; else "No folder".
-  private func placeText(_ draft: NewThreadDraft) -> String {
-    if let chosen = draft.chosenFolder { return Self.folderName(chosen) }
-    guard let environment = draft.environment else { return "No folder" }
-    guard draft.connection?.kind != .b4, environment.folders.count > 1, let folder = draft.folder else {
-      return environment.displayName
-    }
-    return "\(environment.displayName) · \(Self.folderName(folder))"
+  /// The draft's place; the line's words (`ComposerSummary`) are the same.
+  func placeText(_ draft: NewThreadDraft) -> String {
+    ComposerSummary.placeText(draft)
   }
 
-  /// A thread's place: "No folder" when it has no environment, whatever its folder is called (a folder
-  /// the Mac made for it); an environment not loaded (or gone) by the thread's folder.
+  /// A thread's place; the line's words (`ComposerSummary`) are the same.
   func placeText(_ thread: ConversationThread) -> String {
-    guard let environmentId = thread.environmentId else { return "No folder" }
-    let environment = model.environments.first { $0.id == environmentId }
-    let b4 = connection?.kind == .b4
-    guard let environment else {
-      guard !b4, let context = thread.context, !context.isEmpty else { return "No folder" }
-      return Self.folderName(context)
-    }
-    guard !b4, environment.folders.count > 1, let context = thread.context else {
-      return environment.displayName
-    }
-    return "\(environment.displayName) · \(Self.folderName(context))"
+    ComposerSummary.placeText(thread, in: model)
   }
 
   // MARK: Permissions
@@ -266,12 +249,9 @@ struct ComposerPickerRow: View {
   /// "Claude Code · Sonnet" in full; "Sonnet" short, beside the mark. A B4 agent by its route's name.
   private var runtimeLabel: (full: String, short: String) {
     guard let connection else { return ("Runtime", "Runtime") }
-    if connection.kind == .b4 {
-      let name = model.startLabel(for: connection)
-      return (name, name)
-    }
-    let name = Self.modelName(chosenModel, in: connection)
-    return ("\(connection.label) · \(name)", name)
+    let full = ComposerSummary.runtimeText(connection, model: chosenModel, in: model)
+    if connection.kind == .b4 { return (full, full) }
+    return (full, Self.modelName(chosenModel, in: connection))
   }
 
   /// One group per Codex or Claude connection (Claude Code first, then Codex), then this environment's

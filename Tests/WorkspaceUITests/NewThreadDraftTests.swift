@@ -9,7 +9,7 @@ import WorkspaceProtocol
 
 /// Two Macs. `mac-1` owns environment `p1` (two folders) and `p2` (one folder) with their connections;
 /// `mac-2` owns `p3` (one folder).
-private enum Phone {
+enum Phone {
   static func folder(_ id: String, _ environmentId: String, _ path: String) -> EnvironmentFolder {
     EnvironmentFolder(id: id, environmentId: environmentId, path: path, createdAt: PhoneFixture.at(-1000))
   }
