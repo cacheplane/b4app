@@ -18,16 +18,17 @@ struct ComposerSummary: Equatable {
     [place, runtime, permission].compactMap { $0 }.joined(separator: " · ")
   }
 
-  /// VoiceOver's sentence: the runtime's " · " is read as a pause.
+  /// VoiceOver's sentence: every " · " (the place's and the runtime's) is read as a pause, and the
+  /// permission is its label alone ("Plan mode"), since some labels already say "permissions".
   var spoken: String {
-    var sentence = place.map { "Runs in \($0)" } ?? "Runs"
+    var sentence = place.map { "Runs in " + $0.replacingOccurrences(of: " · ", with: ", ") } ?? "Runs"
     if runtime == Self.noRuntime {
       // A thread has no place to lead with: "Runs, no runtime" would read as a fragment.
       sentence = place == nil ? Self.noRuntime : sentence + ", no runtime"
     } else {
       sentence += " with " + runtime.replacingOccurrences(of: " · ", with: ", ")
     }
-    if let permission { sentence += ", \(permission) permissions" }
+    if let permission { sentence += ", \(permission)" }
     return sentence
   }
 

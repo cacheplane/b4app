@@ -498,11 +498,13 @@ extension WorkspaceModel {
         for folder in folders {
           let name = folder.map { "\(environment.displayName) \u{00B7} \(ComposerPickerRow.folderName($0))" }
           let value = [environment.id, folder ?? ""].joined(separator: Self.choiceSeparator)
+          // Folders of one environment can share a last component; the path tells them apart.
           list.append(
             CommandChoice(
               id: value, title: name ?? environment.displayName, value: value,
               isCurrent: draft.chosenFolder == nil && draft.environmentId == environment.id
-                && (folder == nil || draft.folder == folder)))
+                && (folder == nil || draft.folder == folder),
+              detail: folder.map { PlacePalette.shownPath($0) }))
         }
       }
       list.append(CommandChoice(id: "", title: "No folder", value: "", isCurrent: draft.isNoFolder))

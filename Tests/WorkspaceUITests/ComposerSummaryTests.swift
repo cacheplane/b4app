@@ -84,12 +84,13 @@ import WorkspaceProtocol
     let named = ComposerSummary.draft(draft, in: model)
     #expect(named.permission == first.label)
     #expect(named.text.hasSuffix(" · \(first.label)"))
-    #expect(named.spoken.hasSuffix(", \(first.label) permissions"))
+    #expect(named.spoken.hasSuffix(", \(first.label)"))
+    #expect(!named.spoken.contains("permissions permissions"))
     draft.selectPermission(nil)
     let plain = ComposerSummary.draft(draft, in: model)
     #expect(plain.permission == nil)
     #expect(!plain.text.contains(first.label))
-    #expect(!plain.spoken.contains("permissions"))
+    #expect(!plain.spoken.contains(first.label))
     await model.disconnect()
   }
 
@@ -119,7 +120,7 @@ import WorkspaceProtocol
     let summary = ComposerSummary.thread(thread, in: model)
     #expect(summary.permission == option.label)
     #expect(summary.text == "Claude Code · Sonnet · \(option.label)")
-    #expect(summary.spoken == "Runs with Claude Code, Sonnet, \(option.label) permissions")
+    #expect(summary.spoken == "Runs with Claude Code, Sonnet, \(option.label)")
     await model.disconnect()
   }
 

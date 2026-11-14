@@ -505,6 +505,25 @@ struct SelectionMotionTests {
     await model.disconnect()
   }
 
+  @Test func foldersOfOneEnvironmentWithTheSameNameDifferByTheirPath() async throws {
+    let twins = WorkEnvironment(
+      id: "e3", name: "twins",
+      folders: [
+        EnvironmentFolder(id: "f3", environmentId: "e3", path: "/r/one/app"),
+        EnvironmentFolder(id: "f4", environmentId: "e3", path: "/r/two/app"),
+      ])
+    let transport = ScriptedTransport()
+    transport.set(connections: [claude], threads: [], environments: [twins])
+    let model = WorkspaceModel(transportProvider: { transport })
+    model.connect()
+    try #require(await model.settledLink() == .ready)
+    let rows = model.choices(for: .draftEnvironment, target: .draft).filter { $0.title.hasPrefix("twins") }
+    #expect(rows.count == 2)
+    #expect(rows[0].title == rows[1].title)
+    #expect(rows.compactMap(\.detail) == ["/r/one/app", "/r/two/app"])
+    await model.disconnect()
+  }
+
   @Test func theDraftOffersChooseFolderOnTheMac() async throws {
     let (model, _) = try await connected()
     let list = model.commands(for: .draft)

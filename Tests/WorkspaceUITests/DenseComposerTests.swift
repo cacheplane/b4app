@@ -137,7 +137,7 @@
         .draftRuntime, target: .draft, argument: "claude-1" + WorkspaceModel.choiceSeparator + "opus")
       #expect(outcome == .completed("Claude Code \u{00B7} Opus"))
       try await screen.until("the new runtime") {
-        screen.label("composer-summary") == "Runs in Atlas \u{00B7} atlas with Claude Code, Opus"
+        screen.label("composer-summary") == "Runs in Atlas, atlas with Claude Code, Opus"
       }
       #expect(transport.recorded(.threadStart).isEmpty)
       #expect(transport.recorded(.turnSend).isEmpty)
@@ -224,7 +224,7 @@
         .draftRuntime, target: .draft, argument: "claude-1" + WorkspaceModel.choiceSeparator + "opus")
       #expect(outcome == .completed("Claude Code \u{00B7} Opus"))
       try await screen.until("the new runtime") {
-        screen.label("composer-summary") == "Runs in Atlas \u{00B7} atlas with Claude Code, Opus"
+        screen.label("composer-summary") == "Runs in Atlas, atlas with Claude Code, Opus"
       }
       #expect(draft.statusIsFailure)
       #expect(screen.has("new-thread-status"))
@@ -284,7 +284,8 @@
   /// A view in an offscreen window (`SnapshotWindow`), read through the accessibility tree SwiftUI builds
   /// for it: the elements by identifier, their labels, frames and roles. SwiftUI builds the tree only for
   /// an app an assistive client has asked about, so the app is marked as one first. The app's old setting
-  /// is put back when the last open screen closes.
+  /// is put back when the last open screen closes. The flag is application-wide, so other suites running
+  /// in the same process see it while a HostedScreen is alive.
   @MainActor final class HostedScreen {
     private static let enhanced = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
     private static var open = 0
