@@ -192,6 +192,9 @@ public final class WorkspaceModel {
   /// Counts each request to put the cursor in the new-thread composer; `NewThreadView` focuses its
   /// field on a change, as it does when it appears.
   public internal(set) var newThreadFocusRequest = 0
+  /// Counts each request for the system folder panel ("Choose folder…"); `NewThreadView` opens it on a
+  /// change.
+  public internal(set) var chooseFolderRequest = 0
   /// The iPhone's Settings sheet.
   public var showSettingsSheet = false
   /// Set by the Settings views while they are on screen.

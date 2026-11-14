@@ -105,6 +105,13 @@ struct NewThreadView: View {
       #endif
       focused = true
     }
+    #if os(macOS)
+      // The "Choose folder…" command: the panel is the picker row's own, so the places list gives way.
+      .onChange(of: model.chooseFolderRequest) {
+        placesOpen = false
+        choosingFolder = true
+      }
+    #endif
     // A start accepted later (a retry, a lookup) did not open its thread; open it now.
     .onChange(of: draft.finished) { _, finished in
       guard finished else { return }

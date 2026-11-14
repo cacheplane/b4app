@@ -505,11 +505,74 @@ struct SelectionMotionTests {
     await model.disconnect()
   }
 
+  @Test func theDraftOffersChooseFolderOnTheMac() async throws {
+    let (model, _) = try await connected()
+    let list = model.commands(for: .draft)
+    #if os(macOS)
+      let at = try #require(list.firstIndex(of: .draftEnvironment))
+      #expect(list[at + 1] == .draftChooseFolder)
+    #else
+      #expect(!list.contains(.draftChooseFolder))
+    #endif
+    await model.disconnect()
+    let b4 = try await Phone.macModel(ScriptedTransport())
+    b4.newThreadDraft.selectRuntime(connectionId: "b4-remote", model: nil)
+    #expect(b4.newThreadDraft.connection?.kind == .b4)
+    #if os(macOS)
+      let b4List = b4.commands(for: .draft)
+      let b4At = try #require(b4List.firstIndex(of: .draftEnvironment))
+      #expect(b4List[b4At + 1] == .draftChooseFolder)
+    #else
+      #expect(!b4.commands(for: .draft).contains(.draftChooseFolder))
+    #endif
+    await b4.disconnect()
+  }
+
+  @Test func chooseFolderAsksTheNewThreadViewForThePanel() async throws {
+    let (model, _) = try await connected()
+    let before = model.newThreadDraft.environmentId
+    #expect(model.chooseFolderRequest == 0)
+    #expect(model.availability(of: .draftChooseFolder, target: .draft) == .available)
+    let outcome = await model.run(.draftChooseFolder, target: .draft)
+    #expect(outcome == .completed("Choose a folder"))
+    #expect(model.chooseFolderRequest == 1)
+    #expect(model.newThreadDraft.environmentId == before)
+    #expect(model.newThreadDraft.chosenFolder == nil)
+    await model.disconnect()
+  }
+
+  @Test func chooseFolderIsOffOnAMacThatRelays() async throws {
+    let (model, _) = try await connected()
+    model.accountSource = .host
+    #expect(
+      model.availability(of: .draftChooseFolder, target: .draft)
+        == .unavailable("This Mac\u{2019}s folders cannot be browsed from here."))
+    _ = await model.run(.draftChooseFolder, target: .draft)
+    #expect(model.chooseFolderRequest == 0)
+    await model.disconnect()
+  }
+
+  @Test func slashBrowseIsOfferedInANewThreadDraft() async throws {
+    let (model, _) = try await connected()
+    #if os(macOS)
+      #expect(model.slashCommands(for: .draft).contains(.draftChooseFolder))
+    #endif
+    #expect(!model.slashCommands(for: .thread("quiet")).contains(.draftChooseFolder))
+    #expect(CommandCatalog.definition(.draftChooseFolder).slash == "browse")
+    #expect(CommandCatalog.definition(.draftChooseFolder).argument == .none)
+    await model.disconnect()
+  }
+
   @Test func aDraftsCommandsAreItsOwn() async throws {
     let (model, _) = try await connected()
     let slash = SlashController(workspace: model, target: .draft)
     slash.textChanged(from: "", to: "/")
-    #expect(slash.items.compactMap(\.command) == ["/environment", "/model", "/permissions"])
+    #if os(macOS)
+      #expect(
+        slash.items.compactMap(\.command) == ["/environment", "/model", "/permissions", "/browse"])
+    #else
+      #expect(slash.items.compactMap(\.command) == ["/environment", "/model", "/permissions"])
+    #endif
     slash.textChanged(from: "/", to: "/env")
     _ = await slash.choose()
     slash.textChanged(from: "/env", to: "")
