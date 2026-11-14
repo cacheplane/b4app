@@ -444,6 +444,33 @@
       try await settle()
     }
 
+    /// The panel ends a drag where the pointer was released, when no drag event came from there: a
+    /// busy machine drops the last ones, and CI's screen test found the palette one step short.
+    @Test func aDragEndsWhereThePointerIsReleased() async throws {
+      let state = PanelState()
+      let host = try shortWindow(state)
+      defer { host.window.close() }
+      state.shown = true
+      try await settle()
+      let panel = try #require(host.window.childWindows?.first as? PalettePanel)
+      let home = panel.frame.origin
+      let grip = CGPoint(x: panel.frame.minX + 60, y: panel.frame.maxY - 20)
+      try send(.leftMouseDown, at: grip, to: panel)
+      // Fourteen of fifteen steps arrive; the release is at the fifteenth.
+      for step in 1...14 {
+        try send(
+          .leftMouseDragged, at: CGPoint(x: grip.x + CGFloat(step) * 12, y: grip.y - CGFloat(step) * 9),
+          to: panel)
+        pump()
+      }
+      try send(.leftMouseUp, at: CGPoint(x: grip.x + 180, y: grip.y - 135), to: panel)
+      try await settle()
+      #expect(abs(panel.frame.origin.x - home.x - 180) < 0.5)
+      #expect(abs(panel.frame.origin.y - home.y + 135) < 0.5)
+      state.shown = false
+      try await settle()
+    }
+
     /// The real palette, in its panel, is dragged by the empty part of its field, by its header's
     /// glyph, and by its footer; a click on the field's empty part still puts the cursor in it. In
     /// the palette's header SwiftUI answers for every spot, so a press there hits the hosting view
