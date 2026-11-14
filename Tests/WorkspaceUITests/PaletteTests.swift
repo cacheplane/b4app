@@ -502,6 +502,28 @@ struct SelectionMotionTests {
     await model.disconnect()
   }
 
+  /// D-227: the `/` list's rows carry what the palette's do, under the palette's headings.
+  @Test func commandsAreListedUnderThePalettesHeadingsUntilATokenNarrowsThem() async throws {
+    let (workspace, _) = try await connected()
+    let slash = SlashController(workspace: workspace, target: .thread("quiet"))
+    slash.textChanged(from: "", to: "/")
+    #expect(slash.sections.map(\.title) == ["Relay reconnect backoff", "Workspace"])
+    #expect(slash.sections.flatMap(\.items) == slash.items)
+    let first = try #require(slash.items.first)
+    #expect(first.command == "/model")
+    #expect(first.title == "Choose model\u{2026}")
+    #expect(first.symbol == CommandCatalog.definition(.threadModel).symbol)
+    // A typed token is one plain list, as a typed palette query is.
+    slash.textChanged(from: "/", to: "/pe")
+    #expect(slash.sections.map(\.title) == [nil])
+    // A command's values are listed under its name, each with the command's symbol.
+    slash.textChanged(from: "/pe", to: "/mo")
+    #expect(await slash.choose() == .text(""))
+    #expect(slash.sections.map(\.title) == ["Choose model"])
+    #expect(slash.items.allSatisfy { $0.symbol == CommandCatalog.definition(.threadModel).symbol })
+    await workspace.disconnect()
+  }
+
   @Test func pickingASettingListsItsValuesAndEscapeStepsBack() async throws {
     let (model, transport) = try await connected()
     let slash = SlashController(workspace: model, target: .thread("quiet"))

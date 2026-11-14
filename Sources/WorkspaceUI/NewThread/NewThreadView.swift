@@ -71,7 +71,7 @@ struct NewThreadView: View {
         FloatingPanel(
           isPresented: placesOpen && floatsPalettes,
           size: CGSize(width: PlacePaletteView.width, height: PlacePaletteView.fullHeight),
-          placement: .centered, cornerRadius: PlacePaletteView.radius,
+          placement: .centered, cornerRadius: PlacePaletteView.radius, continuousCorners: false,
           dismissesOnResign: !choosingFolder, dismiss: { closePlaces() }
         ) {
           PlacePaletteView(
