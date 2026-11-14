@@ -205,7 +205,12 @@ struct StepsLineRow: View {
         ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
         : AnyLayout(HStackLayout(spacing: LLA.Space.xs))
       layout {
-        if !segments.isEmpty { parts }
+        if !segments.isEmpty {
+          parts
+          // A running step's name is free text ("swift test"), so a dot keeps the action word from
+          // reading as its last word. Stacked, the action is on its own line and needs none.
+          if !stacked { Text("·").foregroundStyle(LLA.Color.muted).fixedSize() }
+        }
         // Stacked, the action word has the row's width to itself and wraps rather than overrun it.
         Text(line.action(open: open))
           .foregroundStyle(LLA.Color.muted)
