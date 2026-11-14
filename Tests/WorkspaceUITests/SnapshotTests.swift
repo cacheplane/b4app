@@ -883,7 +883,7 @@ private final class BackgroundWindow: NSWindow {
   // MARK: a dense composer
 
   /// The composer at dense on the Mac: one line where the pickers were. A thread's, with the default and
-  /// a chosen permission; the new-thread screen as it opens, starting, blocked, and 420 pt wide with a
+  /// a chosen permission; the new-thread screen as it opens, starting, failed, blocked, and 420 pt wide with a
   /// long place; and the new-thread screen at normal density for comparison.
   @Test func denseComposers() async throws {
     func model(
@@ -939,6 +939,11 @@ private final class BackgroundWindow: NSWindow {
     }
     transport.release(.threadStart, with: .failure(WorkspaceError(.endpointUnavailable, "Stopped.")))
     await send.value
+    // The start failed: the line stays, the failure under it.
+    #expect(starting.newThreadDraft.statusIsFailure)
+    try await render("dense-composer-new-thread-failed", size: CGSize(width: 720, height: 420)) {
+      NewThreadView(model: starting)
+    }
     await starting.disconnect()
     await dense.disconnect()
 

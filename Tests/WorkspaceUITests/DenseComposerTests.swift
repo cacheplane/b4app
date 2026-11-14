@@ -7,7 +7,7 @@
   @testable import WorkspaceUI
 
   /// The dense composer on the Mac: one muted line where the picker row was, in a thread and on the
-  /// new-thread screen; the new-thread status taking the line's row while it shows. Read from hosted
+  /// new-thread screen; "Starting…" taking the line's row while it runs, and a failed start under the line. Read from hosted
   /// views through their accessibility identifiers, in a real (offscreen) window.
   @Suite(.serialized) @MainActor struct DenseComposerTests {
     private static let pickers = ["picker-place", "picker-permission", "picker-runtime"]
@@ -154,7 +154,7 @@
       await model.disconnect()
     }
 
-    // MARK: the status takes the row
+    // MARK: the status
 
     @Test func startingTakesTheRowAndTheLineReturns() async throws {
       let (model, transport) = try await macModel(.dense)
@@ -187,7 +187,7 @@
       await model.disconnect()
     }
 
-    @Test func aFailedStartTakesTheRow() async throws {
+    @Test func aFailedStartSitsUnderTheLine() async throws {
       let (model, transport) = try await macModel(.dense)
       let draft = model.newThreadDraft
       draft.selectFolder("/work/atlas", in: "p1")
@@ -199,13 +199,45 @@
         .threadStart, [.failure(WorkspaceError(.protocolInvalid, "That folder is not in this environment."))])
       await draft.send()
       #expect(draft.statusIsFailure)
-      try await screen.until("the failure") { screen.has("new-thread-status") }
-      #expect(!screen.has("composer-summary"))
       let status = try #require(draft.status)
+      try await screen.until("the failure") {
+        screen.label("new-thread-status")?.contains(status) == true && screen.has("composer-summary")
+      }
       #expect(
         screen.label("new-thread-status")?.contains(status) == true,
         "\(screen.label("new-thread-status") ?? "")")
       #expect(!screen.has("new-thread-reason"))
+      let line = try #require(screen.frame("composer-summary"))
+      let under = try #require(screen.frame("new-thread-status"))
+      #expect(under.maxY <= line.minY + 0.5, "line \(line), failure \(under)")
+      await model.disconnect()
+    }
+
+    @Test func theLineFollowsAChangedChoiceWhileTheFailureShows() async throws {
+      let (model, transport) = try await macModel(.dense)
+      let draft = model.newThreadDraft
+      draft.selectFolder("/work/atlas", in: "p1")
+      draft.selectRuntime(connectionId: "codex-1", model: nil)
+      draft.text = "Find the flaky test"
+      let screen = newThread(model)
+      defer { screen.close() }
+      try await screen.until("the line") { screen.label("composer-summary")?.contains("Codex") == true }
+      transport.script(
+        .threadStart, [.failure(WorkspaceError(.protocolInvalid, "That folder is not in this environment."))])
+      await draft.send()
+      let status = try #require(draft.status)
+      try await screen.until("the failure") {
+        screen.label("new-thread-status")?.contains(status) == true && screen.has("composer-summary")
+      }
+
+      let outcome = await model.run(
+        .draftRuntime, target: .draft, argument: "claude-1" + WorkspaceModel.choiceSeparator + "opus")
+      #expect(outcome == .completed("Claude Code \u{00B7} Opus"))
+      try await screen.until("the new runtime") {
+        screen.label("composer-summary") == "Runs in Atlas \u{00B7} atlas with Claude Code, Opus"
+      }
+      #expect(draft.statusIsFailure)
+      #expect(screen.has("new-thread-status"))
       await model.disconnect()
     }
 

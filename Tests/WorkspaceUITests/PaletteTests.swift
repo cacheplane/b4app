@@ -532,21 +532,73 @@ struct SelectionMotionTests {
     let (model, _) = try await connected()
     let before = model.newThreadDraft.environmentId
     #expect(model.chooseFolderRequest == 0)
-    #expect(model.availability(of: .draftChooseFolder, target: .draft) == .available)
-    let outcome = await model.run(.draftChooseFolder, target: .draft)
-    #expect(outcome == .completed("Choose a folder"))
-    #expect(model.chooseFolderRequest == 1)
+    #if os(macOS)
+      #expect(model.newThreadViewIsShowing)
+      #expect(model.availability(of: .draftChooseFolder, target: .draft) == .available)
+      let outcome = await model.run(.draftChooseFolder, target: .draft)
+      #expect(outcome == .completed("Choose a folder"))
+      #expect(model.chooseFolderRequest == 1)
+    #else
+      #expect(
+        model.availability(of: .draftChooseFolder, target: .draft)
+          == .unavailable("Folders are chosen on your Mac."))
+      _ = await model.run(.draftChooseFolder, target: .draft)
+      #expect(model.chooseFolderRequest == 0)
+    #endif
     #expect(model.newThreadDraft.environmentId == before)
     #expect(model.newThreadDraft.chosenFolder == nil)
     await model.disconnect()
   }
 
+  #if os(macOS)
+    /// The request is answered by `NewThreadView`; where another screen shows, the command says so and
+    /// leaves the request alone.
+    private func expectChooseFolderOff(_ model: WorkspaceModel) async {
+      #expect(!model.newThreadViewIsShowing)
+      #expect(
+        model.availability(of: .draftChooseFolder, target: .draft)
+          == .unavailable("Open a new thread first."))
+      let outcome = await model.run(.draftChooseFolder, target: .draft)
+      guard case .failed = outcome else {
+        Issue.record("expected .failed, got \(outcome)")
+        return
+      }
+      #expect(model.chooseFolderRequest == 0)
+    }
+
+    @Test func chooseFolderNeedsTheNewThreadScreenNotAThread() async throws {
+      let (model, _) = try await connected()
+      model.selectedThreadId = "quiet"
+      await expectChooseFolderOff(model)
+      model.selectedThreadId = nil
+      #expect(model.availability(of: .draftChooseFolder, target: .draft) == .available)
+      await model.disconnect()
+    }
+
+    @Test func chooseFolderNeedsTheNewThreadScreenNotAnEnvironmentForm() async throws {
+      let (model, _) = try await connected()
+      model.openEnvironmentForm(id: b4app.id)
+      await expectChooseFolderOff(model)
+      model.closeEnvironmentForm()
+      #expect(model.availability(of: .draftChooseFolder, target: .draft) == .available)
+      await model.disconnect()
+    }
+
+    @Test func chooseFolderNeedsAReadyConnection() async throws {
+      let model = try await Phone.macModel(ScriptedTransport(), connections: [])
+      await expectChooseFolderOff(model)
+      await model.disconnect()
+    }
+  #endif
+
   @Test func chooseFolderIsOffOnAMacThatRelays() async throws {
     let (model, _) = try await connected()
     model.accountSource = .host
-    #expect(
-      model.availability(of: .draftChooseFolder, target: .draft)
-        == .unavailable("This Mac\u{2019}s folders cannot be browsed from here."))
+    #if os(macOS)
+      #expect(
+        model.availability(of: .draftChooseFolder, target: .draft)
+          == .unavailable("This Mac\u{2019}s folders cannot be browsed from here."))
+    #endif
     _ = await model.run(.draftChooseFolder, target: .draft)
     #expect(model.chooseFolderRequest == 0)
     await model.disconnect()
@@ -556,6 +608,11 @@ struct SelectionMotionTests {
     let (model, _) = try await connected()
     #if os(macOS)
       #expect(model.slashCommands(for: .draft).contains(.draftChooseFolder))
+      // On a Mac that relays through the hub the row is still listed, but cannot run.
+      model.accountSource = .host
+      #expect(model.slashCommands(for: .draft).contains(.draftChooseFolder))
+      #expect(model.availability(of: .draftChooseFolder, target: .draft) != .available)
+      model.accountSource = .coordinator
     #endif
     #expect(!model.slashCommands(for: .thread("quiet")).contains(.draftChooseFolder))
     #expect(CommandCatalog.definition(.draftChooseFolder).slash == "browse")

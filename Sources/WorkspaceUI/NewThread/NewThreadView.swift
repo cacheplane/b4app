@@ -102,12 +102,16 @@ struct NewThreadView: View {
     // ⌘N, the top bar's New thread, or "New thread here": an open palette gives way to the composer.
     .onChange(of: model.newThreadFocusRequest) {
       #if os(macOS)
+        // The palette's dismissal asks for focus as it closes; the folder panel it opened keeps it
+        // until the importer answers.
+        if choosingFolder { return }
         placesOpen = false
       #endif
       focused = true
     }
     #if os(macOS)
       // The "Choose folder…" command: the panel is the picker row's own, so the places list gives way.
+      // No `initial: true`, on purpose: a view made after an old request must not open the panel.
       .onChange(of: model.chooseFolderRequest) {
         placesOpen = false
         choosingFolder = true
@@ -200,15 +204,21 @@ struct NewThreadView: View {
     }
   }
 
-  /// Dense, on the Mac: one line where the picker row is. "Starting…" or a failed start takes its row
-  /// and the line returns after; why Send is off is about the place, so it goes under the line.
+  /// Dense, on the Mac: one line where the picker row is. "Starting…" takes its row while it runs; a
+  /// failed start sits under the line, which stays so the place can be changed to fix it. Why Send is
+  /// off is about the place, so it goes under the line too, unless a failure is showing.
   @ViewBuilder private func denseLines(_ draft: NewThreadDraft) -> some View {
-    if draft.status != nil {
+    let failure = draft.status != nil && !draft.submitting && draft.statusIsFailure
+    if draft.status != nil, !failure {
       statusLine(draft)
     } else {
       ComposerSummaryLine(summary: .draft(draft, in: model))
         .padding(.top, LLA.Space.s)
-      if let reason = draft.blockedReason, notice == nil { reasonLine(reason) }
+      if failure {
+        statusLine(draft)
+      } else if let reason = draft.blockedReason, notice == nil {
+        reasonLine(reason)
+      }
     }
   }
 

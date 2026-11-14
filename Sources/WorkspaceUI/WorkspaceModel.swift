@@ -192,6 +192,17 @@ public final class WorkspaceModel {
   /// Counts each request to put the cursor in the new-thread composer; `NewThreadView` focuses its
   /// field on a change, as it does when it appears.
   public internal(set) var newThreadFocusRequest = 0
+  /// Whether the detail column draws `NewThreadView`: no thread is selected (or one is selected that is
+  /// neither listed nor loading), no environment form is open, and a ready connection can start a
+  /// conversation. The same tests as `ThreadsView.threadOrComposer`; change the two together.
+  var newThreadViewIsShowing: Bool {
+    #if os(macOS)
+      if let id = editingEnvironmentId, environments.contains(where: { $0.id == id }) { return false }
+    #endif
+    if threads.contains(where: { $0.id == selectedThreadId }) { return false }
+    if selectedThreadId != nil, detailLoading || pendingThreadOpen == selectedThreadId { return false }
+    return !conversationReadyConnections.isEmpty
+  }
   /// Counts each request for the system folder panel ("Choose folder…"); `NewThreadView` opens it on a
   /// change.
   public internal(set) var chooseFolderRequest = 0

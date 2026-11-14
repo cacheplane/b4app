@@ -377,8 +377,16 @@ extension WorkspaceModel {
     let thread = target.threadId.flatMap(thread(id:))
     // The panel browses this Mac's folders; a Mac that relays through the hub has none to browse. It
     // does not need the coordinator link, so it is settled before the cases that answer at once.
-    if id == .draftChooseFolder, relaysThroughHub {
-      return .unavailable("This Mac\u{2019}s folders cannot be browsed from here.")
+    if id == .draftChooseFolder {
+      #if os(macOS)
+        if relaysThroughHub {
+          return .unavailable("This Mac\u{2019}s folders cannot be browsed from here.")
+        }
+        // The request is answered by `NewThreadView`; with another screen up nothing would open.
+        if !newThreadViewIsShowing { return .unavailable("Open a new thread first.") }
+      #else
+        return .unavailable("Folders are chosen on your Mac.")
+      #endif
     }
     switch id {
     case .find, .commands, .openSettings, .connectionOpen, .threadOpen, .showArchived,
