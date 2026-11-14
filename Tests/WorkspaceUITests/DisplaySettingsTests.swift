@@ -4,23 +4,29 @@ import WorkspaceProtocol
 
 @testable import WorkspaceUI
 
-/// Settings, Display (the Mac's): the Dense switch; and the view-options menu's three ways of drawing
+/// Settings, Display: the Dense switch; and the view-options menu's three ways of drawing
 /// the threads that do not need the owner.
 @Suite @MainActor struct DisplaySettingsTests {
-  @Test func displayIsTheMacsSecondPage() {
+  @Test func displayIsTheSecondPageOnBothPlatforms() {
     #if os(macOS)
       #expect(
         SettingsPage.allCases == [.account, .display, .connections, .servers, .remoteAccess, .diagnostics])
     #else
-      #expect(!SettingsPage.allCases.contains(.display))
+      #expect(SettingsPage.allCases == [.account, .display, .connections, .servers, .diagnostics])
     #endif
     #expect(SettingsPage.display.title == "Display")
   }
 
   @Test func theSwitchSaysDenseAndWhatItDoes() {
     #expect(DisplaySettingsView.denseLabel == "Dense")
-    #expect(
-      DisplaySettingsView.denseDescription == "Tighter rows for the threads that don\u{2019}t need you.")
+    #if os(macOS)
+      #expect(
+        DisplaySettingsView.denseDescription
+          == "Tighter rows for the threads that don\u{2019}t need you, and answers without the steps in a thread."
+      )
+    #else
+      #expect(DisplaySettingsView.denseDescription == "Answers without the steps in a thread.")
+    #endif
   }
 
   @Test func theMenuOffersShownCollapsedHidden() {

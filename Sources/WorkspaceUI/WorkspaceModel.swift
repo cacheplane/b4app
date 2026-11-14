@@ -28,15 +28,15 @@ public enum ThreadRowState: String, Sendable, Equatable, CaseIterable {
 public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
   case account, display, connections, servers, remoteAccess, diagnostics
 
-  /// The pages this platform shows. "Account" comes first (sign-in plan, Task 12). "Display" and "Remote
-  /// access" are the Mac's: Dense draws only the Mac's sidebar tight, and the Mac mints the pairing code
+  /// The pages this platform shows. "Account" comes first (sign-in plan, Task 12). "Display" is on both
+  /// (Dense changes a thread on the phone too). "Remote access" is the Mac's: it mints the pairing code
   /// and holds itself awake, neither of which the phone does. The phone's Account page reads its host's
   /// account (Task 14).
   nonisolated public static var allCases: [SettingsPage] {
     #if os(macOS)
       [.account, .display, .connections, .servers, .remoteAccess, .diagnostics]
     #else
-      [.account, .connections, .servers, .diagnostics]
+      [.account, .display, .connections, .servers, .diagnostics]
     #endif
   }
 
