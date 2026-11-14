@@ -5,15 +5,37 @@ import WorkspaceProtocol
 /// with the view and never stored.
 @Observable final class TranscriptFolds {
   var open: Set<String>
+  /// From a toggle until the reader returns to the end, sends a message, or another thread is shown:
+  /// the transcript neither pins its bottom edge nor follows the stream, so the opened line stays put.
+  private(set) var holds = false
 
   init(open: Set<String> = []) { self.open = open }
 
   func toggle(_ group: String) {
     if open.contains(group) { open.remove(group) } else { open.insert(group) }
+    holds = true
+  }
+
+  /// The bottom pin and the following come back.
+  func release() {
+    if holds { holds = false }
   }
 
   func reset() {
     if !open.isEmpty { open = [] }
+    release()
+  }
+}
+
+/// The content's height and whether its end is in view (within 8 pt of the viewport's). The height is
+/// part of it so a toggle that leaves the content fitting the viewport still reports in.
+private struct TranscriptEnd: Equatable {
+  var height: CGFloat
+  var reached: Bool
+
+  init(_ geometry: ScrollGeometry) {
+    height = geometry.contentSize.height
+    reached = geometry.visibleRect.maxY >= geometry.contentSize.height - 8
   }
 }
 
@@ -53,16 +75,34 @@ struct TranscriptView: View {
       // A thread opens at its latest message. When the content shrinks (a Stop drops a reply's live
       // text, a reload re-lays the lazy stack), keep the bottom edge in place; scrolling to "bottom" in
       // the same update reads the old layout and leaves the view past the new end.
+      // While an opened turn holds the view, its top edge is kept instead, so the line the reader
+      // pressed stays where it was as its steps are drawn under it and the stream goes on below.
       .defaultScrollAnchor(.bottom, for: .initialOffset)
-      .defaultScrollAnchor(.bottom, for: .sizeChanges)
-      .onChange(of: detail.items.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-      .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in
+      .defaultScrollAnchor(folds.holds ? .top : .bottom, for: .sizeChanges)
+      .onScrollGeometryChange(for: TranscriptEnd.self, of: TranscriptEnd.init) { _, end in
+        if end.reached { folds.release() }
+      }
+      .onChange(of: detail.items.count) { _, _ in follow(proxy) }
+      .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in follow(proxy) }
+      .onChange(of: detail.liveText) { _, _ in follow(proxy) }
+      // The reader sent something: back to the end, as today.
+      .onChange(of: pending?.id) { _, _ in
+        folds.release()
         proxy.scrollTo("bottom", anchor: .bottom)
       }
-      .onChange(of: pending?.id) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-      .onChange(of: detail.liveText) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+      .onChange(of: detail.turns.count) { old, new in
+        guard new > old, folds.holds else { return }
+        folds.release()
+        proxy.scrollTo("bottom", anchor: .bottom)
+      }
       .onChange(of: detail.thread.id) { _, _ in folds.reset() }
     }
+  }
+
+  /// Keeps the end in view as the thread grows, unless an opened turn holds the view.
+  private func follow(_ proxy: ScrollViewProxy) {
+    guard !folds.holds else { return }
+    proxy.scrollTo("bottom", anchor: .bottom)
   }
 }
 
@@ -157,11 +197,12 @@ struct StepsLineRow: View {
         ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
         : AnyLayout(HStackLayout(spacing: LLA.Space.xs))
       layout {
-        if line.text != nil || line.failedText != nil || line.declinedText != nil { parts }
+        if !segments.isEmpty { parts }
+        // Stacked, the action word has the row's width to itself and wraps rather than overrun it.
         Text(line.action(open: open))
           .foregroundStyle(LLA.Color.muted)
-          .lineLimit(1)
-          .fixedSize()
+          .lineLimit(stacked ? nil : 1)
+          .fixedSize(horizontal: !stacked, vertical: true)
       }
       .font(LLAFont.small)
       .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row, alignment: .leading)
@@ -173,20 +214,40 @@ struct StepsLineRow: View {
     .accessibilityIdentifier("steps-line")
   }
 
-  /// The text (the only part that shrinks, cut at its tail), "N failed" in danger and "N declined",
-  /// with ", " between the parts that are present.
+  /// A run of the line drawn in one colour.
+  struct Segment: Equatable {
+    enum Tone: Equatable { case muted, danger }
+    var text: String
+    var tone: Tone
+  }
+
+  /// The text, "N failed" (danger, and only it) and "N declined", with a muted ", " between the parts
+  /// that are present. The action word is not part of it.
+  var segments: [Segment] {
+    var segments: [Segment] = []
+    func add(_ text: String?, _ tone: Segment.Tone) {
+      guard let text else { return }
+      if !segments.isEmpty { segments.append(Segment(text: ", ", tone: .muted)) }
+      segments.append(Segment(text: text, tone: tone))
+    }
+    add(line.text, .muted)
+    add(line.failedText, .danger)
+    add(line.declinedText, .muted)
+    return segments
+  }
+
+  /// The segments; the text is the only part that shrinks, cut at its tail.
   private var parts: some View {
     let stacked = typeSize.isAccessibilitySize
     return HStack(spacing: 0) {
-      if let text = line.text {
-        Text(text).foregroundStyle(LLA.Color.muted).lineLimit(stacked ? nil : 1).truncationMode(.tail)
-      }
-      if let failed = line.failedText {
-        Text((line.text == nil ? "" : ", ") + failed).foregroundStyle(LLA.Color.danger).fixedSize()
-      }
-      if let declined = line.declinedText {
-        Text((line.text == nil && line.failedText == nil ? "" : ", ") + declined)
-          .foregroundStyle(LLA.Color.muted).fixedSize()
+      ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
+        let text = Text(segment.text)
+          .foregroundStyle(segment.tone == .danger ? LLA.Color.danger : LLA.Color.muted)
+        if index == 0, line.text != nil {
+          text.lineLimit(stacked ? nil : 1).truncationMode(.tail)
+        } else {
+          text.fixedSize()
+        }
       }
     }
   }

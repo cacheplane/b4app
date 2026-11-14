@@ -173,6 +173,29 @@
       #expect(cut.label.hasSuffix(", Show"))
     }
 
+    @Test func onlyTheFailedCountIsInDanger() {
+      typealias Segment = StepsLineRow.Segment
+      let both = DenseTranscript.StepsLine(
+        group: "t1", folded: [], counted: 4, failed: 1, declined: 1, running: false, waiting: false,
+        runningName: nil)
+      #expect(
+        lineRow(both).segments == [
+          Segment(text: "4 steps", tone: .muted), Segment(text: ", ", tone: .muted),
+          Segment(text: "1 failed", tone: .danger), Segment(text: ", ", tone: .muted),
+          Segment(text: "1 declined", tone: .muted),
+        ])
+      #expect(lineRow(line(counted: 0)).segments.isEmpty)
+    }
+
+    @Test func stackedTheActionWordWraps() {
+      func stacked(width: CGFloat) -> CGFloat {
+        height(
+          lineRow(line(counted: 0), open: true).environment(\.dynamicTypeSize, .accessibility5), width: width)
+      }
+      // "Hide working" alone on a row narrower than it takes a second line instead of running past it.
+      #expect(stacked(width: 40) > stacked(width: 400))
+    }
+
     @Test func anAnswerKeepsItsRowWhenItsTurnEnds() throws {
       var items = fiveItems()
       items.insert(
@@ -230,6 +253,363 @@
       host.detail = first
       window.host.layoutSubtreeIfNeeded()
       #expect(folds.open.isEmpty)
+    }
+  }
+
+  /// Where the transcript's scroll view stands when a turn is opened and the stream goes on, read from
+  /// the real `TranscriptView` (its lazy stack inside its `ScrollView`) hosted in a 720 by 480 window.
+  @Suite(.serialized) @MainActor struct TranscriptScrollTests {
+    // MARK: fixtures
+
+    private static let thread = "th"
+
+    private func item(
+      _ id: String, turn: String, role: DisplayItemRole, type: String, sequence: Int,
+      native: String? = nil, payload: [String: JSONValue] = [:]
+    ) -> DisplayItem {
+      DisplayItem(
+        id: id, threadId: Self.thread, turnId: turn, nativeItemId: native, role: role, type: type,
+        payload: .object(payload), sequence: sequence, provenance: .live)
+    }
+
+    private func turn(_ number: Int, _ status: TurnStatus = .terminal) -> Turn {
+      Turn(
+        id: "t\(number)", threadId: Self.thread, operationId: "op-\(number)", status: status,
+        outcome: status == .terminal ? .completed : nil,
+        createdAt: String(format: "2026-11-11T10:%02d:00Z", number))
+    }
+
+    private func message(
+      _ id: String, turn: String, sequence: Int, native: String? = nil, text: String
+    )
+      -> DisplayItem
+    {
+      item(
+        id, turn: turn, role: .assistant, type: "agentMessage", sequence: sequence, native: native,
+        payload: ["text": .string(text)])
+    }
+
+    private func step(_ id: String, turn: String, sequence: Int, status: String = "completed") -> DisplayItem
+    {
+      item(
+        id, turn: turn, role: .tool, type: "commandExecution", sequence: sequence,
+        payload: ["command": .string("swift test --filter \(id)"), "status": .string(status)])
+    }
+
+    private func user(_ id: String, turn: String, sequence: Int) -> DisplayItem {
+      item(
+        id, turn: turn, role: .user, type: "userMessage", sequence: sequence,
+        payload: ["text": .string("Next, please: \(id)")])
+    }
+
+    /// One ended turn: the message, four steps and the answer, from `sequence` on.
+    private func endedTurn(_ number: Int, from sequence: Int) -> [DisplayItem] {
+      let id = "t\(number)"
+      return [user("u\(number)", turn: id, sequence: sequence)]
+        + (1...4).map { step("s\(number)-\($0)", turn: id, sequence: sequence + $0) }
+        + [message("a\(number)", turn: id, sequence: sequence + 5, text: "Turn \(number) is done.")]
+    }
+
+    /// Twelve ended turns, each of four steps.
+    private func twelveTurns() -> ThreadDetail {
+      ThreadDetail(
+        thread: conversation(), turns: (1...12).map { turn($0) },
+        items: (1...12).flatMap { endedTurn($0, from: $0 * 10) }, requests: [])
+    }
+
+    /// Twelve ended turns and a thirteenth running, its reply streaming as `n13`.
+    private func twelveAndARunningTurn() -> ThreadDetail {
+      var detail = twelveTurns()
+      detail.turns.append(turn(13, .running))
+      detail.items += [
+        user("u13", turn: "t13", sequence: 130),
+        message("a13", turn: "t13", sequence: 131, native: "n13", text: ""),
+      ]
+      detail.liveText["n13"] = "Starting."
+      return detail
+    }
+
+    private func conversation() -> ConversationThread {
+      ConversationThread(
+        id: Self.thread, connectionId: "c1", nativeThreadId: "n-th", title: "th",
+        createdAt: "2026-11-11T10:00:00Z", updatedAt: "2026-11-11T10:00:00Z")
+    }
+
+    private func lines(_ count: Int) -> String {
+      (1...count).map { "Line \($0) of the streamed reply." }.joined(separator: "\n")
+    }
+
+    // MARK: the hosted transcript
+
+    @Observable @MainActor final class Host {
+      var detail: ThreadDetail
+      init(_ detail: ThreadDetail) { self.detail = detail }
+    }
+
+    private struct HostView: View {
+      let host: Host
+      let folds: TranscriptFolds
+      let dense: Bool
+      var body: some View { TranscriptView(detail: host.detail, dense: dense, folds: folds) }
+    }
+
+    /// The window, the scroll view AppKit made for the transcript's `ScrollView`, and its clip view's
+    /// origin (the document view is flipped: y grows downward from the transcript's top).
+    @MainActor final class Hosted {
+      let host: Host
+      let folds: TranscriptFolds
+      private let root: NSView
+      private let window: NSWindow
+      let scroll: NSScrollView
+
+      init(_ detail: ThreadDetail, dense: Bool = true) throws {
+        host = Host(detail)
+        folds = TranscriptFolds()
+        let snapshot = SnapshotWindow(
+          rootView: HostView(host: host, folds: folds, dense: dense).frame(width: 720, height: 480),
+          untitled: true, size: CGSize(width: 720, height: 480))
+        root = snapshot.host
+        window = snapshot.window
+        root.layoutSubtreeIfNeeded()
+        scroll = try #require(Self.scrollView(in: root), "no NSScrollView under the hosting view")
+        #expect(scroll.documentView?.isFlipped == true)
+      }
+
+      private static func scrollView(in view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView { return scroll }
+        for subview in view.subviews {
+          if let found = scrollView(in: subview) { return found }
+        }
+        return nil
+      }
+
+      func close() { window.close() }
+
+      var origin: CGFloat { scroll.contentView.bounds.origin.y }
+      var documentHeight: CGFloat { scroll.documentView?.frame.height ?? 0 }
+      var viewportHeight: CGFloat { scroll.contentView.bounds.height }
+      /// From the viewport's bottom edge to the document's.
+      var below: CGFloat { documentHeight - (origin + viewportHeight) }
+      /// The end marker is in view: following the stream (`scrollTo("bottom")`) puts the 1 pt marker at
+      /// the viewport's bottom edge, leaving the transcript's bottom padding below it; a reader's scroll
+      /// to the end leaves nothing below.
+      var atEnd: Bool { below >= -0.5 && below <= LLA.Metrics.margin + 1.5 }
+      /// Nothing at all below the viewport.
+      var atDocumentEnd: Bool { abs(below) <= 0.5 }
+
+      /// One layout pass and one turn of the main run loop.
+      private func pass() async {
+        root.layoutSubtreeIfNeeded()
+        turnRunLoop()
+        await Task.yield()
+      }
+
+      /// Synchronous by design: `RunLoop.run` is unavailable from async code.
+      private func turnRunLoop() { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+
+      /// Returns once `condition` holds after a pass. No clock decides the outcome: the timeout only
+      /// ends a test that would otherwise hang.
+      func until(_ what: String, _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(60)
+        while !condition() {
+          guard ContinuousClock.now < deadline else {
+            throw WorkspaceError(.internalError, "timed out waiting for \(what)")
+          }
+          await pass()
+        }
+      }
+
+      /// Returns once the origin and the document's height have not moved for ten passes in a row: the
+      /// lazy stack has laid out what it shows and nothing is left to scroll.
+      func settle() async throws {
+        var last = (origin, documentHeight)
+        var still = 0
+        try await until("the transcript to settle") {
+          let now = (origin, documentHeight)
+          still = abs(now.0 - last.0) < 0.01 && abs(now.1 - last.1) < 0.01 ? still + 1 : 0
+          last = now
+          return still >= 10
+        }
+      }
+
+      /// Moves the clip view as a reader's scroll would, and lets the transcript see it.
+      func scroll(to y: CGFloat) async throws {
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, y)))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        try await settle()
+      }
+
+      /// The lazy stack sizes rows it has not drawn by estimate, so the end moves as it is reached.
+      func scrollToEnd() async throws {
+        try await settle()
+        try await until("the end") {
+          if atDocumentEnd { return true }
+          scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, documentHeight - viewportHeight)))
+          scroll.reflectScrolledClipView(scroll.contentView)
+          return false
+        }
+        try await settle()
+        #expect(atDocumentEnd, "below the viewport: \(below)")
+      }
+    }
+
+    // MARK: opening a turn
+
+    @Test func openingATurnLeavesItsLineWhereItWas() async throws {
+      let view = try Hosted(twelveTurns())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      let origin = view.origin
+      let closed = view.documentHeight
+
+      view.folds.toggle("t12")
+      try await view.until("the turn's steps are drawn") { view.documentHeight > closed + 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5, "moved by \(view.origin - origin)")
+      #expect(view.documentHeight > closed)
+
+      let open = view.documentHeight
+      view.folds.toggle("t12")
+      try await view.until("the turn's steps are gone") { view.documentHeight < open - 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5 || view.atEnd, "moved by \(view.origin - origin)")
+    }
+
+    @Test func aStreamDoesNotMoveAnOpenedTurn() async throws {
+      let view = try Hosted(twelveAndARunningTurn())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      // Reading back a little, where the tenth turn is.
+      try await view.scroll(to: view.origin - 300)
+      let origin = view.origin
+
+      view.folds.toggle("t10")
+      try await view.settle()
+      #expect(view.folds.holds)
+      #expect(abs(view.origin - origin) <= 0.5, "opening moved it by \(view.origin - origin)")
+
+      let height = view.documentHeight
+      view.host.detail.liveText["n13"] = lines(20)
+      view.host.detail.items.append(step("s13-1", turn: "t13", sequence: 132, status: "inProgress"))
+      try await view.until("the reply grows") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5, "the stream moved it by \(view.origin - origin)")
+    }
+
+    @Test func scrollingBackToTheEndFollowsTheStreamAgain() async throws {
+      let view = try Hosted(twelveAndARunningTurn())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      view.folds.toggle("t10")
+      try await view.settle()
+      view.host.detail.liveText["n13"] = lines(10)
+      try await view.settle()
+      #expect(view.folds.holds)
+
+      try await view.scrollToEnd()
+      try await view.until("the hold is released") { !view.folds.holds }
+      let height = view.documentHeight
+      view.host.detail.liveText["n13"] = lines(30)
+      try await view.until("the reply grows") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(view.atEnd, "below the viewport: \(view.below)")
+      #expect(!view.folds.holds)
+    }
+
+    @Test func sendingAMessageReleasesTheHold() async throws {
+      let view = try Hosted(twelveTurns())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      view.folds.toggle("t10")
+      try await view.settle()
+      #expect(view.folds.holds)
+
+      let height = view.documentHeight
+      view.host.detail.turns.append(turn(13, .running))
+      view.host.detail.items.append(user("u13", turn: "t13", sequence: 130))
+      try await view.until("the message is drawn") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(!view.folds.holds)
+      #expect(view.atEnd, "below the viewport: \(view.below)")
+    }
+
+    @Test func aShortThreadStillFollowsItsStream() async throws {
+      var detail = ThreadDetail(thread: conversation(), turns: [turn(1, .running)], items: [], requests: [])
+      detail.items =
+        [user("u1", turn: "t1", sequence: 1)]
+        + (1...4).map { step("s1-\($0)", turn: "t1", sequence: 1 + $0) }
+        + [message("a1", turn: "t1", sequence: 6, native: "n1", text: "")]
+      detail.liveText["n1"] = "Starting."
+      let view = try Hosted(detail)
+      defer { view.close() }
+      try await view.settle()
+
+      let closed = view.documentHeight
+      view.folds.toggle("t1")
+      try await view.until("the turn's steps are drawn") { view.documentHeight > closed + 1 }
+      try await view.settle()
+      #expect(view.documentHeight <= view.viewportHeight + 0.5, "the open turn should still fit")
+      #expect(!view.folds.holds)
+
+      view.host.detail.liveText["n1"] = lines(60)
+      try await view.until("the reply outgrows the window") {
+        view.documentHeight > view.viewportHeight * 2
+      }
+      try await view.settle()
+      #expect(view.atEnd, "below the viewport: \(view.below)")
+    }
+
+    @Test func theAnswerStaysPutWhenItsTurnEnds() async throws {
+      var detail = twelveTurns()
+      detail.turns.append(turn(13, .running))
+      detail.items += [
+        user("u13", turn: "t13", sequence: 130),
+        message("m13-1", turn: "t13", sequence: 131, text: "Looking at the build first."),
+        step("s13-1", turn: "t13", sequence: 132),
+        message("m13-2", turn: "t13", sequence: 133, text: "The test target fails to link."),
+        step("s13-2", turn: "t13", sequence: 134),
+        message("m13-3", turn: "t13", sequence: 135, text: "Fixed the link; running the tests again."),
+        step("s13-3", turn: "t13", sequence: 136),
+        message("a13", turn: "t13", sequence: 137, native: "n13", text: ""),
+      ]
+      detail.liveText["n13"] = "Starting."
+      let view = try Hosted(detail)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      // The view follows the stream, as it does while a reply arrives.
+      let streaming = view.documentHeight
+      view.host.detail.liveText["n13"] = lines(4)
+      try await view.until("the reply grows") { view.documentHeight > streaming + 1 }
+      try await view.settle()
+      #expect(view.atEnd, "below the viewport: \(view.below)")
+      // The answer is the last row: from its bottom edge to the document's end is the transcript's
+      // bottom padding and end marker, whatever is folded above it.
+      let below = view.below
+      let height = view.documentHeight
+
+      var ended = view.host.detail
+      if let index = ended.items.firstIndex(where: { $0.id == "a13" }) {
+        ended.items[index].payload = .object(["text": .string(lines(4))])
+      }
+      ended.liveText = [:]
+      ended.turns[ended.turns.count - 1] = turn(13)
+      view.host.detail = ended
+      try await view.until("the interim messages fold") { view.documentHeight < height - 1 }
+      try await view.settle()
+      #expect(abs(view.below - below) <= 0.5, "the answer moved by \(below - view.below)")
+    }
+
+    @Test func withNothingToggledNormalDensityScrollsAsToday() async throws {
+      let view = try Hosted(twelveAndARunningTurn(), dense: false)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      let height = view.documentHeight
+      view.host.detail.liveText["n13"] = lines(20)
+      try await view.until("the reply grows") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(view.atEnd, "below the viewport: \(view.below)")
     }
   }
 #endif
