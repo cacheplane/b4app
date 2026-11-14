@@ -185,6 +185,35 @@ private struct Rig {
     await rig.stop()
   }
 
+  @Test func aDeniedOrStoppedCallIsClosedAsDeclinedAndAnApprovedOneIsNot() async throws {
+    let rig = try await Rig.start()
+    for (response, declined) in [
+      (RuntimeResponse.decision(.deny), true), (RuntimeResponse.decline(reason: "no"), true),
+      (RuntimeResponse.decision(.allowOnce), false),
+    ] {
+      let ref = try await rig.adapter.createSession(NewSessionInput())
+      _ = try await rig.turn(ref, "please approve, shown")
+      let opened = try await rig.collector.waitFor {
+        $0.kind == .runtimeRequestOpened && $0.nativeIds["threadId"] == ref.nativeSessionId
+      }
+      #expect(opened.payload["request"]?["toolCallId"]?.stringValue == "call_9")
+      try await rig.adapter.respond(
+        RuntimeRequestRef(
+          nativeRequestId: opened.nativeIds["requestId"]!, kind: .commandApproval,
+          adapterGeneration: opened.adapterGeneration), response: response)
+      try await rig.collector.waitFor {
+        $0.kind == .turnFinished && $0.nativeIds["threadId"] == ref.nativeSessionId
+      }
+      let closed = await rig.collector.events.filter {
+        $0.kind == .toolCompleted && $0.nativeIds["threadId"] == ref.nativeSessionId
+      }
+      #expect(
+        closed.compactMap { $0.payload["item"]?["status"]?.stringValue } == (declined ? ["declined"] : []))
+      #expect(closed.allSatisfy { $0.nativeIds["itemId"] == "call_9" })
+    }
+    await rig.stop()
+  }
+
   @Test func stopOnAParkedTurnDeclinesThePrompt() async throws {
     let rig = try await Rig.start()
     let ref = try await rig.adapter.createSession(NewSessionInput())

@@ -124,6 +124,35 @@ private let streamedTurn = """
     #expect(events[1].payload["type"]?.stringValue == "toolUse")
   }
 
+  @Test func aRefusedToolUseReadsDeclinedAndAnotherErrorStillFails() {
+    var t = tracker()
+    t.markDeclined(toolUseId: "toolu_1")
+    let events = run(
+      &t,
+      """
+      {"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"rm -rf data"}}]},"session_id":"s1"}
+      {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"User declined","is_error":true}]},"session_id":"s1","uuid":"u2"}
+      {"type":"assistant","message":{"id":"m3","role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"false"}}]},"session_id":"s1"}
+      {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"exit 1","is_error":true}]},"session_id":"s1","uuid":"u3"}
+      """)
+    #expect(events.map(\.kind) == [.toolStarted, .toolCompleted, .toolStarted, .toolCompleted])
+    #expect(events[1].payload["item"]?["status"]?.stringValue == "declined")
+    #expect(events[1].payload["item"]?["output"]?.stringValue == "User declined")
+    #expect(events[3].payload["item"]?["status"]?.stringValue == "failed")
+  }
+
+  @Test func aRefusalThatWasNeverSentLeavesTheResultItsOwn() {
+    var t = tracker()
+    t.markDeclined(toolUseId: "toolu_1")
+    t.unmarkDeclined(toolUseId: "toolu_1")
+    let events = run(
+      &t,
+      """
+      {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"boom","is_error":true}]},"session_id":"s1","uuid":"u2"}
+      """)
+    #expect(events[0].payload["item"]?["status"]?.stringValue == "failed")
+  }
+
   @Test func permissionRequestsOpenRuntimeRequestsWithSafePayloads() {
     var t = tracker()
     let events = run(

@@ -192,17 +192,31 @@ public final class WorkspaceModel {
   /// Counts each request to put the cursor in the new-thread composer; `NewThreadView` focuses its
   /// field on a change, as it does when it appears.
   public internal(set) var newThreadFocusRequest = 0
-  /// Whether the detail column draws `NewThreadView`: no thread is selected (or one is selected that is
-  /// neither listed nor loading), no environment form is open, and a ready connection can start a
-  /// conversation. The same tests as `ThreadsView.threadOrComposer`; change the two together.
-  var newThreadViewIsShowing: Bool {
-    #if os(macOS)
-      if let id = editingEnvironmentId, environments.contains(where: { $0.id == id }) { return false }
-    #endif
-    if threads.contains(where: { $0.id == selectedThreadId }) { return false }
-    if selectedThreadId != nil, detailLoading || pendingThreadOpen == selectedThreadId { return false }
-    return !conversationReadyConnections.isEmpty
+  /// What the detail column draws; `ThreadsView` draws exactly this, so a command that needs one of the
+  /// screens (the folder panel needs the new-thread composer) asks here.
+  enum DetailPane: Equatable {
+    /// The Mac's environment form (D-212).
+    case environment(WorkEnvironment)
+    case thread(ConversationThread)
+    /// A thread is selected and its row is still being read or opened.
+    case opening
+    /// Nothing can start a conversation yet.
+    case noConnection
+    case newThread
   }
+
+  var detailPane: DetailPane {
+    #if os(macOS)
+      if let id = editingEnvironmentId, let environment = environments.first(where: { $0.id == id }) {
+        return .environment(environment)
+      }
+    #endif
+    if let thread = threads.first(where: { $0.id == selectedThreadId }) { return .thread(thread) }
+    if selectedThreadId != nil, detailLoading || pendingThreadOpen == selectedThreadId { return .opening }
+    return conversationReadyConnections.isEmpty ? .noConnection : .newThread
+  }
+
+  var newThreadViewIsShowing: Bool { detailPane == .newThread }
   /// Counts each request for the system folder panel ("Choose folder…"); `NewThreadView` opens it on a
   /// change.
   public internal(set) var chooseFolderRequest = 0

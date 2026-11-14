@@ -652,6 +652,15 @@ struct SelectionMotionTests {
       await model.disconnect()
     }
 
+    @Test func chooseFolderNeedsTheNewThreadScreenNotAThreadStillOpening() async throws {
+      let (model, _) = try await connected()
+      model.selectedThreadId = "not-here-yet"
+      model.requestOpenThread("not-here-yet")
+      #expect(model.detailPane == .opening)
+      await expectChooseFolderOff(model)
+      await model.disconnect()
+    }
+
     @Test func chooseFolderNeedsTheNewThreadScreenNotAnEnvironmentForm() async throws {
       let (model, _) = try await connected()
       model.openEnvironmentForm(id: b4app.id)

@@ -24,6 +24,8 @@ public actor B4Adapter: AgentAdapter {
     var grant: String?
     var allowAlways: Bool
     var generation: Int
+    /// The tool call the prompt is about, when B4 names it.
+    var toolCallId: String?
   }
 
   /// What the server says about a turn whose stream this coordinator is not consuming.
@@ -424,7 +426,8 @@ public actor B4Adapter: AgentAdapter {
         pending[id] = PendingInterrupt(
           threadId: threadId, grant: event.payload["request"]?["grant"]?.stringValue,
           allowAlways: event.payload["request"]?["allowAlways"]?.boolValue ?? true,
-          generation: event.adapterGeneration)
+          generation: event.adapterGeneration,
+          toolCallId: event.payload["request"]?["toolCallId"]?.stringValue)
       }
       eventContinuation.yield(event)
     }
@@ -529,7 +532,7 @@ public actor B4Adapter: AgentAdapter {
       let events = translator.reopen(interruptId: prompt.id, value: prompt.value, grant: prompt.grant)
       pending[prompt.id] = PendingInterrupt(
         threadId: threadId, grant: prompt.grant, allowAlways: prompt.value["allowAlways"]?.boolValue ?? true,
-        generation: generation)
+        generation: generation, toolCallId: prompt.value["toolCallId"]?.stringValue)
       for event in events { eventContinuation.yield(event) }
     }
     runs[threadId] = Run(translator: translator, task: nil, cancel: nil)
@@ -582,12 +585,16 @@ public actor B4Adapter: AgentAdapter {
       if failure.code == .staleRuntimeRequest { pending[interruptId] = nil }
       throw report(failure)
     }
+    let refused = decision == .deny || decision == .cancelled ? pending[interruptId]?.toolCallId : nil
     pending[interruptId] = nil
     var translator =
       runs[threadId]?.translator
       ?? B4TurnTranslator(
         connectionId: connectionId, threadId: threadId, turnId: "resume", generation: generation)
     translator.beginResume()
+    if let refused {
+      for event in translator.declineCall(refused) { eventContinuation.yield(event) }
+    }
     start(threadId: threadId, translator: translator, handle: handle)
   }
 

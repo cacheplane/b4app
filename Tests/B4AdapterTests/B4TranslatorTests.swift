@@ -97,6 +97,34 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(usage?["model"]?.stringValue == "gpt-5-mini")
   }
 
+  @Test func aRefusedCallIsClosedAsDeclinedAndItsResultStaysDeclined() {
+    var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
+    _ = translator.translate(
+      .toolCall(id: "call_9", name: "bash", input: ["command": "rm -rf tmp"], messageId: nil))
+    _ = translator.translate(
+      .toolCall(id: "call_10", name: "bash", input: ["command": "false"], messageId: nil))
+    translator.beginResume()
+    let closed = translator.declineCall("call_9")
+    #expect(closed.map(\.kind) == [.toolCompleted])
+    #expect(closed[0].nativeIds["itemId"] == "call_9")
+    #expect(closed[0].payload["item"]?["status"]?.stringValue == "declined")
+    #expect(closed[0].payload["item"]?["command"]?.stringValue == "rm -rf tmp")
+    let refused = translator.translate(
+      .toolResult(id: "call_9", name: "bash", output: ["error": "Permission denied"]))
+    #expect(refused[0].payload["item"]?["status"]?.stringValue == "declined")
+    let failed = translator.translate(.toolResult(id: "call_10", name: "bash", output: ["error": "exit 1"]))
+    #expect(failed[0].payload["item"]?["status"]?.stringValue == "failed")
+  }
+
+  @Test func aRefusedCallTheStreamNeverShowedWaitsForItsResult() {
+    var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
+    translator.beginResume()
+    #expect(translator.declineCall("call_9").isEmpty)
+    let result = translator.translate(
+      .toolResult(id: "call_9", name: "bash", output: ["error": "Permission denied"]))
+    #expect(result[0].payload["item"]?["status"]?.stringValue == "declined")
+  }
+
   @Test func aParkKeepsTheTurnOpenUntilTheResumeStreamFinishes() {
     var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
     var events: [AdapterEvent] = []

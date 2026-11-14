@@ -17,7 +17,8 @@ struct ComposerSummaryLine: View {
 
   /// The runtime and the permission, led by " · " when the place comes before them.
   static func rest(_ summary: ComposerSummary) -> String {
-    let words = [summary.runtime, summary.permission].compactMap { $0 }.joined(separator: " · ")
+    let words = [summary.runtime ?? ComposerSummary.noRuntime, summary.permission].compactMap { $0 }
+      .joined(separator: " · ")
     return summary.place == nil ? words : " · " + words
   }
 

@@ -200,7 +200,7 @@ func values(of flag: String, in argv: [String]) -> [String] {
     await rig.adapter.dispose()
   }
 
-  @Test func deniedToolShowsAFailedResultAndTheTurnStillCompletes() async throws {
+  @Test func deniedToolShowsADeclinedResultAndTheTurnStillCompletes() async throws {
     let rig = try Rig()
     let ref = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
     _ = try await rig.turn(ref, "use a tool")
@@ -211,7 +211,8 @@ func values(of flag: String, in argv: [String]) -> [String] {
         adapterGeneration: opened.adapterGeneration),
       response: .decision(.deny))
     let tool = try await rig.collector.waitFor { $0.kind == .toolCompleted }
-    #expect(tool.payload["item"]?["status"]?.stringValue == "failed")
+    #expect(tool.payload["item"]?["status"]?.stringValue == "declined")
+    #expect(tool.payload["item"]?["output"]?.stringValue == "User declined")
     let message = try await rig.collector.waitFor { $0.kind == .messageCompleted }
     #expect(message.payload["item"]?["text"]?.stringValue == "I could not run the command.")
     await rig.adapter.dispose()
