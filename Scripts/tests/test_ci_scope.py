@@ -66,20 +66,75 @@ class WorkflowTests(unittest.TestCase):
     def test_the_app_builds_check_reads_the_four_build_steps(self):
         apps = self.jobs["apps"]
         self.assertIn("name: macOS and iOS app builds\n", apps)
-        self.assertIn("needs: [scope, package, macos-smoke]\n    if: always()\n", apps)
-        self.assertIn('if [ "$APPLE" = false ] && [ "$JOBS" = skipped/skipped ]; then', apps)
-        self.assertIn('test "$IOS" = success/success\n          test "$MACOS" = success/success', apps)
-        self.assertIn("ios-apps: ${{ steps.ios-app.outcome }}/${{ steps.ios-beta.outcome }}", self.jobs["package"])
+        self.assertIn("needs: [scope, package, ios-layout, macos-smoke]\n    if: always()\n", apps)
+        self.assertIn("IOS: ${{ needs.package.outputs.ios-app }}/${{ needs.ios-layout.outputs.ios-beta }}\n", apps)
+        self.assertIn("MACOS: ${{ needs.macos-smoke.outputs.macos-apps }}\n", apps)
+        self.assertIn("ios-app: ${{ steps.ios-app.outcome }}\n", self.jobs["package"])
+        # Only shard 1 builds and reports; an empty output from shard 2 replaces nothing.
+        self.assertIn("ios-beta: ${{ matrix.shard == 1 && steps.ios-beta.outcome || '' }}\n", self.jobs["ios-layout"])
         self.assertIn("macos-apps: ${{ steps.macos-app.outcome }}/${{ steps.macos-beta.outcome }}",
                       self.jobs["macos-smoke"])
         # The builds run whatever the tests before them did.
-        for job, steps in (("package", ["ios-app", "ios-beta"]), ("macos-smoke", ["macos-app", "macos-beta"])):
-            for step in steps:
-                self.assertIn(f"        id: {step}\n        if: ${{{{ !cancelled() }}}}\n", self.jobs[job])
-        for job, schemes in (("package", ["B4App-iOS ", "B4App-iOS-Beta "]),
-                             ("macos-smoke", ["B4App-macOS ", "B4App-macOS-Beta "])):
-            for scheme in schemes:
-                self.assertIn(f"-scheme {scheme}", self.jobs[job])
+        always = "${{ !cancelled() }}"
+        for job, step, condition in (("package", "ios-app", always),
+                                     ("ios-layout", "ios-beta", "${{ !cancelled() && matrix.shard == 1 }}"),
+                                     ("macos-smoke", "macos-app", always), ("macos-smoke", "macos-beta", always)):
+            self.assertIn(f"        id: {step}\n        if: {condition}\n", self.jobs[job])
+        # Each scheme is built once, for the destination it always was.
+        text = "".join(self.jobs.values())
+        for job, scheme, destination in (("package", "B4App-iOS", "generic/platform=iOS Simulator"),
+                                         ("ios-layout", "B4App-iOS-Beta", "generic/platform=iOS Simulator"),
+                                         ("macos-smoke", "B4App-macOS", "platform=macOS"),
+                                         ("macos-smoke", "B4App-macOS-Beta", "platform=macOS")):
+            command = f"xcodebuild build -project B4App.xcodeproj -scheme {scheme} -destination '{destination}'\n"
+            self.assertEqual(text.count(command), 1, scheme)
+            self.assertIn(command, self.jobs[job])
+
+
+class CombiningCheckTests(unittest.TestCase):
+    """The two required checks' own shell, run as the workflow runs it, on outcomes that must fail."""
+
+    def script(self, job):
+        text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        body = text[text.index(f"\n  {job}:\n"):].split("        run: |\n", 1)[1]
+        lines = []
+        for line in body.split("\n"):
+            if line.strip() and not line.startswith("          "):
+                break
+            lines.append(line[10:])
+        return "\n".join(lines)
+
+    def passes(self, job, **env):
+        result = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", self.script(job)],
+                                env={"PATH": "/usr/bin:/bin", **env}, capture_output=True, text=True)
+        return result.returncode == 0
+
+    def test_the_app_builds_check(self):
+        good = dict(APPLE="true", JOBS="success/success/success", IOS="success/success", MACOS="success/success")
+        self.assertTrue(self.passes("apps", **good))
+        # A failed test in a job that holds a build does not fail the builds' check.
+        self.assertTrue(self.passes("apps", **{**good, "JOBS": "failure/failure/failure"}))
+        self.assertTrue(self.passes("apps", APPLE="false", JOBS="skipped/skipped/skipped", IOS="/", MACOS=""))
+        bad = [
+            {"IOS": "failure/success"}, {"IOS": "success/failure"}, {"MACOS": "failure/success"},
+            {"MACOS": "success/failure"}, {"IOS": "success/cancelled"}, {"IOS": "success/skipped"},
+            # Shard 1 never reported, or the output was lost: empty, not a pass.
+            {"IOS": "success/"}, {"IOS": "/success"}, {"MACOS": "/"}, {"MACOS": ""},
+            # Jobs skipped without the scope's explicit false, and a false with a job that ran.
+            {"APPLE": "true", "JOBS": "skipped/skipped/skipped", "IOS": "/", "MACOS": ""},
+            {"APPLE": "", "JOBS": "skipped/skipped/skipped", "IOS": "/", "MACOS": ""},
+            {"APPLE": "false", "JOBS": "skipped/success/skipped", "IOS": "/", "MACOS": ""},
+            {"APPLE": "false", "JOBS": "cancelled/cancelled/cancelled", "IOS": "/", "MACOS": ""},
+        ]
+        for change in bad:
+            self.assertFalse(self.passes("apps", **{**good, **change}), change)
+
+    def test_the_layout_check(self):
+        self.assertTrue(self.passes("ios-layout-result", APPLE="true", SHARDS="success"))
+        self.assertTrue(self.passes("ios-layout-result", APPLE="false", SHARDS="skipped"))
+        for apple, shards in (("true", "failure"), ("true", "cancelled"), ("true", "skipped"), ("", "skipped"),
+                              ("false", "failure"), ("true", "")):
+            self.assertFalse(self.passes("ios-layout-result", APPLE=apple, SHARDS=shards), (apple, shards))
 
 
 if __name__ == "__main__":

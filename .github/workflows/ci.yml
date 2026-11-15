@@ -122,7 +122,7 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.apple != 'false' }}
     outputs:
-      ios-apps: ${{ steps.ios-app.outcome }}/${{ steps.ios-beta.outcome }}
+      ios-app: ${{ steps.ios-app.outcome }}
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
@@ -163,9 +163,11 @@ jobs:
           swift test --skip-build --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           swift test --skip-build --skip '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           exit "$status"
-      # The two iOS app builds, which had a macOS job of their own with the two macOS builds (those
-      # are in the smoke job). They run whatever the tests did, and the "apps" job below reports all
-      # four under the required name from these steps' outcomes, not from this job's result.
+      # One of the four app builds, which had a macOS job of their own. The beta iOS build is a step
+      # of layout shard 1 and the two macOS builds are steps of the smoke job, so no job carries more
+      # than this one did when it held both iOS builds and was the longest (D-232). The build runs
+      # whatever the tests did, and the "apps" job below reports all four under the required name
+      # from the steps' outcomes, not from the jobs' results.
       - name: Install XcodeGen
         if: ${{ !cancelled() }}
         run: brew install xcodegen
@@ -186,34 +188,29 @@ jobs:
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'
           -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
-      - name: Build iOS app (beta, simulator)
-        id: ios-beta
-        if: ${{ !cancelled() }}
-        run: >
-          xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
 
-  # The required check for the four app builds. The builds are steps of two jobs that already hold
-  # a macOS runner (iOS in "package", macOS in "macos-smoke"), so a run asks for four macOS runners
-  # where it asked for five. This job always runs and reads the build steps' own outcomes: a failed
-  # test in either job does not fail it, and a build that failed, was cancelled or never ran does.
+  # The required check for the four app builds. The builds are steps of jobs that already hold a
+  # macOS runner (iOS in "package", beta iOS in layout shard 1, both macOS in "macos-smoke"), so a
+  # run asks for four macOS runners where it asked for five. This job always runs and reads the
+  # build steps' own outcomes: a failed test in any of those jobs does not fail it, and a build that
+  # failed, was cancelled, never ran or never reported does.
   apps:
     name: macOS and iOS app builds
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [scope, package, macos-smoke]
+    needs: [scope, package, ios-layout, macos-smoke]
     if: always()
     permissions: {}
     steps:
       - name: Every app build passed
         env:
           APPLE: ${{ needs.scope.outputs.apple }}
-          JOBS: ${{ needs.package.result }}/${{ needs.macos-smoke.result }}
-          IOS: ${{ needs.package.outputs.ios-apps }}
+          JOBS: ${{ needs.package.result }}/${{ needs.ios-layout.result }}/${{ needs.macos-smoke.result }}
+          IOS: ${{ needs.package.outputs.ios-app }}/${{ needs.ios-layout.outputs.ios-beta }}
           MACOS: ${{ needs.macos-smoke.outputs.macos-apps }}
         run: |
           echo "scope: apple=$APPLE; jobs: $JOBS; iOS builds: $IOS; macOS builds: $MACOS"
-          if [ "$APPLE" = false ] && [ "$JOBS" = skipped/skipped ]; then
+          if [ "$APPLE" = false ] && [ "$JOBS" = skipped/skipped/skipped ]; then
             echo "This change touches nothing the apps are built from."
             exit 0
           fi
@@ -234,6 +231,10 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2]
+    # Only shard 1 builds the beta iOS app, and only it reports the build: shard 2 leaves the
+    # output empty, and an empty output never replaces another shard's value.
+    outputs:
+      ios-beta: ${{ matrix.shard == 1 && steps.ios-beta.outcome || '' }}
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
@@ -268,6 +269,17 @@ jobs:
           name: ios-layout-results-shard-${{ matrix.shard }}
           path: .build/iOSLayout/Results-*.xcresult
           retention-days: 7
+      # The beta iOS app build (see "apps" above), in the shard whose tests are the shorter. It runs
+      # whatever the tests did, in a DerivedData of its own.
+      - name: Generate project
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: ./Scripts/generate-project.sh
+      - name: Build iOS app (beta, simulator)
+        id: ios-beta
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: >
+          xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
+          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
 
   # The required check. It always runs, so a cancelled or skipped shard fails it instead of leaving
   # it skipped, which the branch protection would take for a pass. The one skip it accepts is the
