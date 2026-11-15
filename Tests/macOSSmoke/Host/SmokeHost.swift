@@ -136,8 +136,21 @@ import WorkspaceStorage
     // Forty short replies, not one tall one: a single message several windows tall does not open at
     // its end in the running app (seen on main too; the hill-climb record's defect 18).
     var texts: [(DisplayItemRole, String, String)] = [(.user, "userMessage", "How do I run the sync tests?")]
-    texts += (1...40).map {
-      (.assistant, "agentMessage", "Earlier reply \($0) of the reading fixture.\nIts second line.")
+    let mode = try? String(contentsOf: root.appendingPathComponent("reading"), encoding: .utf8)
+    if mode == "tall" {
+      // One reply several windows tall, as a long answer or a pasted log is.
+      texts.append(
+        (
+          .assistant, "agentMessage",
+          (1...120).map { "Earlier line \($0) of the reading fixture." }.joined(separator: "\n")
+        ))
+    } else if mode == "long" {
+      // More replies than the transcript draws at once, so "Show earlier" stands above them.
+      texts += (1...200).map { (.assistant, "agentMessage", "Earlier reply \($0) of the reading fixture.") }
+    } else {
+      texts += (1...40).map {
+        (.assistant, "agentMessage", "Earlier reply \($0) of the reading fixture.\nIts second line.")
+      }
     }
     texts += [
       (

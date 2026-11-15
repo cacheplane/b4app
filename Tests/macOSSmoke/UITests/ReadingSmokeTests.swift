@@ -11,7 +11,7 @@ final class ReadingSmokeTests: XCTestCase {
 
   @MainActor func testJumpToLatestAndCopyCode() async throws {
     continueAfterFailure = false
-    let fixture = try await SmokeFixture.start(in: self, reading: true)
+    let fixture = try await SmokeFixture.start(in: self, reading: .short)
     addTeardownBlock { @MainActor in try await fixture.stop(in: self) }
     let app = XCUIApplication()
     addTeardownBlock { @MainActor in
@@ -74,6 +74,112 @@ final class ReadingSmokeTests: XCTestCase {
     try requireElement(jump, in: app)
     transcript.scroll(byDeltaX: 0, deltaY: -2_000)
     XCTAssertTrue(jump.disappears(within: 5))
+  }
+
+  /// A thread whose history is one reply several windows tall opens at its end, like any other: the
+  /// last line is laid out and in view, and nothing says the reader is away from the end.
+  @MainActor func testATallFirstMessageOpensAtItsEnd() async throws {
+    continueAfterFailure = false
+    let fixture = try await SmokeFixture.start(in: self, reading: .tall)
+    addTeardownBlock { @MainActor in try await fixture.stop(in: self) }
+    let app = XCUIApplication()
+    addTeardownBlock { @MainActor in
+      if app.state == .runningForeground || app.state == .runningBackground { app.terminate() }
+    }
+    app.launchEnvironment = [
+      "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": "1100", "SMOKE_DARK": "0", "SMOKE_HEIGHT": "700",
+      "SWIFTNIO_STRICT": "1",
+    ]
+    try launchWithWindow(app)
+    let row = app.buttons.matching(identifier: "thread-row").matching(
+      NSPredicate(format: "label CONTAINS %@", "Reading fixture")
+    ).firstMatch
+    try requireElement(row, in: app, timeout: 30)
+    row.click()
+    let transcript = app.scrollViews["transcript"].firstMatch
+    try requireElement(transcript, in: app)
+    let last = text("End of the reading fixture.", in: app)
+    let found = last.appears(within: 10)
+    shot(app, "tall-opened")
+    let tree = XCTAttachment(
+      string: app.debugDescription.components(separatedBy: "\n").filter {
+        $0.contains("transcript") || $0.contains("StaticText") || $0.contains("ScrollBar")
+          || $0.contains("ValueIndicator")
+      }.joined(separator: "\n"))
+    tree.name = "reading-tree"
+    tree.lifetime = .keepAlways
+    add(tree)
+    XCTAssertTrue(found, "the last message was never laid out")
+    XCTAssertTrue(transcript.frame.intersects(last.frame), "the last message is out of view")
+    let jump = app.buttons["jump-to-latest"]
+    XCTAssertFalse(jump.exists)
+
+    // Scrolling back at once, before anything in the thread has changed: the reader stays in the tall
+    // reply and is not taken back to the end.
+    transcript.scroll(byDeltaX: 0, deltaY: 700)
+    try requireElement(jump, in: app)
+    try await Task.sleep(for: .seconds(1))
+    XCTAssertTrue(jump.exists, "the reader was taken back to the end")
+    XCTAssertFalse(
+      last.exists && transcript.frame.intersects(last.frame), "the last message is still in view")
+    shot(app, "tall-scrolled-back")
+    jump.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    XCTAssertTrue(jump.disappears(within: 5))
+    try await wait("the last line in view") { last.exists && transcript.frame.intersects(last.frame) }
+  }
+
+  /// A thread with more rows than the transcript draws at once opens at its end with its latest rows;
+  /// "Show earlier" at the top draws the rest, and the reader stays among the rows they were reading.
+  @MainActor func testALongThreadShowsEarlierRowsOnRequest() async throws {
+    continueAfterFailure = false
+    let fixture = try await SmokeFixture.start(in: self, reading: .long)
+    addTeardownBlock { @MainActor in try await fixture.stop(in: self) }
+    let app = XCUIApplication()
+    addTeardownBlock { @MainActor in
+      if app.state == .runningForeground || app.state == .runningBackground { app.terminate() }
+    }
+    app.launchEnvironment = [
+      "SMOKE_SOCKET": fixture.socket, "SMOKE_WIDTH": "1100", "SMOKE_DARK": "0", "SMOKE_HEIGHT": "700",
+      "SWIFTNIO_STRICT": "1",
+    ]
+    try launchWithWindow(app)
+    let row = app.buttons.matching(identifier: "thread-row").matching(
+      NSPredicate(format: "label CONTAINS %@", "Reading fixture")
+    ).firstMatch
+    try requireElement(row, in: app, timeout: 30)
+    row.click()
+    let transcript = app.scrollViews["transcript"].firstMatch
+    try requireElement(transcript, in: app)
+    let last = text("End of the reading fixture.", in: app)
+    try requireElement(last, in: app)
+    XCTAssertTrue(transcript.frame.intersects(last.frame), "the thread did not open at its end")
+    // 203 rows: the latest 150 are drawn, and the first reply is not among them.
+    let earlier = app.buttons["show-earlier"]
+    try requireElement(earlier, in: app)
+    XCTAssertEqual(earlier.label, "Show earlier, 53 more")
+    let firstReply = text("Earlier reply 1 of the reading fixture.", in: app)
+    XCTAssertFalse(firstReply.exists)
+
+    // To the top of what is drawn, and press it.
+    try await wait("the button in view", timeout: .seconds(30)) {
+      if transcript.frame.intersects(earlier.frame) { return true }
+      transcript.scroll(byDeltaX: 0, deltaY: 3_000)
+      return false
+    }
+    let reading = text("Earlier reply 51 of the reading fixture.", in: app)
+    try requireElement(reading, in: app)
+    XCTAssertTrue(transcript.frame.intersects(reading.frame))
+    shot(app, "long-at-the-top")
+    earlier.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+    try requireElement(firstReply, in: app)
+    XCTAssertTrue(earlier.disappears(within: 5), "nothing is left to show")
+    // The row the reader was at is still in view; they were not taken to the top or the end.
+    try await wait("the reply the reader was at, still in view") {
+      transcript.frame.intersects(reading.frame)
+    }
+    XCTAssertFalse(transcript.frame.intersects(firstReply.frame), "the reader was taken to the top")
+    shot(app, "long-earlier-shown")
+    XCTAssertTrue(app.buttons["jump-to-latest"].exists)
   }
 
   @MainActor private func text(_ value: String, in app: XCUIApplication) -> XCUIElement {
