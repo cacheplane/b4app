@@ -1,6 +1,6 @@
 ## 2026-11-14: CI's layout build during the boot, rebalanced shards, and where a run's time goes
 
-The checks for D-232, and the record of a review of the delivery paths against a fixed rubric. Branch `blove/ci-cd-optimization-f1bf66`, from `main` 9bb7c97. Verdict at the end: **incomplete**. Everything local passes; no run of this workflow on hosted runners exists, and the claims that need one are listed as untested, not as passed.
+The checks for D-232, and the record of a review of the delivery paths against a fixed rubric. Branch `blove/ci-cd-optimization-f1bf66`, from `main` 9bb7c97. Verdict at the end: **changes required** (it was incomplete until the first hosted run, 43678912064, which is in "The first hosted run" below). Everything local passes; no run of this workflow on hosted runners exists, and the claims that need one are listed as untested, not as passed.
 
 The comparison was fixed before any candidate result was read: `docs/research/2026-11-14-ci-delivery/manifest.json` (scope, obligations, gates, thresholds, decision rules, exclusions, and three dated amendments). The raw rows are `observations.json` beside it, written by `Scripts/ci_timings.py collect`; every hosted figure below can be recomputed from it with `summarize` and `steps`, except the three marked "from logs", which come from job logs and result bundles that GitHub keeps for the runs named.
 
@@ -53,9 +53,9 @@ Inside those jobs (from logs): a shard waited 68 to 165 s for `simctl bootstatus
 | | Hypothesis | Evidence | Decision |
 | --- | --- | --- | --- |
 | E1 | An app build in the DerivedData of the UI fixture that built the same package reuses its modules | Local, 8 builds: the same SwiftCompile tasks either way (macOS 186 and 186; iOS 116 and 116) | Rejected by its rule (at most half the tasks). Nothing changed. |
-| E2 | The fixture can build while the Simulator boots | Local: the whole suite through the new script, 16 of 16 tests, 129 of 129 checkpoints; the boot had finished when the build ended | Kept, pending a hosted run |
-| E3 | Moving `testSyncCopyJourneys` to shard 1 balances the shards | The four runs' result bundles (from logs): journey sums 222 to 287 s and 291 to 533 s before; 299 to 363 s and 246 to 456 s after; the larger shard's median 430 to 390 s. Local: both shards pass, 70 and 59 checkpoints | Kept. The journey was chosen and judged on the same four runs; in one of them the larger sum rises (300 to 345 s) |
-| E4 | The beta iOS build in shard 1 shortens the package job without making a shard the longest | Local: the combining check's shell on 14 failing outcomes, four mutations killed. Hosted: none | Kept, pending a hosted run; alone it can be reverted |
+| E2 | The fixture can build while the Simulator boots | Local: the whole suite through the new script, 16 of 16 tests, 129 of 129 checkpoints; the boot had finished when the build ended. Hosted, one run: its rule is not met (below) | Kept locally; not kept by its hosted rule on the one run there is. To be reverted, or judged on more runs: the owner's call |
+| E3 | Moving `testSyncCopyJourneys` to shard 1 balances the shards | The four runs' result bundles (from logs): journey sums 222 to 287 s and 291 to 533 s before; 299 to 363 s and 246 to 456 s after; the larger shard's median 430 to 390 s. Local: both shards pass, 70 and 59 checkpoints. Hosted, one run: 268 and 401 s, where the old plan would have had 207 and 462 s | Kept. The journey was chosen and judged on the same four runs; in one of them the larger sum rises (300 to 345 s) |
+| E4 | The beta iOS build in shard 1 shortens the package job without making a shard the longest | Local: the combining check's shell on 14 failing outcomes, four mutations killed. Hosted, one run: the output arrived (`IOS: success/success`); the build took 209 s and shard 1 was the longest job | Kept by its rule. Its cost is F5 and F6; alone it can be reverted |
 
 Replaying the four baseline runs with E2 to E4 (arithmetic on the baseline, not a measurement): the longest job's median falls from 967 s to about 840 s if the overlap saves the whole boot wait, and to about 910 s if it saves nothing, with run 43673503907 slower than before in that case. The smoke job, 816 to 842 s and not touched, is then the longest. The manifest's thresholds were 10% off the longest job and 5% off a run's macOS runner time; on this arithmetic the first is met only if most of the boot wait is saved, and the second probably is not (about 4.5% at the median wait). Neither is claimed.
 
@@ -77,9 +77,9 @@ Three read-only reviewers were given the manifest, the diff and the evidence und
 | F1 | A failed beta iOS build in shard 1 failed the shard's job, and so the layout tests' required check too | C09.1 | S3 | regression in the candidate | Fixed: the build steps do not fail the job; the builds' check reads the step's outcome. Tested by the shell tests and the workflow-shape test |
 | F2 | `ci_timings.py` counted a job cancelled while waiting as having run (10 rows; one run's macOS time overstated by 1,802 s) and gave a re-run's carried-over job a negative run time | C02.1 | S2 | new tool | Fixed, with a test for each shape; the observations were regenerated |
 | F3 | The evidence's queue figures (327 jobs, 75th percentile 194 s) did not match the committed rows | C02.2 | S2 | record | Restated from the committed file: 372 jobs, 264 s. The earlier figures came from a draft of the tool with the F2 error |
-| F4 | The first test may now start the moment the boot finishes; the baseline had 148 to 407 s of idle Simulator before it, and one local pass on a 10-core Mac says nothing about a 3-core runner | C08.3 | S2 | open | Not resolved here. A hosted run's phase lines and first journeys decide it |
-| F5 | The beta build loses the first iOS build's warm module cache (it was 28 to 48 s shorter as the second build) | C03.3 | S2 | candidate | Partly met: it builds in the fixture's DerivedData. Its hosted time is unknown |
-| F6 | Shard 1 can now be the longest job in a slow run, and a shard 1 that times out fails the builds' check | C04.1 | S2 | candidate | Its limit is 35 minutes; the slowest green shard 1 in the rows plus the new work is about 1,450 s. Accepted, to be watched |
+| F4 | The first test may now start the moment the boot finishes; the baseline had 148 to 407 s of idle Simulator before it, and one local pass on a 10-core Mac says nothing about a 3-core runner | C08.3 | S2 | open | One hosted run: the wait after the build was 9 and 7 s, and all 16 tests passed on the first attempt with no repetition in either result bundle. One run of the three the rule asks for |
+| F5 | The beta build loses the first iOS build's warm module cache (it was 28 to 48 s shorter as the second build) | C03.3 | S2 | confirmed | Hosted, one run: 209 s in shard 1, against 92 to 135 s as the package job's second build in the baseline. The fixture's DerivedData did not make it cheap; the first iOS build took 207 s on that run's package runner |
+| F6 | Shard 1 can now be the longest job in a slow run, and a shard 1 that times out fails the builds' check | C04.1 | S2 | candidate | Its limit is 35 minutes; the slowest green shard 1 in the rows plus the new work is about 1,450 s. Hosted, one run: shard 1 was the longest job, 1,083 s, 209 s of it the beta build. Accepted, to be watched |
 | F7 | The layout script's tests did not pass shard or caller arguments, and the check tests took the first `run:` of a job | C08.2 | S3 | test gap | Fixed: the arguments are compared between the build and the test run; the step is found by name |
 | F8 | With an empty Simulator id the script would skip the wait | C09.2 | S1 | candidate | Fixed: under `CI` it refuses |
 | F9 | The smoke job is the floor (its two macOS builds run after its tests); thresholds unlikely to be met | C03.2 | S2 | finding | Recorded above; not addressed in this change |
@@ -101,8 +101,8 @@ One status per check for the changed path (`ci.yml`, the candidate). "Untested" 
 | C02.3 inputs, cache state and runner recorded (required) | Pass | manifest; local and hosted figures are never compared with each other |
 | C03.1 dependency graph | Pass | the diagram above, from the workflow and the scripts |
 | C03.2 critical path measured | Pass | the four-run table; F9 |
-| C03.3 serialization removed and re-measured (required) | Untested | the removal is tested locally; the re-measurement needs a hosted run |
-| C04.1 shards balanced on measurements | Untested | balanced on four runs' own times; the result needs hosted runs |
+| C03.3 serialization removed and re-measured (required) | Fail | removed, and re-measured on one hosted run: build and wait took 380 and 368 s before the first test, against a baseline median of 323 s for wait and build. No saving is shown |
+| C04.1 shards balanced on measurements | Pass | one hosted run: journey sums 268 and 401 s (207 and 462 s on the old plan); the jobs are not balanced, because shard 1 also builds the beta app (F6) |
 | C04.2 runner class and capacity | Pass | unchanged: four macOS jobs, standard runners |
 | C04.3 limited capacity and concurrent requests | Untested | not exercised; `cancel-in-progress` per ref is unchanged |
 | C05.1 exact source and inputs | Pass | unchanged: the event's commit, the lock files, Xcode 26.6 |
@@ -116,7 +116,7 @@ One status per check for the changed path (`ci.yml`, the candidate). "Untested" 
 | C07.3 selected work compared with the full run | Untested | no docs-only pull request has run on the scoped workflow (open since D-229) |
 | C08.1 tests and checks preserved (required) | Pass | no test, assertion or timeout of a test changed |
 | C08.2 sharding keeps every test (required) | Pass | the partition check; both shards locally: 70 and 59 of 129 |
-| C08.3 first-attempt reliability | Untested | F4 |
+| C08.3 first-attempt reliability | Untested | F4: one run of three |
 | C09.1 the check reads explicit outcomes (required) | Pass | the shell tests; F1 fixed |
 | C09.2 failures are not swallowed (required) | Pass | the script tests: a failed build or boot ends it with its status |
 | C09.3 injected failures are refused (required) | Pass | 20 failing outcomes and four mutations, locally, with no publication |
@@ -132,20 +132,39 @@ One status per check for the changed path (`ci.yml`, the candidate). "Untested" 
 | C14.3 rollback | Pass | reverting this branch's commits; no external state. Not exercised |
 | C15.1 cost | Pass | runner minutes by class; currency unknown and said so |
 | C15.2 maintainability | Pass | one script, one plan file, one moved step; the review |
-| C15.3 final integrated candidate and holdout (required) | Untested | no hosted run; the holdout is a pull request this work did not write |
+| C15.3 final integrated candidate and holdout (required) | Untested | one hosted run of the candidate, green; no holdout, which is a pull request this work did not write |
 
-Required checks: 9 pass, 0 fail, 2 untested (C03.3, C15.3). Assessed 9 of 11 (82%); verified passing 9 of 11 (82%). The release paths were read and are unchanged; every check for them is untested here, since none was run.
+Required checks: 9 pass, 1 fail (C03.3), 1 untested (C15.3). Assessed 10 of 11 (91%); verified passing 9 of 11 (82%). The release paths were read and are unchanged; every check for them is untested here, since none was run.
 
-### Verdict: incomplete
+### The first hosted run
 
-No required check fails and no S3 or S4 finding is open. What is missing is the hosted evidence, and with it any supported claim of improvement.
+Run 43678912064, pull request 206, commit 4ba2c3d, first attempt, green: all ten checks passed. One run; the manifest claims no span from fewer than five and no reliability from fewer than three. Read with `Scripts/ci_timings.py`, the two shards' logs and result bundles, and the builds' check's log.
 
-What a first hosted run has to show, and what follows:
+| | Package | Smoke | Shard 1 | Shard 2 | Longest | macOS runner time |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline, four runs | 817 to 960 s | 816 to 842 s | 522 to 742 s | 694 to 1,015 s | 865 to 1,015 s, median 967 s | 3,088 to 3,420 s, median 3,235 s |
+| 43678912064 | 1,005 s | 781 s | 1,083 s | 924 s | 1,083 s (shard 1) | 3,793 s |
 
-- Shard 1's `ios-beta` output reaches "macOS and iOS app builds" and the check passes. If it fails with an empty iOS outcome, revert E4 alone.
-- Each shard's log: "layout phase: wait for the Simulator" to "layout phase: test" is short or zero (the boot finished during the build), and the step is shorter than the baseline by at least half the boot wait.
-- The first journeys of each shard pass on the first attempt, in at least three runs, before F4 is closed.
-- `Scripts/ci_timings.py collect --limit 5 | summarize` for the longest job and the macOS minutes, against the four-run table above.
-- A pull request this work did not write, on this workflow: the holdout.
+The longest job is 12% longer than the baseline's median and longer than in any of the four runs; the macOS runner time is 17% more. The thresholds asked for 10% and 5% less. The run's span was 21.9 minutes with waits for a macOS runner of 32 to 45 s (the baseline's green first attempts: median 24.7 minutes, with their own waits); that is one span and is not compared.
+
+- **This run's runners were slow in steps this change does not touch.** In the package job, "Build" took 151 s (baseline 80 to 132), "Start the tests' PostgreSQL" 249 s (152 to 181), "Test" 268 s (231 to 259) and the first iOS build 207 s (140 to 179): together 875 s against 630 to 722 s. The smoke job, on another runner, was faster than any baseline run (781 s). So part of what follows is the runners and one run cannot say how much.
+- **E4, the output.** "Every app build passed" printed `scope: apple=true; jobs: success/success/success; iOS builds: success/success; macOS builds: success/success`. Shard 1's `ios-beta` output reached the check with shard 2 leaving it empty. E4's rule is met.
+- **E4, the cost.** The beta build took 209 s in shard 1; as the package job's second iOS build it took 92 to 135 s. The package job without it still ran 1,005 s. F5 is confirmed and larger than the 28 to 48 s expected.
+- **E2, the phases.** Shard 1: build 371 s, wait for the Simulator 9 s, tests 341 s. Shard 2: build 361 s, wait 7 s, tests 457 s. The boot did finish during the build. In 15 baseline shard logs the wait was 67 to 165 s (median 96) and the build after it 147 to 406 s (median 216): wait and build together 216 to 571 s, median 323 s. Here they took 380 and 368 s. The build beside a booting Simulator took about as long as the baseline's wait and build one after the other, on runners that were slow that run. The steps were 778 s (shard 1, with the moved journey's 61 s) and 874 s (shard 2), against 486 to 694 s and 649 to 961 s. E2's hosted rule, a step shorter than its baseline by at least half the boot wait, is not met on this run.
+- **F4, the first tests.** 8 of 8 tests passed in each shard, with no repetition of any test in either result bundle; the first journeys took 26 s (`testConnectionNoticeJourney`) and 66 s (`testEntryRootJourneys`), inside their baseline ranges. One run of three.
+- **E3, the balance.** Journey sums 268 s (shard 1) and 401 s (shard 2). With `testSyncCopyJourneys` (61 s) still in shard 2 they would have been 207 and 462 s.
+- **Not seen.** A re-run of failed jobs (F10), a failed beta build in shard 1 on a hosted run, a docs-only pull request, a holdout.
+
+### Verdict: changes required
+
+One required check fails: C03.3. The serialization was removed and the one hosted measurement shows no saving from it, and the candidate as a whole ran a longer longest job and more macOS runner time than any of the four baseline runs. No S3 or S4 finding is open, no check of correctness fails, and the required checks' names and meaning are unchanged. No improvement is claimed.
+
+What that leaves, for the owner:
+
+- E2 by its own rule is not kept. Either revert it (the layout script's build, wait, test order and its tests; D-229's order returns) or judge it on two more runs, about 60 macOS runner-minutes each, since this run's runners were slow in untouched steps too.
+- E4 met its rule and cost about 75 to 115 s of runner time on this run, with shard 1 the longest job. Reverting commit d980aacf's move alone puts the beta build back in the package job, which was already 1,005 s here without it.
+- E3 stands on one hosted run and the four baseline runs.
+- The tool, the combining checks' shell tests and the timing rows do not depend on E2 or E4.
+- Still open: F4 (two more runs), F10, the docs-only path, the holdout.
 
 To undo: revert this branch's commits. Nothing outside the repository changed.
