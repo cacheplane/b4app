@@ -6935,3 +6935,1868 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.timeoutAllocations == 2 && facts.qualified)
   }
 }
+
+// Dormant B2: independent native S1→S2 oracles and actual owned invocations only.
+// Every group locally qualifies its recipe before opening its target fixtures. These tests
+// assert comparison evidence, never HTTP authentication, owner admission or native quiescence.
+extension OwnedProtocolProofWriteTests {
+  private final class OwnedPositiveCountedMemory: Sendable {
+    private struct State: Sendable {
+      var current = true
+      var calls = 0
+      var selected: Int? = nil
+    }
+    private let state = Mutex(State())
+    func compare() -> Bool {
+      state.withLock {
+        $0.calls += 1
+        return $0.current && $0.selected != $0.calls
+      }
+    }
+    func calls() -> Int { state.withLock { $0.calls } }
+    func setCurrent(_ current: Bool) { state.withLock { $0.current = current } }
+    func disableSelector() { state.withLock { $0.selected = nil } }
+    func armSelector(baseline: Int, localOrdinal: Int) throws {
+      let armed = state.withLock { value -> Bool in
+        guard (1...4).contains(localOrdinal), baseline >= 0, value.current,
+          value.selected == nil, value.calls == baseline
+        else { return false }
+        let (selected, overflow) = baseline.addingReportingOverflow(localOrdinal)
+        guard !overflow else { return false }
+        value.selected = selected
+        return true
+      }
+      if !armed { throw FixtureFailure.redactedFailure }
+    }
+  }
+
+  private struct OwnedPositiveParent {
+    let receipt: ProtocolOwnedProofWriteReceipt
+    let anchor: ProtocolVerificationSnapshot
+    let image: OwnedBindImage
+  }
+
+  private static func ownedPositiveObservation(
+    _ binding: ProtocolMembershipBinding, version: Int = 7
+  ) throws -> ProtocolVerificationObservation {
+    try ProtocolVerificationObservation(
+      binding: binding, reportedMinimum: 2, reportedVersion: version, healthy: true)
+  }
+
+  private static func ownedPositiveObservationObject(
+    _ observation: ProtocolVerificationObservation
+  ) -> [String: Any] {
+    [
+      "binding": ownedT09Binding(observation.binding), "reportedMinimum": observation.reportedMinimum,
+      "reportedVersion": observation.reportedVersion, "healthy": observation.healthy,
+    ]
+  }
+
+  // Expected JSON is authored from the frozen native predecessor; never from receipt payloads,
+  // the legacy positive API, a current recapture or a product-produced candidate.
+  private static func ownedPositiveStage(
+    _ f: Fixture, observation: ProtocolVerificationObservation
+  ) throws -> OwnedBindStageFixture {
+    let before = try ownedBindImage(f.inspector)
+    let predecessor = try ownedDeferredControl(before)
+    guard let binding = predecessor["binding"] as? [String: Any],
+      try ownedT09Data(binding) == ownedT09Data(ownedT09Binding(observation.binding))
+    else { throw FixtureFailure.nativeShape }
+    var expected = predecessor
+    expected["revision"] = try ownedT09Next(predecessor)
+    expected["observation"] = ownedPositiveObservationObject(observation)
+    let image = try ownedT09ControlImage(before, old: predecessor, new: expected)
+    let link = try ownedT09Object(ownedT09Link(before))
+    guard let reference = link["tokenRef"] as? String else { throw FixtureFailure.nativeShape }
+    return try ownedT09Freeze(
+      f, before: before, expected: image, expectedControl: expected, reference: reference)
+  }
+
+  private static func ownedPositiveEstablishParent(
+    _ f: Fixture, anchor: ProtocolVerificationSnapshot, reference: String,
+    admission: ProtocolProofMemoryAdmission, calls: () -> Int
+  ) throws -> OwnedPositiveParent {
+    let before = try ownedBindImage(f.inspector)
+    let control = try ownedDeferredControl(before)
+    var wanted = control
+    if control["binding"] == nil {
+      wanted["revision"] = try ownedT09Next(control)
+      wanted["binding"] = ownedT09Binding(f.binding)
+    } else {
+      guard let binding = control["binding"] as? [String: Any],
+        try ownedT09Data(binding) == ownedT09Data(ownedT09Binding(f.binding))
+      else { throw FixtureFailure.nativeShape }
+    }
+    let expected = try ownedT09ControlImage(before, old: control, new: wanted)
+    let start = calls()
+    let receipt = f.database.prepareProtocolVerification(
+      expectedSnapshot: anchor, expectedBinding: f.binding, expectedTokenRef: reference,
+      memoryAdmission: admission)
+    guard receipt.operation == .bind, receipt.disposition == .committedCurrent,
+      calls() - start == 4, try ownedBindImage(f.inspector) == expected
+    else { throw FixtureFailure.nativeShape }
+    // Explicit setup redemption is separate from the four actual bind-writer checks.
+    let redeemStart = calls()
+    let s1 = try receipt.currentSuccessor(
+      expectedSnapshot: anchor, expectedTokenRef: reference, memoryAdmission: admission)
+    guard calls() - redeemStart == 1 else { throw FixtureFailure.nativeShape }
+    try ownedT09NativeValidate(
+      f, successor: s1, binding: f.binding, reference: reference, observation: anchor.observation)
+    guard try ownedBindImage(f.inspector) == expected else { throw FixtureFailure.nativeShape }
+    return OwnedPositiveParent(receipt: receipt, anchor: s1, image: expected)
+  }
+
+  private static func ownedPositiveParent(
+    _ f: Fixture, anchor: ProtocolVerificationSnapshot, reference: String,
+    admission: ProtocolProofMemoryAdmission, memory: OwnedBindMemory
+  ) throws -> OwnedPositiveParent {
+    try ownedPositiveEstablishParent(
+      f, anchor: anchor, reference: reference, admission: admission, calls: { memory.calls() })
+  }
+
+  // P05 has its own concretely typed checker; old OwnedBindMemory remains init-only.
+  private static func ownedPositiveParent(
+    _ f: Fixture, anchor: ProtocolVerificationSnapshot, reference: String,
+    admission: ProtocolProofMemoryAdmission, memory: OwnedPositiveCountedMemory
+  ) throws -> OwnedPositiveParent {
+    try ownedPositiveEstablishParent(
+      f, anchor: anchor, reference: reference, admission: admission, calls: { memory.calls() })
+  }
+
+  private static func ownedPositiveWriter(
+    database: WorkspaceDatabase, anchor: ProtocolVerificationSnapshot,
+    parent: ProtocolOwnedProofWriteReceipt, observation: ProtocolVerificationObservation,
+    reference: String, admission: ProtocolProofMemoryAdmission, finished: OwnedBindFinished
+  ) -> OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt> {
+    OwnedProofNativeWork { [database, anchor, parent, observation, reference, admission, finished] in
+      let receipt = database.commitObservedProtocolFact(
+        expectedSnapshot: anchor, expectedBindingReceipt: parent, observation: observation,
+        expectedTokenRef: reference, memoryAdmission: admission)
+      finished.markReturned()
+      return receipt
+    }
+  }
+
+  private static func ownedPositiveWrite(
+    _ f: Fixture, parent: OwnedPositiveParent, observation: ProtocolVerificationObservation,
+    reference: String, admission: ProtocolProofMemoryAdmission
+  ) -> ProtocolOwnedProofWriteReceipt {
+    f.database.commitObservedProtocolFact(
+      expectedSnapshot: parent.anchor, expectedBindingReceipt: parent.receipt,
+      observation: observation, expectedTokenRef: reference, memoryAdmission: admission)
+  }
+
+  private static func ownedPositiveRefuses(
+    _ receipt: ProtocolOwnedProofWriteReceipt, anchor: ProtocolVerificationSnapshot,
+    reference: String, admission: ProtocolProofMemoryAdmission, calls: () -> Int,
+    disposition: ProtocolProofWriteDisposition = .confirmedNoncommit
+  ) throws {
+    let before = calls()
+    guard receipt.operation == .positive, receipt.disposition == disposition,
+      !validates({
+        _ = try receipt.currentSuccessor(
+          expectedSnapshot: anchor, expectedTokenRef: reference, memoryAdmission: admission)
+      }), calls() == before, receipt.disposition == disposition
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedPositiveRedeem(
+    _ receipt: ProtocolOwnedProofWriteReceipt, fixture f: Fixture,
+    parent: OwnedPositiveParent, observation: ProtocolVerificationObservation,
+    reference: String, admission: ProtocolProofMemoryAdmission, calls: () -> Int
+  ) throws -> ProtocolVerificationSnapshot {
+    let before = calls()
+    guard receipt.operation == .positive, receipt.disposition == .committedCurrent else {
+      throw FixtureFailure.nativeShape
+    }
+    let successor = try receipt.currentSuccessor(
+      expectedSnapshot: parent.anchor, expectedTokenRef: reference, memoryAdmission: admission)
+    guard calls() - before == 1, successor.observation == observation else {
+      throw FixtureFailure.nativeShape
+    }
+    // Independent native checks are outside currentSuccessor's memory-only authority.
+    try ownedT09NativeValidate(
+      f, successor: successor, binding: observation.binding, reference: reference,
+      observation: observation)
+    return successor
+  }
+
+  private struct OwnedPositiveBodyRecipe {
+    let stage: OwnedBindStageFixture
+    let catalog: [Data]
+  }
+
+  private static let ownedPositiveBodySources: [String: String] = [
+    "assert_complete": "\n" + """
+      DECLARE t text; mismatch boolean;
+      BEGIN
+        IF required_reference IS NULL
+          OR (SELECT count(*) FROM "owned_bind_stage"."meta")<>1
+          OR (SELECT count(*) FROM "owned_bind_stage"."mode")<>1
+          OR convert_to(current_database(),'UTF8') IS DISTINCT FROM
+            (SELECT convert_to(database,'UTF8') FROM "owned_bind_stage"."meta" WHERE singleton=1)
+          OR (SELECT count(*) FROM public.settings WHERE key='__b4app_agent_protocol_activation_v1')<>1
+          OR (SELECT value FROM public.settings WHERE key='__b4app_agent_protocol_activation_v1')
+            IS DISTINCT FROM
+            (SELECT expected_control FROM "owned_bind_stage"."meta" WHERE singleton=1)
+          OR (SELECT count(*) FROM public."hubLink")<>1
+          OR (SELECT count(*) FROM public."hubLink" WHERE id=1)<>1
+          OR (SELECT convert_to("tokenRef",'UTF8') FROM public."hubLink" WHERE id=1)
+            IS DISTINCT FROM convert_to(required_reference,'UTF8')
+        THEN RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001'; END IF;
+        IF EXISTS((SELECT tablename::text FROM pg_catalog.pg_tables WHERE schemaname='public')
+            EXCEPT SELECT name FROM "owned_bind_stage"."names")
+          OR EXISTS((SELECT name FROM "owned_bind_stage"."names")
+            EXCEPT SELECT tablename::text FROM pg_catalog.pg_tables WHERE schemaname='public')
+        THEN RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001'; END IF;
+        FOR t IN SELECT name FROM "owned_bind_stage"."names" LOOP
+          IF t='hubLink' THEN
+            EXECUTE format(
+              'SELECT EXISTS((SELECT to_jsonb(p) FROM public.%I p) EXCEPT ALL '
+              '(SELECT value||jsonb_build_object(''tokenRef'',$2::text) '
+              'FROM "owned_bind_stage"."expected" WHERE name=$1)) '
+              'OR EXISTS((SELECT value||jsonb_build_object(''tokenRef'',$2::text) '
+              'FROM "owned_bind_stage"."expected" WHERE name=$1) EXCEPT ALL '
+              '(SELECT to_jsonb(p) FROM public.%I p))',t,t)
+              INTO mismatch USING t,required_reference;
+          ELSE
+            EXECUTE format(
+              'SELECT EXISTS((SELECT to_jsonb(p) FROM public.%I p) EXCEPT ALL '
+              '(SELECT value FROM "owned_bind_stage"."expected" WHERE name=$1)) '
+              'OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=$1) '
+              'EXCEPT ALL (SELECT to_jsonb(p) FROM public.%I p))',t,t)
+              INTO mismatch USING t;
+          END IF;
+          IF mismatch THEN
+            RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001';
+          END IF;
+        END LOOP;
+        IF (SELECT jsonb_build_object('last_value',last_value,'log_cnt',log_cnt,'is_called',is_called)
+            FROM public.changes_seq_seq) IS DISTINCT FROM
+            (SELECT expected_sequence FROM "owned_bind_stage"."meta" WHERE singleton=1)
+        THEN RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001'; END IF;
+      END
+      """ + " ",
+    "assert_transaction": "\n" + """
+      DECLARE isolation_value text; lock_value text; statement_value text;
+        stamp_value text; device_value text; wanted_device text;
+      BEGIN
+        isolation_value := current_setting('transaction_isolation');
+        lock_value := current_setting('lock_timeout');
+        statement_value := current_setting('statement_timeout');
+        stamp_value := current_setting('b4app.hlc',true);
+        device_value := current_setting('b4app.device_id',true);
+        SELECT expected_device INTO STRICT wanted_device FROM "owned_bind_stage"."meta" WHERE singleton=1;
+        IF isolation_value IS DISTINCT FROM 'read committed' OR lock_value IS DISTINCT FROM '2s'
+          OR statement_value IS DISTINCT FROM '2s' OR stamp_value IS NULL
+          OR stamp_value !~ '^[0-9a-f]{12}-[0-9a-f]{4}-.+$'
+          OR convert_to(substring(stamp_value FROM 19),'UTF8')
+            IS DISTINCT FROM convert_to(wanted_device,'UTF8')
+          OR (wanted_device='local' AND coalesce(device_value,'')<>'')
+          OR (wanted_device<>'local' AND convert_to(device_value,'UTF8')
+            IS DISTINCT FROM convert_to(wanted_device,'UTF8'))
+          OR (SELECT count(*) FROM "owned_bind_stage"."observed")<>0
+        THEN RAISE EXCEPTION 'OWNED_BIND_TRANSACTION_MISMATCH' USING ERRCODE='P0001'; END IF;
+        INSERT INTO "owned_bind_stage"."observed"(isolation,lock_budget,statement_budget,hlc,device)
+          VALUES(isolation_value,lock_value,statement_value,stamp_value,device_value);
+      END
+      """ + " ",
+    "body": "\n" + """
+      DECLARE original text; replacement text; fault boolean; changed bigint;
+      BEGIN
+        SELECT original_ref INTO STRICT original FROM "owned_bind_stage"."meta" WHERE singleton=1;
+        PERFORM "owned_bind_stage"."assert_complete"(original);
+        PERFORM "owned_bind_stage"."assert_transaction"();
+        SELECT m.replacement,m.raw_body_fault INTO STRICT replacement,fault
+          FROM "owned_bind_stage"."mode" m WHERE singleton=1;
+        UPDATE public."hubLink" SET "tokenRef"=replacement WHERE id=1;
+        GET DIAGNOSTICS changed=ROW_COUNT;
+        IF changed<>1 THEN
+          RAISE EXCEPTION 'OWNED_BIND_COMPLETE_MISMATCH' USING ERRCODE='P0001';
+        END IF;
+        PERFORM "owned_bind_stage"."assert_complete"(replacement);
+        PERFORM nextval('"owned_bind_stage"."body_probe"'::regclass);
+        IF fault THEN
+          RAISE EXCEPTION 'OWNED_BIND_RAW_BODY_FAULT' USING ERRCODE='23514';
+        END IF;
+        RETURN NEW;
+      END
+      """ + " ",
+    "commit_normal": "\n" + """
+      DECLARE replacement text;
+      BEGIN
+        SELECT m.replacement INTO STRICT replacement FROM "owned_bind_stage"."mode" m WHERE singleton=1;
+        PERFORM "owned_bind_stage"."assert_complete"(replacement);
+        PERFORM nextval('"owned_bind_stage"."commit_probe"'::regclass);
+        RETURN NEW;
+      END
+      """ + " ",
+  ]
+
+  private static func ownedPositiveBodyShape(
+    _ c: PostgresConnection, stage: OwnedBindStageFixture, replacement: String, fault: Bool
+  ) throws {
+    let mode = try c.execute(
+      "SELECT replacement,raw_body_fault::text AS fault FROM \"owned_bind_stage\".\"mode\" WHERE singleton=1"
+    ).rows
+    guard mode.count == 1, let actual = mode[0].text("replacement"), equalBytes(actual, replacement),
+      mode[0].text("fault") == (fault ? "true" : "false")
+    else { throw FixtureFailure.nativeShape }
+    let sources = try c.execute(
+      """
+      SELECT p.proname AS name,p.prosrc AS source,pg_get_function_identity_arguments(p.oid) AS args,
+        pg_get_function_result(p.oid) AS result,p.proconfig::text AS config,l.lanname AS language,
+        p.provolatile::text AS volatility,p.proparallel::text AS parallel,
+        p.prosecdef::text AS definer,p.proisstrict::text AS strict,p.proleakproof::text AS leakproof,
+        p.prokind::text AS kind
+      FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+      JOIN pg_catalog.pg_language l ON l.oid=p.prolang WHERE n.nspname='owned_bind_stage'
+      """
+    ).rows
+    guard sources.count == ownedPositiveBodySources.count else { throw FixtureFailure.nativeShape }
+    for row in sources {
+      guard let name = row.text("name"), let expected = ownedPositiveBodySources[name],
+        let actual = row.text("source"), equalBytes(actual, expected),
+        row.text("args") == (name == "assert_complete" ? "required_reference text" : ""),
+        row.text("result") == ((name == "body" || name == "commit_normal") ? "trigger" : "void"),
+        row.text("config") == "{search_path=pg_catalog}", row.text("language") == "plpgsql",
+        row.text("volatility") == "v", row.text("parallel") == "u",
+        row.text("definer") == "false", row.text("strict") == "false",
+        row.text("leakproof") == "false", row.text("kind") == "f"
+      else { throw FixtureFailure.nativeShape }
+    }
+    let names = try c.execute("SELECT name FROM \"owned_bind_stage\".\"names\"").rows
+    var expectedRows = Dictionary(uniqueKeysWithValues: stage.expected.rows.keys.map { ($0, [Data]()) })
+    var actualNames = Set<Data>()
+    for row in names {
+      guard let name = row.text("name"), actualNames.insert(Data(name.utf8)).inserted else {
+        throw FixtureFailure.nativeShape
+      }
+    }
+    guard actualNames == Set(stage.expected.rows.keys.map { Data($0.utf8) }) else {
+      throw FixtureFailure.nativeShape
+    }
+    for row in try c.execute(
+      "SELECT name,value::text AS value FROM \"owned_bind_stage\".\"expected\""
+    ).rows {
+      guard let name = row.text("name"), let value = row.text("value"), expectedRows[name] != nil else {
+        throw FixtureFailure.nativeShape
+      }
+      expectedRows[name]!.append(try ownedBindJSON(value))
+    }
+    for name in Array(expectedRows.keys) { expectedRows[name]!.sort { $0.lexicographicallyPrecedes($1) } }
+    guard expectedRows == stage.expected.rows else { throw FixtureFailure.nativeShape }
+    let meta = try c.execute(
+      "SELECT to_jsonb(m)::text AS value FROM \"owned_bind_stage\".\"meta\" m"
+    ).rows
+    let expectedMeta: [String: Any] = [
+      "singleton": 1, "database": stage.before.database, "original_ref": stage.originalReference,
+      "expected_control": try ownedT09Object(Data(stage.controlJSON.utf8)),
+      "expected_sequence": try ownedT09Object(stage.before.sequence),
+      "expected_device": stage.device, "lower_wall": stage.lowerWall,
+    ]
+    guard meta.count == 1, let text = meta[0].text("value"),
+      try ownedBindJSON(text) == ownedT09Data(expectedMeta)
+    else { throw FixtureFailure.nativeShape }
+    let triggers = try c.execute(
+      """
+      SELECT t.tgname AS name,t.tgtype::text AS kind,t.tgenabled::text AS enabled,
+        t.tgdeferrable::text AS deferrable,t.tginitdeferred::text AS deferred,
+        p.proname AS function,n.nspname AS schema
+      FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
+      JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+      WHERE t.tgrelid='public.settings'::pg_catalog.regclass AND NOT t.tgisinternal
+      """
+    ).rows
+    guard triggers.count == 2 else { throw FixtureFailure.nativeShape }
+    for row in triggers {
+      let commit = row.text("name") == "owned_bind_commit_normal"
+      guard commit || row.text("name") == "owned_bind_body",
+        row.text("kind") == "17", row.text("enabled") == "O",
+        row.text("schema") == "owned_bind_stage",
+        row.text("function") == (commit ? "commit_normal" : "body"),
+        row.text("deferrable") == (commit ? "true" : "false"),
+        row.text("deferred") == (commit ? "true" : "false")
+      else { throw FixtureFailure.nativeShape }
+    }
+    let linkTriggers = try c.execute(
+      """
+      SELECT count(*) AS n FROM pg_catalog.pg_trigger
+      WHERE tgrelid='public."hubLink"'::pg_catalog.regclass AND NOT tgisinternal
+      """
+    ).rows
+    guard linkTriggers.count == 1, linkTriggers[0].int("n") == 0 else {
+      throw FixtureFailure.nativeShape
+    }
+  }
+
+  private static func ownedPositiveRawControls(
+    diagnostic: OwnedT11Diagnostic? = nil
+  ) throws -> [OwnedBindRawFacts] {
+    var results: [OwnedBindRawFacts] = []
+    var databases = Set<Data>()
+    for row in OwnedBindRawControl.allCases {
+      diagnostic?.selectRawRow(row)
+      diagnostic?.phase = .rawFixture
+      var observed: OwnedBindRawFacts?
+      try withFixture { f in
+        diagnostic?.phase = .rawValidate
+        _ = try validateFixture(f)
+        let memory = OwnedBindMemory(selected: nil)
+        let admission = ProtocolProofMemoryAdmission { [memory] in
+          if !memory.compare() { throw FixtureFailure.redactedFailure }
+        }
+        let parent = try ownedPositiveParent(
+          f, anchor: f.anchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+        let observation = try ownedPositiveObservation(f.binding)
+        let replacement = row == .normalB ? "secret:OWNED_BIND_RAW_REFERENCE_B" : f.link.tokenRef
+        diagnostic?.phase = .rawFreeze
+        let frozen = try ownedPositiveStage(f, observation: observation)
+        guard frozen.before == parent.image else { throw FixtureFailure.nativeShape }
+        let stage = OwnedBindStageFixture(
+          before: frozen.before, expected: frozen.expected, controlJSON: frozen.controlJSON,
+          originalReference: frozen.originalReference, replacement: replacement,
+          device: frozen.device, lowerWall: frozen.lowerWall)
+        guard databases.insert(Data(stage.before.database.utf8)).inserted else {
+          throw FixtureFailure.nativeShape
+        }
+        // Every row gets a distinct endpoint/database, genuine owned-bind S1, independent
+        // exact S2, and the identical two enabled UPDATE-only functions/triggers.
+        diagnostic?.phase = .rawInstall
+        try ownedBindInstall(f, stage: stage, rawBodyFault: row == .bodyFault)
+        let catalog = try ownedDeferredCatalog(f.inspector)
+        try ownedPositiveBodyShape(
+          f.inspector, stage: stage, replacement: replacement, fault: row == .bodyFault)
+        diagnostic?.phase = .rawExpectedDamage
+        var checkedStage = stage
+        if row == .imageReject {
+          guard
+            try f.inspector.execute(
+              """
+              UPDATE "owned_bind_stage"."expected"
+              SET value=pg_catalog.jsonb_set(value,'{value}',
+                pg_catalog.to_jsonb('OWNED_BIND_PRIVATE_IMAGE_CORRUPTION'::text))
+              WHERE name='settings' AND value->>'key'=$1
+              """, [sentinelKey]
+            ).affected == 1
+          else { throw FixtureFailure.nativeShape }
+          guard let settings = stage.expected.rows["settings"] else { throw FixtureFailure.nativeShape }
+          var replacements = 0
+          let damaged = try settings.map { data -> Data in
+            var object = try ownedT09Object(data)
+            if object["key"] as? String == sentinelKey {
+              guard object["value"] as? String == "OWNED_PROOF_RETAINED" else {
+                throw FixtureFailure.nativeShape
+              }
+              object["value"] = "OWNED_BIND_PRIVATE_IMAGE_CORRUPTION"
+              replacements += 1
+            }
+            return try ownedT09Data(object)
+          }.sorted { $0.lexicographicallyPrecedes($1) }
+          guard replacements == 1 else { throw FixtureFailure.nativeShape }
+          var expectedRows = stage.expected.rows
+          expectedRows["settings"] = damaged
+          checkedStage = OwnedBindStageFixture(
+            before: stage.before,
+            expected: OwnedBindImage(
+              database: stage.expected.database, rows: expectedRows, sequence: stage.expected.sequence),
+            controlJSON: stage.controlJSON, originalReference: stage.originalReference,
+            replacement: stage.replacement, device: stage.device, lowerWall: stage.lowerWall)
+        }
+        try ownedPositiveBodyShape(
+          f.inspector, stage: checkedStage, replacement: replacement, fault: row == .bodyFault)
+        diagnostic?.phase = .rawInitialImage
+        guard try ownedBindImage(f.inspector) == stage.before else { throw FixtureFailure.nativeShape }
+        diagnostic?.phase = .rawDriver
+        observed = try ownedBindRawDriver(f, stage: stage, row: row)
+        guard try ownedDeferredCatalog(f.inspector) == catalog else { throw FixtureFailure.nativeShape }
+        try ownedPositiveBodyShape(
+          f.inspector, stage: checkedStage, replacement: replacement, fault: row == .bodyFault)
+        diagnostic?.phase = .rawTeardown
+      }
+      // withFixture has closed its database and relinquished its inspector/physical root first.
+      diagnostic?.phase = .rawFacts
+      guard let observed, observed.qualified else { throw FixtureFailure.nativeShape }
+      results.append(observed)
+    }
+    guard results.count == 4 else { throw FixtureFailure.nativeShape }
+    return results
+  }
+
+  private static func ownedPositiveDeferredRawControl(
+    _ row: Int, diagnostic: OwnedDeferredDiagnostic
+  ) throws -> OwnedDeferredControlFacts {
+    diagnostic.selectRawFixture(row)
+    diagnostic.attempt = .none
+    guard (0...4).contains(row) else { throw FixtureFailure.nativeShape }
+    var facts: OwnedDeferredControlFacts?
+    try ownedDeferredWithFixture(diagnostic) { f in
+      diagnostic.enter(.fixtureValidate)
+      _ = try validateFixture(f)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let parent = try ownedPositiveParent(
+        f, anchor: f.anchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+      let observation = try ownedPositiveObservation(f.binding)
+      diagnostic.enter(.freeze)
+      let stage = try ownedPositiveStage(f, observation: observation)
+      guard stage.before == parent.image else { throw FixtureFailure.nativeShape }
+      var mode = row == 2 ? "fault" : (row >= 3 ? "gate" : "normal")
+      var baseline = 0
+      diagnostic.enter(.oldInstall)
+      var recipe = try ownedDeferredInstall(f, stage: stage, mode: mode, diagnostic: diagnostic)
+      diagnostic.enter(.damage)
+      if row == 0 { recipe = try ownedDeferredDamage(f.inspector, recipe: recipe, diagnostic: diagnostic) }
+      diagnostic.enter(.initialState)
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
+      let work = OwnedDeferredWork()
+      // Registration precedes every holder/worker, including partially started attempts.
+      defer { work.releaseAndJoin() }
+      var knownPIDs = [inspectorPID]
+      var attempts = 0
+      var acknowledgements = 0
+      var errors = 0
+      var rollbacks = 0
+      var bodies = 0
+      var deferred = 0
+      var timeouts = 0
+      var restorations = 0
+      var transitions = 0
+      for attempt in 0..<(row == 0 ? 1 : 2) {
+        diagnostic.selectAttempt(attempt)
+        diagnostic.enter(.beforeCheckpoint)
+        let before = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        diagnostic.enter(.imageAndProbes)
+        guard before.image == stage.before, before.observations.count == baseline else {
+          throw FixtureFailure.nativeShape
+        }
+        let gated = row >= 3
+        let timeout = row == 4 && attempt == 0
+        let kind: OwnedDeferredRawKind =
+          row == 0 ? .reject : (row == 2 && attempt == 0 ? .fault : (timeout ? .timeout : .normal))
+        let application = "owned-deferred-raw-\(UUID().uuidString)"
+        let holderApplication = "owned-deferred-gate-\(UUID().uuidString)"
+        let hold = OwnedProofHold()
+        let holderState = OwnedBindHolderState()
+        var holderPID = 0
+        var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+        if gated {
+          work.holds.append(hold)
+          diagnostic.enter(.gateClear)
+          try ownedDeferredGateClear(f.inspector)
+          let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+          diagnostic.enter(.holderStart)
+          let started = ownedDeferredHolder(
+            binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+            database: endpoint.database, user: NSUserName(), application: holderApplication,
+            hold: hold, state: holderState)
+          work.holders.append(started)
+          holder = started
+          diagnostic.enter(.holderReady)
+          holderPID = try ownedDeferredHolderReady(
+            f.inspector, state: holderState, hold: hold, database: endpoint.database,
+            application: holderApplication, deadline: readiness)
+          guard !knownPIDs.contains(holderPID) else { throw FixtureFailure.nativeShape }
+          knownPIDs.append(holderPID)
+        }
+        let state = OwnedBindHolderState()
+        let finished = OwnedBindFinished()
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        diagnostic.enter(.rawStart)
+        let worker = ownedDeferredRawWorker(
+          binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+          database: endpoint.database, user: NSUserName(), application: application,
+          kind: kind, state: state, finished: finished)
+        work.raw.append(worker)
+        diagnostic.enter(.observeCommit)
+        if gated {
+          while state.snapshot().pid == 0 && finished.pending()
+            && DispatchTime.now().uptimeNanoseconds <= deadline
+          { Thread.sleep(forTimeInterval: 0.005) }
+          let candidate = state.snapshot()
+          guard candidate.acquired, candidate.pid > 0, !knownPIDs.contains(candidate.pid),
+            DispatchTime.now().uptimeNanoseconds <= deadline
+          else { throw FixtureFailure.nativeShape }
+          try ownedDeferredObserveCommit(
+            f.inspector, database: endpoint.database, holderPID: holderPID,
+            knownOwnedPIDs: knownPIDs, holderApplication: holderApplication,
+            candidateApplication: application, rawPID: candidate.pid, hold: hold,
+            finished: finished, memory: nil, invocationStart: 0, probes: before.probes,
+            deadline: deadline)
+          if !timeout {
+            try ownedDeferredRelease(
+              hold, finished: finished, memory: nil, invocationStart: 0, retire: false,
+              deadline: deadline)
+          }
+        }
+        // The intended timeout keeps its original eight-second hold valid until actual return.
+        // Capture the result/timestamp, then immediately release ALL and join ALL before guards.
+        diagnostic.enter(.resultCapture)
+        let result = worker.join()
+        let receiptAt = DispatchTime.now().uptimeNanoseconds
+        let heldAtReturn = !timeout || hold.heldUnexpired()
+        work.releaseAndJoin()
+        let held = holder?.join()
+        diagnostic.enter(.drainReturned)
+        let rawIdentity = state.snapshot()
+        diagnostic.enter(.rawResult)
+        guard result.valid, finished.pending() == false, rawIdentity.acquired,
+          rawIdentity.pid > 0, !knownPIDs.contains(rawIdentity.pid),
+          (!gated || held?.normal == true), heldAtReturn,
+          !timeout || receiptAt < hold.snapshot().expiry
+        else { throw FixtureFailure.nativeShape }
+        knownPIDs.append(rawIdentity.pid)
+        attempts += 1
+        let success = kind == .normal
+        let bodyCount: Int64 = row == 0 ? 0 : 1
+        let commitCount: Int64 = row == 0 ? 0 : 1
+        let timeoutCount: Int64 = timeout ? 1 : 0
+        diagnostic.enter(.rawResult)
+        guard result.dmlReturned == (row != 0), result.commitSent == (row != 0),
+          result.acknowledged == success, result.rollbackAcknowledged == (row == 0),
+          result.predicateRejected == (row == 0),
+          result.actualDeferredFault == (kind == .fault), result.actualServerTimeout == timeout,
+          result.ownPredicate == (row != 0), result.ownSettings == (row != 0)
+        else { throw FixtureFailure.nativeShape }
+        diagnostic.enter(.afterCheckpoint)
+        let after = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        diagnostic.enter(.imageAndProbes)
+        guard after.image == (success ? stage.expected : stage.before),
+          after.probes.advanced(
+            from: before.probes, body: bodyCount, commit: commitCount, timeout: timeoutCount)
+        else { throw FixtureFailure.nativeShape }
+        diagnostic.enter(.observations)
+        if success {
+          try ownedDeferredAppendObservation(
+            f.inspector, stage: stage, old: before.observations, actual: after.observations,
+            rawMillis: result.millis)
+          acknowledgements += 1
+        } else {
+          guard after.observations == before.observations else { throw FixtureFailure.nativeShape }
+          if row == 0 { rollbacks += 1 } else { errors += 1 }
+        }
+        bodies += Int(bodyCount)
+        deferred += Int(commitCount)
+        timeouts += Int(timeoutCount)
+        if attempt == 0 && (row == 1 || row == 3) {
+          diagnostic.enter(.q01)
+          try ownedDeferredQ01(f, recipe: recipe, mode: mode, diagnostic: diagnostic)
+          restorations += 1
+          diagnostic.enter(.configTransition)
+          try ownedDeferredTransition(
+            f, recipe: recipe, oldMode: mode, oldBaseline: 0, newMode: mode, newBaseline: 1,
+            diagnostic: diagnostic)
+          baseline = 1
+          transitions += 1
+        } else if attempt == 0 && row == 2 {
+          diagnostic.enter(.configTransition)
+          try ownedDeferredTransition(
+            f, recipe: recipe, oldMode: "fault", oldBaseline: 0, newMode: "normal", newBaseline: 0,
+            diagnostic: diagnostic)
+          mode = "normal"
+          transitions += 1
+        }
+      }
+      diagnostic.enter(.finalFacts)
+      guard work.raw.count == (row == 0 ? 1 : 2), work.holders.count == (row >= 3 ? 2 : 0) else {
+        throw FixtureFailure.nativeShape
+      }
+      facts = OwnedDeferredControlFacts(
+        row: row, attempts: attempts, holders: work.holders.count,
+        acknowledgements: acknowledgements, errors: errors, rollbacks: rollbacks,
+        bodies: bodies, deferred: deferred, timeouts: timeouts,
+        restorations: restorations, transitions: transitions, qualified: true)
+    }
+    // Complete fixture close/root teardown precedes escape of these primitive-only facts.
+    diagnostic.enter(.finalFacts)
+    guard let facts, facts.qualified else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  private static func ownedPositiveDeferredPrerequisites(
+    diagnostic: OwnedDeferredDiagnostic
+  ) throws -> (
+    old: Int, controls: Int, attempts: Int, holders: Int
+  ) {
+    diagnostic.fixture = .oldFour
+    diagnostic.attempt = .none
+    diagnostic.enter(.oldFour)
+    let old = try ownedPositiveRawControls()
+    diagnostic.enter(.oldFour)
+    guard old.map({ $0.row }) == [0, 1, 2, 3], old.count == 4,
+      old.allSatisfy({ $0.qualified && $0.durableImageValidated })
+    else { throw FixtureFailure.nativeShape }
+    // The old four have ALL torn down. Each NEW recipe row independently tears down as well.
+    var rows: [OwnedDeferredControlFacts] = []
+    for row in 0...4 { rows.append(try ownedPositiveDeferredRawControl(row, diagnostic: diagnostic)) }
+    diagnostic.fixture = .none
+    diagnostic.attempt = .none
+    diagnostic.enter(.finalFacts)
+    guard rows.map({ $0.row }) == [0, 1, 2, 3, 4], rows.allSatisfy({ $0.qualified }),
+      rows.map({ $0.attempts }) == [1, 2, 2, 2, 2],
+      rows.map({ $0.holders }) == [0, 0, 0, 2, 2],
+      rows.map({ $0.acknowledgements }) == [0, 2, 1, 2, 1],
+      rows.map({ $0.errors }) == [0, 0, 1, 0, 1],
+      rows.map({ $0.rollbacks }) == [1, 0, 0, 0, 0],
+      rows.map({ $0.bodies }) == [0, 2, 2, 2, 2],
+      rows.map({ $0.deferred }) == [0, 2, 2, 2, 2],
+      rows.map({ $0.timeouts }) == [0, 0, 0, 0, 1],
+      rows.map({ $0.restorations }) == [0, 1, 0, 1, 0],
+      rows.map({ $0.transitions }) == [0, 1, 1, 1, 0]
+    else { throw FixtureFailure.nativeShape }
+    return (old.count, rows.count, rows.reduce(0) { $0 + $1.attempts }, rows.reduce(0) { $0 + $1.holders })
+  }
+
+  private static func ownedPositiveInstallBody(
+    _ f: Fixture, stage: OwnedBindStageFixture, replacement: String, fault: Bool
+  ) throws -> OwnedPositiveBodyRecipe {
+    let adapted = OwnedBindStageFixture(
+      before: stage.before, expected: stage.expected, controlJSON: stage.controlJSON,
+      originalReference: stage.originalReference, replacement: replacement,
+      device: stage.device, lowerWall: stage.lowerWall)
+    try ownedBindInstall(f, stage: adapted, rawBodyFault: fault)
+    try ownedPositiveBodyShape(f.inspector, stage: stage, replacement: replacement, fault: fault)
+    return OwnedPositiveBodyRecipe(stage: stage, catalog: try ownedDeferredCatalog(f.inspector))
+  }
+
+  private static func ownedPositiveBodyCheckpoint(
+    _ f: Fixture, recipe: OwnedPositiveBodyRecipe, replacement: String, fault: Bool,
+    image: OwnedBindImage, body: OwnedBindProbe, commit: OwnedBindProbe,
+    bodies: Int64, commits: Int64
+  ) throws {
+    try ownedPositiveBodyShape(
+      f.inspector, stage: recipe.stage, replacement: replacement, fault: fault)
+    guard try ownedDeferredCatalog(f.inspector) == recipe.catalog,
+      try ownedBindImage(f.inspector) == image,
+      try ownedBindProbe(f.inspector, "body_probe").advanced(from: body, by: bodies),
+      try ownedBindProbe(f.inspector, "commit_probe").advanced(from: commit, by: commits)
+    else { throw FixtureFailure.nativeShape }
+    if commits == 0 {
+      try ownedBindObservedEmpty(f.inspector)
+    } else {
+      guard commits == 1 else { throw FixtureFailure.nativeShape }
+      try ownedBindWriterObserved(f.inspector, stage: recipe.stage, actualDevice: f.database.deviceId)
+    }
+  }
+
+  private static func ownedPositiveBodyMode(
+    _ f: Fixture, recipe: OwnedPositiveBodyRecipe, oldReference: String, oldFault: Bool,
+    newReference: String, newFault: Bool
+  ) throws {
+    try ownedPositiveBodyShape(
+      f.inspector, stage: recipe.stage, replacement: oldReference, fault: oldFault)
+    let image = try ownedBindImage(f.inspector)
+    let body = try ownedBindProbe(f.inspector, "body_probe")
+    let commit = try ownedBindProbe(f.inspector, "commit_probe")
+    let observed = try ownedDeferredObservations(f.inspector)
+    guard
+      try f.inspector.execute(
+        "UPDATE \"owned_bind_stage\".\"mode\" SET replacement=$1,raw_body_fault=$2::boolean WHERE singleton=1 AND convert_to(replacement,'UTF8')=convert_to($3,'UTF8') AND raw_body_fault=$4::boolean",
+        [newReference, newFault ? "true" : "false", oldReference, oldFault ? "true" : "false"]
+      ).affected == 1
+    else { throw FixtureFailure.nativeShape }
+    try ownedPositiveBodyShape(
+      f.inspector, stage: recipe.stage, replacement: newReference, fault: newFault)
+    guard try ownedDeferredCatalog(f.inspector) == recipe.catalog,
+      try ownedBindImage(f.inspector) == image,
+      try ownedBindProbe(f.inspector, "body_probe") == body,
+      try ownedBindProbe(f.inspector, "commit_probe") == commit,
+      try ownedDeferredObservations(f.inspector) == observed
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedPositiveRequireCoreControls() throws {
+    let rows = try ownedPositiveRawControls()
+    guard rows.map({ $0.row }) == [0, 1, 2, 3], rows.allSatisfy({ $0.qualified }) else {
+      throw FixtureFailure.nativeShape
+    }
+  }
+
+  // P01a real mutating parent; P01b an additional actual equal-binding no-op parent.
+  @Test(arguments: [false, true])
+  func ownedPositiveCommitsExactObservationAndSingleRevisionFromOwnedBind(noopParent: Bool) throws {
+    try Self.ownedPositiveRequireCoreControls()
+    try Self.withFixture { f in
+      _ = try Self.validateFixture(f)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      var parent = try Self.ownedPositiveParent(
+        f, anchor: f.anchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+      if noopParent {
+        let previous = parent.image
+        parent = try Self.ownedPositiveParent(
+          f, anchor: parent.anchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+        guard parent.image == previous else { throw FixtureFailure.nativeShape }
+      }
+      let observation = try Self.ownedPositiveObservation(f.binding)
+      let stage = try Self.ownedPositiveStage(f, observation: observation)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let start = memory.calls()
+      let receipt = Self.ownedPositiveWrite(
+        f, parent: parent, observation: observation, reference: f.link.tokenRef, admission: admission)
+      guard receipt.operation == .positive, receipt.disposition == .committedCurrent,
+        memory.calls() - start == 4, parent.receipt.operation == .bind,
+        parent.receipt.disposition == .committedCurrent
+      else { throw FixtureFailure.nativeShape }
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: body, commit: commit, bodies: 1, commits: 1)
+      _ = try Self.ownedPositiveRedeem(
+        receipt, fixture: f, parent: parent, observation: observation, reference: f.link.tokenRef,
+        admission: admission, calls: { memory.calls() })
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: body, commit: commit, bodies: 1, commits: 1)
+      #expect(memory.calls() - start == 5)
+    }
+  }
+
+  // P05's typed checker deliberately cannot accept the old init-only selector helper.
+  private static func ownedPositiveP05Refused(
+    _ receipt: ProtocolOwnedProofWriteReceipt, fixture f: Fixture, parent: OwnedPositiveParent,
+    recipe: OwnedPositiveBodyRecipe, admission: ProtocolProofMemoryAdmission,
+    memory: OwnedPositiveCountedMemory, start: Int, ordinal: Int,
+    body: OwnedBindProbe, commit: OwnedBindProbe
+  ) throws {
+    guard memory.calls() - start == ordinal else { throw FixtureFailure.nativeShape }
+    try ownedPositiveRefuses(
+      receipt, anchor: parent.anchor, reference: f.link.tokenRef,
+      admission: admission, calls: { memory.calls() })
+    try ownedPositiveBodyCheckpoint(
+      f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: parent.image,
+      body: body, commit: commit, bodies: ordinal == 1 ? 0 : 1, commits: 0)
+  }
+
+  @Test(arguments: [1, 2, 3])
+  func ownedPositiveCountsMemoryChecksAtPREPOSTAndImmediatePreCommit(ordinal: Int) throws {
+    try Self.ownedPositiveRequireCoreControls()
+    try Self.withFixture { f in
+      _ = try Self.validateFixture(f)
+      let memory = OwnedPositiveCountedMemory()
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let parent = try Self.ownedPositiveParent(
+        f, anchor: f.anchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+      let observation = try Self.ownedPositiveObservation(f.binding)
+      let stage = try Self.ownedPositiveStage(f, observation: observation)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let invocationStart = memory.calls()
+      try memory.armSelector(baseline: invocationStart, localOrdinal: ordinal)
+      guard memory.calls() == invocationStart else { throw FixtureFailure.nativeShape }
+      let refused = Self.ownedPositiveWrite(
+        f, parent: parent, observation: observation, reference: f.link.tokenRef, admission: admission)
+      try Self.ownedPositiveP05Refused(
+        refused, fixture: f, parent: parent, recipe: recipe, admission: admission, memory: memory,
+        start: invocationStart, ordinal: ordinal, body: body, commit: commit)
+      let beforeDisable = memory.calls()
+      memory.disableSelector()
+      guard memory.calls() == beforeDisable, try Self.ownedBindImage(f.inspector) == parent.image else {
+        throw FixtureFailure.nativeShape
+      }
+      let inverseBody = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let inverseCommit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let inverseStart = memory.calls()
+      let allowed = Self.ownedPositiveWrite(
+        f, parent: parent, observation: observation, reference: f.link.tokenRef, admission: admission)
+      guard allowed.operation == .positive, allowed.disposition == .committedCurrent,
+        memory.calls() - inverseStart == 4
+      else { throw FixtureFailure.nativeShape }
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: inverseBody, commit: inverseCommit, bodies: 1, commits: 1)
+      _ = try Self.ownedPositiveRedeem(
+        allowed, fixture: f, parent: parent, observation: observation, reference: f.link.tokenRef,
+        admission: admission, calls: { memory.calls() })
+      try Self.ownedPositiveRefuses(
+        refused, anchor: parent.anchor, reference: f.link.tokenRef,
+        admission: admission, calls: { memory.calls() })
+      guard memory.calls() - inverseStart == 5 else { throw FixtureFailure.nativeShape }
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: inverseBody, commit: inverseCommit, bodies: 1, commits: 1)
+      #expect(memory.calls() - invocationStart == ordinal + 5)
+    }
+  }
+
+  @Test(arguments: [false, true])
+  func ownedPositiveRefusesSuccessfulBodyReferenceReplacementAndBodyFault(bodyFault: Bool) throws {
+    try Self.ownedPositiveRequireCoreControls()
+    try Self.withFixture { f in
+      _ = try Self.validateFixture(f)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let parent = try Self.ownedPositiveParent(
+        f, anchor: f.anchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+      let observation = try Self.ownedPositiveObservation(f.binding)
+      let stage = try Self.ownedPositiveStage(f, observation: observation)
+      let replacement = bodyFault ? f.link.tokenRef : "secret:OWNED_POSITIVE_REFERENCE_B"
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: replacement, fault: bodyFault)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let start = memory.calls()
+      let refused = Self.ownedPositiveWrite(
+        f, parent: parent, observation: observation, reference: f.link.tokenRef, admission: admission)
+      guard memory.calls() - start == 1 else { throw FixtureFailure.nativeShape }
+      try Self.ownedPositiveRefuses(
+        refused, anchor: parent.anchor, reference: f.link.tokenRef,
+        admission: admission, calls: { memory.calls() })
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: replacement, fault: bodyFault, image: parent.image,
+        body: body, commit: commit, bodies: 1, commits: 0)
+      try Self.ownedPositiveBodyMode(
+        f, recipe: recipe, oldReference: replacement, oldFault: bodyFault,
+        newReference: f.link.tokenRef, newFault: false)
+      let inverseBody = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let inverseCommit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let inverseStart = memory.calls()
+      let allowed = Self.ownedPositiveWrite(
+        f, parent: parent, observation: observation, reference: f.link.tokenRef, admission: admission)
+      guard allowed.operation == .positive, allowed.disposition == .committedCurrent,
+        memory.calls() - inverseStart == 4
+      else { throw FixtureFailure.nativeShape }
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: inverseBody, commit: inverseCommit, bodies: 1, commits: 1)
+      _ = try Self.ownedPositiveRedeem(
+        allowed, fixture: f, parent: parent, observation: observation, reference: f.link.tokenRef,
+        admission: admission, calls: { memory.calls() })
+      try Self.ownedPositiveRefuses(
+        refused, anchor: parent.anchor, reference: f.link.tokenRef,
+        admission: admission, calls: { memory.calls() })
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: inverseBody, commit: inverseCommit, bodies: 1, commits: 1)
+      #expect(memory.calls() - start == 6)
+    }
+  }
+
+  @Test(arguments: [0, 1])
+  func ownedPositiveRechecksMemoryAfterActualNativeWait(kindValue: Int) throws {
+    try Self.ownedPositiveRequireCoreControls()
+    let kind: OwnedBindWaitKind = kindValue == 0 ? .advisory : .link
+    try Self.withFixture { f in
+      _ = try Self.validateFixture(f)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let parent = try Self.ownedPositiveParent(
+        f, anchor: f.anchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+      let observation = try Self.ownedPositiveObservation(f.binding)
+      let stage = try Self.ownedPositiveStage(f, observation: observation)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let work = OwnedDeferredWork()
+      defer { work.releaseAndJoin() }
+      var knownPIDs = [try Self.ownedDeferredInspectorPID(f.inspector)]
+      var original: ProtocolOwnedProofWriteReceipt?
+      for attempt in 0..<2 {
+        memory.setCurrent(true)
+        let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+        let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+        let start = memory.calls()
+        let hold = OwnedProofHold()
+        let state = OwnedBindHolderState()
+        work.holds.append(hold)
+        let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        let holder = Self.ownedBindHolder(
+          binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+          database: endpoint.database, user: NSUserName(), application: "owned-positive-pre-\(UUID())",
+          kind: kind, hold: hold, state: state)
+        work.holders.append(holder)
+        let pid = try Self.ownedBindHolderReady(state, hold: hold, deadline: readiness)
+        guard !knownPIDs.contains(pid) else { throw FixtureFailure.nativeShape }
+        knownPIDs.append(pid)
+        let finished = OwnedBindFinished()
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        let writer = Self.ownedPositiveWriter(
+          database: f.database, anchor: parent.anchor, parent: parent.receipt,
+          observation: observation, reference: f.link.tokenRef, admission: admission, finished: finished)
+        work.writers.append(writer)
+        try Self.ownedBindObserveWait(
+          f.inspector, database: endpoint.database, holderPID: pid, knownOwnedPIDs: knownPIDs,
+          kind: kind, hold: hold, finished: finished, memory: memory,
+          invocationStart: start, deadline: deadline)
+        guard try Self.ownedBindProbe(f.inspector, "body_probe") == body,
+          try Self.ownedBindProbe(f.inspector, "commit_probe") == commit
+        else { throw FixtureFailure.nativeShape }
+        try Self.ownedBindReleaseObservedHold(
+          hold, finished: finished, memory: memory, invocationStart: start,
+          retiring: attempt == 0, deadline: deadline)
+        let receipt = writer.join()
+        work.releaseAndJoin()
+        let held = holder.join()
+        guard held.normal, !finished.pending(), memory.calls() - start == (attempt == 0 ? 1 : 4) else {
+          throw FixtureFailure.nativeShape
+        }
+        try Self.ownedPositiveBodyCheckpoint(
+          f, recipe: recipe, replacement: f.link.tokenRef, fault: false,
+          image: attempt == 0 ? parent.image : stage.expected, body: body, commit: commit,
+          bodies: attempt == 0 ? 0 : 1, commits: attempt == 0 ? 0 : 1)
+        if attempt == 0 {
+          original = receipt
+          try Self.ownedPositiveRefuses(
+            receipt, anchor: parent.anchor, reference: f.link.tokenRef,
+            admission: admission, calls: { memory.calls() })
+        } else {
+          _ = try Self.ownedPositiveRedeem(
+            receipt, fixture: f, parent: parent, observation: observation, reference: f.link.tokenRef,
+            admission: admission, calls: { memory.calls() })
+          guard let original else { throw FixtureFailure.nativeShape }
+          try Self.ownedPositiveRefuses(
+            original, anchor: parent.anchor, reference: f.link.tokenRef,
+            admission: admission, calls: { memory.calls() })
+          try Self.ownedPositiveBodyCheckpoint(
+            f, recipe: recipe, replacement: f.link.tokenRef, fault: false,
+            image: stage.expected, body: body, commit: commit, bodies: 1, commits: 1)
+        }
+      }
+      #expect(work.holders.count == 2 && work.writers.count == 2)
+    }
+  }
+
+  private static func ownedPositiveDeferredTarget(
+    _ unit: OwnedDeferredCase, diagnostic: OwnedDeferredDiagnostic
+  ) throws -> OwnedDeferredFacts {
+    // Every call owns ALL prerequisites; no cache, earlier test, or previously qualified run.
+    let prerequisites = try ownedPositiveDeferredPrerequisites(diagnostic: diagnostic)
+    var facts: OwnedDeferredFacts?
+    diagnostic.fixture = .target
+    diagnostic.attempt = .none
+    try ownedDeferredWithFixture(diagnostic) { f in
+      diagnostic.enter(.fixtureValidate)
+      _ = try validateFixture(f)
+      let reference = f.link.tokenRef
+      guard ProtocolCredentialReference(reference) != nil,
+        reference.utf8.allSatisfy({ $0 > 0 && $0 < 128 })
+      else { throw FixtureFailure.nativeShape }
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let parent = try ownedPositiveParent(
+        f, anchor: f.anchor, reference: reference, admission: admission, memory: memory)
+      let setupCalls = memory.calls()
+      let observation = try ownedPositiveObservation(f.binding)
+      let stage = try ownedPositiveStage(f, observation: observation)
+      guard stage.before == parent.image else { throw FixtureFailure.nativeShape }
+      var mode = unit == .fault ? "fault" : "gate"
+      var baseline = 0
+      let recipe = try ownedDeferredInstall(f, stage: stage, mode: mode, diagnostic: diagnostic)
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
+      let work = OwnedDeferredWork()
+      defer { work.releaseAndJoin() }
+      var knownPIDs = [inspectorPID]
+      var original: ProtocolOwnedProofWriteReceipt?
+      var writerCalls = 0
+      var redemptions = 0
+      var waits = 0
+      var timeoutAllocations = 0
+      for attempt in 0..<2 {
+        diagnostic.selectAttempt(attempt)
+        diagnostic.enter(.beforeCheckpoint)
+        let before = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        diagnostic.enter(.imageAndProbes)
+        guard before.image == stage.before, before.observations.count == baseline else {
+          throw FixtureFailure.nativeShape
+        }
+        diagnostic.enter(.targetWrite)
+        let invocationStart = memory.calls()
+        let expectedStart = setupCalls + (attempt == 0 ? 0 : (unit == .stale ? 4 : 3))
+        guard invocationStart == expectedStart else { throw FixtureFailure.nativeShape }
+        let gated = unit != .fault
+        let timeout = unit == .timeout && attempt == 0
+        let hold = OwnedProofHold()
+        let holderState = OwnedBindHolderState()
+        let holderApplication = "owned-deferred-target-gate-\(UUID().uuidString)"
+        var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+        var holderPID = 0
+        if gated {
+          work.holds.append(hold)
+          diagnostic.enter(.gateClear)
+          try ownedDeferredGateClear(f.inspector)
+          let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+          diagnostic.enter(.holderStart)
+          let started = ownedDeferredHolder(
+            binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+            database: endpoint.database, user: NSUserName(), application: holderApplication,
+            hold: hold, state: holderState)
+          work.holders.append(started)
+          holder = started
+          diagnostic.enter(.holderReady)
+          holderPID = try ownedDeferredHolderReady(
+            f.inspector, state: holderState, hold: hold, database: endpoint.database,
+            application: holderApplication, deadline: readiness)
+          guard !knownPIDs.contains(holderPID) else { throw FixtureFailure.nativeShape }
+          knownPIDs.append(holderPID)
+        }
+        diagnostic.enter(.targetWrite)
+        guard memory.calls() == invocationStart else { throw FixtureFailure.nativeShape }
+        let finished = OwnedBindFinished()
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        // Literal same original database/anchor/binding/reference/admission for both invocations.
+        diagnostic.enter(.targetWrite)
+        let writer = ownedPositiveWriter(
+          database: f.database, anchor: parent.anchor, parent: parent.receipt,
+          observation: observation, reference: reference,
+          admission: admission, finished: finished)
+        work.writers.append(writer)
+        if gated {
+          diagnostic.enter(.observeCommit)
+          try ownedDeferredObserveCommit(
+            f.inspector, database: endpoint.database, holderPID: holderPID,
+            knownOwnedPIDs: knownPIDs, holderApplication: holderApplication,
+            candidateApplication: "b4app", rawPID: nil, hold: hold, finished: finished,
+            memory: memory, invocationStart: invocationStart, probes: before.probes,
+            deadline: deadline)
+          waits += 1
+          if !timeout {
+            try ownedDeferredRelease(
+              hold, finished: finished, memory: memory, invocationStart: invocationStart,
+              retire: unit == .stale && attempt == 0, deadline: deadline)
+          }
+        }
+        // No throwing assertion, inspector image, or receipt validation may intervene here.
+        // In the timeout branch actual receipt capture occurs while the original hold is valid;
+        // immediately release ALL and join ALL before validating any result, including this fact.
+        diagnostic.enter(.resultCapture)
+        let receipt = writer.join()
+        let receiptAt = DispatchTime.now().uptimeNanoseconds
+        let heldAtReturn = !timeout || hold.heldUnexpired()
+        work.releaseAndJoin()
+        let held = holder?.join()
+        diagnostic.enter(.drainReturned)
+        guard !finished.pending(), !gated || held?.normal == true,
+          heldAtReturn, !timeout || receiptAt < hold.snapshot().expiry
+        else { throw FixtureFailure.nativeShape }
+        diagnostic.enter(.afterCheckpoint)
+        let after = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        let committed = unit == .stale || attempt == 1
+        let expectedCalls = committed ? 4 : 3
+        let delta = memory.calls() - invocationStart
+        diagnostic.enter(.targetReceipt)
+        guard receipt.operation == .positive, delta == expectedCalls,
+          after.image == (committed ? stage.expected : stage.before),
+          after.probes.advanced(from: before.probes, body: 1, commit: 1, timeout: timeout ? 1 : 0)
+        else { throw FixtureFailure.nativeShape }
+        writerCalls += delta
+        if timeout { timeoutAllocations += 1 }
+        diagnostic.enter(.observations)
+        if committed {
+          try ownedDeferredAppendObservation(
+            f.inspector, stage: stage, old: before.observations,
+            actual: after.observations, rawMillis: nil)
+        } else {
+          guard after.observations == before.observations else { throw FixtureFailure.nativeShape }
+        }
+        if attempt == 0 {
+          original = receipt
+          let disposition: ProtocolProofWriteDisposition = unit == .stale ? .committedStale : .unknown
+          diagnostic.enter(.targetRefusal)
+          try ownedPositiveRefuses(
+            receipt, anchor: parent.anchor, reference: reference, admission: admission,
+            calls: { memory.calls() }, disposition: disposition)
+          guard
+            try ownedDeferredCheckpointRead(
+              f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic) == after
+          else { throw FixtureFailure.nativeShape }
+          if unit == .stale {
+            // Genuine acknowledged stale S2 and its original refusal were checked BEFORE Q01.
+            // This fixture-only restoration is never a rollback or repair by the product API.
+            diagnostic.enter(.q01)
+            try ownedDeferredQ01(f, recipe: recipe, mode: mode, diagnostic: diagnostic)
+            diagnostic.enter(.configTransition)
+            try ownedDeferredTransition(
+              f, recipe: recipe, oldMode: mode, oldBaseline: 0, newMode: mode, newBaseline: 1,
+              diagnostic: diagnostic)
+            baseline = 1
+            memory.setCurrent(true)
+          } else if unit == .fault {
+            // Exact native 23514/canary/COMMIT was directly qualified by this unit's R2.
+            // Target fault/stage/source attribution is explicitly INFERENCE from the immutable
+            // full recipe, body/deferred relative probes, genuine unknown and reviewed writer
+            // COMMIT-sent catch; the sealed target receipt exports no native diagnostic.
+            diagnostic.enter(.configTransition)
+            try ownedDeferredTransition(
+              f, recipe: recipe, oldMode: "fault", oldBaseline: 0, newMode: "normal", newBaseline: 0,
+              diagnostic: diagnostic)
+            mode = "normal"
+          }
+          // T07's ONLY timeout allocation is inside its actual deferred gate handler, after
+          // exact COMMIT/blocker/resource observation. Own R4 qualified original native rethrow.
+          // An infeasible handler fails prerequisites; elapsed+unknown+S1 supplies no substitute.
+        } else {
+          guard receipt.disposition == .committedCurrent else { throw FixtureFailure.nativeShape }
+          diagnostic.enter(.targetRedemption)
+          let beforeRedemption = memory.calls()
+          let successor = try receipt.currentSuccessor(
+            expectedSnapshot: parent.anchor, expectedTokenRef: reference, memoryAdmission: admission)
+          let afterRedemption = memory.calls()
+          guard afterRedemption - beforeRedemption == 1 else { throw FixtureFailure.nativeShape }
+          redemptions += afterRedemption - beforeRedemption
+          diagnostic.enter(.successorValidation)
+          try ownedT09NativeValidate(
+            f, successor: successor, binding: f.binding, reference: reference, observation: observation)
+          diagnostic.enter(.originalRefusal)
+          guard let original else { throw FixtureFailure.nativeShape }
+          try ownedPositiveRefuses(
+            original, anchor: parent.anchor, reference: reference, admission: admission,
+            calls: { memory.calls() },
+            disposition: unit == .stale ? .committedStale : .unknown)
+          guard
+            try ownedDeferredCheckpointRead(
+              f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic) == after
+          else { throw FixtureFailure.nativeShape }
+        }
+      }
+      diagnostic.enter(.finalFacts)
+      guard work.writers.count == 2, work.raw.isEmpty,
+        work.holders.count == (unit == .fault ? 0 : 2),
+        writerCalls == (unit == .stale ? 8 : 7), redemptions == 1,
+        memory.calls() - setupCalls == writerCalls + redemptions, waits == (unit == .fault ? 0 : 2),
+        timeoutAllocations == (unit == .timeout ? 1 : 0)
+      else { throw FixtureFailure.nativeShape }
+      facts = OwnedDeferredFacts(
+        oldControls: prerequisites.old, newControls: prerequisites.controls,
+        rawAttempts: prerequisites.attempts, rawHolders: prerequisites.holders,
+        writerCalls: writerCalls, redemptionCalls: redemptions, targetHolders: work.holders.count,
+        targetWaits: waits, timeoutAllocations: timeoutAllocations, qualified: true)
+    }
+    diagnostic.enter(.finalFacts)
+    guard let facts, facts.qualified else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  @Test func ownedPositiveActualSuccessfulCommitRetirementIsStale() throws {
+    let diagnostic = OwnedDeferredDiagnostic(unit: .stale)
+    let facts = try Self.ownedPositiveDeferredTarget(.stale, diagnostic: diagnostic)
+    #expect(facts.oldControls == 4 && facts.newControls == 5 && facts.rawAttempts == 9)
+    #expect(facts.writerCalls == 8 && facts.redemptionCalls == 1)
+    #expect(facts.targetHolders == 2 && facts.targetWaits == 2 && facts.timeoutAllocations == 0)
+    #expect(facts.qualified)
+  }
+
+  @Test func ownedPositiveActualDeferredCommitFaultRemainsUnknown() throws {
+    let diagnostic = OwnedDeferredDiagnostic(unit: .fault)
+    let facts = try Self.ownedPositiveDeferredTarget(.fault, diagnostic: diagnostic)
+    #expect(facts.oldControls == 4 && facts.newControls == 5 && facts.rawAttempts == 9)
+    #expect(facts.writerCalls == 7 && facts.redemptionCalls == 1)
+    #expect(facts.targetHolders == 0 && facts.targetWaits == 0 && facts.timeoutAllocations == 0)
+    #expect(facts.qualified)
+  }
+
+  @Test func ownedPositiveActualCommitServerTimeoutIsUnknown() throws {
+    let diagnostic = OwnedDeferredDiagnostic(unit: .timeout)
+    let facts = try Self.ownedPositiveDeferredTarget(.timeout, diagnostic: diagnostic)
+    #expect(facts.oldControls == 4 && facts.newControls == 5 && facts.rawAttempts == 9)
+    #expect(facts.writerCalls == 7 && facts.redemptionCalls == 1)
+    #expect(facts.targetHolders == 2 && facts.targetWaits == 2 && facts.timeoutAllocations == 1)
+    #expect(facts.qualified)
+  }
+
+  // A fixture-only DELETE/INSERT never fires either UPDATE-only positive recipe trigger.
+  private static func ownedPositiveReplaceControl(
+    _ f: Fixture, old: [String: Any], new: [String: Any]?
+  ) throws {
+    var acknowledged = false
+    defer { if !acknowledged { _ = try? f.inspector.execute("ROLLBACK") } }
+    try f.inspector.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+    try f.inspector.execute("SET LOCAL lock_timeout='2s'")
+    try f.inspector.execute("SET LOCAL statement_timeout='2s'")
+    guard
+      try f.inspector.execute(
+        "DELETE FROM public.settings WHERE key=$1 AND value=$2::jsonb",
+        [key, try ownedBindText(ownedT09Data(old))]
+      ).affected == 1
+    else { throw FixtureFailure.nativeShape }
+    if let new {
+      guard
+        try f.inspector.execute(
+          "INSERT INTO public.settings(key,value) VALUES($1,$2::jsonb)",
+          [key, try ownedBindText(ownedT09Data(new))]
+        ).affected == 1
+      else { throw FixtureFailure.nativeShape }
+    }
+    try f.inspector.execute("COMMIT")
+    acknowledged = true
+  }
+
+  @Test(arguments: [
+    "store", "member", "revision", "binding", "observation", "missingControl", "malformedControl",
+    "missingLink", "base", "device", "joined", "referenceB", "referenceEmpty", "referenceMalformed",
+    "allow", "maximum",
+  ])
+  func ownedPositiveComparesExactNativeS1AndRefusesExhaustion(row: String) throws {
+    try Self.ownedPositiveRequireCoreControls()
+    try Self.withFixture { f in
+      let inactive = try Self.validateFixture(f)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      var bindAnchor = f.anchor
+      if row == "maximum" {
+        var maximumSeed = inactive.object
+        maximumSeed["revision"] = String(Int64.max - 1)
+        let before = try Self.ownedBindImage(f.inspector)
+        let seeded = try Self.ownedT09ControlImage(before, old: inactive.object, new: maximumSeed)
+        try Self.ownedPositiveReplaceControl(f, old: inactive.object, new: maximumSeed)
+        guard try Self.ownedBindImage(f.inspector) == seeded else { throw FixtureFailure.nativeShape }
+        let membership = try ProtocolNativeMembership(
+          canonicalHubBase: f.link.url, deviceID: f.link.deviceId, linkJoinedAt: f.link.joinedAt)
+        bindAnchor = try f.database.captureProtocolVerification(
+          accountID: f.binding.accountID, expectedMembership: membership)
+      }
+      let parent = try Self.ownedPositiveParent(
+        f, anchor: bindAnchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+      let observation = try Self.ownedPositiveObservation(f.binding)
+      if row == "maximum" {
+        let native = try Self.control(f)
+        guard native.revision == Int64.max else { throw FixtureFailure.nativeShape }
+        let start = memory.calls()
+        let receipt = Self.ownedPositiveWrite(
+          f, parent: parent, observation: observation, reference: f.link.tokenRef, admission: admission)
+        guard memory.calls() - start == 1, try Self.ownedBindImage(f.inspector) == parent.image else {
+          throw FixtureFailure.nativeShape
+        }
+        try Self.ownedPositiveRefuses(
+          receipt, anchor: parent.anchor, reference: f.link.tokenRef,
+          admission: admission, calls: { memory.calls() })
+        // No S2 can be authored: dedicated body/COMMIT probes are N/A, never observed zero.
+        try Self.ownedBindCatalogGuard(f.inspector)
+        #expect(receipt.disposition == .confirmedNoncommit)
+        return
+      }
+      let stage = try Self.ownedPositiveStage(f, observation: observation)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let original = try Self.ownedDeferredControl(parent.image)
+      var expectedImage = parent.image
+      if ["store", "member", "revision", "binding", "observation", "missingControl", "malformedControl"]
+        .contains(row)
+      {
+        var changed = original
+        switch row {
+        case "store": changed["storeIncarnation"] = UUID().uuidString
+        case "member": changed["membershipIncarnation"] = UUID().uuidString
+        case "revision": changed["revision"] = try Self.ownedT09Next(original)
+        case "binding":
+          let other = try Self.ownedT09OtherBinding(f.binding, unit: .boundUser)
+          changed["binding"] = Self.ownedT09Binding(other)
+        case "observation": changed["observation"] = Self.ownedPositiveObservationObject(observation)
+        case "malformedControl": changed["unexpected"] = "OWNED_POSITIVE_MALFORMED"
+        default: break
+        }
+        let next: [String: Any]? = row == "missingControl" ? nil : changed
+        expectedImage = try Self.ownedT09ControlImage(parent.image, old: original, new: next)
+        try Self.ownedPositiveReplaceControl(f, old: original, new: next)
+      } else if row != "allow" {
+        let column: OwnedT09LinkColumn?
+        let value: String?
+        switch row {
+        case "missingLink": column = nil; value = nil
+        case "base": column = .url; value = "https://example.invalid/OwnedPositiveOther"
+        case "device": column = .deviceId; value = "OWNED_POSITIVE_DEVICE_OTHER"
+        case "joined": column = .joinedAt; value = "2026-11-13T00:00:00.001Z"
+        case "referenceB": column = .tokenRef; value = "secret:OWNED_POSITIVE_NATIVE_B"
+        case "referenceEmpty": column = .tokenRef; value = ""
+        case "referenceMalformed": column = .tokenRef; value = "other:OWNED_POSITIVE_MALFORMED"
+        default: throw FixtureFailure.nativeShape
+        }
+        if let column, let value {
+          expectedImage = try Self.ownedT09ChangedLink(parent.image, column: column, value: value)
+        } else {
+          expectedImage = try Self.ownedT09LinkImage(
+            parent.image, old: Self.ownedT09Link(parent.image), new: nil)
+        }
+        try Self.ownedT09LinkSwap(
+          f, from: parent.image, to: expectedImage, column: column,
+          stage: stage, body: body, commit: commit)
+      }
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: expectedImage,
+        body: body, commit: commit, bodies: 0, commits: 0)
+      let start = memory.calls()
+      let receipt = Self.ownedPositiveWrite(
+        f, parent: parent, observation: observation, reference: f.link.tokenRef, admission: admission)
+      if row == "allow" {
+        guard memory.calls() - start == 4 else { throw FixtureFailure.nativeShape }
+        try Self.ownedPositiveBodyCheckpoint(
+          f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+          body: body, commit: commit, bodies: 1, commits: 1)
+        _ = try Self.ownedPositiveRedeem(
+          receipt, fixture: f, parent: parent, observation: observation, reference: f.link.tokenRef,
+          admission: admission, calls: { memory.calls() })
+        try Self.ownedPositiveBodyCheckpoint(
+          f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+          body: body, commit: commit, bodies: 1, commits: 1)
+      } else {
+        guard memory.calls() == start else { throw FixtureFailure.nativeShape }
+        try Self.ownedPositiveRefuses(
+          receipt, anchor: parent.anchor, reference: f.link.tokenRef,
+          admission: admission, calls: { memory.calls() })
+        try Self.ownedPositiveBodyCheckpoint(
+          f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: expectedImage,
+          body: body, commit: commit, bodies: 0, commits: 0)
+      }
+      #expect(receipt.operation == .positive)
+    }
+  }
+
+  private static func ownedPositiveUnchangedBody(
+    _ f: Fixture, recipe: OwnedPositiveBodyRecipe, image: OwnedBindImage,
+    body: OwnedBindProbe, commit: OwnedBindProbe, observations: [Data]
+  ) throws {
+    try ownedPositiveBodyShape(
+      f.inspector, stage: recipe.stage, replacement: recipe.stage.originalReference, fault: false)
+    guard try ownedDeferredCatalog(f.inspector) == recipe.catalog,
+      try ownedBindImage(f.inspector) == image,
+      try ownedBindProbe(f.inspector, "body_probe") == body,
+      try ownedBindProbe(f.inspector, "commit_probe") == commit,
+      try ownedDeferredObservations(f.inspector) == observations
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  // These two P02 rows construct actual B1 outcomes under locally qualified B1 recipes.
+  // The later positive invocation is preflight refusal only; no counterfeit B2 parent is made.
+  private static func ownedPositiveUnusableBindParent(stale: Bool) throws {
+    let diagnostic = OwnedDeferredDiagnostic(unit: stale ? .stale : .fault)
+    _ = try ownedDeferredPrerequisites(diagnostic: diagnostic)
+    try withFixture { f in
+      let inactive = try validateFixture(f)
+      let stage = try ownedBindFreeze(f, predecessor: inactive, replacement: f.link.tokenRef)
+      let mode = stale ? "gate" : "fault"
+      let recipe = try ownedDeferredInstall(f, stage: stage, mode: mode, diagnostic: diagnostic)
+      let before = try ownedDeferredCheckpointRead(
+        f.inspector, recipe: recipe, mode: mode, baseline: 0, diagnostic: diagnostic)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let work = OwnedDeferredWork()
+      defer { work.releaseAndJoin() }
+      let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
+      let hold = OwnedProofHold()
+      let holderState = OwnedBindHolderState()
+      let application = "owned-positive-invalid-parent-\(UUID())"
+      var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+      var holderPID = 0
+      if stale {
+        work.holds.append(hold)
+        try ownedDeferredGateClear(f.inspector)
+        let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        let started = ownedDeferredHolder(
+          binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+          database: endpoint.database, user: NSUserName(), application: application,
+          hold: hold, state: holderState)
+        work.holders.append(started)
+        holder = started
+        holderPID = try ownedDeferredHolderReady(
+          f.inspector, state: holderState, hold: hold, database: endpoint.database,
+          application: application, deadline: readiness)
+      }
+      let finished = OwnedBindFinished()
+      let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+      let start = memory.calls()
+      let writer = ownedBindWriter(
+        database: f.database, anchor: f.anchor, binding: f.binding, reference: f.link.tokenRef,
+        admission: admission, finished: finished)
+      work.writers.append(writer)
+      if stale {
+        try ownedDeferredObserveCommit(
+          f.inspector, database: endpoint.database, holderPID: holderPID,
+          knownOwnedPIDs: [inspectorPID, holderPID], holderApplication: application,
+          candidateApplication: "b4app", rawPID: nil, hold: hold, finished: finished,
+          memory: memory, invocationStart: start, probes: before.probes, deadline: deadline)
+        try ownedDeferredRelease(
+          hold, finished: finished, memory: memory, invocationStart: start, retire: true,
+          deadline: deadline)
+      }
+      let parent = writer.join()
+      work.releaseAndJoin()
+      let held = holder?.join()
+      guard !finished.pending(), !stale || held?.normal == true,
+        parent.operation == .bind, parent.disposition == (stale ? .committedStale : .unknown),
+        memory.calls() - start == (stale ? 4 : 3)
+      else { throw FixtureFailure.nativeShape }
+      let checkpoint = try ownedDeferredCheckpointRead(
+        f.inspector, recipe: recipe, mode: mode, baseline: 0, diagnostic: diagnostic)
+      guard checkpoint.image == (stale ? stage.expected : stage.before),
+        checkpoint.probes.advanced(from: before.probes, body: 1, commit: 1, timeout: 0)
+      else { throw FixtureFailure.nativeShape }
+      if stale {
+        try ownedDeferredAppendObservation(
+          f.inspector, stage: stage, old: before.observations,
+          actual: checkpoint.observations, rawMillis: nil)
+      } else {
+        guard checkpoint.observations == before.observations else { throw FixtureFailure.nativeShape }
+      }
+      let membership = try ProtocolNativeMembership(
+        canonicalHubBase: f.link.url, deviceID: f.link.deviceId, linkJoinedAt: f.link.joinedAt)
+      // A comparison capture is deliberately a negative input, never a provenance substitute.
+      let negativeAnchor = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: membership)
+      let positiveStart = memory.calls()
+      let receipt = f.database.commitObservedProtocolFact(
+        expectedSnapshot: negativeAnchor, expectedBindingReceipt: parent,
+        observation: try ownedPositiveObservation(f.binding), expectedTokenRef: f.link.tokenRef,
+        memoryAdmission: admission)
+      guard memory.calls() == positiveStart else { throw FixtureFailure.nativeShape }
+      try ownedPositiveRefuses(
+        receipt, anchor: negativeAnchor, reference: f.link.tokenRef,
+        admission: admission, calls: { memory.calls() })
+      guard
+        try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: 0, diagnostic: diagnostic) == checkpoint,
+        parent.disposition == (stale ? .committedStale : .unknown)
+      else { throw FixtureFailure.nativeShape }
+    }
+  }
+
+  @Test(arguments: [
+    "S0", "fact", "account", "object", "empty", "prefixOnly", "wrongPrefix", "nul",
+    "differentRef", "unicodeComposed", "unicodeDecomposed", "admission", "observationAccount",
+    "observationUser", "observationOrg", "observationBase", "observationDevice",
+    "observationDatabase", "observationJoined", "noncommitParent", "unknownParent", "staleParent",
+    "positiveParent",
+  ])
+  func ownedPositiveRequiresExactGenuineCurrentBindParentBeforeSQL(row: String) throws {
+    try Self.ownedPositiveRequireCoreControls()
+    if row == "unknownParent" || row == "staleParent" {
+      try Self.ownedPositiveUnusableBindParent(stale: row == "staleParent")
+      return
+    }
+    try Self.withFixture { f in
+      _ = try Self.validateFixture(f)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let otherMemory = OwnedBindMemory(selected: nil)
+      let otherAdmission = ProtocolProofMemoryAdmission { [otherMemory] in
+        if !otherMemory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let membership = try ProtocolNativeMembership(
+        canonicalHubBase: f.link.url, deviceID: f.link.deviceId, linkJoinedAt: f.link.joinedAt)
+      let wrongAccount = try f.database.captureProtocolVerification(
+        accountID: "OWNED_POSITIVE_ACCOUNT_OTHER", expectedMembership: membership)
+      var reference = f.link.tokenRef
+      if row == "unicodeComposed" || row == "unicodeDecomposed" {
+        reference = row == "unicodeComposed" ? "secret:\u{00E9}" : "secret:e\u{0301}"
+        let before = try Self.ownedBindImage(f.inspector)
+        let changed = try Self.ownedT09ChangedLink(before, column: .tokenRef, value: reference)
+        try Self.ownedT09LinkSwap(
+          f, from: before, to: changed, column: .tokenRef, stage: nil, body: nil, commit: nil)
+      }
+      let parent = try Self.ownedPositiveParent(
+        f, anchor: f.anchor, reference: reference, admission: admission, memory: memory)
+      var anchor = parent.anchor
+      var parentReceipt = parent.receipt
+      var suppliedRef = reference
+      var suppliedAdmission = admission
+      var observation = try Self.ownedPositiveObservation(f.binding)
+      var extra: WorkspaceDatabase?
+      defer { if let extra { try? extra.close() } }
+      switch row {
+      case "S0": anchor = f.anchor
+      case "fact":
+        anchor = try #require(try f.database.readProtocolFact(expectedBinding: f.binding))
+      case "account": anchor = wrongAccount
+      case "object":
+        let endpoint = f.database.endpoint
+        let database = try WorkspaceDatabase(
+          endpoint: endpoint, binDir: endpoint.binDir!, createIfMissing: false)
+        extra = database
+        anchor = try database.captureProtocolVerification(
+          accountID: f.binding.accountID, expectedMembership: membership)
+      case "empty": suppliedRef = ""
+      case "prefixOnly": suppliedRef = "secret:"
+      case "wrongPrefix": suppliedRef = "other:OWNED_POSITIVE"
+      case "nul": suppliedRef = "secret:x\u{0}y"
+      case "differentRef": suppliedRef = "secret:OWNED_POSITIVE_DIFFERENT"
+      case "unicodeComposed": suppliedRef = "secret:e\u{0301}"
+      case "unicodeDecomposed": suppliedRef = "secret:\u{00E9}"
+      case "admission": suppliedAdmission = otherAdmission
+      case "observationAccount", "observationUser", "observationOrg", "observationBase",
+        "observationDevice", "observationDatabase", "observationJoined":
+        let unit: OwnedT09Unit
+        switch row {
+        case "observationAccount": unit = .account
+        case "observationUser": unit = .boundUser
+        case "observationOrg": unit = .boundOrg
+        case "observationBase": unit = .hubBase
+        case "observationDevice": unit = .device
+        case "observationDatabase": unit = .database
+        default: unit = .joined
+        }
+        observation = try Self.ownedPositiveObservation(Self.ownedT09OtherBinding(f.binding, unit: unit))
+      case "noncommitParent":
+        let start = memory.calls()
+        parentReceipt = f.database.prepareProtocolVerification(
+          expectedSnapshot: f.anchor, expectedBinding: f.binding, expectedTokenRef: "",
+          memoryAdmission: admission)
+        guard parentReceipt.operation == .bind, parentReceipt.disposition == .confirmedNoncommit,
+          memory.calls() == start
+        else { throw FixtureFailure.nativeShape }
+      default: break
+      }
+      // Oracle always describes valid original binding even when the supplied observation differs.
+      let validObservation = try Self.ownedPositiveObservation(f.binding)
+      let stage = try Self.ownedPositiveStage(f, observation: validObservation)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: reference, fault: false)
+      if row == "positiveParent" {
+        let start = memory.calls()
+        parentReceipt = Self.ownedPositiveWrite(
+          f, parent: parent, observation: validObservation, reference: reference, admission: admission)
+        guard parentReceipt.operation == .positive, parentReceipt.disposition == .committedCurrent,
+          memory.calls() - start == 4, try Self.ownedBindImage(f.inspector) == stage.expected
+        else { throw FixtureFailure.nativeShape }
+        anchor = try Self.ownedPositiveRedeem(
+          parentReceipt, fixture: f, parent: parent, observation: validObservation,
+          reference: reference, admission: admission, calls: { memory.calls() })
+      }
+      let image = try Self.ownedBindImage(f.inspector)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let observations = try Self.ownedDeferredObservations(f.inspector)
+      let start = memory.calls()
+      let otherStart = otherMemory.calls()
+      let receipt = f.database.commitObservedProtocolFact(
+        expectedSnapshot: anchor, expectedBindingReceipt: parentReceipt, observation: observation,
+        expectedTokenRef: suppliedRef, memoryAdmission: suppliedAdmission)
+      guard memory.calls() == start, otherMemory.calls() == otherStart else {
+        throw FixtureFailure.nativeShape
+      }
+      try Self.ownedPositiveRefuses(
+        receipt, anchor: anchor, reference: suppliedRef,
+        admission: suppliedAdmission, calls: { memory.calls() })
+      guard otherMemory.calls() == otherStart else { throw FixtureFailure.nativeShape }
+      try Self.ownedPositiveUnchangedBody(
+        f, recipe: recipe, image: image, body: body, commit: commit, observations: observations)
+      // Precheckout reachability is additionally established by the fixed writer's source gate;
+      // zero callbacks/probes alone are not evidence about a transient pool checkout.
+      #expect(receipt.operation == .positive && receipt.disposition == .confirmedNoncommit)
+    }
+  }
+
+  @Test func ownedPositiveRedemptionRequiresS1ReferenceAdmissionAndFreshMemory() throws {
+    try Self.ownedPositiveRequireCoreControls()
+    try Self.withFixture { f in
+      _ = try Self.validateFixture(f)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let otherMemory = OwnedBindMemory(selected: nil)
+      let otherAdmission = ProtocolProofMemoryAdmission { [otherMemory] in
+        if !otherMemory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let membership = try ProtocolNativeMembership(
+        canonicalHubBase: f.link.url, deviceID: f.link.deviceId, linkJoinedAt: f.link.joinedAt)
+      let wrongAccount = try f.database.captureProtocolVerification(
+        accountID: "OWNED_POSITIVE_REDEMPTION_OTHER", expectedMembership: membership)
+      let parent = try Self.ownedPositiveParent(
+        f, anchor: f.anchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+      let observation = try Self.ownedPositiveObservation(f.binding)
+      let stage = try Self.ownedPositiveStage(f, observation: observation)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let writeStart = memory.calls()
+      let receipt = Self.ownedPositiveWrite(
+        f, parent: parent, observation: observation, reference: f.link.tokenRef, admission: admission)
+      guard receipt.operation == .positive, receipt.disposition == .committedCurrent,
+        memory.calls() - writeStart == 4
+      else { throw FixtureFailure.nativeShape }
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: body, commit: commit, bodies: 1, commits: 1)
+      let frozenBody = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let frozenCommit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let observations = try Self.ownedDeferredObservations(f.inspector)
+      // P10.write ends with ZERO redemptions. Expected S2 JSON is not a snapshot getter.
+      guard memory.calls() - writeStart == 4 else { throw FixtureFailure.nativeShape }
+      let redemptionStart = memory.calls()
+      var deltas: [Int] = []
+      let equalS1 = parent.anchor
+      let firstStart = memory.calls()
+      // FIRST redemption obtains the actual S2 snapshot. No recapture or private initializer.
+      let actualS2 = try receipt.currentSuccessor(
+        expectedSnapshot: equalS1, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+      deltas.append(memory.calls() - firstStart)
+      guard deltas == [1], actualS2.observation == observation else { throw FixtureFailure.nativeShape }
+      try Self.ownedT09NativeValidate(
+        f, successor: actualS2, binding: f.binding, reference: f.link.tokenRef, observation: observation)
+      try Self.ownedPositiveUnchangedBody(
+        f, recipe: recipe, image: stage.expected, body: frozenBody,
+        commit: frozenCommit, observations: observations)
+      for wrongAnchor in [f.anchor, actualS2] {
+        let before = memory.calls()
+        guard
+          !Self.validates({
+            _ = try receipt.currentSuccessor(
+              expectedSnapshot: wrongAnchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+          })
+        else { throw FixtureFailure.nativeShape }
+        deltas.append(memory.calls() - before)
+        try Self.ownedPositiveUnchangedBody(
+          f, recipe: recipe, image: stage.expected, body: frozenBody,
+          commit: frozenCommit, observations: observations)
+      }
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let extra = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir, createIfMissing: false)
+      defer { try? extra.close() }
+      let otherObjectAnchor = try extra.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: membership)
+      let noContext = try #require(try f.database.readProtocolFact(expectedBinding: f.binding))
+      let contextStart = memory.calls()
+      for wrongAnchor in [wrongAccount, noContext, otherObjectAnchor] {
+        guard
+          !Self.validates({
+            _ = try receipt.currentSuccessor(
+              expectedSnapshot: wrongAnchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+          }), memory.calls() == contextStart
+        else { throw FixtureFailure.nativeShape }
+        try Self.ownedPositiveUnchangedBody(
+          f, recipe: recipe, image: stage.expected, body: frozenBody,
+          commit: frozenCommit, observations: observations)
+      }
+      deltas.append(memory.calls() - contextStart)
+      let referenceStart = memory.calls()
+      for wrongRef in ["", "secret:", "other:x", "secret:x\u{0}y", "secret:OWNED_POSITIVE_OTHER"] {
+        guard
+          !Self.validates({
+            _ = try receipt.currentSuccessor(
+              expectedSnapshot: equalS1, expectedTokenRef: wrongRef, memoryAdmission: admission)
+          }), memory.calls() == referenceStart
+        else { throw FixtureFailure.nativeShape }
+        try Self.ownedPositiveUnchangedBody(
+          f, recipe: recipe, image: stage.expected, body: frozenBody,
+          commit: frozenCommit, observations: observations)
+      }
+      deltas.append(memory.calls() - referenceStart)
+      let admissionStart = memory.calls()
+      guard
+        !Self.validates({
+          _ = try receipt.currentSuccessor(
+            expectedSnapshot: equalS1, expectedTokenRef: f.link.tokenRef, memoryAdmission: otherAdmission)
+        }), otherMemory.calls() == 0
+      else { throw FixtureFailure.nativeShape }
+      deltas.append(memory.calls() - admissionStart)
+      try Self.ownedPositiveUnchangedBody(
+        f, recipe: recipe, image: stage.expected, body: frozenBody,
+        commit: frozenCommit, observations: observations)
+      let retirementStart = memory.calls()
+      memory.setCurrent(false)
+      guard memory.calls() == retirementStart,
+        !Self.validates({
+          _ = try receipt.currentSuccessor(
+            expectedSnapshot: equalS1, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+        }), receipt.disposition == .committedCurrent
+      else { throw FixtureFailure.nativeShape }
+      deltas.append(memory.calls() - retirementStart)
+      try Self.ownedPositiveUnchangedBody(
+        f, recipe: recipe, image: stage.expected, body: frozenBody,
+        commit: frozenCommit, observations: observations)
+      let recoveryStart = memory.calls()
+      memory.setCurrent(true)
+      guard memory.calls() == recoveryStart else { throw FixtureFailure.nativeShape }
+      let recovered = try receipt.currentSuccessor(
+        expectedSnapshot: equalS1, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+      deltas.append(memory.calls() - recoveryStart)
+      guard receipt.disposition == .committedCurrent, recovered.observation == actualS2.observation,
+        otherMemory.calls() == 0, deltas == [1, 0, 0, 0, 0, 0, 1, 1],
+        memory.calls() - redemptionStart == 3
+      else { throw FixtureFailure.nativeShape }
+      // Both actual returned values must independently equal the SAME frozen native S2 facts.
+      try Self.ownedT09NativeValidate(
+        f, successor: recovered, binding: f.binding, reference: f.link.tokenRef, observation: observation)
+      try Self.ownedT09NativeValidate(
+        f, successor: actualS2, binding: f.binding, reference: f.link.tokenRef, observation: observation)
+      try Self.ownedPositiveUnchangedBody(
+        f, recipe: recipe, image: stage.expected, body: frozenBody,
+        commit: frozenCommit, observations: observations)
+      #expect(deltas == [1, 0, 0, 0, 0, 0, 1, 1])
+    }
+  }
+
+  @Test func ownedPositiveAlwaysAdvancesForAlreadyEqualObservationWithNewGenuineBindParent() throws {
+    try Self.ownedPositiveRequireCoreControls()
+    try Self.withFixture { f in
+      _ = try Self.validateFixture(f)
+      let memory = OwnedBindMemory(selected: nil)
+      let admission = ProtocolProofMemoryAdmission { [memory] in
+        if !memory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let parent = try Self.ownedPositiveParent(
+        f, anchor: f.anchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+      let observation = try Self.ownedPositiveObservation(f.binding)
+      let firstStage = try Self.ownedPositiveStage(f, observation: observation)
+      let firstStart = memory.calls()
+      let first = Self.ownedPositiveWrite(
+        f, parent: parent, observation: observation, reference: f.link.tokenRef, admission: admission)
+      guard first.operation == .positive, first.disposition == .committedCurrent,
+        memory.calls() - firstStart == 4, try Self.ownedBindImage(f.inspector) == firstStage.expected
+      else { throw FixtureFailure.nativeShape }
+      let actualS2 = try Self.ownedPositiveRedeem(
+        first, fixture: f, parent: parent, observation: observation, reference: f.link.tokenRef,
+        admission: admission, calls: { memory.calls() })
+      // P11.first preparation probes N/A: no recipe installed. Actual B1 no-op setup adds 4+1.
+      let newParent = try Self.ownedPositiveParent(
+        f, anchor: actualS2, reference: f.link.tokenRef, admission: admission, memory: memory)
+      guard newParent.image == firstStage.expected else { throw FixtureFailure.nativeShape }
+      let stage = try Self.ownedPositiveStage(f, observation: observation)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let start = memory.calls()
+      let equal = Self.ownedPositiveWrite(
+        f, parent: newParent, observation: observation, reference: f.link.tokenRef, admission: admission)
+      guard equal.operation == .positive, equal.disposition == .committedCurrent,
+        memory.calls() - start == 4
+      else { throw FixtureFailure.nativeShape }
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: body, commit: commit, bodies: 1, commits: 1)
+      _ = try Self.ownedPositiveRedeem(
+        equal, fixture: f, parent: newParent, observation: observation, reference: f.link.tokenRef,
+        admission: admission, calls: { memory.calls() })
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: body, commit: commit, bodies: 1, commits: 1)
+      #expect(memory.calls() - start == 5)
+    }
+  }
+}

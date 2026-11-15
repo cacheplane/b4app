@@ -1295,3 +1295,220 @@ extension WorkspaceDatabase {
       expectedTokenRef: expectedTokenRef, memoryAdmission: memoryAdmission)
   }
 }
+
+extension ProtocolOwnedProofWriteReceipt {
+  // Pure sealed provenance extraction. A stamped current bind still needs the positive
+  // invocation's actual locked native PRE and all four fresh memory comparisons.
+  fileprivate func positiveBindParent(
+    database: WorkspaceDatabase, anchor: ProtocolVerificationSnapshot,
+    observation: ProtocolVerificationObservation, reference: ProtocolCredentialReference,
+    memoryAdmission: ProtocolProofMemoryAdmission
+  ) throws -> ProtocolProofBindLineage {
+    guard case .committed(let evidence) = payload, evidence.currentness == .current,
+      case .bind(let parent) = evidence.lineage,
+      anchor.database === database, evidence.actualDatabase === database,
+      parent.originalAnchor.database === database, parent.boundSuccessor.database === database,
+      ProtocolProofSnapshotComparison.same(anchor, evidence.successor),
+      ProtocolProofSnapshotComparison.same(anchor, parent.boundSuccessor),
+      ProtocolProofSnapshotComparison.same(evidence.callerAnchor, parent.originalAnchor),
+      evidence.invocation === parent.invocation,
+      reference == evidence.originalParsedReference, reference == parent.originalParsedReference,
+      memoryAdmission === evidence.memoryAdmission, memoryAdmission === parent.memoryAdmission,
+      let context = anchor.capturedContext, let membership = context.membership,
+      let originalContext = parent.originalAnchor.capturedContext,
+      originalContext.membership == membership,
+      ProtocolActivationControl.bytesEqual(context.accountID, originalContext.accountID),
+      anchor.record.binding == parent.expectedBinding,
+      observation.binding == parent.expectedBinding,
+      ProtocolActivationControl.bytesEqual(context.accountID, observation.binding.accountID),
+      ProtocolActivationControl.bytesEqual(database.endpoint.database, observation.binding.databaseName),
+      ProtocolActivationControl.bytesEqual(membership.canonicalHubBase, observation.binding.canonicalHubBase),
+      ProtocolActivationControl.bytesEqual(membership.deviceID, observation.binding.deviceID),
+      ProtocolActivationControl.bytesEqual(membership.linkJoinedAt, observation.binding.linkJoinedAt),
+      ProtocolActivationControl.bytesEqual(evidence.predecessorContext.accountID, context.accountID),
+      ProtocolActivationControl.bytesEqual(evidence.successorContext.accountID, context.accountID),
+      evidence.predecessorContext.membership == membership,
+      evidence.successorContext.membership == membership,
+      evidence.actualNativePredecessor.record == parent.originalAnchor.record,
+      evidence.actualNativePredecessor.membership == membership,
+      evidence.actualNativePredecessor.credentialReference == reference,
+      ProtocolActivationControl.bytesEqual(
+        evidence.actualNativePredecessor.databaseName, database.endpoint.database),
+      observation.reportedMinimum == 2, observation.reportedVersion >= 2, observation.healthy
+    else { throw ProtocolActivationControl.failure }
+    return parent
+  }
+}
+
+extension ProtocolOwnedProofWriter {
+  private struct PositiveWork {
+    let predecessor: ProtocolProofNativePredecessor
+    let context: ProtocolProofLinkedContext
+    let successor: ProtocolVerificationSnapshot
+  }
+
+  private static func positiveRefusal(
+    invocation: ProtocolProofInvocation, stage: ProtocolProofReachedStage,
+    beginSent: Bool = false, rollbackAcknowledged: Bool = false,
+    commitSent: Bool = false, commitAcknowledged: Bool = false
+  ) -> ProtocolOwnedProofWriteReceipt {
+    let decision = ProtocolProofSettlementClassifier.classify(
+      beginSent: beginSent, rollbackAcknowledged: rollbackAcknowledged,
+      commitSent: commitSent, commitAcknowledged: commitAcknowledged)
+    return ProtocolOwnedProofWriteReceipt(
+      payload: .noContinuation(
+        ProtocolProofNoContinuation(
+          operation: .positive, invocation: invocation, lastReachedStage: stage,
+          outcome: decision == .confirmedNoncommit ? .confirmedNoncommit : .unknown)))
+  }
+
+  static func positive(
+    database: WorkspaceDatabase, anchor: ProtocolVerificationSnapshot,
+    bindingReceipt: ProtocolOwnedProofWriteReceipt, observation: ProtocolVerificationObservation,
+    expectedTokenRef: String, memoryAdmission: ProtocolProofMemoryAdmission
+  ) -> ProtocolOwnedProofWriteReceipt {
+    let invocation = ProtocolProofInvocation()
+    guard let reference = ProtocolCredentialReference(expectedTokenRef),
+      let parent = try? bindingReceipt.positiveBindParent(
+        database: database, anchor: anchor, observation: observation, reference: reference,
+        memoryAdmission: memoryAdmission),
+      let context = anchor.capturedContext, let membership = context.membership
+    else { return positiveRefusal(invocation: invocation, stage: .invocationStarted) }
+    let device = database.deviceId
+    do {
+      // Only this fixed nonthrowing callback owns SQL. The parent extraction above is pure.
+      return try database.withOwnedProtocolProofConnection { connection in
+        performPositive(
+          connection, database: database, anchor: anchor, parent: parent,
+          observation: observation, context: context, membership: membership,
+          reference: reference, device: device, memoryAdmission: memoryAdmission,
+          invocation: invocation)
+      }
+    } catch {
+      return positiveRefusal(invocation: invocation, stage: .inputValidated)
+    }
+  }
+
+  private static func performPositive(
+    _ c: PostgresConnection, database: WorkspaceDatabase, anchor: ProtocolVerificationSnapshot,
+    parent: ProtocolProofBindLineage, observation: ProtocolVerificationObservation,
+    context: ProtocolActivationControl.CapturedContext, membership: ProtocolNativeMembership,
+    reference: ProtocolCredentialReference, device: String,
+    memoryAdmission: ProtocolProofMemoryAdmission, invocation: ProtocolProofInvocation
+  ) -> ProtocolOwnedProofWriteReceipt {
+    var stage = ProtocolProofReachedStage.checkoutEntered
+    var beginSent = false
+    var rollbackAcknowledged = false
+    var commitSent = false
+    var commitAcknowledged = false
+    let work: PositiveWork
+    do {
+      beginSent = true
+      stage = .beginSent
+      try c.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+      stage = .beginAcknowledged
+      try c.execute("SET LOCAL lock_timeout='2s'")
+      try c.execute("SET LOCAL statement_timeout='2s'")
+      stage = .budgetsInstalled
+      try c.execute(
+        "SELECT pg_advisory_xact_lock($1::bigint)", [String(WorkspaceDatabase.remoteApplyLockKey)])
+      try c.execute("SELECT set_config('b4app.hlc', $1, true)", [database.clock.next().rawValue])
+      if device != "local" {
+        try c.execute("SELECT set_config('b4app.device_id', $1, true)", [device])
+      }
+      stage = .advisoryAndClockInstalled
+      let pre = try ProtocolActivationControl.state(c, locking: true)
+      let predecessor = try ProtocolActivationControl.capturedRecord(
+        database, state: pre, snapshot: anchor, allowingLaterRevision: false)
+      try ProtocolActivationControl.requireMembership(
+        pre, binding: parent.expectedBinding, endpoint: database.endpoint.database)
+      guard predecessor.binding == parent.expectedBinding,
+        predecessor.binding == observation.binding,
+        let nativeMembership = try ProtocolActivationControl.nativeMembership(pre),
+        nativeMembership == membership, let nativeReference = pre.credentialReference,
+        nativeReference == reference
+      else { throw ProtocolActivationControl.failure }
+      let nativePredecessor = ProtocolProofNativePredecessor(
+        databaseName: pre.database, record: predecessor, membership: nativeMembership,
+        credentialReference: nativeReference)
+      let linkedContext = ProtocolProofLinkedContext(
+        accountID: context.accountID, membership: nativeMembership)
+      stage = .nativePreValidated
+      try memoryAdmission.requireCurrent()
+      stage = .memoryPreAccepted
+      var candidate = predecessor
+      // Positive always mutates once, including an already equal observation.
+      candidate.revision = try ProtocolActivationControl.next(predecessor.revision)
+      candidate.observation = observation
+      try ProtocolActivationControl.store(c, candidate)
+      stage = .successorStoredOrNoop
+      let successor = ProtocolVerificationSnapshot(
+        database: database, record: candidate, capturedContext: context)
+      let post = try ProtocolActivationControl.state(c, locking: false)
+      _ = try ProtocolActivationControl.capturedRecord(
+        database, state: post, snapshot: successor, allowingLaterRevision: false)
+      try ProtocolActivationControl.requireMembership(
+        post, binding: parent.expectedBinding, endpoint: database.endpoint.database)
+      guard post.credentialReference == reference,
+        try ProtocolActivationControl.nativeMembership(post) == nativeMembership
+      else { throw ProtocolActivationControl.failure }
+      stage = .nativePostValidated
+      work = PositiveWork(predecessor: nativePredecessor, context: linkedContext, successor: successor)
+      try memoryAdmission.requireCurrent()
+      stage = .memoryPostAccepted
+      // A distinct last memory comparison. Only flag/stage assignments precede actual COMMIT.
+      try memoryAdmission.requireCurrent()
+      stage = .preCommitMemoryAccepted
+      commitSent = true
+      stage = .commitSent
+      try c.execute("COMMIT")
+      commitAcknowledged = true
+      stage = .commitAcknowledged
+    } catch {
+      if beginSent && !commitSent {
+        stage = .rollbackSent
+        do {
+          try c.execute("ROLLBACK")
+          rollbackAcknowledged = true
+          stage = .rollbackAcknowledged
+        } catch {
+          // One attempted ROLLBACK only; no acknowledged return means unknown.
+        }
+      }
+      // Once COMMIT was sent, this catch sends no further SQL, inspection or retry.
+      return positiveRefusal(
+        invocation: invocation, stage: stage, beginSent: beginSent,
+        rollbackAcknowledged: rollbackAcknowledged, commitSent: commitSent,
+        commitAcknowledged: commitAcknowledged)
+    }
+    // Actual ACK is settled. This fourth callback is outside the SQL catch.
+    let currentness: ProtocolProofCommittedCurrentness
+    do {
+      try memoryAdmission.requireCurrent()
+      currentness = .current
+    } catch {
+      currentness = .stale
+    }
+    return ProtocolOwnedProofWriteReceipt(
+      payload: .committed(
+        ProtocolProofCommittedEvidence(
+          actualDatabase: database, callerAnchor: anchor, actualNativePredecessor: work.predecessor,
+          predecessorContext: work.context, successor: work.successor, successorContext: work.context,
+          originalParsedReference: reference, memoryAdmission: memoryAdmission,
+          invocation: invocation, lineage: .positive(parent: parent, observation: observation),
+          currentness: currentness)))
+  }
+}
+
+extension WorkspaceDatabase {
+  /// Dormant fixed positive: exact owned-bind provenance plus this invocation's actual ACK.
+  package func commitObservedProtocolFact(
+    expectedSnapshot: ProtocolVerificationSnapshot, expectedBindingReceipt: ProtocolOwnedProofWriteReceipt,
+    observation: ProtocolVerificationObservation, expectedTokenRef: String,
+    memoryAdmission: ProtocolProofMemoryAdmission
+  ) -> ProtocolOwnedProofWriteReceipt {
+    ProtocolOwnedProofWriter.positive(
+      database: self, anchor: expectedSnapshot, bindingReceipt: expectedBindingReceipt,
+      observation: observation, expectedTokenRef: expectedTokenRef, memoryAdmission: memoryAdmission)
+  }
+}
