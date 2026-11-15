@@ -1,0 +1,68 @@
+{
+  "manifest_version": 1,
+  "frozen_at": "2026-11-15T04:12:34Z",
+  "frozen_before": "any candidate measurement (the local reuse experiment E1 was running; no result had been read)",
+  "scope": {
+    "delivery_path": "ci.yml: a push to a pull request or to main, to the required checks' results (developer feedback and validation of integration candidates)",
+    "principal_bottleneck": "the macOS jobs of ci.yml: their wait for one of the organisation's 5 concurrent macOS runners, and the longest of them once started",
+    "not_optimized": [
+      "hub release (hub-image.yml, hub-release.yml, hub-deploy.yml, hub-chart.yml): read, not changed",
+      "Mac release (Scripts/release-mac.sh, the owner's Mac) and iOS upload (Scripts/upload-ios.sh): read, not changed, not run"
+    ]
+  },
+  "revisions": {
+    "baseline_pipeline": "dd67dc69 (.github/workflows/ci.yml as merged by D-229)",
+    "product_source": "origin/main at the candidate's base; recorded in the gate record",
+    "candidate_pipeline": "this branch's head; recorded in the gate record"
+  },
+  "inputs": {
+    "locks": ["Package.resolved", "Hub/Cargo.lock", "Tests/B4Runtime/package-lock.json"],
+    "toolchain": {"xcode": "26.6 (17F113)", "node": "24.20.0", "rust": "1.93.1", "xcodegen": "2.46.0 (brew, unpinned)"},
+    "runners": {"hosted": ["macos-26 (arm64, standard)", "ubuntu-latest"], "local": "the owner's Mac, 10 cores, Xcode 26.6; other sessions build on it at the same time"},
+    "caches": ["spm-<os>-<Package.resolved>: .build and the SwiftPM cache", "spm-xcode-<os>-<Package.resolved>: .spm clones", "postgres-dl-<fetch script>", "node npm cache", "hub-cargo-<os>-<Cargo.lock>"],
+    "cache_namespace": "the repository's own Actions caches, read-only for this work: no key changes, no purge"
+  },
+  "obligations": {
+    "required_checks_by_branch_protection": ["macOS and iOS app builds", "iOS navigation and banner regression tests"],
+    "jobs": ["Change scope", "B4 runtime integration (aimock)", "Workflow and shell lint", "Package build and tests", "macOS and iOS app builds", "iOS layout tests (shard 1 of 2)", "iOS layout tests (shard 2 of 2)", "iOS navigation and banner regression tests", "macOS recovery smoke tests", "Hub (Rust)"],
+    "app_builds": ["B4App-macOS, platform=macOS", "B4App-macOS-Beta, platform=macOS", "B4App-iOS, generic/platform=iOS Simulator (arm64 and x86_64)", "B4App-iOS-Beta, generic/platform=iOS Simulator (arm64 and x86_64)"],
+    "tests": ["swift test, both processes, every test", "the layout plan: 13 journeys, 3 component tests, 129 checkpoints across two shards", "the macOS smoke suite", "cargo fmt, clippy, test", "the lint job's steps", "the B4 runtime cases"],
+    "unchanged": "check names, timeouts' meaning, test selection, the four schemes and their destinations, fail-closed combining jobs, the scope rule"
+  },
+  "gates": {
+    "required": [
+      {"id": "G1", "what": "measurement honesty: every figure is from GitHub's timestamps or a named local log; hosted and local figures are never mixed in one comparison", "authority": "this task's contract"},
+      {"id": "G2", "what": "the obligations above are preserved", "authority": "repository requirement (AGENTS.md, D-187, D-225, D-229) and branch protection"},
+      {"id": "G3", "what": "the two combining checks fail closed: a build step or shard that failed, was cancelled, was skipped without the scope's explicit false, or never reported fails the check", "authority": "repository requirement (D-225, D-229)"},
+      {"id": "G4", "what": "a claimed improvement is supported by evidence of the stated kind (hosted R/M for a hosted claim)", "authority": "this task's contract"}
+    ],
+    "advisory": ["attestation or signing of CI outputs (CI publishes nothing)", "byte reproducibility of CI build products", "hosted cost accounting in currency (only runner-minutes are observable)"]
+  },
+  "objective": {
+    "kind": "provisional, baseline-relative; no numeric target was supplied",
+    "population": "first attempts of ci.yml on pull requests and main that need the macOS jobs",
+    "baseline_window": "the 80 ci.yml runs from 2026-11-13T12:13Z to 2026-11-15T03:41Z; for per-job figures, the runs with the D-229 workflow shape",
+    "metrics": {
+      "critical_job": "the longest macOS job's run time (what a run takes when every job finds a runner at once)",
+      "runner_seconds": "summed macOS job run time per run (what a run asks of the 5 shared runners)",
+      "span": "push to the last job's completion, reported with its queue and never claimed from fewer than 5 runs"
+    },
+    "meaningful_improvement": {"critical_job": "at least 10% shorter", "runner_seconds": "at least 5% fewer"},
+    "acceptable_cost": {"macos_jobs_per_run": "no more than 4", "runner_class": "unchanged", "cache_storage": "no new cache", "first_attempt_pass_rate": "no new failure mode in the checks run", "cold_path": "a run with no cache is no slower than before by more than noise"}
+  },
+  "decision_rules": {
+    "E1": "keep sharing a DerivedData between a UI fixture's build and an app build only if, locally, the shared build runs at most half the SwiftCompile tasks of the same build in its own DerivedData, succeeds, and still compiles the app target's own sources; a hosted run then has to show the step shorter than its baseline range"
+  },
+  "cases": {
+    "required": ["warm caches, ordinary Swift change (hosted)", "docs-only pull request skips macOS and reports both required checks (hosted)", "a failing app build fails the combining check (negative)", "a skipped or missing build outcome fails the combining check (negative)", "a source change after the fixture build is seen by the app build in the shared DerivedData (invalidation)"],
+    "holdout": "a pull request this work did not write, run on the candidate workflow after it merges or is rebased onto: its jobs' times and results",
+    "excluded": [
+      {"case": "cold caches on hosted runners", "reason": "needs a cache purge or a lock change; neither is authorized or part of the change (no cache key changes)"},
+      {"case": "dependency or toolchain update", "reason": "the candidate changes no cache key and no resolution step"},
+      {"case": "macOS smoke suite locally", "reason": "it drives the owner's pointer (D-225, D-229)"},
+      {"case": "release paths end to end", "reason": "they publish; no authorization, and they are not changed"}
+    ]
+  },
+  "budget": {"experiments_after_baseline": 4, "hosted_runs": "only with the owner's go-ahead to push; about 50 macOS runner-minutes each"},
+  "rollback": "revert this branch's commits to .github/workflows/ci.yml and Scripts/tests/test_ci_scope.py; no cache, secret, protection or external state changes"
+}
