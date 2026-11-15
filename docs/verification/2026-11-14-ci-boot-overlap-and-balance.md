@@ -132,7 +132,7 @@ One status per check for the changed path (`ci.yml`, the candidate). "Untested" 
 | C14.3 rollback | Pass | reverting this branch's commits; no external state. Not exercised |
 | C15.1 cost | Pass | runner minutes by class; currency unknown and said so |
 | C15.2 maintainability | Pass | one script, one plan file, one moved step; the review |
-| C15.3 final integrated candidate and holdout (required) | Untested | the hosted run was of the candidate with E2; the candidate without it has none yet; no holdout, which is a pull request this work did not write |
+| C15.3 final integrated candidate and holdout (required) | Untested | one hosted run of the candidate that remains (43684652276, green; "The second hosted run"); no holdout, which is a pull request this work did not write |
 
 Required checks: 10 pass, 0 fail, 1 untested (C15.3). Assessed 10 of 11 (91%); verified passing 10 of 11 (91%). The release paths were read and are unchanged; every check for them is untested here, since none was run.
 
@@ -155,16 +155,33 @@ The longest job is 12% longer than the baseline's median and longer than in any 
 - **E3, the balance.** Journey sums 268 s (shard 1) and 401 s (shard 2). With `testSyncCopyJourneys` (61 s) still in shard 2 they would have been 207 and 462 s.
 - **Not seen.** A re-run of failed jobs (F10), a failed beta build in shard 1 on a hosted run, a docs-only pull request, a holdout.
 
+### The second hosted run
+
+Run 43684652276, pull request 206, commit 46abf6e (E2 reverted; E3 and E4), first attempt, green: all ten checks passed. The same sources as the first.
+
+| | Package | Smoke | Shard 1 | Shard 2 | Longest | macOS runner time |
+| --- | --- | --- | --- | --- | --- | --- |
+| Baseline, four runs | 817 to 960 s | 816 to 842 s | 522 to 742 s | 694 to 1,015 s | 865 to 1,015 s, median 967 s | 3,088 to 3,420 s, median 3,235 s |
+| 43678912064 (E2, E3, E4) | 1,005 s | 781 s | 1,083 s | 924 s | 1,083 s (shard 1) | 3,793 s |
+| 43684652276 (E3, E4) | 644 s | 576 s | 950 s | 985 s | 985 s (shard 2) | 3,155 s |
+
+The longest job is 2% longer than the baseline's median and the macOS runner time 2.5% less; the thresholds asked for 10% and 5% less. The span was 20.5 minutes, with waits for a macOS runner of 14 to 265 s.
+
+- **This run's runners were fast in steps this change does not touch.** The package job's four untouched steps took 570 s (baseline 630 to 722 s; the first run 875 s) and the smoke job's tests 324 s (523 to 551 s). The runners differ from run to run by more than anything changed here.
+- **The shards did not share that.** With D-229's order back: shard 1 waited 101 s for the boot, built for 259 s and tested for 322 s; shard 2 105 s, 248 s and 556 s. Wait and build took 360 and 353 s, against 380 and 368 s with E2 on the first run and a baseline median of 323 s. The two orders are not told apart by these two runs; E2 stays reverted by its rule.
+- **E3.** Journey sums 278 s (shard 1) and 408 s (shard 2); with `testSyncCopyJourneys` (57 s) in shard 2 they would have been 221 and 465 s. All 16 tests passed with no repetition. Shard 2's tests took 556 s for 408 s of journeys and shard 1's 322 s for 278 s.
+- **E4.** The output arrived again (`iOS builds: success/success`). The beta build took 191 s in shard 1. Without it shard 1 would have run about 760 s and the package job, with it at the baseline's 92 to 135 s, about 740 to 780 s: shard 2 is the longest either way, and the move cost about 55 to 100 s of runner time.
+
 ### Verdict: incomplete
 
 After the first hosted run the verdict was "changes required": E2 had failed its rule. E2 is now reverted (the layout script and its tests are `main`'s, and the workflow waits for `simctl bootstatus` before it calls the script, as in D-229). Local after the revert: 55 script tests pass, `actionlint` and `shellcheck` are clean.
 
-No required check fails and no S3 or S4 finding is open. One required check is untested, C15.3: the candidate that remains has no hosted run of its own, and there is no holdout. No improvement is claimed. On the one run there is, the candidate with E2 was slower than every baseline run, on runners that were slow in untouched steps too.
+No required check fails and no S3 or S4 finding is open. One required check is untested, C15.3: there is no holdout. No improvement is claimed, and on the two hosted runs none is shown: neither threshold is met in either. The candidate with E2 was slower than every baseline run, on runners that were slow in untouched steps too; the candidate that remains ran a longest job of 985 s against the baseline's median of 967 s, with 2.5% less macOS runner time on runners that were fast in untouched steps.
 
-What the next hosted runs have to show:
+What is left, for the owner:
 
-- The longest macOS job and the macOS runner time against the four-run table, in at least three runs. E4 cost about 75 to 115 s of runner time on the first run and made shard 1 the longest job; if that holds, revert commit d980aacf's move alone, which puts the beta build back in the package job.
-- E3's balance: the two shards' journey sums.
+- E4 has now cost runner time on both runs (209 and 191 s for the beta build, against 92 to 135 s in the package job) and shortened the longest job in neither. On the six runs read, the package job with both iOS builds was the longest job once. Reverting commit d980aacf's move alone puts the beta build back there.
+- E3 held on both runs (journey sums 268 and 401 s, then 278 and 408 s), and shard 2 is still the longer shard: its step outside the journeys (the boot wait, the fixture's build and the tests' own start and end) is what makes it so, and the plan cannot move that.
 - Still open: F10, the docs-only path, the holdout.
 
 To undo: revert this branch's commits. Nothing outside the repository changed.
