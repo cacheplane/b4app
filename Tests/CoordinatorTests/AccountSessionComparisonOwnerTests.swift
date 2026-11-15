@@ -40,6 +40,8 @@ import WorkspaceSync
       let disposal = try await f.manager.advanceDormantHubCleanupToSessionDisposal(
         original: ordinary, finalPush: final)
       p2bOwnerRefusal { _ = try disposal.captureInstalledAccountSessionComparison() }
+      let revoked = await f.manager.revokeDormantHubCleanupPhase(disposal)
+      #expect(revoked)
       let finished = await f.manager.finishDormantHubCleanup(disposal)
       #expect(finished)
       await f.expectEffects(before)
@@ -47,9 +49,13 @@ import WorkspaceSync
   }
 
   @Test func p2bB17OwnerRetirementAfterRealAndControlledWaitsRefuses() async throws {
+    var observationIndex = 0
     // Each stale case has an independent same-owner positive control on the same real path.
     for retired in [false, true] {
-      try await P2BOwnerFixture.withFixture(linked: true) { f in
+      observationIndex += 1
+      try await P2BOwnerFixture.withFixture(
+        linked: true, observation: P2BOwnerObservation(testCase: .b17, fixtureIndex: observationIndex)
+      ) { f in
         let installed = try await f.install(f.scope)
         let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
         let database = f.scope.database
@@ -91,7 +97,10 @@ import WorkspaceSync
       (.afterRollbackBeforeG8, UInt(128), UInt(4)),
     ] {
       for retired in [false, true] {
-        try await P2BOwnerFixture.withFixture(linked: true) { f in
+        observationIndex += 1
+        try await P2BOwnerFixture.withFixture(
+          linked: true, observation: P2BOwnerObservation(testCase: .b17, fixtureIndex: observationIndex)
+        ) { f in
           let installed = try await f.install(f.scope)
           let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
           let probe = try f.native.probe(f.scope.database, phase: phase)
@@ -119,7 +128,10 @@ import WorkspaceSync
       }
     }
     for retired in [false, true] {
-      try await P2BOwnerFixture.withFixture(linked: true) { f in
+      observationIndex += 1
+      try await P2BOwnerFixture.withFixture(
+        linked: true, observation: P2BOwnerObservation(testCase: .b17, fixtureIndex: observationIndex)
+      ) { f in
         let installed = try await f.install(f.scope)
         let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
         let inspector = try f.native.inspector(f.scope.database)
@@ -151,8 +163,12 @@ import WorkspaceSync
   }
 
   @Test func p2bB18ContextTentativeGateAndReplacementNeverRetarget() async throws {
+    var observationIndex = 0
     for mutation in 0..<8 {
-      try await P2BOwnerFixture.withFixture(linked: true) { f in
+      observationIndex += 1
+      try await P2BOwnerFixture.withFixture(
+        linked: true, observation: P2BOwnerObservation(testCase: .b18, fixtureIndex: observationIndex)
+      ) { f in
         if mutation >= 6 {
           var unicode = f.scope.account
           if mutation == 6 { unicode.deviceId = "d\u{00e9}" } else { unicode.tokenRef = "secret:r\u{00e9}" }
@@ -192,7 +208,10 @@ import WorkspaceSync
     }
     // A native-absent context preserves nil independently of the native absence branch.
     for initiallyNil in [false, true] {
-      try await P2BOwnerFixture.withFixture(linked: false) { f in
+      observationIndex += 1
+      try await P2BOwnerFixture.withFixture(
+        linked: false, observation: P2BOwnerObservation(testCase: .b18, fixtureIndex: observationIndex)
+      ) { f in
         var original = f.scope.account
         if initiallyNil { original.tokenRef = nil; f.scope.update(account: original) }
         let installed = try await f.install(f.scope)
@@ -211,7 +230,10 @@ import WorkspaceSync
         p2bOwnerCleanup(probe.snapshot())
       }
     }
-    try await P2BOwnerFixture.withFixture(linked: true) { f in
+    observationIndex += 1
+    try await P2BOwnerFixture.withFixture(
+      linked: true, observation: P2BOwnerObservation(testCase: .b18, fixtureIndex: observationIndex)
+    ) { f in
       let installed = try await f.install(f.scope)
       let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
       let probe = try f.native.probe(f.scope.database, phase: .afterFactsBeforeG7)
@@ -363,6 +385,31 @@ private func p2bOwnerSuccessful(_ sample: AccountSessionComparisonTestSample) {
     && sample.factsDecoded == 1 && sample.selectReturns == 1
     && sample.rollbackAttempts == 1 && sample.rollbackAcknowledgements == 1
   #expect(actualChecksAndCommands)
+}
+
+private struct P2BOwnerObservation: Sendable {
+  enum TestCase: Int, Sendable { case b17 = 17; case b18 = 18 }
+  enum Boundary: String, Sendable {
+    case setupEntered, setupReturned, baselineEffectsEntered, bodyEntered, bodyReturned, bodyThrew
+    case effectsCheckEntered, effectsCheckReturned, nativeCleanupEntered, nativeCleanupReturned
+    case nativeCleanupUnsettled, eventCleanupEntered, eventCleanupReturned
+    case lifecycleCleanupEntered, lifecycleCleanupReturned, cleanupReturned, fixtureReturned
+  }
+  let testCase: TestCase
+  let fixtureIndex: Int
+  private let started: UInt64
+  init(testCase: TestCase, fixtureIndex: Int) {
+    self.testCase = testCase
+    self.fixtureIndex = fixtureIndex
+    self.started = DispatchTime.now().uptimeNanoseconds
+  }
+  func record(_ boundary: Boundary) {
+    let now = DispatchTime.now().uptimeNanoseconds
+    let elapsed = now >= started ? now - started : 0
+    print(
+      "p2b_owner_boundary test=\(testCase.rawValue) fixture=\(fixtureIndex) phase=\(boundary.rawValue) elapsed_ns=\(elapsed)"
+    )
+  }
 }
 
 private final class P2BOwnerNativeHold: Sendable {
@@ -849,19 +896,28 @@ private struct P2BOwnerFixture: Sendable {
   static func withFixture(
     ownerRevision: UInt64? = nil, lifecycleSerial: UInt64? = nil,
     beforeStart: @Sendable (AccountManager, AccountManager.Slot) async throws -> Void = { _, _ in },
-    linked: Bool,
+    linked: Bool, observation: P2BOwnerObservation? = nil,
     body: @Sendable (P2BOwnerFixture) async throws -> Void
   ) async throws {
+    observation?.record(.setupEntered)
     let f = try await make(
       ownerRevision: ownerRevision, lifecycleSerial: lifecycleSerial,
       beforeStart: beforeStart, linked: linked)
+    observation?.record(.setupReturned)
     do {
+      observation?.record(.baselineEffectsEntered)
       let baseline = await f.effects()
+      observation?.record(.bodyEntered)
       try await body(f)
+      observation?.record(.bodyReturned)
+      observation?.record(.effectsCheckEntered)
       await f.expectEffects(baseline)
-      await f.finish()
+      observation?.record(.effectsCheckReturned)
+      await f.finish(observation: observation)
+      observation?.record(.fixtureReturned)
     } catch {
-      await f.finish()
+      observation?.record(.bodyThrew)
+      await f.finish(observation: observation)
       // Never let arbitrary resource errors render private rows or references in a test terminal.
       Issue.record("The scope-owner control failed; private details were suppressed.")
       throw P2BOwnerFixtureFailure.incomplete
@@ -1098,12 +1154,21 @@ private struct P2BOwnerFixture: Sendable {
     #expect(unchanged)
   }
 
-  func finish() async {
+  func finish(observation: P2BOwnerObservation? = nil) async {
+    observation?.record(.nativeCleanupEntered)
     let nativeSettled = native.finish()
+    observation?.record(.nativeCleanupReturned)
     #expect(nativeSettled)
-    guard nativeSettled else { return }
+    guard nativeSettled else {
+      observation?.record(.nativeCleanupUnsettled)
+      return
+    }
+    observation?.record(.eventCleanupEntered)
     await events.finish()
+    observation?.record(.eventCleanupReturned)
+    observation?.record(.lifecycleCleanupEntered)
     let drained = await cleanup.finish(manager: manager, slot: slot)
+    observation?.record(.lifecycleCleanupReturned)
     registry.close()
     if drained {
       do { try FileManager.default.removeItem(atPath: root) } catch {
@@ -1112,5 +1177,6 @@ private struct P2BOwnerFixture: Sendable {
     } else {
       Issue.record("The scope-owner private root was retained because its leases did not drain.")
     }
+    observation?.record(.cleanupReturned)
   }
 }
