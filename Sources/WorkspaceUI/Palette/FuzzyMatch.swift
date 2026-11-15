@@ -74,6 +74,16 @@ nonisolated enum FuzzyMatch {
       guard best > 0 else { return nil }
       total += best
     }
+    // Terms found together and in order in the title are a phrase of it, and count again: "choose
+    // folder" names "Choose folder…" ahead of a row that starts with "Choose" and has "folder" as an
+    // alias. One term alone has no phrase, so an alias keeps its whole weight there; letters scattered
+    // across the title ("Choose a folder") are no phrase either.
+    if terms.count > 1,
+      let phrase = score(Array(terms.joined(separator: [Unit(32)])), in: title, positions: false),
+      phrase.score >= Score.inside
+    {
+      total += phrase.score
+    }
     return Hit(score: total, positions: positions)
   }
 

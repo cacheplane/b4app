@@ -104,6 +104,21 @@ private func connected(
     #expect(secondary == FuzzyMatch.Score.prefix / 2)
   }
 
+  /// "choose folder" is the name of one command; another that starts with "Choose" and has "folder"
+  /// as an alias must not rank above it. Terms found together, in order, in the title count again.
+  @Test func aTitleThatHoldsTheQueryAsAPhraseBeatsAnAliasForOneOfItsWords() throws {
+    let named = try #require(score("choose folder", "Choose folder\u{2026}"))
+    let aliased = try #require(
+      score("choose folder", "Choose where it starts\u{2026}", also: ["environment", "folder", "place"]))
+    #expect(named > aliased)
+    // One word alone keeps the alias's whole weight.
+    let one = try #require(score("folder", "Choose folder\u{2026}"))
+    let oneAliased = try #require(score("folder", "Choose where it starts\u{2026}", also: ["folder"]))
+    #expect(oneAliased > one)
+    // Terms out of order, or apart, are no phrase.
+    #expect(score("folder choose", "Choose folder\u{2026}") == score("choose folder", "Choose a folder"))
+  }
+
   @Test func matchedRunsFollowTheOriginalText() {
     let hit = FuzzyMatch.match(FuzzyMatch.terms("pri res"), title: FuzzyMatch.Text("Pricing page research"))
     let runs = FuzzyMatch.runs(of: "Pricing page research", matched: hit?.positions ?? [])
@@ -285,6 +300,19 @@ struct SelectionMotionTests {
     #expect(palette.selected?.id == "thread:dup1")
     await model.disconnect()
   }
+
+  #if os(macOS)
+    /// Seen on screen (2026-11-15): "choose folder" put "Choose where it starts…" first, by its alias.
+    @Test func aCommandsNameTypedInFullListsItFirst() async throws {
+      let (model, _) = try await connected()
+      let palette = PaletteModel(workspace: model, purpose: .commands)
+      palette.setQuery("choose folder")
+      #expect(palette.items.first?.kind == .command(.draftChooseFolder, .draft))
+      palette.setQuery("folder")
+      #expect(palette.items.first?.kind == .command(.draftEnvironment, .draft))
+      await model.disconnect()
+    }
+  #endif
 
   @Test func aLeadingAngleOrSlashEntersCommandsAndBackspaceLeaves() async throws {
     let (model, _) = try await connected()
