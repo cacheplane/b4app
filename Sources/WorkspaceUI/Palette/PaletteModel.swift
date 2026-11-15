@@ -251,7 +251,7 @@ struct PaletteResults {
     list += SettingsPage.allCases.map { (.openSettings, .settings($0)) }
     if includeDestinations {
       list += model.environments.map { (.environmentNewThread, .environment($0.id)) }
-      list += model.connections.map { (.connectionOpen, .connection($0.id)) }
+      list += model.enabledConnections.map { (.connectionOpen, .connection($0.id)) }
     }
     return list
   }

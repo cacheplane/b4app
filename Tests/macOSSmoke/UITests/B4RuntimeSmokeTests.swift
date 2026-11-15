@@ -105,7 +105,7 @@ final class B4RuntimeSmokeTests: XCTestCase {
 
     try await runtime.command("start")
     app.buttons["remediation"].click()
-    XCTAssertTrue(app.descendants(matching: .any)["error-banner"].waitForNonExistence(timeout: 15))
+    XCTAssertTrue(app.descendants(matching: .any)["error-banner"].disappears(within: 15))
     XCTAssertEqual(composer.value as? String, Self.restartDraft)
     try await waitForDraft(Self.restartDraft, fixture: fixture)
     try checkJournal(try await runtime.command("snapshot"), requests: 3, tool: true)

@@ -97,6 +97,95 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(usage?["model"]?.stringValue == "gpt-5-mini")
   }
 
+  @Test func aRefusedCallIsClosedAsDeclinedAndItsResultStaysDeclined() {
+    var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
+    _ = translator.translate(
+      .toolCall(id: "call_9", name: "bash", input: ["command": "rm -rf tmp"], messageId: nil))
+    _ = translator.translate(
+      .toolCall(id: "call_10", name: "bash", input: ["command": "false"], messageId: nil))
+    translator.beginResume()
+    let closed = translator.declineCall("call_9")
+    #expect(closed.map(\.kind) == [.toolCompleted])
+    #expect(closed[0].nativeIds["itemId"] == "call_9")
+    #expect(closed[0].payload["item"]?["status"]?.stringValue == "declined")
+    #expect(closed[0].payload["item"]?["command"]?.stringValue == "rm -rf tmp")
+    let refused = translator.translate(
+      .toolResult(id: "call_9", name: "bash", output: ["error": "Permission denied"]))
+    #expect(refused[0].payload["item"]?["status"]?.stringValue == "declined")
+    let failed = translator.translate(.toolResult(id: "call_10", name: "bash", output: ["error": "exit 1"]))
+    #expect(failed[0].payload["item"]?["status"]?.stringValue == "failed")
+  }
+
+  @Test func aRefusedCallTheStreamNeverShowedWaitsForItsResult() {
+    var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
+    translator.beginResume()
+    #expect(translator.declineCall("call_9").isEmpty)
+    let result = translator.translate(
+      .toolResult(id: "call_9", name: "bash", output: ["error": "Permission denied"]))
+    #expect(result[0].payload["item"]?["status"]?.stringValue == "declined")
+  }
+
+  @Test func aCallB4RefusedItselfReadsDeclinedAndTheSameWordsWithoutTheStepDoNot() {
+    var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
+    for id in ["call_1", "call_2", "call_3", "call_4"] {
+      _ = translator.translate(.toolCall(id: id, name: "deploy", input: [:], messageId: nil))
+    }
+    func toolMessage(_ content: String, step: String?) -> JSONValue {
+      var kwargs: [String: JSONValue] = ["content": .string(content), "status": "success"]
+      if let step { kwargs["additional_kwargs"] = ["b4_step": ["v": 1, "status": .string(step)]] }
+      return ["lc": 1, "kwargs": .object(kwargs)]
+    }
+    func status(_ id: String, _ output: JSONValue) -> String? {
+      translator.translate(.toolResult(id: id, name: "deploy", output: output))[0].payload["item"]?["status"]?
+        .stringValue
+    }
+    let words = "Permission denied (fail-closed): tool deploy"
+    // B4 stamps the step on the result; a refusal keeps the message's status "success".
+    #expect(status("call_1", toolMessage(words, step: "denied")) == "declined")
+    // The words alone are a tool's own business.
+    #expect(status("call_2", toolMessage(words, step: "completed")) == "completed")
+    #expect(status("call_3", .string(words)) == "completed")
+    // The step event says it first when the result is not a message.
+    let step: B4StreamEvent = .unknown(event: "step", data: ["toolCallId": "call_4", "status": "denied"])
+    #expect(translator.translate(step).isEmpty)
+    #expect(status("call_4", .string(words)) == "declined")
+  }
+
+  @Test func aCallB4RefusedItselfReadsDeclinedInHistory() {
+    func lc(_ cls: String, _ kwargs: JSONValue) -> JSONValue {
+      ["lc": 1, "type": "constructor", "id": ["langchain_core", "messages", .string(cls)], "kwargs": kwargs]
+    }
+    let items = B4Protocol.snapshotItems(
+      stateValues: [
+        "messages": [
+          lc("HumanMessage", ["content": "ship it"]),
+          lc(
+            "AIMessage",
+            [
+              "content": "",
+              "tool_calls": [
+                ["id": "call_1", "name": "deploy", "args": [:]],
+                ["id": "call_2", "name": "search", "args": [:]],
+              ],
+            ]),
+          lc(
+            "ToolMessage",
+            [
+              "content": "Permission denied by user: tool deploy", "tool_call_id": "call_1",
+              "additional_kwargs": ["b4_step": ["v": 1, "status": "denied"]],
+            ]),
+          lc(
+            "ToolMessage",
+            [
+              "content": "Permission denied: /etc/hosts", "tool_call_id": "call_2",
+              "additional_kwargs": ["b4_step": ["v": 1, "status": "completed"]],
+            ]),
+        ]
+      ])
+    #expect(items.compactMap { $0.payload["status"]?.stringValue } == ["declined", "completed"])
+    #expect(items[1].payload["output"]?.stringValue == "Permission denied by user: tool deploy")
+  }
+
   @Test func aParkKeepsTheTurnOpenUntilTheResumeStreamFinishes() {
     var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
     var events: [AdapterEvent] = []

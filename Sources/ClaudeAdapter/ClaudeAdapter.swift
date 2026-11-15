@@ -373,6 +373,15 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
     return StopReceipt(confirmed: true, outcome: nil)
   }
 
+  /// Whether this answer refuses a tool's permission ("Deny" or a decline of `can_use_tool`).
+  static func refusesTool(subtype: String, response: RuntimeResponse) -> Bool {
+    guard subtype == "can_use_tool" else { return false }
+    switch response {
+    case .decline, .decision(.deny): return true
+    default: return false
+    }
+  }
+
   public func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
     guard let pending = pendingRequests[ref.nativeRequestId], pending.generation == ref.adapterGeneration,
       let session = sessions[pending.sessionId]
@@ -421,7 +430,16 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
         .protocolInvalid,
         "Response shape does not match request \(pending.subtype) (\(pending.toolName ?? "-")).")
     }
-    try await session.send(line)
+    // A refused tool permission comes back as an error result; mark it first, since the result may
+    // arrive while the send is still suspended.
+    let refused = Self.refusesTool(subtype: pending.subtype, response: response) && !pending.toolUseId.isEmpty
+    if refused { trackers[pending.sessionId]?.markDeclined(toolUseId: pending.toolUseId) }
+    do {
+      try await session.send(line)
+    } catch {
+      if refused { trackers[pending.sessionId]?.unmarkDeclined(toolUseId: pending.toolUseId) }
+      throw error
+    }
     pendingRequests[ref.nativeRequestId] = nil
   }
 

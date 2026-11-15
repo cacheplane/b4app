@@ -28,7 +28,7 @@ extension XCTestCase {
   @MainActor func launchWithWindow(_ app: XCUIApplication) throws {
     app.launch()
     app.activate()
-    if !app.windows.firstMatch.waitForExistence(timeout: 15) {
+    if !app.windows.firstMatch.appears(within: 15) {
       app.menuBars.menuBarItems["File"].click()
       app.menuItems["New Window"].click()
     }
@@ -37,7 +37,7 @@ extension XCTestCase {
 
   @MainActor func requireElement(_ element: XCUIElement, in app: XCUIApplication, timeout: Double = 10) throws
   {
-    guard element.waitForExistence(timeout: timeout) else {
+    guard element.appears(within: timeout) else {
       XCTFail("Missing \(element)\n\(app.debugDescription)")
       throw NSError(domain: "SmokeAssertion", code: 1)
     }

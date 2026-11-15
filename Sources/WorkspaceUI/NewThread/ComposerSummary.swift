@@ -8,25 +8,25 @@ import WorkspaceProtocol
 struct ComposerSummary: Equatable {
   /// The environment (and folder); nil for a thread, whose place is already on screen.
   var place: String?
-  /// "Claude Code · Opus", a B4 agent's start label, or "No runtime".
-  var runtime: String
+  /// "Claude Code · Opus" or a B4 agent's start label; nil with no connection, drawn as "No runtime".
+  var runtime: String?
   /// The permission's label; nil when it is as configured, and for B4, whose route decides.
   var permission: String?
 
   /// The parts that exist, joined by " · ".
   var text: String {
-    [place, runtime, permission].compactMap { $0 }.joined(separator: " · ")
+    [place, runtime ?? Self.noRuntime, permission].compactMap { $0 }.joined(separator: " · ")
   }
 
   /// VoiceOver's sentence: every " · " (the place's and the runtime's) is read as a pause, and the
   /// permission is its label alone ("Plan mode"), since some labels already say "permissions".
   var spoken: String {
     var sentence = place.map { "Runs in " + $0.replacingOccurrences(of: " · ", with: ", ") } ?? "Runs"
-    if runtime == Self.noRuntime {
+    if let runtime {
+      sentence += " with " + runtime.replacingOccurrences(of: " · ", with: ", ")
+    } else {
       // A thread has no place to lead with: "Runs, no runtime" would read as a fragment.
       sentence = place == nil ? Self.noRuntime : sentence + ", no runtime"
-    } else {
-      sentence += " with " + runtime.replacingOccurrences(of: " · ", with: ", ")
     }
     if let permission { sentence += ", \(permission)" }
     return sentence
@@ -37,7 +37,7 @@ struct ComposerSummary: Equatable {
   @MainActor static func draft(_ draft: NewThreadDraft, in model: WorkspaceModel) -> ComposerSummary {
     ComposerSummary(
       place: placeText(draft),
-      runtime: runtimeText(draft.connection, model: draft.model, in: model),
+      runtime: draft.connection.map { runtimeText($0, model: draft.model, in: model) },
       permission: permissionText(draft.connection, chosen: draft.permission))
   }
 
@@ -45,7 +45,7 @@ struct ComposerSummary: Equatable {
     let connection = model.connection(id: thread.connectionId)
     return ComposerSummary(
       place: nil,
-      runtime: runtimeText(connection, model: thread.model, in: model),
+      runtime: connection.map { runtimeText($0, model: thread.model, in: model) },
       permission: permissionText(connection, chosen: thread.permission))
   }
 

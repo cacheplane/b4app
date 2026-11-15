@@ -206,8 +206,11 @@ struct StepsLineRow: View {
         : AnyLayout(HStackLayout(spacing: LLA.Space.xs))
       layout {
         if !segments.isEmpty { parts }
+        // A running step's name is free text ("swift test"), so a dot keeps the action word from
+        // reading as its last word. It is part of the action's text, not a view of its own: a third
+        // view in the row kept the lazy stack from settling (`DenseTranscriptViewTests`).
         // Stacked, the action word has the row's width to itself and wraps rather than overrun it.
-        Text(line.action(open: open))
+        Text(segments.isEmpty || stacked ? line.action(open: open) : "· \(line.action(open: open))")
           .foregroundStyle(LLA.Color.muted)
           .lineLimit(stacked ? nil : 1)
           .fixedSize(horizontal: !stacked, vertical: true)

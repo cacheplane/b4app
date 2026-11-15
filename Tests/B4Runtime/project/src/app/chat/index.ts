@@ -10,5 +10,6 @@ export default agent({
   provider: "openai",
   systemPrompt: "You are a deterministic integration-test agent. Follow the fixture instructions.",
   retry: { maxAttempts: 1 },
-  tools: { allow: ["fixture_lookup"] },
+  // `fixture_guarded` is denied in b4.config.ts: B4 refuses it itself, without a prompt.
+  tools: { allow: ["fixture_lookup", "fixture_guarded"], approve: ["fixture_guarded"] },
 });

@@ -759,3 +759,107 @@ struct ServerHarness {
     _ = try await h.stop(server)
   }
 }
+
+/// Taking a project off the Mac (D-231).
+@Suite(.serialized) struct LocalServerRemoveTests {
+  private func connect(_ h: ServerHarness, _ server: LocalServer) async throws -> Connection {
+    try await h.client.request(
+      ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),
+      options: h.mutation()
+    ).connection
+  }
+
+  private func remove(
+    _ h: ServerHarness, _ server: LocalServer, force: Bool? = nil
+  ) async throws
+    -> ServerRemove.Result
+  {
+    try await h.client.request(
+      ServerRemove.self, ServerLifecycleParams(serverId: server.id, force: force), options: h.mutation())
+  }
+
+  private func connections(_ h: ServerHarness, includeDisabled: Bool) async throws -> [Connection] {
+    try await h.client.request(
+      ConnectionList.self, ConnectionList.Params(includeDisabled: includeDisabled)
+    ).connections
+  }
+
+  @Test func removingARunningProjectStopsItAndDisablesItsConnections() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let path = try h.project()
+    let server = try await h.start(try await h.add(path))
+    let pid = try #require(server.pid)
+    let logPath = try #require(server.logPath)
+    let connection = try await connect(h, server)
+    let thread = try await h.client.request(
+      ThreadCreate.self, ThreadCreate.Params(connectionId: connection.id), options: h.mutation()
+    ).thread
+
+    #expect(try await remove(h, server).serverId == server.id)
+
+    #expect(try await h.client.request(ServerList.self, EmptyParams()).servers.isEmpty)
+    #expect(kill(pid_t(pid), 0) != 0)
+    #expect(!FileManager.default.fileExists(atPath: logPath))
+    // The project's own folder is left as it was.
+    #expect(FileManager.default.fileExists(atPath: path + "/package.json"))
+    try await h.events.waitFor {
+      $0.kind == .serverRemoved && $0.payload["serverId"]?.stringValue == server.id
+    }
+    // The connection is kept for its thread, disabled and with no server behind it.
+    #expect(try await connections(h, includeDisabled: false).isEmpty)
+    let kept = try #require(try await connections(h, includeDisabled: true).first)
+    #expect(kept.id == connection.id && !kept.enabled && kept.localServerId == nil)
+    #expect(kept.status == .offline)
+    // Its thread is still read, and a message to it says why it cannot go.
+    let read = try await h.client.request(ThreadRead.self, ThreadRead.Params(threadId: thread.id))
+    #expect(read.thread.id == thread.id)
+    let refused = await h.failure {
+      try await h.client.request(
+        TurnSend.self, TurnSend.Params(threadId: thread.id, text: "hello"), options: h.mutation())
+    }
+    #expect(refused?.code == .endpointUnavailable)
+    #expect(refused?.details?["reason"]?.stringValue == "server_removed")
+    // The same folder can be added again, as a new project with its own connections.
+    let again = try await h.add(path)
+    #expect(again.id != server.id)
+    #expect(try await connect(h, again).id != connection.id)
+  }
+
+  @Test func removingRefusesWhileATurnIsRunningUnlessForced() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let server = try await h.start(try await h.add(try h.project()))
+    let connection = try await connect(h, server)
+    let thread = try await h.client.request(
+      ThreadCreate.self, ThreadCreate.Params(connectionId: connection.id), options: h.mutation()
+    ).thread
+    let turn = try await h.client.request(
+      TurnSend.self, TurnSend.Params(threadId: thread.id, text: "hang around"), options: h.mutation()
+    ).turn
+    try await h.events.waitFor {
+      $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
+    }
+    let refused = await h.failure { try await remove(h, server) }
+    #expect(refused?.code == .ownedProcessConflict)
+    #expect(refused?.details?["reason"]?.stringValue == "turn_active")
+    #expect(try await h.status(server).health == .ready)
+    #expect(try await connections(h, includeDisabled: false).count == 1)
+
+    _ = try await remove(h, server, force: true)
+    #expect(try await h.client.request(ServerList.self, EmptyParams()).servers.isEmpty)
+    let read = try await h.client.request(
+      ThreadRead.self, ThreadRead.Params(threadId: thread.id), options: RequestOptions(timeout: .seconds(30)))
+    #expect(read.turns.first { $0.id == turn.id }?.outcome != .completed)
+  }
+
+  @Test func removingAnUnknownProjectIsNotFound() async throws {
+    let h = try await ServerHarness.start()
+    defer { Task { await h.close() } }
+    let failure = await h.failure {
+      try await h.client.request(
+        ServerRemove.self, ServerLifecycleParams(serverId: "nope"), options: h.mutation())
+    }
+    #expect(failure?.code == .notFound)
+  }
+}

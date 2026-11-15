@@ -146,7 +146,8 @@ public final class MirrorTransport: WorkspaceTransport {
       return "Recovering and stopping local work is done on the Mac."
     case .connectionAdd, .connectionInspect, .connectionLogin, .credentialAdd:
       return "Setting up connections is done on the Mac."
-    case .serverAdd, .serverStart, .serverStatus, .serverLogs, .serverRestart, .serverStop, .serverInspect:
+    case .serverAdd, .serverStart, .serverStatus, .serverLogs, .serverRestart, .serverStop, .serverInspect,
+      .serverRemove:
       return "Running local servers is done on the Mac."
     case .databaseStatus, .databaseBackup, .databaseRestore, .databaseImportSQLite:
       return "Managing the workspace database is done on the Mac."

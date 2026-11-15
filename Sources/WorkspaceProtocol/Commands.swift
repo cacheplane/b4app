@@ -31,6 +31,7 @@ public enum Method: String, Codable, Sendable, CaseIterable {
   case serverRestart = "server.restart"
   case serverStop = "server.stop"
   case serverInspect = "server.inspect"
+  case serverRemove = "server.remove"
   case workspaceActiveWork = "workspace.activeWork"
   case workspaceStopLocalWork = "workspace.stopLocalWork"
   case workspaceReconcile = "workspace.reconcile"
@@ -87,7 +88,8 @@ public enum Method: String, Codable, Sendable, CaseIterable {
       .threadReconcile, .turnSend, .turnInterrupt, .turnAbandon, .requestRespond, .credentialAdd, .serverAdd,
       .serverStart,
       .serverRestart,
-      .serverStop, .serverInspect, .workspaceStopLocalWork, .workspaceReconcile, .databaseBackup,
+      .serverStop, .serverInspect, .serverRemove, .workspaceStopLocalWork, .workspaceReconcile,
+      .databaseBackup,
       .databaseRestore,
       .databaseImportSQLite, .hubJoin, .hubLeave, .environmentCreate, .environmentUpdate, .environmentRename,
       .environmentDelete, .threadMarkRead, .threadStart, .settingsUpdate, .connectionUpdate,
@@ -626,6 +628,18 @@ public enum ServerRestart: WorkspaceCommand {
   public typealias Params = ServerLifecycleParams
   public typealias Result = ServerAdd.Result
   public static let method = Method.serverRestart
+}
+
+/// Take a project off this Mac (D-231): its server is stopped, its route connections are disabled, and
+/// its row and log are deleted. Their threads stay and can be read, not continued. Nothing in the
+/// project's folder is touched. Refused like a stop while a turn is running, unless `force` is set.
+public enum ServerRemove: WorkspaceCommand {
+  public typealias Params = ServerLifecycleParams
+  public struct Result: Codable, Sendable, Equatable {
+    public var serverId: String
+    public init(serverId: String) { self.serverId = serverId }
+  }
+  public static let method = Method.serverRemove
 }
 
 /// A redacted tail of the server's log file. Pass the returned `offset` back as `afterOffset` to

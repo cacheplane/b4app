@@ -384,6 +384,31 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
+  /// Delete a server's row and disable its route connections, in one transaction: a connection never
+  /// stays enabled with no server behind it. The connections are returned as they now are (the foreign
+  /// key has cleared their `localServerId`). Unknown server: `notFound`.
+  public func deleteLocalServer(id: String) throws -> [Connection] {
+    try write { c in
+      let ids = try all(
+        c, Connection.self,
+        "SELECT * FROM \"connections\" WHERE \"localServerId\" = $1 ORDER BY \"createdAt\"", [id]
+      ).map(\.id)
+      for connectionId in ids {
+        guard var connection = try byId(c, Connection.self, "connections", connectionId) else { continue }
+        connection.enabled = false
+        connection.status = .offline
+        connection.updatedAt = Timestamp.now()
+        try update(c, "connections", connection)
+      }
+      let deleted = try c.execute("DELETE FROM \"localServers\" WHERE \"id\" = $1", [id]).affected
+      guard deleted > 0 else {
+        throw WorkspaceError(
+          .notFound, "Managed server \(id) does not exist.", details: ["serverId": .string(id)])
+      }
+      return try ids.compactMap { try byId(c, Connection.self, "connections", $0) }
+    }
+  }
+
   public func connections(localServerId: String) throws -> [Connection] {
     try read {
       try all(

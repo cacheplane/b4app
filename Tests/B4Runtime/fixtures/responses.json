@@ -23,6 +23,14 @@
     {
       "match": { "userMessage": "smoke-after-restart" },
       "response": { "content": "The same conversation continued after restart." }
+    },
+    {
+      "match": { "userMessage": "smoke-denied", "hasToolResult": true },
+      "response": { "content": "The guarded tool was refused." }
+    },
+    {
+      "match": { "userMessage": "smoke-denied", "hasToolResult": false },
+      "response": { "toolCalls": [{ "id": "call_fixture_guarded", "name": "fixture_guarded", "arguments": "{\"query\":\"never\"}" }] }
     }
   ]
 }

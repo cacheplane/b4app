@@ -82,17 +82,6 @@ struct PaletteLead: View {
 }
 
 #if os(macOS)
-  /// The pointer's last place, so a row is selected by the pointer only when the pointer itself
-  /// moved: a list that scrolls or changes under a still pointer keeps the keyboard's selection.
-  final class PointerTracker {
-    private var last: CGPoint?
-
-    func moved(to point: CGPoint) -> Bool {
-      defer { last = point }
-      guard let last else { return false }
-      return abs(last.x - point.x) > 0.5 || abs(last.y - point.y) > 0.5
-    }
-  }
 
   struct MacPalette: View {
     @Bindable var model: WorkspaceModel
@@ -101,24 +90,18 @@ struct PaletteLead: View {
     var floating = false
     @FocusState private var focused: Bool
     @State private var selection: TextSelection?
-    @State private var pointer = PointerTracker()
     @Namespace private var highlight
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let width: CGFloat = 600
-    static let rowHeight: CGFloat = 32
     /// Eight rows and their section labels fit before the list scrolls.
     static let listMaxHeight: CGFloat = 344
     /// The card at its tallest (the field, the list, the footer, and a notice's line), which is the
     /// room its panel gives it.
     static let fullHeight: CGFloat = fieldHeight + 1 + listMaxHeight + 1 + LLA.Space.xxl + 48
-    /// The field's row, which sits over the title bar's button when the palette opens there.
-    static let fieldHeight: CGFloat = 36
-    /// The card's corners: half the field row, so the row alone (the title bar's resting control) is
-    /// a capsule, the shape of the button groups beside it, and the card keeps those corners as it
-    /// opens. Circular, as a capsule's ends are.
-    static let radius: CGFloat = fieldHeight / 2
-    static var shape: RoundedRectangle { RoundedRectangle(cornerRadius: radius, style: .circular) }
+    static let fieldHeight = PickerMetrics.fieldHeight
+    static let radius = PickerMetrics.radius
+    static var shape: RoundedRectangle { PickerMetrics.shape }
     /// Where the card's top sits under the window's top.
     static let topOffset: CGFloat = 96
 
@@ -160,17 +143,9 @@ struct PaletteLead: View {
         Hairline()
         footer
       }
-      .background(LLA.Color.bg, in: Self.shape)
-      .overlay(
-        Self.shape.strokeBorder(LLA.Color.rule)
-      )
-      .clipShape(Self.shape)
       // In a panel the window draws the shadow, and the panel takes each new height at once: an
       // animated height would leave the window, and its shadow, a step behind the card.
-      .shadow(
-        color: LLA.Color.ink.opacity(floating ? 0 : 0.12), radius: floating ? 0 : 18, x: 0,
-        y: floating ? 0 : 8
-      )
+      .pickerCard(shadow: !floating)
       .animation(floating ? nil : pageAnimation, value: palette.page)
       .accessibilityElement(children: .contain)
       .accessibilityLabel(palette.purpose.title)
@@ -271,9 +246,7 @@ struct PaletteLead: View {
             if let notice = emptyNotice(sections) { notice }
             ForEach(sections) { section in
               if let title = section.title {
-                Text(title).llaSmallMuted().lineLimit(1)
-                  .padding(.horizontal, LLA.Space.s).padding(.top, LLA.Space.s).padding(.bottom, LLA.Space.xs)
-                  .accessibilityAddTraits(.isHeader)
+                PickerSectionTitle(title)
               }
               ForEach(section.items) { item in row(item, selected: item.id == selected) }
             }
@@ -300,8 +273,12 @@ struct PaletteLead: View {
         palette.select(item.id)
         Task { await palette.activate() }
       } label: {
-        HStack(spacing: LLA.Space.s) {
+        PickerRow(
+          selected: selected, highlight: highlight, secondary: item.secondary, trailing: item.trailing,
+          isCurrent: item.isCurrent, shortcut: item.shortcut, hasActions: item.hasActions
+        ) {
           PaletteLead(item: item, selected: selected)
+        } title: {
           MatchedTitle(
             title: item.title, matched: item.matched,
             font: item.isCode ? LLAFont.code : item.isActLevel ? LLAFont.rowMedium : LLAFont.row,
@@ -310,44 +287,11 @@ struct PaletteLead: View {
           .foregroundStyle(
             item.isDestructive ? LLA.Color.danger : item.isAvailable ? LLA.Color.ink : LLA.Color.muted
           )
-          .lineLimit(1)
-          .layoutPriority(1)
-          if let secondary = item.secondary {
-            Text(secondary).llaCaption().lineLimit(1)
-          }
-          Spacer(minLength: LLA.Space.s)
-          if let trailing = item.trailing {
-            // A value or a state is short and shown whole; a runtime's argument hint can be a
-            // line long, and is cut before it pushes the row wider than the card.
-            Text(trailing).llaCaption().lineLimit(1).truncationMode(.tail)
-              .frame(maxWidth: 220, alignment: .trailing).fixedSize(horizontal: true, vertical: false)
-          }
-          if item.isCurrent {
-            Text("Current").llaCaption().fixedSize()
-            Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold))
-              .foregroundStyle(LLA.Color.ink).accessibilityHidden(true)
-          }
-          if let shortcut = item.shortcut {
-            KeyCaps(label: shortcut)
-          }
-          if item.hasActions {
-            Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
-              .foregroundStyle(LLA.Color.ghost).accessibilityHidden(true)
-          }
         }
-        .padding(.horizontal, LLA.Space.s)
-        .frame(height: Self.rowHeight)
-        .selectionHighlight(selected, in: highlight)
-        .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .id(item.id)
-      // The pointer takes the highlight with the same glide as the keys (D-222), and only when it
-      // is the pointer that moved.
-      .onContinuousHover(coordinateSpace: .global) { phase in
-        guard case .active(let point) = phase, pointer.moved(to: point) else { return }
-        withAnimation(SelectionMotion.animation(reduceMotion: reduceMotion)) { palette.select(item.id) }
-      }
+      .pickerHover { palette.select(item.id) }
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(item.spoken)
       .accessibilityHint(item.isAvailable ? item.primary : "")
@@ -363,40 +307,20 @@ struct PaletteLead: View {
     // MARK: Footer
 
     private var footer: some View {
-      HStack(spacing: LLA.Space.l) {
-        HStack(spacing: LLA.Space.s) {
-          if palette.running, case .requested = palette.feedback {
-            ProgressView().controlSize(.mini).accessibilityHidden(true)
-          }
-          Text(palette.context)
-            .font(LLAFont.caption)
-            .foregroundStyle(isFailure ? LLA.Color.danger : LLA.Color.muted)
-            .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityIdentifier("palette-context")
+      PickerFooter(
+        context: palette.context, isFailure: isFailure, busy: isRequested,
+        contextIdentifier: "palette-context"
+      ) {
         if palette.canShowActions {
-          hint("Actions", keys: [.tab]) { palette.showActions() }
+          PickerHint("Actions", keys: [.tab]) { palette.showActions() }
         } else if palette.depth > 1 {
-          hint("Back", keys: [.shift, .tab]) { back() }
+          PickerHint("Back", keys: [.escape]) { back() }
         }
-        Button {
-          Task { await palette.activate() }
-        } label: {
-          HStack(spacing: LLA.Space.s) {
-            Text(palette.primaryLabel).font(LLAFont.caption).foregroundStyle(LLA.Color.ink).lineLimit(1)
-            KeyCaps([.return])
-          }
-        }
-        .buttonStyle(.plain)
-        .disabled(!palette.primaryEnabled)
-        .opacity(palette.primaryEnabled ? 1 : 0.45)
-        .help("Return")
-        .accessibilityLabel("\(palette.primaryLabel), Return")
-        .accessibilityIdentifier("palette-primary")
+        PickerHint(palette.primaryLabel, keys: [.return], strong: true) { Task { await palette.activate() } }
+          .disabled(!palette.primaryEnabled)
+          .opacity(palette.primaryEnabled ? 1 : 0.45)
+          .accessibilityIdentifier("palette-primary")
       }
-      .padding(.horizontal, LLA.Space.l)
-      .frame(height: LLA.Space.xxl)
       .background { if floating { WindowDragArea() } }
     }
 
@@ -405,17 +329,9 @@ struct PaletteLead: View {
       return false
     }
 
-    /// A footer hint: what a key does, and the key in caps. VoiceOver and the tooltip name the key.
-    private func hint(_ title: String, keys: [HintKey], action: @escaping () -> Void) -> some View {
-      Button(action: action) {
-        HStack(spacing: LLA.Space.s) {
-          Text(title).font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
-          KeyCaps(keys)
-        }
-      }
-      .buttonStyle(.plain)
-      .help(HintKey.spoken(keys))
-      .accessibilityLabel("\(title), \(HintKey.spoken(keys))")
+    private var isRequested: Bool {
+      if palette.running, case .requested = palette.feedback { return true }
+      return false
     }
   }
 #endif

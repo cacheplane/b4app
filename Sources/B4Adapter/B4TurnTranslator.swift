@@ -27,6 +27,8 @@ public struct B4TurnTranslator: Sendable {
   private var currentReasoning: (id: String, text: String)?
   private var toolCalls: [String: (name: String, input: JSONValue, args: String, label: String?)] = [:]
   private var toolOrder: [String] = []
+  /// Tool calls whose permission the app refused; a result for one is "declined", not "failed" (D-227).
+  private var declinedCalls: Set<String> = []
   private var sawInterrupt = false
   private var streamedText = false
   private var capabilityIndex = 0
@@ -50,6 +52,15 @@ public struct B4TurnTranslator: Sendable {
     sawInterrupt = false
     phase = .streaming
     reattaching = false
+  }
+
+  /// The app refused this tool call's permission ("Deny", a decline, a stop on a parked turn). A call
+  /// the stream has shown is closed as declined now, since B4 need not send a result for a call it did
+  /// not run; a result that does arrive is declined too.
+  public mutating func declineCall(_ id: String) -> [AdapterEvent] {
+    declinedCalls.insert(id)
+    guard toolCalls[id] != nil else { return [] }
+    return [event(.toolCompleted, toolPayload(id: id, status: "declined"), itemId: id)]
   }
 
   private func event(
@@ -105,6 +116,13 @@ public struct B4TurnTranslator: Sendable {
       return content.stringValue.map(JSONValue.string) ?? content
     }
     return output.stringValue.map(JSONValue.string) ?? output
+  }
+
+  /// B4 refused the call itself (a route's permissions, a rule, the permission mode): the result's
+  /// step says `denied` (D-230).
+  static func toolRefused(_ output: JSONValue) -> Bool {
+    guard output["lc"] != nil, let kwargs = output["kwargs"] else { return false }
+    return B4Protocol.stepStatus(ofToolMessage: kwargs) == "denied"
   }
 
   static func toolFailed(_ output: JSONValue) -> Bool {
@@ -163,12 +181,9 @@ public struct B4TurnTranslator: Sendable {
       let callId =
         id ?? toolOrder.last(where: { toolCalls[$0]?.name == name }) ?? "\(turnId):t\(toolOrder.count + 1)"
       track(callId, name: name)
-      let failed = Self.toolFailed(output)
-      return [
-        event(
-          .toolCompleted, toolPayload(id: callId, status: failed ? "failed" : "completed", output: output),
-          itemId: callId)
-      ]
+      let declined = declinedCalls.contains(callId) || Self.toolRefused(output)
+      let status = declined ? "declined" : Self.toolFailed(output) ? "failed" : "completed"
+      return [event(.toolCompleted, toolPayload(id: callId, status: status, output: output), itemId: callId)]
     case .interrupt(let interruptId, let type, let kind, let detail, let grant, let raw):
       var events = closeMessage()
       sawInterrupt = true
@@ -239,6 +254,8 @@ public struct B4TurnTranslator: Sendable {
       // the call's card instead of becoming an item of its own.
       guard let callId = data["toolCallId"]?.stringValue, let call = toolCalls[callId] else { return [] }
       toolCalls[callId]?.label = data["label"]?.stringValue ?? call.label
+      // B4 settled the call as refused; the result that follows is declined, whatever its shape.
+      if data["status"]?.stringValue == "denied" { declinedCalls.insert(callId) }
       if data["status"]?.stringValue == "running" {
         return [event(.toolStarted, toolPayload(id: callId, status: "inProgress"), itemId: callId)]
       }
