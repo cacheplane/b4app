@@ -16,8 +16,12 @@ D-237: the transcript is a plain stack over a thread's latest 150 rows, with "Sh
 - In the harness app with a plain stack and no window (an experiment before the window was written): `testATallFirstMessageOpensAtItsEnd` and `testJumpToLatestAndCopyCode` passed.
 - `Scripts/docs-index.sh --check`: passes with this record and D-237.
 
+### The app journeys, on CI
+
+The Mac asked for a password to enable UI Automation Mode again after the experiment above, so the journeys on the final code ran on the hosted runner only (run 43746286943, commit 46b1e4fe, macOS 26.7.2, 1000 pt wide). `testATallFirstMessageOpensAtItsEnd` (with its scroll back and Jump to latest) and `testJumpToLatestAndCopyCode` passed. `testALongThreadShowsEarlierRowsOnRequest` failed in the test, not the app: the thread had opened at its end, "Show earlier, 53 more" stood at the top with reply 53 the first row drawn, and the test looked for reply 51. The test now reads reply 53; its press of "Show earlier" has its first run on the commit after 46b1e4fe.
+
 ### Not checked
 
-- The three app journeys on the final code (`testATallFirstMessageOpensAtItsEnd` with its scroll back, `testJumpToLatestAndCopyCode`, `testALongThreadShowsEarlierRowsOnRequest`). After the experiment above the Mac reported "Automation Mode is disabled. This device requires user authentication to enable Automation Mode", and the runner timed out enabling it; approving that is the owner's. "Show earlier" has not been pressed in the running app.
+- "Show earlier" pressed in the running app, on this Mac or anywhere, when this was written: see the hosted run below.
 - The phone, a release build's layout time, VoiceOver on "Show earlier", a thread of thousands of rows in the running app.
 - The other smoke journeys were not rerun; the host seeds the reading thread only for `ReadingSmokeTests`.

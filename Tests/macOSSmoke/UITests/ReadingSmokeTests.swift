@@ -166,7 +166,8 @@ final class ReadingSmokeTests: XCTestCase {
       transcript.scroll(byDeltaX: 0, deltaY: 3_000)
       return false
     }
-    let reading = text("Earlier reply 51 of the reading fixture.", in: app)
+    // The question and replies 1 to 52 are left out: reply 53 is the first row drawn.
+    let reading = text("Earlier reply 53 of the reading fixture.", in: app)
     try requireElement(reading, in: app)
     XCTAssertTrue(transcript.frame.intersects(reading.frame))
     shot(app, "long-at-the-top")
