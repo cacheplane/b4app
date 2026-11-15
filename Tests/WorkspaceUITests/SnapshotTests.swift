@@ -878,6 +878,43 @@ private final class BackgroundWindow: NSWindow {
         ask("u3", "Thanks.", turn: nil), message("a3", "Any time.", turn: nil),
       ], turns: [])
     try await render("dense-thread-history", size: size) { transcript(history) }
+
+    // A turn the user stopped with a step still open, then a turn that completed: at normal density
+    // the open step and the stopped turn's note, and the same thread at dense.
+    let stopped = detail(
+      [
+        ask("u1", "Run the whole suite."),
+        step("c1", "swift build"),
+        step("c2", "swift test", status: "inProgress"),
+        ask("u2", "Just the sync tests.", turn: "t2"),
+        step("c3", "swift test --filter SyncTests", turn: "t2"),
+        message("a2", "The sync tests pass.", turn: "t2"),
+      ],
+      turns: [
+        Turn(id: "t1", threadId: "th", operationId: "op1", status: .terminal, outcome: .cancelled),
+        Turn(id: "t2", threadId: "th", operationId: "op2", status: .terminal, outcome: .completed),
+      ])
+    try await render("thread-normal-stopped", size: size) { transcript(stopped, dense: false) }
+    try await render("dense-thread-stopped", size: size) { transcript(stopped, open: ["t1"]) }
+
+    // A reply with prose, a fenced block and a block still open as it streams.
+    let fence = "```"
+    let code = detail(
+      [
+        ask("u1", "How do I run one suite?"),
+        message(
+          "a1",
+          "Filter by the suite's name:\n\n\(fence)bash\nswift test --filter SyncTests\n\(fence)\n\nThe filter is a regular expression, so `Sync.*` matches too."
+        ),
+        ask("u2", "And the package manifest?", turn: "t2"),
+        message("a2", "", turn: "t2", native: "n2"),
+      ],
+      turns: [
+        Turn(id: "t1", threadId: "th", operationId: "op1", status: .terminal, outcome: .completed),
+        Turn(id: "t2", threadId: "th", operationId: "op2", status: .running),
+      ],
+      live: ["n2": "It declares the targets:\n\n\(fence)swift\nlet package = Package(\n  name: \"b4app\","])
+    try await render("thread-code-reply", size: size) { transcript(code, dense: false) }
   }
 
   // MARK: a dense composer

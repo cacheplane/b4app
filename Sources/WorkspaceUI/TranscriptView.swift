@@ -16,6 +16,12 @@ import WorkspaceProtocol
     holds = true
   }
 
+  /// The reader scrolled back from the end: the same hold as opening a turn, so neither the stream nor
+  /// a turn's end moves what they are reading.
+  func hold() {
+    if !holds { holds = true }
+  }
+
   /// The bottom pin and the following come back.
   func release() {
     if holds { holds = false }
@@ -27,15 +33,43 @@ import WorkspaceProtocol
   }
 }
 
-/// The content's height and whether its end is in view (within 8 pt of the viewport's). The height is
-/// part of it so a toggle that leaves the content fitting the viewport still reports in.
-private struct TranscriptEnd: Equatable {
+/// The content's height, where the viewport's top edge stands in it, and whether its end is in view
+/// (within 8 pt of the viewport's). The height is part of it so a toggle that leaves the content
+/// fitting the viewport still reports in.
+struct TranscriptEnd: Equatable {
   var height: CGFloat
+  var top: CGFloat
   var reached: Bool
+  /// The end marker is out of view: more than the transcript's bottom padding lies below the viewport.
+  /// Following the stream rests the view with that padding below it, so nearer than this is the end.
+  var away: Bool
+
+  init(height: CGFloat, top: CGFloat, reached: Bool, away: Bool) {
+    self.height = height
+    self.top = top
+    self.reached = reached
+    self.away = away
+  }
 
   init(_ geometry: ScrollGeometry) {
     height = geometry.contentSize.height
-    reached = geometry.visibleRect.maxY >= geometry.contentSize.height - 8
+    top = geometry.visibleRect.minY
+    let below = geometry.contentSize.height - geometry.visibleRect.maxY
+    reached = below <= 8
+    away = below > LLA.Metrics.margin + 8
+  }
+
+  /// What a change of geometry says about the reader. The end in view: following. The viewport's top
+  /// edge moved up over content of the same height, the end marker out of view: the reader went back (a
+  /// wheel, a drag, Page Up, the scroller). Content growing under a still viewport, the view being
+  /// taken down to the end, and a layout pass that resizes the content and moves the view with it are
+  /// none of these: the top edge stays or moves down, or the height changed in the same step.
+  enum Intent: Equatable { case following, reading, unchanged }
+
+  static func intent(from old: TranscriptEnd, to new: TranscriptEnd) -> Intent {
+    if new.reached { return .following }
+    return new.away && new.top < old.top - 0.5 && abs(new.height - old.height) <= 0.5
+      ? .reading : .unchanged
   }
 }
 
@@ -79,8 +113,27 @@ struct TranscriptView: View {
       // pressed stays where it was as its steps are drawn under it and the stream goes on below.
       .defaultScrollAnchor(.bottom, for: .initialOffset)
       .defaultScrollAnchor(folds.holds ? .top : .bottom, for: .sizeChanges)
-      .onScrollGeometryChange(for: TranscriptEnd.self, of: TranscriptEnd.init) { _, end in
-        if end.reached { folds.release() }
+      .onScrollGeometryChange(for: TranscriptEnd.self, of: TranscriptEnd.init) { old, end in
+        switch TranscriptEnd.intent(from: old, to: end) {
+        case .following: folds.release()
+        case .reading: folds.hold()
+        case .unchanged: break
+        }
+      }
+      // While the view is held, the latest content is out of sight below: one press goes back to it
+      // and follows the stream again.
+      .overlay(alignment: .bottom) {
+        if folds.holds {
+          Button("Jump to latest") {
+            folds.release()
+            proxy.scrollTo("bottom", anchor: .bottom)
+          }
+          .buttonStyle(.llaSecondary)
+          .llaPopoverShadow()
+          .padding(.bottom, LLA.Space.m)
+          .accessibilityIdentifier("jump-to-latest")
+          .accessibilityHint("Scrolls to the end of the thread and follows new output")
+        }
       }
       .onChange(of: detail.items.count) { _, _ in follow(proxy) }
       .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in follow(proxy) }
@@ -107,7 +160,8 @@ struct TranscriptView: View {
     }
   }
 
-  /// Keeps the end in view as the thread grows, unless an opened turn holds the view.
+  /// Keeps the end in view as the thread grows, unless an opened turn or a reader who scrolled back
+  /// holds the view.
   private func follow(_ proxy: ScrollViewProxy) {
     guard !folds.holds else { return }
     proxy.scrollTo("bottom", anchor: .bottom)
