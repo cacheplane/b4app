@@ -108,7 +108,7 @@
   "objective": {
     "kind": "provisional, baseline-relative; no numeric target was supplied",
     "population": "first attempts of ci.yml on pull requests and main that need the macOS jobs",
-    "baseline_window": "the 80 ci.yml runs from 2026-11-13T12:13Z to 2026-11-15T03:41Z; for per-job figures, the runs with the D-229 workflow shape",
+    "baseline_window": "85 ci.yml runs created 2026-11-13T01:34:25Z to 2026-11-15T04:07:06Z (docs/research/2026-11-14-ci-delivery/observations.json); for per-job figures, the four green first attempts with the D-229 workflow shape",
     "metrics": {
       "critical_job": "the longest macOS job's run time (what a run takes when every job finds a runner at once)",
       "runner_seconds": "summed macOS job run time per run (what a run asks of the 5 shared runners)",
@@ -174,6 +174,17 @@
       "cases_added": [
         "a shard-1 build outcome that never reaches the combining check fails it (negative, local)",
         "the combining checks' shell under four mutations (negative, local)"
+      ]
+    },
+    {
+      "at": "2026-11-15T05:00:00Z",
+      "why": "review corrections, none of which changes a threshold or a rule",
+      "changes": [
+        "baseline_window restated from the committed observations.json: 85 ci.yml runs created 2026-11-13T01:34:25Z to 2026-11-15T04:07:06Z (the first statement said 80 runs; the last baseline run, 43675337568, was created before the freeze and finished after it)",
+        "revisions.baseline_pipeline and rollback reworded (the candidate's base and the full list of files)",
+        "observations.json regenerated after Scripts/ci_timings.py stopped counting jobs cancelled while waiting; steps under 5 s are left out of the committed file",
+        "E4 gained continue-on-error on shard 1's build steps and a 35-minute limit, so a failed beta build fails only the builds' check",
+        "the freeze time is this file's own statement; its first commit is 88017988"
       ]
     }
   ]
