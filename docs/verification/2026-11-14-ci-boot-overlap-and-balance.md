@@ -1,6 +1,6 @@
 ## 2026-11-14: CI's layout build during the boot, rebalanced shards, and where a run's time goes
 
-The checks for D-232, and the record of a review of the delivery paths against a fixed rubric. Branch `blove/ci-cd-optimization-f1bf66`, from `main` 9bb7c97. Verdict at the end: **incomplete**. The first candidate (E2 to E4) had one hosted run, 43678912064, in "The first hosted run" below; E2 failed its rule there and was reverted. The second candidate (E3 and E4) had one too, 43684652276; E4 cost runner time on both and was reverted at the owner's word. What remains is E3, the timing tool and the checks' shell tests, and E5 (the iOS app builds compile `arm64` only, the owner's decision), which has no hosted run yet. No improvement is claimed.
+The checks for D-232, and the record of a review of the delivery paths against a fixed rubric. Branch `blove/ci-cd-optimization-f1bf66`, from `main` 9bb7c97. Verdict at the end: **incomplete**. The first candidate (E2 to E4) had one hosted run, 43678912064, in "The first hosted run" below; E2 failed its rule there and was reverted. The second candidate (E3 and E4) had one too, 43684652276; E4 cost runner time on both and was reverted at the owner's word. What remains is E3, the timing tool and the checks' shell tests, and E5 (the iOS app builds compile `arm64` only, the owner's decision), which has one hosted run of the two its rule asks for. No improvement is claimed.
 
 The comparison was fixed before any candidate result was read: `docs/research/2026-11-14-ci-delivery/manifest.json` (scope, obligations, gates, thresholds, decision rules, exclusions, and six dated amendments). The raw rows are `observations.json` beside it, written by `Scripts/ci_timings.py collect`; every hosted figure below can be recomputed from it with `summarize` and `steps`, except the three marked "from logs", which come from job logs and result bundles that GitHub keeps for the runs named.
 
@@ -182,6 +182,12 @@ E5, after the owner said nobody builds the iOS app on an Intel Mac: `ARCHS=arm64
 
 Larger macOS runners were looked up, not tried: GitHub offers them only on its Team and Enterprise Cloud plans and bills them by the minute in public repositories (5-core M2 Pro, $0.102 a minute); this organization is on the free plan, where the standard runners cost a public repository nothing. That is the owner's to decide and nothing here depends on it.
 
+### The fourth hosted run: E5's first
+
+Run 43762471549, commit 2b6392e (`main`'s workflow with E3 and E5), first attempt, green: all ten checks passed. Package 908 s, smoke 890 s, shard 1 997 s, shard 2 895 s: the longest job 997 s and the macOS runner time 3,690 s, against baseline medians of 967 and 3,235 s. Neither threshold is met; the smoke job and shard 1, which E5 does not touch, ran 148 and 244 s longer than on the run before.
+
+E5 is judged on its two steps. The package job's log has 344 `SwiftCompile normal arm64` lines and none for `x86_64`, and both builds succeeded. The steps took 120 and 82 s, 202 s together: 25.5% under the baseline's median of 271 s, where the rule asks for 25%, and 60 s under the run before without E5 (153 and 109 s). The rule is met on this run by one second of margin, and it asks for two runs. Half the compile tasks did not make half the step: the rest of a build (resolving packages, the other task kinds, linking, the project's own overhead) does not shrink with the architectures. What can be said so far is about a minute a run on the package job, not yet a saving that is stated.
+
 ### Verdict: incomplete
 
 E2 and E4 are reverted: `.github/workflows/ci.yml`, `Scripts/test-ios-layout.sh` and its tests are `main`'s (9bb7c97). The branch changes the shard plan (E3), adds `Scripts/ci_timings.py` and its tests, and adds the combining checks' shell tests, now against `main`'s two-job form of the builds' check. Findings F1, F4, F5, F6, F8 and F10 were about E2 or E4 and no longer arise. Local after the reverts and E5: 56 script tests pass, `actionlint` is clean, `Scripts/docs-index.sh --check` passes.
@@ -192,6 +198,6 @@ What is left:
 
 - E3 held on both runs (journey sums 268 and 401 s, then 278 and 408 s), and shard 2 is still the longer shard: its step outside the journeys is what makes it so, and the plan cannot move that.
 - The runners differ from run to run by more than any change tried here. A further change to this path needs several runs each side before it is judged.
-- E5 needs its two hosted runs. For the owner: larger runners, which need a paid plan. Still open: the docs-only path, the holdout.
+- E5 has one of its two hosted runs, at the edge of its rule. For the owner: larger runners, which need a paid plan. Still open: the docs-only path, the holdout.
 
 To undo: revert this branch's commits. Nothing outside the repository changed.
