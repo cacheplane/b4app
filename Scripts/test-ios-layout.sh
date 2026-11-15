@@ -46,12 +46,6 @@ mkdir -p .build/iOSLayout
 xcodegen generate --spec Tests/iOSLayout/project.yml --project .build/iOSLayout >/dev/null
 if [ -n "${B4APP_LAYOUT_DESTINATION:-}" ]; then
   destination=$B4APP_LAYOUT_DESTINATION
-  # B4APP_LAYOUT_SIMULATOR_UDID names the Simulator whose boot the tests wait for. CI always
-  # names one: without it nothing here would wait.
-  if [ -n "${CI:-}" ] && [ -z "${B4APP_LAYOUT_SIMULATOR_UDID:-}" ]; then
-    echo "CI must name the Simulator to wait for (B4APP_LAYOUT_SIMULATOR_UDID)" >&2
-    exit 2
-  fi
 else
   device=$(own_device)
   if [ -z "$device" ]; then
@@ -73,10 +67,11 @@ print((pro or phones)[0]["identifier"], runtime["identifier"])
     # shellcheck disable=SC2086 # two words: the device type and the runtime
     device=$(xcrun simctl create "$NAME" $choice)
   fi
-  # Begin its boot now, so it boots while xcodebuild builds the harness; the wait is below.
-  xcrun simctl boot "$device" >/dev/null 2>&1 || true
+  # Boot it and wait for the boot to finish before xcodebuild builds the harness. Left to
+  # xcodebuild, a cold Simulator is still settling when the first tests run: on a hosted runner the
+  # first two then failed to set the orientation and to launch the app (run 42770467156).
+  xcrun simctl bootstatus "$device" -b >/dev/null
   destination="platform=iOS Simulator,id=$device"
-  B4APP_LAYOUT_SIMULATOR_UDID=$device
 fi
 # One shard of the reviewed plan (Tests/iOSLayout/UITests/shards.json): CI runs each in its own job.
 # The plan names the tests, so no caller's count or selection applies.
@@ -92,27 +87,10 @@ if [ -n "$shard" ]; then
   IFS=$old_ifs
 fi
 results=${B4APP_LAYOUT_RESULTS:-"$PWD/.build/iOSLayout/Results-$(date -u +%Y%m%dT%H%M%S).xcresult"}
-derived=${B4APP_LAYOUT_DERIVED_DATA:-.build/iOSLayout/DerivedData}
-# Build, then wait for the Simulator, then test. The build used to wait for the boot, which took
-# hosted runners 68 to 165 s in which nothing else ran (D-232); the two now overlap. The tests
-# still start only on a Simulator whose boot has finished: left to xcodebuild, a cold one is still
-# settling when the first tests run, and on a hosted runner the first two then failed to set the
-# orientation and to launch the app (run 42770467156). A failed build or a boot that does not
-# finish ends the script before any test.
-phase() { echo "layout phase: $1 at $(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
-phase build
-xcodebuild build-for-testing -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -scheme WorkspaceLayout \
-  -destination "$destination" -derivedDataPath "$derived" "$@"
-if [ -n "${B4APP_LAYOUT_SIMULATOR_UDID:-}" ]; then
-  phase "wait for the Simulator"
-  xcrun simctl bootstatus "$B4APP_LAYOUT_SIMULATOR_UDID" -b
-fi
-phase test
-if xcodebuild test-without-building -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -scheme WorkspaceLayout \
+if xcodebuild test -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -scheme WorkspaceLayout \
   -destination "$destination" -parallel-testing-enabled NO \
-  -derivedDataPath "$derived" \
+  -derivedDataPath "${B4APP_LAYOUT_DERIVED_DATA:-.build/iOSLayout/DerivedData}" \
   -resultBundlePath "$results" "$@"; then
-  phase "tests passed"
   xcrun xcresulttool get test-results summary --path "$results" --compact > "$results.summary.json"
   xcrun xcresulttool get test-results tests --path "$results" --compact > "$results.tests.json"
   # xcodebuild has already consumed the caller's arguments; only parser flags follow here.

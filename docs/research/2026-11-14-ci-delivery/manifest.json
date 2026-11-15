@@ -186,6 +186,16 @@
         "E4 gained continue-on-error on shard 1's build steps and a 35-minute limit, so a failed beta build fails only the builds' check",
         "the freeze time is this file's own statement; its first commit is 88017988"
       ]
+    },
+    {
+      "at": "2026-11-15T06:10:00Z",
+      "why": "the first hosted run of the candidate, 43678912064 (pull request 206, commit 4ba2c3d, green on the first attempt); no threshold or rule changes",
+      "changes": [
+        "E2 rejected by its hosted rule: build and wait took 380 and 368 s before the first test against a baseline median of 323 s, and the shards' steps were not shorter; reverted at the owner's word",
+        "E4's rule met: shard 1's ios-beta output reached the builds' check; its build took 209 s there against 92 to 135 s in the package job",
+        "E3 kept: journey sums 268 and 401 s",
+        "the run's longest job was 1,083 s and its macOS runner time 3,793 s, against baseline medians of 967 and 3,235 s; neither threshold is met and no improvement is claimed"
+      ]
     }
   ]
 }
