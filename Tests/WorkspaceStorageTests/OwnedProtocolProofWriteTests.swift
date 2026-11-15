@@ -8406,7 +8406,7 @@ extension OwnedProtocolProofWriteTests {
       let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
       let hold = OwnedProofHold()
       let holderState = OwnedBindHolderState()
-      let application = "owned-positive-invalid-parent-\(UUID())"
+      let application = "owned-positive-bad-parent-\(UUID())"
       var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
       var holderPID = 0
       if stale {

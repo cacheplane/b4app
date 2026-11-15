@@ -116,6 +116,7 @@ jobs:
       # so no other test ran and those that wait on a clock (MirrorSyncTests) timed out. They run in
       # a process of their own, then the rest, both on one cluster that a single test starts first.
       - name: Start the tests' PostgreSQL
+        id: test-postgres-prewarm
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
         run: swift test --filter 'AccountRegistryTests/aLedgerIsCreatedOnlyWhenMissing'
@@ -128,9 +129,10 @@ jobs:
         run: swift test --filter 'AgentProtocol|ProtocolProjectionStoreTests|ProtocolActivation'
       - name: Focused Node probe observation controls
         id: node-probe-control
+        if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.test-postgres-prewarm.outcome == 'success' }}
         run: swift test --filter NodeVersionProbeObservationTests
       - name: Test
-        if: ${{ !cancelled() && (success() || steps.node-probe-control.outcome == 'failure') }}
+        if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.test-postgres-prewarm.outcome == 'success' }}
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
         run: |
@@ -166,9 +168,9 @@ jobs:
               "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "23a1c01b827d4d0ee1c533ba5c0391500efd37c28d0fa71182eecb43c70af23f",
           }
 
-          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': '3d246fa94ddf9b061aca3b73b28a10686b5af7f8a8f1306975b940f40ce21bef', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '4aa79857d10a9709150318c7aea4b948476f31a55ffbd0452af89ee2635e74c8', 'Sources/WorkspaceStorage/PostgresClient.swift': 'd713d50ed4183abb642f4ca6689d773c8b25306ac225ea0dd9936e0704cfc803', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '5fd3e92a93760433293cddc21652c95614c75f766449fb7b93701584ebaf74d1'}
+          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': '3d246fa94ddf9b061aca3b73b28a10686b5af7f8a8f1306975b940f40ce21bef', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '4aa79857d10a9709150318c7aea4b948476f31a55ffbd0452af89ee2635e74c8', 'Sources/WorkspaceStorage/PostgresClient.swift': 'd713d50ed4183abb642f4ca6689d773c8b25306ac225ea0dd9936e0704cfc803', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '8e36f5b21f5b193988fcd59ae2927ebcce98468c222e9257c621677433fa8599'}
           HELPER_RELATIVE = "Scripts/check-owner-carrier-compiler-controls.py"
-          HELPER_SHA256 = "67f5d93e74d64f4e2f4212975238a5751bf2d7a0fcb1f49dc3cfe0d5ab9a7cb3"
+          HELPER_SHA256 = "9828692414d5e8f9f0c3e13bca9e2943846304900b6a3fedc002515fc7601127"
 
           class Rejected(Exception):
               pass
@@ -430,7 +432,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "67f5d93e74d64f4e2f4212975238a5751bf2d7a0fcb1f49dc3cfe0d5ab9a7cb3"
+              expected = "9828692414d5e8f9f0c3e13bca9e2943846304900b6a3fedc002515fc7601127"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -481,7 +483,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "67f5d93e74d64f4e2f4212975238a5751bf2d7a0fcb1f49dc3cfe0d5ab9a7cb3"
+              expected = "9828692414d5e8f9f0c3e13bca9e2943846304900b6a3fedc002515fc7601127"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
