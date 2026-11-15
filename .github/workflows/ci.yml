@@ -164,13 +164,13 @@ jobs:
               "Sources/Coordinator/HubSync/HubOwnerCarrier.swift": "217eee004c3d36fbeffc4a7efb96bc9eee955ca656eacc0e000dcb619332f51b",
               "Sources/Coordinator/Accounts/AccountManager.swift": "06119d341433560101eca806f4497eb4ae93b9b99c06db2968ce33e8520d2cfe",
               "Sources/Coordinator/HubSync/HubSync.swift": "1e5524a1fb3616c6ce2db218168b3c4d144ba57821c51b5c06dbdbcdc2b7338c",
-              "Sources/WorkspaceStorage/ProtocolActivation.swift": "3d246fa94ddf9b061aca3b73b28a10686b5af7f8a8f1306975b940f40ce21bef",
+              "Sources/WorkspaceStorage/ProtocolActivation.swift": "378e1052777af215bd55d824a5d630a49ba5e1e3f5e865f1c2c608e32f97aef4",
               "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "23a1c01b827d4d0ee1c533ba5c0391500efd37c28d0fa71182eecb43c70af23f",
           }
 
-          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': '3d246fa94ddf9b061aca3b73b28a10686b5af7f8a8f1306975b940f40ce21bef', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '4aa79857d10a9709150318c7aea4b948476f31a55ffbd0452af89ee2635e74c8', 'Sources/WorkspaceStorage/PostgresClient.swift': 'd713d50ed4183abb642f4ca6689d773c8b25306ac225ea0dd9936e0704cfc803', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '8e36f5b21f5b193988fcd59ae2927ebcce98468c222e9257c621677433fa8599'}
+          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': '378e1052777af215bd55d824a5d630a49ba5e1e3f5e865f1c2c608e32f97aef4', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '4aa79857d10a9709150318c7aea4b948476f31a55ffbd0452af89ee2635e74c8', 'Sources/WorkspaceStorage/PostgresClient.swift': 'd713d50ed4183abb642f4ca6689d773c8b25306ac225ea0dd9936e0704cfc803', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '69a1d5532b26c079ef3b185cf2f5a2590e81414c7117e477618f15af8662e56c'}
           HELPER_RELATIVE = "Scripts/check-owner-carrier-compiler-controls.py"
-          HELPER_SHA256 = "9828692414d5e8f9f0c3e13bca9e2943846304900b6a3fedc002515fc7601127"
+          HELPER_SHA256 = "f6b8fda823a498b835a3a3845eb7f5f51c2d666730cbd174a21880cf8a7db31f"
 
           class Rejected(Exception):
               pass
@@ -432,7 +432,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "9828692414d5e8f9f0c3e13bca9e2943846304900b6a3fedc002515fc7601127"
+              expected = "f6b8fda823a498b835a3a3845eb7f5f51c2d666730cbd174a21880cf8a7db31f"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -483,7 +483,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "9828692414d5e8f9f0c3e13bca9e2943846304900b6a3fedc002515fc7601127"
+              expected = "f6b8fda823a498b835a3a3845eb7f5f51c2d666730cbd174a21880cf8a7db31f"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())

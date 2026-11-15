@@ -1512,3 +1512,185 @@ extension WorkspaceDatabase {
       observation: observation, expectedTokenRef: expectedTokenRef, memoryAdmission: memoryAdmission)
   }
 }
+
+// Fixed denial-only fence. Original capture and actual later predecessor remain distinct.
+extension ProtocolOwnedProofWriter {
+  private struct FenceWork {
+    let predecessor: ProtocolProofNativePredecessor
+    let context: ProtocolProofLinkedContext
+    let successor: ProtocolVerificationSnapshot
+  }
+
+  private static func fenceRefusal(
+    invocation: ProtocolProofInvocation, stage: ProtocolProofReachedStage,
+    beginSent: Bool = false, rollbackAcknowledged: Bool = false,
+    commitSent: Bool = false, commitAcknowledged: Bool = false
+  ) -> ProtocolOwnedProofWriteReceipt {
+    let decision = ProtocolProofSettlementClassifier.classify(
+      beginSent: beginSent, rollbackAcknowledged: rollbackAcknowledged,
+      commitSent: commitSent, commitAcknowledged: commitAcknowledged)
+    return ProtocolOwnedProofWriteReceipt(
+      payload: .noContinuation(
+        ProtocolProofNoContinuation(
+          operation: .fence, invocation: invocation, lastReachedStage: stage,
+          outcome: decision == .confirmedNoncommit ? .confirmedNoncommit : .unknown)))
+  }
+
+  static func fence(
+    database: WorkspaceDatabase, anchor: ProtocolVerificationSnapshot,
+    binding: ProtocolMembershipBinding, expectedTokenRef: String,
+    memoryAdmission: ProtocolProofMemoryAdmission
+  ) -> ProtocolOwnedProofWriteReceipt {
+    let invocation = ProtocolProofInvocation()
+    guard anchor.database === database, let context = anchor.capturedContext,
+      let membership = context.membership,
+      ProtocolActivationControl.bytesEqual(context.accountID, binding.accountID),
+      ProtocolActivationControl.bytesEqual(database.endpoint.database, binding.databaseName),
+      ProtocolActivationControl.bytesEqual(membership.canonicalHubBase, binding.canonicalHubBase),
+      ProtocolActivationControl.bytesEqual(membership.deviceID, binding.deviceID),
+      ProtocolActivationControl.bytesEqual(membership.linkJoinedAt, binding.linkJoinedAt),
+      anchor.record.binding == nil || anchor.record.binding == binding,
+      let reference = ProtocolCredentialReference(expectedTokenRef)
+    else { return fenceRefusal(invocation: invocation, stage: .invocationStarted) }
+    let device = database.deviceId
+    do {
+      // The fresh owner's callback is fixed and nonthrowing; no connection enters any field.
+      return try database.withOwnedProtocolProofConnection { connection in
+        performFence(
+          connection, database: database, anchor: anchor, binding: binding,
+          context: context, membership: membership, reference: reference, device: device,
+          memoryAdmission: memoryAdmission, invocation: invocation)
+      }
+    } catch {
+      return fenceRefusal(invocation: invocation, stage: .inputValidated)
+    }
+  }
+
+  private static func performFence(
+    _ c: PostgresConnection, database: WorkspaceDatabase, anchor: ProtocolVerificationSnapshot,
+    binding: ProtocolMembershipBinding, context: ProtocolActivationControl.CapturedContext,
+    membership: ProtocolNativeMembership, reference: ProtocolCredentialReference, device: String,
+    memoryAdmission: ProtocolProofMemoryAdmission, invocation: ProtocolProofInvocation
+  ) -> ProtocolOwnedProofWriteReceipt {
+    var stage = ProtocolProofReachedStage.checkoutEntered
+    var beginSent = false
+    var rollbackAcknowledged = false
+    var commitSent = false
+    var commitAcknowledged = false
+    let work: FenceWork
+    do {
+      beginSent = true
+      stage = .beginSent
+      try c.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+      stage = .beginAcknowledged
+      try c.execute("SET LOCAL lock_timeout='2s'")
+      try c.execute("SET LOCAL statement_timeout='2s'")
+      stage = .budgetsInstalled
+      try c.execute(
+        "SELECT pg_advisory_xact_lock($1::bigint)", [String(WorkspaceDatabase.remoteApplyLockKey)])
+      try c.execute("SELECT set_config('b4app.hlc', $1, true)", [database.clock.next().rawValue])
+      if device != "local" {
+        try c.execute("SELECT set_config('b4app.device_id', $1, true)", [device])
+      }
+      stage = .advisoryAndClockInstalled
+      // state(locking:true) locks the actual link tuple before the control tuple.
+      let pre = try ProtocolActivationControl.state(c, locking: true)
+      let predecessor = try ProtocolActivationControl.capturedRecord(
+        database, state: pre, snapshot: anchor, allowingLaterRevision: true)
+      try ProtocolActivationControl.requireMembership(
+        pre, binding: binding, endpoint: database.endpoint.database)
+      // requireKnownBinding alone compares neither hub user nor organization. Compare ALL
+      // seven bound fields before memory PRE while allowing a lawful unbound predecessor.
+      guard predecessor.binding == nil || predecessor.binding == binding,
+        let nativeMembership = try ProtocolActivationControl.nativeMembership(pre),
+        nativeMembership == membership, let nativeReference = pre.credentialReference,
+        nativeReference == reference
+      else { throw ProtocolActivationControl.failure }
+      let nativePredecessor = ProtocolProofNativePredecessor(
+        databaseName: pre.database, record: predecessor, membership: nativeMembership,
+        credentialReference: nativeReference)
+      let linkedContext = ProtocolProofLinkedContext(
+        accountID: context.accountID, membership: nativeMembership)
+      stage = .nativePreValidated
+      try memoryAdmission.requireCurrent()
+      stage = .memoryPreAccepted
+      var candidate = predecessor
+      // Every lawful fence increments the ACTUAL latest revision once, even already clear.
+      // Copying the whole predecessor preserves its binding and every other retained field.
+      candidate.revision = try ProtocolActivationControl.next(predecessor.revision)
+      candidate.observation = nil
+      try ProtocolActivationControl.store(c, candidate)
+      stage = .successorStoredOrNoop
+      let successor = ProtocolVerificationSnapshot(
+        database: database, record: candidate, capturedContext: context)
+      let post = try ProtocolActivationControl.state(c, locking: false)
+      let postRecord = try ProtocolActivationControl.capturedRecord(
+        database, state: post, snapshot: successor, allowingLaterRevision: false)
+      try ProtocolActivationControl.requireMembership(
+        post, binding: binding, endpoint: database.endpoint.database)
+      guard postRecord.binding == nil || postRecord.binding == binding,
+        post.credentialReference == reference,
+        try ProtocolActivationControl.nativeMembership(post) == nativeMembership
+      else { throw ProtocolActivationControl.failure }
+      stage = .nativePostValidated
+      work = FenceWork(predecessor: nativePredecessor, context: linkedContext, successor: successor)
+      try memoryAdmission.requireCurrent()
+      stage = .memoryPostAccepted
+      // Distinct immediate pre-COMMIT check; only flag/stage assignments follow before SQL.
+      try memoryAdmission.requireCurrent()
+      stage = .preCommitMemoryAccepted
+      commitSent = true
+      stage = .commitSent
+      try c.execute("COMMIT")
+      commitAcknowledged = true
+      stage = .commitAcknowledged
+    } catch {
+      if beginSent && !commitSent {
+        stage = .rollbackSent
+        do {
+          try c.execute("ROLLBACK")
+          rollbackAcknowledged = true
+          stage = .rollbackAcknowledged
+        } catch {
+          // One attempt only. A missing acknowledgement remains unknown.
+        }
+      }
+      // A sent COMMIT error performs no further SQL, rollback, retry or inspection.
+      return fenceRefusal(
+        invocation: invocation, stage: stage, beginSent: beginSent,
+        rollbackAcknowledged: rollbackAcknowledged, commitSent: commitSent,
+        commitAcknowledged: commitAcknowledged)
+    }
+    // Actual checked COMMIT returned normally. A fourth, memory-only failure is committed
+    // stale, outside the SQL catch: it can never initiate rollback or compensate durable S3.
+    let currentness: ProtocolProofCommittedCurrentness
+    do {
+      try memoryAdmission.requireCurrent()
+      currentness = .current
+    } catch {
+      currentness = .stale
+    }
+    return ProtocolOwnedProofWriteReceipt(
+      payload: .committed(
+        ProtocolProofCommittedEvidence(
+          actualDatabase: database, callerAnchor: anchor, actualNativePredecessor: work.predecessor,
+          predecessorContext: work.context, successor: work.successor, successorContext: work.context,
+          originalParsedReference: reference, memoryAdmission: memoryAdmission,
+          invocation: invocation,
+          lineage: .fence(
+            originalAnchor: anchor, latestPredecessor: work.predecessor, suppliedBinding: binding),
+          currentness: currentness)))
+  }
+}
+
+extension WorkspaceDatabase {
+  /// Dormant denial-only fence: continuation comparison evidence needs this invocation's ACK.
+  package func fenceProtocolVerification(
+    expectedSnapshot: ProtocolVerificationSnapshot, expectedBinding: ProtocolMembershipBinding,
+    expectedTokenRef: String, memoryAdmission: ProtocolProofMemoryAdmission
+  ) -> ProtocolOwnedProofWriteReceipt {
+    ProtocolOwnedProofWriter.fence(
+      database: self, anchor: expectedSnapshot, binding: expectedBinding,
+      expectedTokenRef: expectedTokenRef, memoryAdmission: memoryAdmission)
+  }
+}

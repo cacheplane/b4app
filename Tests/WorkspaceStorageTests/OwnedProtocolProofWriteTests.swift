@@ -8800,3 +8800,2104 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 }
+
+// Dormant B3 fence comparisons. All fixture oracles below are independent native images.
+// No snapshot fabrication, receipt reconstruction, HTTP authority or runtime admission follows.
+extension OwnedProtocolProofWriteTests {
+  private struct OwnedFenceChain {
+    let original: ProtocolVerificationSnapshot
+    let parent: OwnedPositiveParent
+    let positiveReceipt: ProtocolOwnedProofWriteReceipt
+    let positive: ProtocolVerificationSnapshot
+    let image: OwnedBindImage
+    let memory: OwnedPositiveCountedMemory
+    let admission: ProtocolProofMemoryAdmission
+  }
+
+  private static func ownedFenceChain(
+    _ f: Fixture, validatedSeed: Bool = false
+  ) throws -> OwnedFenceChain {
+    if !validatedSeed { _ = try validateFixture(f) }
+    try ownedBindCatalogGuard(f.inspector)
+    let memory = OwnedPositiveCountedMemory()
+    let admission = ProtocolProofMemoryAdmission { [memory] in
+      if !memory.compare() { throw FixtureFailure.redactedFailure }
+    }
+    let b1Start = memory.calls()
+    let parent = try ownedPositiveParent(
+      f, anchor: f.anchor, reference: f.link.tokenRef, admission: admission, memory: memory)
+    guard memory.calls() - b1Start == 5 else { throw FixtureFailure.nativeShape }
+    let observation = try ownedPositiveObservation(f.binding)
+    let expected = try ownedPositiveStage(f, observation: observation)
+    guard expected.before == parent.image else { throw FixtureFailure.nativeShape }
+    let b2Start = memory.calls()
+    let positiveReceipt = ownedPositiveWrite(
+      f, parent: parent, observation: observation, reference: f.link.tokenRef, admission: admission)
+    guard positiveReceipt.operation == .positive, positiveReceipt.disposition == .committedCurrent,
+      memory.calls() - b2Start == 4, try ownedBindImage(f.inspector) == expected.expected
+    else { throw FixtureFailure.nativeShape }
+    let redemptionStart = memory.calls()
+    let positive = try ownedPositiveRedeem(
+      positiveReceipt, fixture: f, parent: parent, observation: observation,
+      reference: f.link.tokenRef, admission: admission, calls: { memory.calls() })
+    guard memory.calls() - redemptionStart == 1,
+      try ownedBindImage(f.inspector) == expected.expected
+    else { throw FixtureFailure.nativeShape }
+    try ownedBindCatalogGuard(f.inspector)
+    return OwnedFenceChain(
+      original: f.anchor, parent: parent, positiveReceipt: positiveReceipt,
+      positive: positive, image: expected.expected, memory: memory, admission: admission)
+  }
+
+  private static func ownedFenceStage(_ f: Fixture) throws -> OwnedBindStageFixture {
+    let before = try ownedBindImage(f.inspector)
+    let original = try ownedDeferredControl(before)
+    var expected = original
+    expected["revision"] = try ownedT09Next(original)
+    expected.removeValue(forKey: "observation")
+    let image = try ownedT09ControlImage(before, old: original, new: expected)
+    // Exact native JSON is an oracle only; the successor comes from counted redemption.
+    return try ownedT09Freeze(
+      f, before: before, expected: image, expectedControl: expected, reference: f.link.tokenRef)
+  }
+
+  private static func ownedFenceWrite(
+    _ f: Fixture, anchor: ProtocolVerificationSnapshot, binding: ProtocolMembershipBinding,
+    reference: String, admission: ProtocolProofMemoryAdmission
+  ) -> ProtocolOwnedProofWriteReceipt {
+    f.database.fenceProtocolVerification(
+      expectedSnapshot: anchor, expectedBinding: binding,
+      expectedTokenRef: reference, memoryAdmission: admission)
+  }
+
+  private static func ownedFenceWriter(
+    database: WorkspaceDatabase, anchor: ProtocolVerificationSnapshot,
+    binding: ProtocolMembershipBinding, reference: String,
+    admission: ProtocolProofMemoryAdmission, finished: OwnedBindFinished
+  ) -> OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt> {
+    OwnedProofNativeWork { [database, anchor, binding, reference, admission, finished] in
+      let receipt = database.fenceProtocolVerification(
+        expectedSnapshot: anchor, expectedBinding: binding,
+        expectedTokenRef: reference, memoryAdmission: admission)
+      finished.markReturned()
+      return receipt
+    }
+  }
+
+  private static func ownedFenceRefuses(
+    _ receipt: ProtocolOwnedProofWriteReceipt, anchor: ProtocolVerificationSnapshot,
+    reference: String, admission: ProtocolProofMemoryAdmission,
+    memory: OwnedPositiveCountedMemory,
+    disposition: ProtocolProofWriteDisposition = .confirmedNoncommit
+  ) throws {
+    let start = memory.calls()
+    guard receipt.operation == .fence, receipt.disposition == disposition,
+      !validates({
+        _ = try receipt.currentSuccessor(
+          expectedSnapshot: anchor, expectedTokenRef: reference, memoryAdmission: admission)
+      }), memory.calls() == start, receipt.disposition == disposition
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedFenceRedeem(
+    _ receipt: ProtocolOwnedProofWriteReceipt, fixture f: Fixture,
+    anchor: ProtocolVerificationSnapshot, reference: String,
+    admission: ProtocolProofMemoryAdmission, memory: OwnedPositiveCountedMemory
+  ) throws -> ProtocolVerificationSnapshot {
+    let start = memory.calls()
+    guard receipt.operation == .fence, receipt.disposition == .committedCurrent else {
+      throw FixtureFailure.nativeShape
+    }
+    let successor = try receipt.currentSuccessor(
+      expectedSnapshot: anchor, expectedTokenRef: reference, memoryAdmission: admission)
+    guard memory.calls() - start == 1, successor.observation == nil else {
+      throw FixtureFailure.nativeShape
+    }
+    try ownedT09NativeValidate(
+      f, successor: successor, binding: f.binding, reference: reference, observation: nil)
+    return successor
+  }
+
+  private static func ownedFenceAllow(
+    _ f: Fixture, chain: OwnedFenceChain, anchor: ProtocolVerificationSnapshot,
+    recipe: OwnedPositiveBodyRecipe, body: OwnedBindProbe, commit: OwnedBindProbe
+  ) throws -> ProtocolVerificationSnapshot {
+    let start = chain.memory.calls()
+    let receipt = ownedFenceWrite(
+      f, anchor: anchor, binding: f.binding, reference: f.link.tokenRef, admission: chain.admission)
+    guard chain.memory.calls() - start == 4 else { throw FixtureFailure.nativeShape }
+    try ownedPositiveBodyCheckpoint(
+      f, recipe: recipe, replacement: f.link.tokenRef, fault: false,
+      image: recipe.stage.expected, body: body, commit: commit, bodies: 1, commits: 1)
+    let successor = try ownedFenceRedeem(
+      receipt, fixture: f, anchor: anchor, reference: f.link.tokenRef,
+      admission: chain.admission, memory: chain.memory)
+    try ownedPositiveBodyCheckpoint(
+      f, recipe: recipe, replacement: f.link.tokenRef, fault: false,
+      image: recipe.stage.expected, body: body, commit: commit, bodies: 1, commits: 1)
+    return successor
+  }
+
+  private static func ownedFenceRequireCoreControls() throws {
+    let rows = try ownedFenceRawControls()
+    guard rows.map({ $0.row }) == [0, 1, 2, 3], rows.count == 4,
+      rows.allSatisfy({ $0.qualified && $0.durableImageValidated })
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  // F01a/F01b: O=S0 or saved genuine S1, actual PRE is genuine S2.
+  // F01 matrix: F01a, F01b
+  @Test(arguments: [false, true])
+  func ownedFenceOriginalAnchorClearsActualLaterPositivePreservingPrincipal(boundOriginal: Bool) throws {
+    try Self.ownedFenceRequireCoreControls()
+    try Self.withFixture { f in
+      let chain = try Self.ownedFenceChain(f)
+      let original = boundOriginal ? chain.parent.anchor : chain.original
+      let stage = try Self.ownedFenceStage(f)
+      guard stage.before == chain.image else { throw FixtureFailure.nativeShape }
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      _ = try Self.ownedFenceAllow(
+        f, chain: chain, anchor: original, recipe: recipe, body: body, commit: commit)
+    }
+  }
+
+  // F02a/F02b: first clear is extra uninstrumented setup; lawful unbound has B1/B2 N/A.
+  // F02 matrix: F02a, F02b
+  @Test(arguments: [false, true])
+  func ownedFenceDenialOnlyAlreadyClearAndLawfulUnbound(unbound: Bool) throws {
+    try Self.ownedFenceRequireCoreControls()
+    try Self.withFixture { f in
+      if unbound {
+        _ = try Self.validateFixture(f)
+        let memory = OwnedPositiveCountedMemory()
+        let admission = ProtocolProofMemoryAdmission { [memory] in
+          if !memory.compare() { throw FixtureFailure.redactedFailure }
+        }
+        let stage = try Self.ownedFenceStage(f)
+        guard try Self.ownedDeferredControl(stage.before)["binding"] == nil else {
+          throw FixtureFailure.nativeShape
+        }
+        let recipe = try Self.ownedPositiveInstallBody(
+          f, stage: stage, replacement: f.link.tokenRef, fault: false)
+        let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+        let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+        let start = memory.calls()
+        let receipt = Self.ownedFenceWrite(
+          f, anchor: f.anchor, binding: f.binding, reference: f.link.tokenRef, admission: admission)
+        guard memory.calls() - start == 4 else { throw FixtureFailure.nativeShape }
+        _ = try Self.ownedFenceRedeem(
+          receipt, fixture: f, anchor: f.anchor, reference: f.link.tokenRef,
+          admission: admission, memory: memory)
+        try Self.ownedPositiveBodyCheckpoint(
+          f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+          body: body, commit: commit, bodies: 1, commits: 1)
+        guard try Self.ownedDeferredControl(stage.expected)["binding"] == nil else {
+          throw FixtureFailure.nativeShape
+        }
+      } else {
+        let chain = try Self.ownedFenceChain(f)
+        let firstStage = try Self.ownedFenceStage(f)
+        let start = chain.memory.calls()
+        let first = Self.ownedFenceWrite(
+          f, anchor: chain.original, binding: f.binding, reference: f.link.tokenRef,
+          admission: chain.admission)
+        guard chain.memory.calls() - start == 4,
+          try Self.ownedBindImage(f.inspector) == firstStage.expected
+        else { throw FixtureFailure.nativeShape }
+        let actualS3 = try Self.ownedFenceRedeem(
+          first, fixture: f, anchor: chain.original, reference: f.link.tokenRef,
+          admission: chain.admission, memory: chain.memory)
+        guard actualS3.observation == nil, chain.memory.calls() - start == 5 else {
+          throw FixtureFailure.nativeShape
+        }
+        let stage = try Self.ownedFenceStage(f)
+        guard stage.before == firstStage.expected else { throw FixtureFailure.nativeShape }
+        let recipe = try Self.ownedPositiveInstallBody(
+          f, stage: stage, replacement: f.link.tokenRef, fault: false)
+        let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+        let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+        _ = try Self.ownedFenceAllow(
+          f, chain: chain, anchor: chain.original, recipe: recipe, body: body, commit: commit)
+      }
+    }
+  }
+
+  private enum OwnedFenceInput: String, CaseIterable, Sendable {
+    case databaseObject, missingContext, missingLinkedMembership, contextAccount, databaseName
+    case nativeHub, nativeDevice, nativeJoined, anchorHubUser, anchorHubOrg, anchorAccount
+    case emptyRef, prefixOnlyRef, wrongPrefixRef, nulRef
+  }
+
+  // F03 matrix: F03.databaseObject, F03.missingContext, F03.missingLinkedMembership, F03.contextAccount, F03.databaseName, F03.nativeHub, F03.nativeDevice, F03.nativeJoined, F03.anchorHubUser, F03.anchorHubOrg, F03.anchorAccount, F03.emptyRef, F03.prefixOnlyRef, F03.wrongPrefixRef, F03.nulRef
+  @Test(arguments: OwnedFenceInput.allCases)
+  private func ownedFencePrecheckoutRejectsInvalidOriginalContextPrincipalReference(
+    row: OwnedFenceInput
+  ) throws {
+    try Self.ownedFenceRequireCoreControls()
+    try Self.withFixture { f in
+      _ = try Self.validateFixture(f)
+      let seed = try Self.ownedBindImage(f.inspector)
+      var unlinked: ProtocolVerificationSnapshot?
+      if row == .missingLinkedMembership {
+        let absent = try Self.ownedT09LinkImage(seed, old: Self.ownedT09Link(seed), new: nil)
+        try Self.ownedT09LinkSwap(
+          f, from: seed, to: absent, column: nil, stage: nil, body: nil, commit: nil)
+        unlinked = try f.database.captureProtocolVerification(
+          accountID: f.binding.accountID, expectedMembership: nil)
+        guard try Self.ownedBindImage(f.inspector) == absent else { throw FixtureFailure.nativeShape }
+        try Self.ownedT09LinkSwap(
+          f, from: absent, to: seed, column: nil, stage: nil, body: nil, commit: nil)
+      }
+      let chain = try Self.ownedFenceChain(f)
+      var anchor = chain.original
+      var binding = f.binding
+      var reference = f.link.tokenRef
+      let endpoint = f.database.endpoint
+      var extra: WorkspaceDatabase?
+      defer { if let extra { try? extra.close() } }
+      switch row {
+      case .databaseObject:
+        guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+        let actual = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir, createIfMissing: false)
+        extra = actual
+        let membership = try ProtocolNativeMembership(
+          canonicalHubBase: f.link.url, deviceID: f.link.deviceId, linkJoinedAt: f.link.joinedAt)
+        anchor = try actual.captureProtocolVerification(
+          accountID: f.binding.accountID, expectedMembership: membership)
+      case .missingContext:
+        anchor = try #require(try f.database.readProtocolFact(expectedBinding: f.binding))
+      case .missingLinkedMembership: anchor = try #require(unlinked)
+      case .contextAccount, .anchorAccount:
+        binding = try Self.ownedT09OtherBinding(binding, unit: .account)
+        if row == .anchorAccount { anchor = chain.parent.anchor }
+      case .databaseName: binding = try Self.ownedT09OtherBinding(binding, unit: .database)
+      case .nativeHub: binding = try Self.ownedT09OtherBinding(binding, unit: .hubBase)
+      case .nativeDevice: binding = try Self.ownedT09OtherBinding(binding, unit: .device)
+      case .nativeJoined: binding = try Self.ownedT09OtherBinding(binding, unit: .joined)
+      case .anchorHubUser:
+        anchor = chain.parent.anchor; binding = try Self.ownedT09OtherBinding(binding, unit: .boundUser)
+      case .anchorHubOrg:
+        anchor = chain.parent.anchor; binding = try Self.ownedT09OtherBinding(binding, unit: .boundOrg)
+      case .emptyRef: reference = ""
+      case .prefixOnlyRef: reference = "secret:"
+      case .wrongPrefixRef: reference = "other:FENCE"
+      case .nulRef: reference = "secret:FENCE\u{0}NEGATIVE"
+      }
+      guard try Self.ownedBindImage(f.inspector) == chain.image else { throw FixtureFailure.nativeShape }
+      let start = chain.memory.calls()
+      let receipt = Self.ownedFenceWrite(
+        f, anchor: anchor, binding: binding, reference: reference, admission: chain.admission)
+      guard chain.memory.calls() == start, try Self.ownedBindImage(f.inspector) == chain.image else {
+        throw FixtureFailure.nativeShape
+      }
+      try Self.ownedFenceRefuses(
+        receipt, anchor: anchor, reference: reference, admission: chain.admission, memory: chain.memory)
+      try Self.ownedBindCatalogGuard(f.inspector)
+      // No target recipe or probe exists: body/commit/timeout measurements are N/A.
+    }
+  }
+
+  private enum OwnedFenceNative: String, CaseIterable, Sendable {
+    case controlMissing, controlMalformed, controlVersion, storeEpoch, memberEpoch, lowerRevision
+    case nativeMissing, nativeHub, nativeDevice, nativeJoined, refMissing, refMalformed, refReplaced
+    case currentAccount, currentHubUser, currentHubOrg
+  }
+
+  private static func ownedFenceReplaceControl(
+    _ f: Fixture, before: OwnedBindImage, old: [String: Any]?, new: [String: Any]?
+  ) throws -> OwnedBindImage {
+    try ownedBindCatalogGuard(f.inspector)
+    let after = try ownedT09ControlImage(before, old: old, new: new)
+    guard try ownedBindImage(f.inspector) == before else { throw FixtureFailure.nativeShape }
+    var acknowledged = false
+    defer { if !acknowledged { _ = try? f.inspector.execute("ROLLBACK") } }
+    try f.inspector.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
+    try f.inspector.execute("SET LOCAL lock_timeout='2s'")
+    try f.inspector.execute("SET LOCAL statement_timeout='2s'")
+    if let old {
+      guard
+        try f.inspector.execute(
+          "DELETE FROM public.settings WHERE key=$1 AND value=$2::jsonb",
+          [key, try ownedBindText(ownedT09Data(old))]
+        ).affected == 1
+      else { throw FixtureFailure.nativeShape }
+    }
+    if let new {
+      guard
+        try f.inspector.execute(
+          "INSERT INTO public.settings(key,value) VALUES($1,$2::jsonb)",
+          [key, try ownedBindText(ownedT09Data(new))]
+        ).affected == 1
+      else { throw FixtureFailure.nativeShape }
+    }
+    try f.inspector.execute("COMMIT")
+    acknowledged = true
+    guard try ownedBindImage(f.inspector) == after else { throw FixtureFailure.nativeShape }
+    try ownedBindCatalogGuard(f.inspector)
+    return after
+  }
+
+  // F04 matrix: F04.controlMissing, F04.controlMalformed, F04.controlVersion, F04.storeEpoch, F04.memberEpoch, F04.lowerRevision, F04.nativeMissing, F04.nativeHub, F04.nativeDevice, F04.nativeJoined, F04.refMissing, F04.refMalformed, F04.refReplaced, F04.currentAccount, F04.currentHubUser, F04.currentHubOrg
+  @Test(arguments: OwnedFenceNative.allCases)
+  private func ownedFenceNativePreRejectsEpochPrincipalAndReferenceDriftBeforeMemory(
+    row: OwnedFenceNative
+  ) throws {
+    try Self.ownedFenceRequireCoreControls()
+    try Self.withFixture { f in
+      let chain = try Self.ownedFenceChain(f)
+      let original = row == .lowerRevision ? chain.parent.anchor : chain.original
+      let genuine = try Self.ownedDeferredControl(chain.image)
+      var changed = genuine
+      var damaged: OwnedBindImage
+      var column: OwnedT09LinkColumn?
+      let changesLink = [
+        .nativeMissing, .nativeHub, .nativeDevice, .nativeJoined,
+        .refMissing, .refMalformed, .refReplaced,
+      ].contains(row)
+      if changesLink {
+        let value: String?
+        switch row {
+        case .nativeMissing: column = nil; value = nil
+        case .nativeHub: column = .url; value = "https://example.invalid/FenceOther"
+        case .nativeDevice: column = .deviceId; value = "FENCE_NATIVE_OTHER"
+        case .nativeJoined: column = .joinedAt; value = "2026-11-13T00:00:00.001Z"
+        case .refMissing: column = .tokenRef; value = ""
+        case .refMalformed: column = .tokenRef; value = "other:FENCE_NATIVE"
+        case .refReplaced: column = .tokenRef; value = "secret:FENCE_NATIVE_B"
+        default: throw FixtureFailure.nativeShape
+        }
+        if let column, let value {
+          damaged = try Self.ownedT09ChangedLink(chain.image, column: column, value: value)
+        } else {
+          damaged = try Self.ownedT09LinkImage(chain.image, old: Self.ownedT09Link(chain.image), new: nil)
+        }
+        try Self.ownedT09LinkSwap(
+          f, from: chain.image, to: damaged, column: column, stage: nil, body: nil, commit: nil)
+      } else {
+        switch row {
+        case .controlMissing: break
+        case .controlMalformed: changed["unexpected"] = "FENCE_MALFORMED"
+        case .controlVersion: changed["version"] = 2
+        case .storeEpoch: changed["storeIncarnation"] = UUID().uuidString
+        case .memberEpoch: changed["membershipIncarnation"] = UUID().uuidString
+        case .lowerRevision: changed["revision"] = "0"
+        case .currentAccount, .currentHubUser, .currentHubOrg:
+          let unit: OwnedT09Unit =
+            row == .currentAccount ? .account : (row == .currentHubUser ? .boundUser : .boundOrg)
+          let binding = try Self.ownedT09OtherBinding(f.binding, unit: unit)
+          changed["binding"] = Self.ownedT09Binding(binding)
+          var observation = try #require(changed["observation"] as? [String: Any])
+          observation["binding"] = Self.ownedT09Binding(binding)
+          changed["observation"] = observation
+        default: throw FixtureFailure.nativeShape
+        }
+        damaged = try Self.ownedFenceReplaceControl(
+          f, before: chain.image, old: genuine, new: row == .controlMissing ? nil : changed)
+      }
+      let start = chain.memory.calls()
+      let receipt = Self.ownedFenceWrite(
+        f, anchor: original, binding: f.binding, reference: f.link.tokenRef, admission: chain.admission)
+      guard chain.memory.calls() == start, try Self.ownedBindImage(f.inspector) == damaged else {
+        throw FixtureFailure.nativeShape
+      }
+      try Self.ownedFenceRefuses(
+        receipt, anchor: original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory)
+      try Self.ownedBindCatalogGuard(f.inspector)
+      // No target recipe/probes during damaged native PRE; all probe measurements N/A.
+      if changesLink {
+        try Self.ownedT09LinkSwap(
+          f, from: damaged, to: chain.image, column: column, stage: nil, body: nil, commit: nil)
+      } else {
+        let restored = try Self.ownedFenceReplaceControl(
+          f, before: damaged, old: row == .controlMissing ? nil : changed, new: genuine)
+        guard restored == chain.image else { throw FixtureFailure.nativeShape }
+      }
+      try Self.ownedFenceRefuses(
+        receipt, anchor: original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory)
+      let stage = try Self.ownedFenceStage(f)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      _ = try Self.ownedFenceAllow(
+        f, chain: chain, anchor: original, recipe: recipe, body: body, commit: commit)
+      try Self.ownedFenceRefuses(
+        receipt, anchor: original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory)
+    }
+  }
+
+  // F05 matrix: F05.pre, F05.post, F05.preCommit
+  @Test(arguments: [1, 2, 3])
+  func ownedFenceMemoryPrePostImmediatePreCommitRefuseAndSameInputAllows(ordinal: Int) throws {
+    try Self.ownedFenceRequireCoreControls()
+    try Self.withFixture { f in
+      let chain = try Self.ownedFenceChain(f)
+      let stage = try Self.ownedFenceStage(f)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let start = chain.memory.calls()
+      try chain.memory.armSelector(baseline: start, localOrdinal: ordinal)
+      let receipt = Self.ownedFenceWrite(
+        f, anchor: chain.original, binding: f.binding, reference: f.link.tokenRef, admission: chain.admission)
+      guard chain.memory.calls() - start == ordinal else { throw FixtureFailure.nativeShape }
+      try Self.ownedFenceRefuses(
+        receipt, anchor: chain.original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory)
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: chain.image,
+        body: body, commit: commit, bodies: ordinal == 1 ? 0 : 1, commits: 0)
+      let recoveryStart = chain.memory.calls()
+      chain.memory.disableSelector()
+      guard chain.memory.calls() == recoveryStart else { throw FixtureFailure.nativeShape }
+      try Self.ownedFenceRefuses(
+        receipt, anchor: chain.original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory)
+      let inverseBody = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let inverseCommit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      _ = try Self.ownedFenceAllow(
+        f, chain: chain, anchor: chain.original, recipe: recipe, body: inverseBody, commit: inverseCommit)
+      try Self.ownedFenceRefuses(
+        receipt, anchor: chain.original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory)
+    }
+  }
+}
+
+extension OwnedProtocolProofWriteTests {
+  private static func ownedFenceObserveWait(
+    _ c: PostgresConnection, database: String, holderPID: Int, knownOwnedPIDs: [Int],
+    kind: OwnedBindWaitKind, hold: OwnedProofHold, finished: OwnedBindFinished,
+    memory: OwnedPositiveCountedMemory, invocationStart: Int, deadline: UInt64
+  ) throws {
+    guard holderPID > 0, !knownOwnedPIDs.isEmpty,
+      knownOwnedPIDs.allSatisfy({ $0 > 0 }), knownOwnedPIDs.contains(holderPID)
+    else { throw FixtureFailure.nativeShape }
+    let query =
+      kind == .advisory
+      ? "SELECT pg_advisory_xact_lock($1::bigint)"
+      : "SELECT id FROM public.\"hubLink\" WHERE id=1 FOR UPDATE"
+    let excluded = "{" + knownOwnedPIDs.map(String.init).joined(separator: ",") + "}"
+    let sql = kind == .advisory ? ownedBindAdvisoryWait : ownedBindLinkWait
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      guard finished.pending(), hold.heldUnexpired(), memory.calls() == invocationStart else {
+        throw FixtureFailure.nativeShape
+      }
+      let rows = try c.execute(
+        sql, [database, String(holderPID), String(WorkspaceDatabase.remoteApplyLockKey), query, excluded]
+      ).rows
+      let queryEnd = DispatchTime.now().uptimeNanoseconds
+      // A truthy result after the original deadline is invalid, including the final query.
+      guard queryEnd <= deadline, rows.count <= 1, finished.pending(),
+        hold.heldUnexpired(), memory.calls() == invocationStart
+      else { throw FixtureFailure.nativeShape }
+      if rows.count == 1 {
+        guard let text = rows[0].text("pid"), let pid = Int(text), pid > 0,
+          !knownOwnedPIDs.contains(pid)
+        else { throw FixtureFailure.nativeShape }
+        return
+      }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedFenceReleasePreHold(
+    _ hold: OwnedProofHold, finished: OwnedBindFinished, memory: OwnedPositiveCountedMemory,
+    invocationStart: Int, retiring: Bool, deadline: UInt64
+  ) throws {
+    guard hold.heldUnexpired(), finished.pending(), memory.calls() == invocationStart else {
+      throw FixtureFailure.nativeShape
+    }
+    if retiring { memory.setCurrent(false) }
+    // Retirement's mutex is released before this monotonic sample or any release operation.
+    let retirement = DispatchTime.now().uptimeNanoseconds
+    let original = hold.snapshot()
+    guard original.entered, original.held, !original.expired, !original.released,
+      retirement < original.expiry, finished.pending(), memory.calls() == invocationStart
+    else { throw FixtureFailure.nativeShape }
+    let releaseStart = DispatchTime.now().uptimeNanoseconds
+    hold.release()
+    let releaseEnd = DispatchTime.now().uptimeNanoseconds
+    let released = hold.snapshot()
+    // No SQL or scheduling is interposed between the retirement and prompt release.
+    guard retirement <= releaseStart, releaseStart <= releaseEnd,
+      releaseEnd < original.expiry, releaseEnd <= deadline, released.released, !released.expired
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedFenceObserveCommit(
+    _ c: PostgresConnection, database: String, holderPID: Int, knownOwnedPIDs: [Int],
+    holderApplication: String, candidateApplication: String, rawPID: Int?,
+    hold: OwnedProofHold, finished: OwnedBindFinished, memory: OwnedPositiveCountedMemory?,
+    invocationStart: Int, probes: OwnedDeferredProbes, deadline: UInt64
+  ) throws {
+    guard holderPID > 0, knownOwnedPIDs.contains(holderPID),
+      knownOwnedPIDs.allSatisfy({ $0 > 0 }), WorkspaceDatabase.remoteApplyLockKey == 1647599984,
+      WorkspaceDatabase.remoteApplyLockKey != 1647600739
+    else { throw FixtureFailure.nativeShape }
+    let excluded = "{" + knownOwnedPIDs.map(String.init).joined(separator: ",") + "}"
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      guard hold.heldUnexpired(), finished.pending() else { throw FixtureFailure.nativeShape }
+      if let memory {
+        let delta = memory.calls() - invocationStart
+        guard (0...3).contains(delta) else { throw FixtureFailure.nativeShape }
+        if delta != 3 {
+          // Waiting for entry is non-credit; no memory ordinal substitutes for native COMMIT.
+          Thread.sleep(forTimeInterval: 0.005)
+          continue
+        }
+      }
+      let queryBegin = DispatchTime.now().uptimeNanoseconds
+      let rows = try c.execute(
+        ownedDeferredCommitWait,
+        [
+          database, String(holderPID), "1647600739", excluded,
+          holderApplication, candidateApplication, "1647599984",
+        ]
+      ).rows
+      let queryEnd = DispatchTime.now().uptimeNanoseconds
+      // Both query completion and all synchronous proof reads must fit the ORIGINAL window.
+      guard queryBegin <= queryEnd, queryEnd <= deadline, rows.count <= 1,
+        hold.heldUnexpired(), finished.pending(),
+        memory.map({ $0.calls() - invocationStart == 3 }) ?? true
+      else { throw FixtureFailure.nativeShape }
+      let actualProbes = try ownedDeferredProbes(c)
+      guard actualProbes.timeout == probes.timeout,
+        actualProbes.body.advanced(from: probes.body, by: 0)
+          || actualProbes.body.advanced(from: probes.body, by: 1),
+        actualProbes.commit.advanced(from: probes.commit, by: 0)
+          || actualProbes.commit.advanced(from: probes.commit, by: 1),
+        DispatchTime.now().uptimeNanoseconds <= deadline,
+        hold.heldUnexpired(), finished.pending(),
+        memory.map({ $0.calls() - invocationStart == 3 }) ?? true
+      else { throw FixtureFailure.nativeShape }
+      if rows.count == 1 {
+        guard let text = rows[0].text("pid"), let pid = Int(text), pid > 0,
+          !knownOwnedPIDs.contains(pid), rawPID.map({ $0 == pid }) ?? true,
+          let ageText = rows[0].text("age_us"), let age = Int64(ageText), age >= 0,
+          actualProbes.advanced(from: probes, body: 1, commit: 1, timeout: 0),
+          DispatchTime.now().uptimeNanoseconds <= deadline,
+          hold.heldUnexpired(), finished.pending(),
+          memory.map({ $0.calls() - invocationStart == 3 }) ?? true
+        else { throw FixtureFailure.nativeShape }
+        // Age is a nonnegative diagnostic only, never a cause or timer reset.
+        return
+      }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedFenceReleaseCommit(
+    _ hold: OwnedProofHold, finished: OwnedBindFinished, memory: OwnedPositiveCountedMemory?,
+    invocationStart: Int, retire: Bool, deadline: UInt64
+  ) throws {
+    guard hold.heldUnexpired(), finished.pending(),
+      memory.map({ $0.calls() - invocationStart == 3 }) ?? true,
+      !retire || memory != nil
+    else { throw FixtureFailure.nativeShape }
+    if retire { memory?.setCurrent(false) }
+    // The memory mutex has been released. Nothing blocking or SQL runs before release.
+    let retirement = DispatchTime.now().uptimeNanoseconds
+    let original = hold.snapshot()
+    guard original.entered, original.held, !original.expired, !original.released,
+      retirement < original.expiry, finished.pending(),
+      memory.map({ $0.calls() - invocationStart == 3 }) ?? true
+    else { throw FixtureFailure.nativeShape }
+    let releaseStart = DispatchTime.now().uptimeNanoseconds
+    hold.release()
+    let releaseEnd = DispatchTime.now().uptimeNanoseconds
+    let released = hold.snapshot()
+    guard retirement <= releaseStart, releaseStart <= releaseEnd, releaseEnd <= deadline,
+      releaseEnd < original.expiry, released.released, !released.expired
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  private static func ownedFenceObserveControl(
+    _ c: PostgresConnection, database: String, holderPID: Int, knownOwnedPIDs: [Int],
+    hold: OwnedProofHold, finished: OwnedBindFinished, memory: OwnedPositiveCountedMemory,
+    invocationStart: Int, deadline: UInt64
+  ) throws -> Int {
+    guard holderPID > 0, knownOwnedPIDs.contains(holderPID),
+      !knownOwnedPIDs.isEmpty, knownOwnedPIDs.allSatisfy({ $0 > 0 })
+    else { throw FixtureFailure.nativeShape }
+    let excluded = "{" + knownOwnedPIDs.map(String.init).joined(separator: ",") + "}"
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      guard finished.pending(), hold.heldUnexpired(), memory.calls() == invocationStart else {
+        throw FixtureFailure.nativeShape
+      }
+      let rows = try c.execute(
+        ownedT11ControlWait,
+        [
+          database, String(holderPID), String(WorkspaceDatabase.remoteApplyLockKey),
+          ownedT11ControlQuery, excluded,
+        ]
+      ).rows
+      let queryEnd = DispatchTime.now().uptimeNanoseconds
+      guard queryEnd <= deadline, rows.count <= 1, finished.pending(),
+        hold.heldUnexpired(), memory.calls() == invocationStart
+      else { throw FixtureFailure.nativeShape }
+      if rows.count == 1 {
+        guard let text = rows[0].text("pid"), let pid = Int(text), pid > 0,
+          !knownOwnedPIDs.contains(pid)
+        else { throw FixtureFailure.nativeShape }
+        return pid
+      }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedFenceContenderReady(
+    _ state: OwnedT11ContenderState, hold: OwnedProofHold, finished: OwnedBindFinished,
+    memory: OwnedPositiveCountedMemory, invocationStart: Int, deadline: UInt64
+  ) throws -> Int {
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      let value = state.snapshot()
+      let held = hold.heldUnexpired()
+      let pending = finished.pending()
+      let calls = memory.calls()
+      let end = DispatchTime.now().uptimeNanoseconds
+      guard end <= deadline, held, pending, calls == invocationStart, !value.returned else {
+        throw FixtureFailure.nativeShape
+      }
+      if value.started && value.pid > 0 { return value.pid }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedFenceObserveContender(
+    _ c: PostgresConnection, database: String, application: String, contenderPID: Int,
+    writerPID: Int, holderPID: Int, knownOwnedPIDs: [Int], hold: OwnedProofHold,
+    finished: OwnedBindFinished, contender: OwnedT11ContenderState,
+    memory: OwnedPositiveCountedMemory, invocationStart: Int, deadline: UInt64
+  ) throws {
+    guard contenderPID > 0, writerPID > 0, holderPID > 0, writerPID != contenderPID,
+      knownOwnedPIDs.contains(contenderPID), knownOwnedPIDs.contains(holderPID),
+      !knownOwnedPIDs.contains(writerPID), knownOwnedPIDs.allSatisfy({ $0 > 0 })
+    else { throw FixtureFailure.nativeShape }
+    let excluded = "{" + knownOwnedPIDs.map(String.init).joined(separator: ",") + "}"
+    while DispatchTime.now().uptimeNanoseconds <= deadline {
+      let before = contender.snapshot()
+      guard before.started, before.pid == contenderPID, !before.returned,
+        finished.pending(), hold.heldUnexpired(), memory.calls() == invocationStart
+      else { throw FixtureFailure.nativeShape }
+      // All nine bindings match the two predicates IN THIS SAME native statement:
+      // 1 contender; 2 DB; 3 private app; 4 link query; 5 actual writer; 6 holder;
+      // 7 actual advisory key; 8 composed control query; 9 all known raw/inspector PIDs.
+      let rows = try c.execute(
+        ownedT11ContenderWait,
+        [
+          String(contenderPID), database, application,
+          "SELECT id FROM public.\"hubLink\" WHERE id=1 FOR UPDATE", String(writerPID),
+          String(holderPID), String(WorkspaceDatabase.remoteApplyLockKey),
+          ownedT11ControlQuery, excluded,
+        ]
+      ).rows
+      let queryEnd = DispatchTime.now().uptimeNanoseconds
+      let after = contender.snapshot()
+      guard queryEnd <= deadline, rows.count <= 1, finished.pending(), hold.heldUnexpired(),
+        memory.calls() == invocationStart, after.started, after.pid == contenderPID, !after.returned
+      else { throw FixtureFailure.nativeShape }
+      if rows.count == 1 {
+        guard let text = rows[0].text("pid"), Int(text) == contenderPID else {
+          throw FixtureFailure.nativeShape
+        }
+        return
+      }
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    throw FixtureFailure.nativeShape
+  }
+
+  private static func ownedFenceRawControls(
+    diagnostic: OwnedT11Diagnostic? = nil
+  ) throws -> [OwnedBindRawFacts] {
+    var results: [OwnedBindRawFacts] = []
+    var databases = Set<Data>()
+    for row in OwnedBindRawControl.allCases {
+      diagnostic?.selectRawRow(row)
+      diagnostic?.phase = .rawFixture
+      var observed: OwnedBindRawFacts?
+      try withFixture { f in
+        diagnostic?.phase = .rawValidate
+        let chain = try ownedFenceChain(f)
+        let replacement = row == .normalB ? "secret:OWNED_FENCE_RAW_B" : f.link.tokenRef
+        diagnostic?.phase = .rawFreeze
+        let frozen = try ownedFenceStage(f)
+        guard frozen.before == chain.image else { throw FixtureFailure.nativeShape }
+        let stage = OwnedBindStageFixture(
+          before: frozen.before, expected: frozen.expected, controlJSON: frozen.controlJSON,
+          originalReference: frozen.originalReference, replacement: replacement,
+          device: frozen.device, lowerWall: frozen.lowerWall)
+        guard databases.insert(Data(stage.before.database.utf8)).inserted else {
+          throw FixtureFailure.nativeShape
+        }
+        // Every row gets a distinct endpoint/database, genuine owned B1/B2 S2, independent
+        // exact fenced S3, and the identical two enabled UPDATE-only functions/triggers.
+        diagnostic?.phase = .rawInstall
+        try ownedBindInstall(f, stage: stage, rawBodyFault: row == .bodyFault)
+        let catalog = try ownedDeferredCatalog(f.inspector)
+        try ownedPositiveBodyShape(
+          f.inspector, stage: stage, replacement: replacement, fault: row == .bodyFault)
+        diagnostic?.phase = .rawExpectedDamage
+        var checkedStage = stage
+        if row == .imageReject {
+          guard
+            try f.inspector.execute(
+              """
+              UPDATE "owned_bind_stage"."expected"
+              SET value=pg_catalog.jsonb_set(value,'{value}',
+                pg_catalog.to_jsonb('OWNED_BIND_PRIVATE_IMAGE_CORRUPTION'::text))
+              WHERE name='settings' AND value->>'key'=$1
+              """, [sentinelKey]
+            ).affected == 1
+          else { throw FixtureFailure.nativeShape }
+          guard let settings = stage.expected.rows["settings"] else { throw FixtureFailure.nativeShape }
+          var replacements = 0
+          let damaged = try settings.map { data -> Data in
+            var object = try ownedT09Object(data)
+            if object["key"] as? String == sentinelKey {
+              guard object["value"] as? String == "OWNED_PROOF_RETAINED" else {
+                throw FixtureFailure.nativeShape
+              }
+              object["value"] = "OWNED_BIND_PRIVATE_IMAGE_CORRUPTION"
+              replacements += 1
+            }
+            return try ownedT09Data(object)
+          }.sorted { $0.lexicographicallyPrecedes($1) }
+          guard replacements == 1 else { throw FixtureFailure.nativeShape }
+          var expectedRows = stage.expected.rows
+          expectedRows["settings"] = damaged
+          checkedStage = OwnedBindStageFixture(
+            before: stage.before,
+            expected: OwnedBindImage(
+              database: stage.expected.database, rows: expectedRows, sequence: stage.expected.sequence),
+            controlJSON: stage.controlJSON, originalReference: stage.originalReference,
+            replacement: stage.replacement, device: stage.device, lowerWall: stage.lowerWall)
+        }
+        try ownedPositiveBodyShape(
+          f.inspector, stage: checkedStage, replacement: replacement, fault: row == .bodyFault)
+        diagnostic?.phase = .rawInitialImage
+        guard try ownedBindImage(f.inspector) == stage.before else { throw FixtureFailure.nativeShape }
+        diagnostic?.phase = .rawDriver
+        observed = try ownedBindRawDriver(f, stage: stage, row: row)
+        guard try ownedDeferredCatalog(f.inspector) == catalog else { throw FixtureFailure.nativeShape }
+        try ownedPositiveBodyShape(
+          f.inspector, stage: checkedStage, replacement: replacement, fault: row == .bodyFault)
+        diagnostic?.phase = .rawTeardown
+      }
+      // withFixture has closed its database and relinquished its inspector/physical root first.
+      diagnostic?.phase = .rawFacts
+      guard let observed, observed.qualified else { throw FixtureFailure.nativeShape }
+      results.append(observed)
+    }
+    guard results.count == 4 else { throw FixtureFailure.nativeShape }
+    return results
+  }
+
+  private static func ownedFenceDeferredRawControl(
+    _ row: Int, diagnostic: OwnedDeferredDiagnostic
+  ) throws -> OwnedDeferredControlFacts {
+    diagnostic.selectRawFixture(row)
+    diagnostic.attempt = .none
+    guard (0...4).contains(row) else { throw FixtureFailure.nativeShape }
+    var facts: OwnedDeferredControlFacts?
+    try ownedDeferredWithFixture(diagnostic) { f in
+      diagnostic.enter(.fixtureValidate)
+      let chain = try ownedFenceChain(f)
+      diagnostic.enter(.freeze)
+      let stage = try ownedFenceStage(f)
+      guard stage.before == chain.image else { throw FixtureFailure.nativeShape }
+      var mode = row == 2 ? "fault" : (row >= 3 ? "gate" : "normal")
+      var baseline = 0
+      diagnostic.enter(.oldInstall)
+      var recipe = try ownedDeferredInstall(f, stage: stage, mode: mode, diagnostic: diagnostic)
+      diagnostic.enter(.damage)
+      if row == 0 { recipe = try ownedDeferredDamage(f.inspector, recipe: recipe, diagnostic: diagnostic) }
+      diagnostic.enter(.initialState)
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
+      let work = OwnedDeferredWork()
+      // Registration precedes every holder/worker, including partially started attempts.
+      defer { work.releaseAndJoin() }
+      var knownPIDs = [inspectorPID]
+      var attempts = 0
+      var acknowledgements = 0
+      var errors = 0
+      var rollbacks = 0
+      var bodies = 0
+      var deferred = 0
+      var timeouts = 0
+      var restorations = 0
+      var transitions = 0
+      for attempt in 0..<(row == 0 ? 1 : 2) {
+        diagnostic.selectAttempt(attempt)
+        diagnostic.enter(.beforeCheckpoint)
+        let before = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        diagnostic.enter(.imageAndProbes)
+        guard before.image == stage.before, before.observations.count == baseline else {
+          throw FixtureFailure.nativeShape
+        }
+        let gated = row >= 3
+        let timeout = row == 4 && attempt == 0
+        let kind: OwnedDeferredRawKind =
+          row == 0 ? .reject : (row == 2 && attempt == 0 ? .fault : (timeout ? .timeout : .normal))
+        let application = "owned-fence-raw-\(UUID().uuidString)"
+        let holderApplication = "owned-fence-gate-\(UUID().uuidString)"
+        let hold = OwnedProofHold()
+        let holderState = OwnedBindHolderState()
+        var holderPID = 0
+        var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+        if gated {
+          work.holds.append(hold)
+          diagnostic.enter(.gateClear)
+          try ownedDeferredGateClear(f.inspector)
+          let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+          diagnostic.enter(.holderStart)
+          let started = ownedDeferredHolder(
+            binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+            database: endpoint.database, user: NSUserName(), application: holderApplication,
+            hold: hold, state: holderState)
+          work.holders.append(started)
+          holder = started
+          diagnostic.enter(.holderReady)
+          holderPID = try ownedDeferredHolderReady(
+            f.inspector, state: holderState, hold: hold, database: endpoint.database,
+            application: holderApplication, deadline: readiness)
+          guard !knownPIDs.contains(holderPID) else { throw FixtureFailure.nativeShape }
+          knownPIDs.append(holderPID)
+        }
+        let state = OwnedBindHolderState()
+        let finished = OwnedBindFinished()
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        diagnostic.enter(.rawStart)
+        let worker = ownedDeferredRawWorker(
+          binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+          database: endpoint.database, user: NSUserName(), application: application,
+          kind: kind, state: state, finished: finished)
+        work.raw.append(worker)
+        diagnostic.enter(.observeCommit)
+        if gated {
+          while state.snapshot().pid == 0 && finished.pending()
+            && DispatchTime.now().uptimeNanoseconds <= deadline
+          { Thread.sleep(forTimeInterval: 0.005) }
+          let candidate = state.snapshot()
+          guard candidate.acquired, candidate.pid > 0, !knownPIDs.contains(candidate.pid),
+            DispatchTime.now().uptimeNanoseconds <= deadline
+          else { throw FixtureFailure.nativeShape }
+          try ownedDeferredObserveCommit(
+            f.inspector, database: endpoint.database, holderPID: holderPID,
+            knownOwnedPIDs: knownPIDs, holderApplication: holderApplication,
+            candidateApplication: application, rawPID: candidate.pid, hold: hold,
+            finished: finished, memory: nil, invocationStart: 0, probes: before.probes,
+            deadline: deadline)
+          if !timeout {
+            try ownedDeferredRelease(
+              hold, finished: finished, memory: nil, invocationStart: 0, retire: false,
+              deadline: deadline)
+          }
+        }
+        // The intended timeout keeps its original eight-second hold valid until actual return.
+        // Capture the result/timestamp, then immediately release ALL and join ALL before guards.
+        diagnostic.enter(.resultCapture)
+        let result = worker.join()
+        let receiptAt = DispatchTime.now().uptimeNanoseconds
+        let heldAtReturn = !timeout || hold.heldUnexpired()
+        work.releaseAndJoin()
+        let held = holder?.join()
+        diagnostic.enter(.drainReturned)
+        let rawIdentity = state.snapshot()
+        diagnostic.enter(.rawResult)
+        guard result.valid, finished.pending() == false, rawIdentity.acquired,
+          rawIdentity.pid > 0, !knownPIDs.contains(rawIdentity.pid),
+          (!gated || held?.normal == true), heldAtReturn,
+          !timeout || receiptAt < hold.snapshot().expiry
+        else { throw FixtureFailure.nativeShape }
+        knownPIDs.append(rawIdentity.pid)
+        attempts += 1
+        let success = kind == .normal
+        let bodyCount: Int64 = row == 0 ? 0 : 1
+        let commitCount: Int64 = row == 0 ? 0 : 1
+        let timeoutCount: Int64 = timeout ? 1 : 0
+        diagnostic.enter(.rawResult)
+        guard result.dmlReturned == (row != 0), result.commitSent == (row != 0),
+          result.acknowledged == success, result.rollbackAcknowledged == (row == 0),
+          result.predicateRejected == (row == 0),
+          result.actualDeferredFault == (kind == .fault), result.actualServerTimeout == timeout,
+          result.ownPredicate == (row != 0), result.ownSettings == (row != 0)
+        else { throw FixtureFailure.nativeShape }
+        diagnostic.enter(.afterCheckpoint)
+        let after = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        diagnostic.enter(.imageAndProbes)
+        guard after.image == (success ? stage.expected : stage.before),
+          after.probes.advanced(
+            from: before.probes, body: bodyCount, commit: commitCount, timeout: timeoutCount)
+        else { throw FixtureFailure.nativeShape }
+        diagnostic.enter(.observations)
+        if success {
+          try ownedDeferredAppendObservation(
+            f.inspector, stage: stage, old: before.observations, actual: after.observations,
+            rawMillis: result.millis)
+          acknowledgements += 1
+        } else {
+          guard after.observations == before.observations else { throw FixtureFailure.nativeShape }
+          if row == 0 { rollbacks += 1 } else { errors += 1 }
+        }
+        bodies += Int(bodyCount)
+        deferred += Int(commitCount)
+        timeouts += Int(timeoutCount)
+        if attempt == 0 && (row == 1 || row == 3) {
+          diagnostic.enter(.q01)
+          try ownedDeferredQ01(f, recipe: recipe, mode: mode, diagnostic: diagnostic)
+          restorations += 1
+          diagnostic.enter(.configTransition)
+          try ownedDeferredTransition(
+            f, recipe: recipe, oldMode: mode, oldBaseline: 0, newMode: mode, newBaseline: 1,
+            diagnostic: diagnostic)
+          baseline = 1
+          transitions += 1
+        } else if attempt == 0 && row == 2 {
+          diagnostic.enter(.configTransition)
+          try ownedDeferredTransition(
+            f, recipe: recipe, oldMode: "fault", oldBaseline: 0, newMode: "normal", newBaseline: 0,
+            diagnostic: diagnostic)
+          mode = "normal"
+          transitions += 1
+        }
+      }
+      diagnostic.enter(.finalFacts)
+      guard work.raw.count == (row == 0 ? 1 : 2), work.holders.count == (row >= 3 ? 2 : 0) else {
+        throw FixtureFailure.nativeShape
+      }
+      facts = OwnedDeferredControlFacts(
+        row: row, attempts: attempts, holders: work.holders.count,
+        acknowledgements: acknowledgements, errors: errors, rollbacks: rollbacks,
+        bodies: bodies, deferred: deferred, timeouts: timeouts,
+        restorations: restorations, transitions: transitions, qualified: true)
+    }
+    // Complete fixture close/root teardown precedes escape of these primitive-only facts.
+    diagnostic.enter(.finalFacts)
+    guard let facts, facts.qualified else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  private static func ownedFenceDeferredPrerequisites(
+    diagnostic: OwnedDeferredDiagnostic
+  ) throws -> (
+    old: Int, controls: Int, attempts: Int, holders: Int
+  ) {
+    diagnostic.fixture = .oldFour
+    diagnostic.attempt = .none
+    diagnostic.enter(.oldFour)
+    let old = try ownedFenceRawControls()
+    diagnostic.enter(.oldFour)
+    guard old.map({ $0.row }) == [0, 1, 2, 3], old.count == 4,
+      old.allSatisfy({ $0.qualified && $0.durableImageValidated })
+    else { throw FixtureFailure.nativeShape }
+    // The old four have ALL torn down. Each NEW recipe row independently tears down as well.
+    var rows: [OwnedDeferredControlFacts] = []
+    for row in 0...4 { rows.append(try ownedFenceDeferredRawControl(row, diagnostic: diagnostic)) }
+    diagnostic.fixture = .none
+    diagnostic.attempt = .none
+    diagnostic.enter(.finalFacts)
+    guard rows.map({ $0.row }) == [0, 1, 2, 3, 4], rows.allSatisfy({ $0.qualified }),
+      rows.map({ $0.attempts }) == [1, 2, 2, 2, 2],
+      rows.map({ $0.holders }) == [0, 0, 0, 2, 2],
+      rows.map({ $0.acknowledgements }) == [0, 2, 1, 2, 1],
+      rows.map({ $0.errors }) == [0, 0, 1, 0, 1],
+      rows.map({ $0.rollbacks }) == [1, 0, 0, 0, 0],
+      rows.map({ $0.bodies }) == [0, 2, 2, 2, 2],
+      rows.map({ $0.deferred }) == [0, 2, 2, 2, 2],
+      rows.map({ $0.timeouts }) == [0, 0, 0, 0, 1],
+      rows.map({ $0.restorations }) == [0, 1, 0, 1, 0],
+      rows.map({ $0.transitions }) == [0, 1, 1, 1, 0]
+    else { throw FixtureFailure.nativeShape }
+    return (old.count, rows.count, rows.reduce(0) { $0 + $1.attempts }, rows.reduce(0) { $0 + $1.holders })
+  }
+}
+
+extension OwnedProtocolProofWriteTests {
+  // F06 matrix: F06.advisory, F06.link
+  @Test(arguments: [0, 1])
+  func ownedFenceRetirementAfterActualAdvisoryOrLinkPreWaitRefuses(kindValue: Int) throws {
+    try Self.ownedFenceRequireCoreControls()
+    let kind: OwnedBindWaitKind = kindValue == 0 ? .advisory : .link
+    try Self.withFixture { f in
+      let chain = try Self.ownedFenceChain(f)
+      let memory = chain.memory
+      let admission = chain.admission
+      let stage = try Self.ownedFenceStage(f)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let work = OwnedDeferredWork()
+      defer { work.releaseAndJoin() }
+      var knownPIDs = [try Self.ownedDeferredInspectorPID(f.inspector)]
+      var original: ProtocolOwnedProofWriteReceipt?
+      for attempt in 0..<2 {
+        memory.setCurrent(true)
+        let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+        let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+        let start = memory.calls()
+        let hold = OwnedProofHold()
+        let state = OwnedBindHolderState()
+        work.holds.append(hold)
+        let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        let holder = Self.ownedBindHolder(
+          binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+          database: endpoint.database, user: NSUserName(), application: "owned-fence-pre-\(UUID())",
+          kind: kind, hold: hold, state: state)
+        work.holders.append(holder)
+        let pid = try Self.ownedBindHolderReady(state, hold: hold, deadline: readiness)
+        guard !knownPIDs.contains(pid) else { throw FixtureFailure.nativeShape }
+        knownPIDs.append(pid)
+        let finished = OwnedBindFinished()
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        let writer = Self.ownedFenceWriter(
+          database: f.database, anchor: chain.original, binding: f.binding, reference: f.link.tokenRef,
+          admission: admission, finished: finished)
+        work.writers.append(writer)
+        try Self.ownedFenceObserveWait(
+          f.inspector, database: endpoint.database, holderPID: pid, knownOwnedPIDs: knownPIDs,
+          kind: kind, hold: hold, finished: finished, memory: memory,
+          invocationStart: start, deadline: deadline)
+        guard try Self.ownedBindProbe(f.inspector, "body_probe") == body,
+          try Self.ownedBindProbe(f.inspector, "commit_probe") == commit
+        else { throw FixtureFailure.nativeShape }
+        try Self.ownedFenceReleasePreHold(
+          hold, finished: finished, memory: memory, invocationStart: start,
+          retiring: attempt == 0, deadline: deadline)
+        let receipt = writer.join()
+        work.releaseAndJoin()
+        let held = holder.join()
+        guard held.normal, !finished.pending(), memory.calls() - start == (attempt == 0 ? 1 : 4) else {
+          throw FixtureFailure.nativeShape
+        }
+        try Self.ownedPositiveBodyCheckpoint(
+          f, recipe: recipe, replacement: f.link.tokenRef, fault: false,
+          image: attempt == 0 ? chain.image : stage.expected, body: body, commit: commit,
+          bodies: attempt == 0 ? 0 : 1, commits: attempt == 0 ? 0 : 1)
+        if attempt == 0 {
+          original = receipt
+          try Self.ownedFenceRefuses(
+            receipt, anchor: chain.original, reference: f.link.tokenRef,
+            admission: admission, memory: memory)
+        } else {
+          _ = try Self.ownedFenceRedeem(
+            receipt, fixture: f, anchor: chain.original, reference: f.link.tokenRef,
+            admission: admission, memory: memory)
+          guard let original else { throw FixtureFailure.nativeShape }
+          try Self.ownedFenceRefuses(
+            original, anchor: chain.original, reference: f.link.tokenRef,
+            admission: admission, memory: memory)
+          try Self.ownedPositiveBodyCheckpoint(
+            f, recipe: recipe, replacement: f.link.tokenRef, fault: false,
+            image: stage.expected, body: body, commit: commit, bodies: 1, commits: 1)
+        }
+      }
+      #expect(work.holders.count == 2 && work.writers.count == 2)
+    }
+  }
+}
+
+extension OwnedProtocolProofWriteTests {
+  // F07 matrix: F07.bodyFault, F07.reference
+  @Test(arguments: [false, true])
+  func ownedFenceActualBodyFaultOrReferenceReplacementNeverCreatesContinuation(bodyFault: Bool) throws {
+    try Self.ownedFenceRequireCoreControls()
+    try Self.withFixture { f in
+      let chain = try Self.ownedFenceChain(f)
+      let memory = chain.memory
+      let admission = chain.admission
+      let stage = try Self.ownedFenceStage(f)
+      let replacement = bodyFault ? f.link.tokenRef : "secret:OWNED_FENCE_REFERENCE_B"
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: replacement, fault: bodyFault)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let start = memory.calls()
+      let refused = Self.ownedFenceWrite(
+        f, anchor: chain.original, binding: f.binding, reference: f.link.tokenRef, admission: admission)
+      guard memory.calls() - start == 1 else { throw FixtureFailure.nativeShape }
+      try Self.ownedFenceRefuses(
+        refused, anchor: chain.original, reference: f.link.tokenRef,
+        admission: admission, memory: memory)
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: replacement, fault: bodyFault, image: chain.image,
+        body: body, commit: commit, bodies: 1, commits: 0)
+      try Self.ownedPositiveBodyMode(
+        f, recipe: recipe, oldReference: replacement, oldFault: bodyFault,
+        newReference: f.link.tokenRef, newFault: false)
+      let inverseBody = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let inverseCommit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let inverseStart = memory.calls()
+      let allowed = Self.ownedFenceWrite(
+        f, anchor: chain.original, binding: f.binding, reference: f.link.tokenRef, admission: admission)
+      guard allowed.operation == .fence, allowed.disposition == .committedCurrent,
+        memory.calls() - inverseStart == 4
+      else { throw FixtureFailure.nativeShape }
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: inverseBody, commit: inverseCommit, bodies: 1, commits: 1)
+      _ = try Self.ownedFenceRedeem(
+        allowed, fixture: f, anchor: chain.original, reference: f.link.tokenRef,
+        admission: admission, memory: memory)
+      try Self.ownedFenceRefuses(
+        refused, anchor: chain.original, reference: f.link.tokenRef,
+        admission: admission, memory: memory)
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: inverseBody, commit: inverseCommit, bodies: 1, commits: 1)
+      #expect(memory.calls() - start == 6)
+    }
+  }
+
+  // F10 matrix: F10.write, F10.redemptions
+  @Test func ownedFenceCurrentReceiptRedeemsOriginalAnchorOnlyAndFreshMemory() throws {
+    try Self.ownedFenceRequireCoreControls()
+    try Self.withFixture { f in
+      _ = try Self.validateFixture(f)
+      let otherMemory = OwnedBindMemory(selected: nil)
+      let otherAdmission = ProtocolProofMemoryAdmission { [otherMemory] in
+        if !otherMemory.compare() { throw FixtureFailure.redactedFailure }
+      }
+      let membership = try ProtocolNativeMembership(
+        canonicalHubBase: f.link.url, deviceID: f.link.deviceId, linkJoinedAt: f.link.joinedAt)
+      let wrongAccount = try f.database.captureProtocolVerification(
+        accountID: "OWNED_FENCE_REDEMPTION_OTHER", expectedMembership: membership)
+      let chain = try Self.ownedFenceChain(f)
+      let memory = chain.memory
+      let admission = chain.admission
+      let stage = try Self.ownedFenceStage(f)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let writeStart = memory.calls()
+      let receipt = Self.ownedFenceWrite(
+        f, anchor: chain.original, binding: f.binding, reference: f.link.tokenRef, admission: admission)
+      guard receipt.operation == .fence, receipt.disposition == .committedCurrent,
+        memory.calls() - writeStart == 4
+      else { throw FixtureFailure.nativeShape }
+      try Self.ownedPositiveBodyCheckpoint(
+        f, recipe: recipe, replacement: f.link.tokenRef, fault: false, image: stage.expected,
+        body: body, commit: commit, bodies: 1, commits: 1)
+      let frozenBody = try Self.ownedBindProbe(f.inspector, "body_probe")
+      let frozenCommit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+      let observations = try Self.ownedDeferredObservations(f.inspector)
+      // F10.write ends with ZERO redemptions. Expected S3 JSON is not a snapshot getter.
+      guard memory.calls() - writeStart == 4 else { throw FixtureFailure.nativeShape }
+      let redemptionStart = memory.calls()
+      var deltas: [Int] = []
+      let equalOriginal = chain.original
+      let firstStart = memory.calls()
+      // FIRST redemption obtains the actual S3 snapshot. No recapture or private initializer.
+      let actualS3 = try receipt.currentSuccessor(
+        expectedSnapshot: equalOriginal, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+      deltas.append(memory.calls() - firstStart)
+      guard deltas == [1], actualS3.observation == nil else { throw FixtureFailure.nativeShape }
+      try Self.ownedT09NativeValidate(
+        f, successor: actualS3, binding: f.binding, reference: f.link.tokenRef, observation: nil)
+      try Self.ownedPositiveUnchangedBody(
+        f, recipe: recipe, image: stage.expected, body: frozenBody,
+        commit: frozenCommit, observations: observations)
+      for wrongAnchor in [chain.positive, actualS3, chain.parent.anchor] {
+        let before = memory.calls()
+        guard
+          !Self.validates({
+            _ = try receipt.currentSuccessor(
+              expectedSnapshot: wrongAnchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+          })
+        else { throw FixtureFailure.nativeShape }
+        deltas.append(memory.calls() - before)
+        try Self.ownedPositiveUnchangedBody(
+          f, recipe: recipe, image: stage.expected, body: frozenBody,
+          commit: frozenCommit, observations: observations)
+      }
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let extra = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir, createIfMissing: false)
+      defer { try? extra.close() }
+      let otherObjectAnchor = try extra.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: membership)
+      let noContext = try #require(try f.database.readProtocolFact(expectedBinding: f.binding))
+      let contextStart = memory.calls()
+      for wrongAnchor in [wrongAccount, noContext, otherObjectAnchor] {
+        guard
+          !Self.validates({
+            _ = try receipt.currentSuccessor(
+              expectedSnapshot: wrongAnchor, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+          }), memory.calls() == contextStart
+        else { throw FixtureFailure.nativeShape }
+        try Self.ownedPositiveUnchangedBody(
+          f, recipe: recipe, image: stage.expected, body: frozenBody,
+          commit: frozenCommit, observations: observations)
+      }
+      deltas.append(memory.calls() - contextStart)
+      let referenceStart = memory.calls()
+      for wrongRef in ["", "secret:", "other:x", "secret:x\u{0}y", "secret:OWNED_FENCE_OTHER"] {
+        guard
+          !Self.validates({
+            _ = try receipt.currentSuccessor(
+              expectedSnapshot: equalOriginal, expectedTokenRef: wrongRef, memoryAdmission: admission)
+          }), memory.calls() == referenceStart
+        else { throw FixtureFailure.nativeShape }
+        try Self.ownedPositiveUnchangedBody(
+          f, recipe: recipe, image: stage.expected, body: frozenBody,
+          commit: frozenCommit, observations: observations)
+      }
+      deltas.append(memory.calls() - referenceStart)
+      let admissionStart = memory.calls()
+      guard
+        !Self.validates({
+          _ = try receipt.currentSuccessor(
+            expectedSnapshot: equalOriginal, expectedTokenRef: f.link.tokenRef,
+            memoryAdmission: otherAdmission)
+        }), otherMemory.calls() == 0
+      else { throw FixtureFailure.nativeShape }
+      deltas.append(memory.calls() - admissionStart)
+      try Self.ownedPositiveUnchangedBody(
+        f, recipe: recipe, image: stage.expected, body: frozenBody,
+        commit: frozenCommit, observations: observations)
+      let retirementStart = memory.calls()
+      memory.setCurrent(false)
+      guard memory.calls() == retirementStart,
+        !Self.validates({
+          _ = try receipt.currentSuccessor(
+            expectedSnapshot: equalOriginal, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+        }), receipt.disposition == .committedCurrent
+      else { throw FixtureFailure.nativeShape }
+      deltas.append(memory.calls() - retirementStart)
+      try Self.ownedPositiveUnchangedBody(
+        f, recipe: recipe, image: stage.expected, body: frozenBody,
+        commit: frozenCommit, observations: observations)
+      let recoveryStart = memory.calls()
+      memory.setCurrent(true)
+      guard memory.calls() == recoveryStart else { throw FixtureFailure.nativeShape }
+      let recovered = try receipt.currentSuccessor(
+        expectedSnapshot: equalOriginal, expectedTokenRef: f.link.tokenRef, memoryAdmission: admission)
+      deltas.append(memory.calls() - recoveryStart)
+      guard receipt.disposition == .committedCurrent, recovered.observation == actualS3.observation,
+        otherMemory.calls() == 0, deltas == [1, 0, 0, 0, 0, 0, 0, 1, 1],
+        memory.calls() - redemptionStart == 3
+      else { throw FixtureFailure.nativeShape }
+      // Both actual returned values must independently equal the SAME frozen native S3 facts.
+      try Self.ownedT09NativeValidate(
+        f, successor: recovered, binding: f.binding, reference: f.link.tokenRef, observation: nil)
+      try Self.ownedT09NativeValidate(
+        f, successor: actualS3, binding: f.binding, reference: f.link.tokenRef, observation: nil)
+      try Self.ownedPositiveUnchangedBody(
+        f, recipe: recipe, image: stage.expected, body: frozenBody,
+        commit: frozenCommit, observations: observations)
+      #expect(deltas == [1, 0, 0, 0, 0, 0, 0, 1, 1])
+    }
+  }
+}
+
+extension OwnedProtocolProofWriteTests {
+  // F08 matrix: F08.max
+  @Test func ownedFenceActualLatestRevisionOverflowNeverRepairsOrWraps() throws {
+    try Self.ownedFenceRequireCoreControls()
+    try Self.withFixture { f in
+      let inactive = try Self.validateFixture(f)
+      let before = try Self.ownedBindImage(f.inspector)
+      var seed = inactive.object
+      seed["revision"] = String(Int64.max - 2)
+      let seeded = try Self.ownedFenceReplaceControl(f, before: before, old: inactive.object, new: seed)
+      let membership = try ProtocolNativeMembership(
+        canonicalHubBase: f.link.url, deviceID: f.link.deviceId, linkJoinedAt: f.link.joinedAt)
+      let original = try f.database.captureProtocolVerification(
+        accountID: f.binding.accountID, expectedMembership: membership)
+      guard try Self.ownedBindImage(f.inspector) == seeded else { throw FixtureFailure.nativeShape }
+      let actual = Fixture(
+        database: f.database, inspector: f.inspector, link: f.link, binding: f.binding, anchor: original)
+      let chain = try Self.ownedFenceChain(actual, validatedSeed: true)
+      let latest = try Self.control(actual)
+      let bound = try Self.ownedDeferredControl(chain.parent.image)
+      guard latest.revision == Int64.max, bound["revision"] as? String == String(Int64.max - 1) else {
+        throw FixtureFailure.nativeShape
+      }
+      let start = chain.memory.calls()
+      let receipt = Self.ownedFenceWrite(
+        actual, anchor: original, binding: f.binding, reference: f.link.tokenRef, admission: chain.admission)
+      guard chain.memory.calls() - start == 1, try Self.ownedBindImage(f.inspector) == chain.image else {
+        throw FixtureFailure.nativeShape
+      }
+      try Self.ownedFenceRefuses(
+        receipt, anchor: original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory)
+      try Self.ownedBindCatalogGuard(f.inspector)
+      // No representable S3, target recipe, or target probe: all measurements N/A.
+    }
+    // This independent fresh allow has a different original and is not a same-input inverse.
+    try Self.withFixture { f in
+      let chain = try Self.ownedFenceChain(f)
+      let stage = try Self.ownedFenceStage(f)
+      let recipe = try Self.ownedPositiveInstallBody(
+        f, stage: stage, replacement: f.link.tokenRef, fault: false)
+      _ = try Self.ownedFenceAllow(
+        f, chain: chain, anchor: chain.original, recipe: recipe,
+        body: Self.ownedBindProbe(f.inspector, "body_probe"),
+        commit: Self.ownedBindProbe(f.inspector, "commit_probe"))
+    }
+  }
+
+  // F09 matrix: F09.selector4
+  @Test func ownedFencePostAckMemoryFailureIsCommittedStale() throws {
+    let diagnostic = OwnedDeferredDiagnostic(unit: .stale)
+    let prerequisites = try Self.ownedFenceDeferredPrerequisites(diagnostic: diagnostic)
+    guard prerequisites.old == 4, prerequisites.controls == 5,
+      prerequisites.attempts == 9, prerequisites.holders == 4
+    else { throw FixtureFailure.nativeShape }
+    try Self.withFixture { f in
+      let chain = try Self.ownedFenceChain(f)
+      let stage = try Self.ownedFenceStage(f)
+      let recipe = try Self.ownedDeferredInstall(f, stage: stage, mode: "normal", diagnostic: diagnostic)
+      let before = try Self.ownedDeferredCheckpointRead(
+        f.inspector, recipe: recipe, mode: "normal", baseline: 0, diagnostic: diagnostic)
+      guard before.image == chain.image, before.observations.isEmpty else { throw FixtureFailure.nativeShape }
+      let start = chain.memory.calls()
+      try chain.memory.armSelector(baseline: start, localOrdinal: 4)
+      let stale = Self.ownedFenceWrite(
+        f, anchor: chain.original, binding: f.binding, reference: f.link.tokenRef, admission: chain.admission)
+      guard chain.memory.calls() - start == 4 else { throw FixtureFailure.nativeShape }
+      try Self.ownedFenceRefuses(
+        stale, anchor: chain.original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory, disposition: .committedStale)
+      let first = try Self.ownedDeferredCheckpointRead(
+        f.inspector, recipe: recipe, mode: "normal", baseline: 0, diagnostic: diagnostic)
+      guard first.image == stage.expected, first.observations.count == 1,
+        first.probes.advanced(from: before.probes, body: 1, commit: 1, timeout: 0)
+      else { throw FixtureFailure.nativeShape }
+      try Self.ownedDeferredAppendObservation(
+        f.inspector, stage: stage, old: before.observations, actual: first.observations, rawMillis: nil)
+      try Self.ownedFenceRefuses(
+        stale, anchor: chain.original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory, disposition: .committedStale)
+      // Existing NORMAL baseline0/count1 Q01 retains the complete history and all three probes.
+      try Self.ownedDeferredQ01(f, recipe: recipe, mode: "normal", diagnostic: diagnostic)
+      try Self.ownedFenceRefuses(
+        stale, anchor: chain.original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory, disposition: .committedStale)
+      let restored = try Self.ownedDeferredCheckpointRead(
+        f.inspector, recipe: recipe, mode: "normal", baseline: 0, diagnostic: diagnostic)
+      guard restored.image == stage.before, restored.probes == first.probes,
+        restored.observations == first.observations
+      else { throw FixtureFailure.nativeShape }
+      try Self.ownedDeferredTransition(
+        f, recipe: recipe, oldMode: "normal", oldBaseline: 0, newMode: "normal", newBaseline: 1,
+        diagnostic: diagnostic)
+      try Self.ownedFenceRefuses(
+        stale, anchor: chain.original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory, disposition: .committedStale)
+      let recovery = chain.memory.calls()
+      chain.memory.disableSelector()
+      chain.memory.setCurrent(true)
+      guard chain.memory.calls() == recovery else { throw FixtureFailure.nativeShape }
+      try Self.ownedFenceRefuses(
+        stale, anchor: chain.original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory, disposition: .committedStale)
+      let allowed = Self.ownedFenceWrite(
+        f, anchor: chain.original, binding: f.binding, reference: f.link.tokenRef, admission: chain.admission)
+      guard chain.memory.calls() - recovery == 4, allowed.disposition == .committedCurrent else {
+        throw FixtureFailure.nativeShape
+      }
+      let second = try Self.ownedDeferredCheckpointRead(
+        f.inspector, recipe: recipe, mode: "normal", baseline: 1, diagnostic: diagnostic)
+      guard second.image == stage.expected, second.observations.count == 2,
+        second.probes.advanced(from: before.probes, body: 2, commit: 2, timeout: 0)
+      else { throw FixtureFailure.nativeShape }
+      try Self.ownedDeferredAppendObservation(
+        f.inspector, stage: stage, old: first.observations, actual: second.observations, rawMillis: nil)
+      try Self.ownedFenceRefuses(
+        stale, anchor: chain.original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory, disposition: .committedStale)
+      _ = try Self.ownedFenceRedeem(
+        allowed, fixture: f, anchor: chain.original, reference: f.link.tokenRef,
+        admission: chain.admission, memory: chain.memory)
+      try Self.ownedFenceRefuses(
+        stale, anchor: chain.original, reference: f.link.tokenRef, admission: chain.admission,
+        memory: chain.memory, disposition: .committedStale)
+      guard chain.memory.calls() - start == 9,
+        try Self.ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: "normal", baseline: 1, diagnostic: diagnostic) == second
+      else { throw FixtureFailure.nativeShape }
+      // The native recipe itself reaches checked COMMIT; no target holder or wait is used.
+    }
+  }
+}
+
+extension OwnedProtocolProofWriteTests {
+  private static func ownedFenceDeferredTarget(
+    _ unit: String, diagnostic: OwnedDeferredDiagnostic
+  ) throws -> OwnedDeferredFacts {
+    // Every call owns ALL prerequisites; no cache, earlier test, or previously qualified run.
+    let prerequisites = try ownedFenceDeferredPrerequisites(diagnostic: diagnostic)
+    var facts: OwnedDeferredFacts?
+    diagnostic.fixture = .target
+    diagnostic.attempt = .none
+    try ownedDeferredWithFixture(diagnostic) { f in
+      diagnostic.enter(.fixtureValidate)
+      let chain = try ownedFenceChain(f)
+      let reference = f.link.tokenRef
+      let memory = chain.memory
+      let admission = chain.admission
+      let setupCalls = memory.calls()
+      let stage = try ownedFenceStage(f)
+      guard stage.before == chain.image else { throw FixtureFailure.nativeShape }
+      var mode = unit == "fault" ? "fault" : "gate"
+      var baseline = 0
+      let recipe = try ownedDeferredInstall(f, stage: stage, mode: mode, diagnostic: diagnostic)
+      let endpoint = f.database.endpoint
+      guard let binDir = endpoint.binDir else { throw FixtureFailure.nativeShape }
+      let inspectorPID = try ownedDeferredInspectorPID(f.inspector)
+      let work = OwnedDeferredWork()
+      defer { work.releaseAndJoin() }
+      var knownPIDs = [inspectorPID]
+      var original: ProtocolOwnedProofWriteReceipt?
+      var writerCalls = 0
+      var redemptions = 0
+      var waits = 0
+      var timeoutAllocations = 0
+      for attempt in 0..<(unit == "current" ? 1 : 2) {
+        diagnostic.selectAttempt(attempt)
+        diagnostic.enter(.beforeCheckpoint)
+        let before = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        diagnostic.enter(.imageAndProbes)
+        guard before.image == stage.before, before.observations.count == baseline else {
+          throw FixtureFailure.nativeShape
+        }
+        diagnostic.enter(.targetWrite)
+        let invocationStart = memory.calls()
+        let expectedStart = setupCalls + (attempt == 0 ? 0 : (unit == "stale" ? 4 : 3))
+        guard invocationStart == expectedStart else { throw FixtureFailure.nativeShape }
+        let gated = unit != "fault"
+        let timeout = unit == "timeout" && attempt == 0
+        let hold = OwnedProofHold()
+        let holderState = OwnedBindHolderState()
+        let holderApplication = "owned-fence-commit-\(UUID().uuidString)"
+        var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+        var holderPID = 0
+        if gated {
+          work.holds.append(hold)
+          diagnostic.enter(.gateClear)
+          try ownedDeferredGateClear(f.inspector)
+          let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+          diagnostic.enter(.holderStart)
+          let started = ownedDeferredHolder(
+            binDir: binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+            database: endpoint.database, user: NSUserName(), application: holderApplication,
+            hold: hold, state: holderState)
+          work.holders.append(started)
+          holder = started
+          diagnostic.enter(.holderReady)
+          holderPID = try ownedDeferredHolderReady(
+            f.inspector, state: holderState, hold: hold, database: endpoint.database,
+            application: holderApplication, deadline: readiness)
+          guard !knownPIDs.contains(holderPID) else { throw FixtureFailure.nativeShape }
+          knownPIDs.append(holderPID)
+        }
+        diagnostic.enter(.targetWrite)
+        guard memory.calls() == invocationStart else { throw FixtureFailure.nativeShape }
+        let finished = OwnedBindFinished()
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        // Literal same original database/anchor/binding/reference/admission for both invocations.
+        diagnostic.enter(.targetWrite)
+        let writer = ownedFenceWriter(
+          database: f.database, anchor: chain.original, binding: f.binding, reference: reference,
+          admission: admission, finished: finished)
+        work.writers.append(writer)
+        if gated {
+          diagnostic.enter(.observeCommit)
+          try ownedFenceObserveCommit(
+            f.inspector, database: endpoint.database, holderPID: holderPID,
+            knownOwnedPIDs: knownPIDs, holderApplication: holderApplication,
+            candidateApplication: "b4app", rawPID: nil, hold: hold, finished: finished,
+            memory: memory, invocationStart: invocationStart, probes: before.probes,
+            deadline: deadline)
+          waits += 1
+          if !timeout {
+            try ownedFenceReleaseCommit(
+              hold, finished: finished, memory: memory, invocationStart: invocationStart,
+              retire: unit == "stale" && attempt == 0, deadline: deadline)
+          }
+        }
+        // No throwing assertion, inspector image, or receipt validation may intervene here.
+        // In the timeout branch actual receipt capture occurs while the original hold is valid;
+        // immediately release ALL and join ALL before validating any result, including this fact.
+        diagnostic.enter(.resultCapture)
+        let receipt = writer.join()
+        let receiptAt = DispatchTime.now().uptimeNanoseconds
+        let heldAtReturn = !timeout || hold.heldUnexpired()
+        work.releaseAndJoin()
+        let held = holder?.join()
+        diagnostic.enter(.drainReturned)
+        guard !finished.pending(), !gated || held?.normal == true,
+          heldAtReturn, !timeout || receiptAt < hold.snapshot().expiry
+        else { throw FixtureFailure.nativeShape }
+        diagnostic.enter(.afterCheckpoint)
+        let after = try ownedDeferredCheckpointRead(
+          f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic)
+        let committed = unit == "current" || unit == "stale" || attempt == 1
+        let expectedCalls = committed ? 4 : 3
+        let delta = memory.calls() - invocationStart
+        diagnostic.enter(.targetReceipt)
+        guard receipt.operation == .fence, delta == expectedCalls,
+          after.image == (committed ? stage.expected : stage.before),
+          after.probes.advanced(from: before.probes, body: 1, commit: 1, timeout: timeout ? 1 : 0)
+        else { throw FixtureFailure.nativeShape }
+        writerCalls += delta
+        if timeout { timeoutAllocations += 1 }
+        diagnostic.enter(.observations)
+        if committed {
+          try ownedDeferredAppendObservation(
+            f.inspector, stage: stage, old: before.observations,
+            actual: after.observations, rawMillis: nil)
+        } else {
+          guard after.observations == before.observations else { throw FixtureFailure.nativeShape }
+        }
+        if attempt == 0 && unit != "current" {
+          original = receipt
+          let disposition: ProtocolProofWriteDisposition = unit == "stale" ? .committedStale : .unknown
+          diagnostic.enter(.targetRefusal)
+          try ownedFenceRefuses(
+            receipt, anchor: chain.original, reference: reference, admission: admission,
+            memory: memory, disposition: disposition)
+          guard
+            try ownedDeferredCheckpointRead(
+              f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic) == after
+          else { throw FixtureFailure.nativeShape }
+          if unit == "stale" {
+            // Genuine acknowledged stale S2 and its original refusal were checked BEFORE Q01.
+            // This fixture-only restoration is never a rollback or repair by the product API.
+            diagnostic.enter(.q01)
+            try ownedDeferredQ01(f, recipe: recipe, mode: mode, diagnostic: diagnostic)
+            try ownedFenceRefuses(
+              receipt, anchor: chain.original, reference: reference, admission: admission,
+              memory: memory, disposition: .committedStale)
+            diagnostic.enter(.configTransition)
+            try ownedDeferredTransition(
+              f, recipe: recipe, oldMode: mode, oldBaseline: 0, newMode: mode, newBaseline: 1,
+              diagnostic: diagnostic)
+            baseline = 1
+            try ownedFenceRefuses(
+              receipt, anchor: chain.original, reference: reference, admission: admission,
+              memory: memory, disposition: .committedStale)
+            memory.setCurrent(true)
+            try ownedFenceRefuses(
+              receipt, anchor: chain.original, reference: reference, admission: admission,
+              memory: memory, disposition: .committedStale)
+          } else if unit == "fault" {
+            // Exact native 23514/canary/COMMIT was directly qualified by this unit's R2.
+            // Target fault/stage/source attribution is explicitly INFERENCE from the immutable
+            // full recipe, body/deferred relative probes, genuine unknown and reviewed writer
+            // COMMIT-sent catch; the sealed target receipt exports no native diagnostic.
+            diagnostic.enter(.configTransition)
+            try ownedDeferredTransition(
+              f, recipe: recipe, oldMode: "fault", oldBaseline: 0, newMode: "normal", newBaseline: 0,
+              diagnostic: diagnostic)
+            mode = "normal"
+          }
+          // T07's ONLY timeout allocation is inside its actual deferred gate handler, after
+          // exact COMMIT/blocker/resource observation. Own R4 qualified original native rethrow.
+          // An infeasible handler fails prerequisites; elapsed+unknown+S1 supplies no substitute.
+        } else {
+          guard receipt.disposition == .committedCurrent else { throw FixtureFailure.nativeShape }
+          diagnostic.enter(.targetRedemption)
+          let beforeRedemption = memory.calls()
+          let successor = try receipt.currentSuccessor(
+            expectedSnapshot: chain.original, expectedTokenRef: reference, memoryAdmission: admission)
+          let afterRedemption = memory.calls()
+          guard afterRedemption - beforeRedemption == 1 else { throw FixtureFailure.nativeShape }
+          redemptions += afterRedemption - beforeRedemption
+          diagnostic.enter(.successorValidation)
+          try ownedT09NativeValidate(
+            f, successor: successor, binding: f.binding, reference: reference, observation: nil)
+          if unit != "current" {
+            diagnostic.enter(.originalRefusal)
+            guard let original else { throw FixtureFailure.nativeShape }
+            try ownedFenceRefuses(
+              original, anchor: chain.original, reference: reference, admission: admission,
+              memory: memory,
+              disposition: unit == "stale" ? .committedStale : .unknown)
+          }
+          guard
+            try ownedDeferredCheckpointRead(
+              f.inspector, recipe: recipe, mode: mode, baseline: baseline, diagnostic: diagnostic) == after
+          else { throw FixtureFailure.nativeShape }
+        }
+      }
+      diagnostic.enter(.finalFacts)
+      guard work.writers.count == (unit == "current" ? 1 : 2), work.raw.isEmpty,
+        work.holders.count == (unit == "fault" ? 0 : (unit == "current" ? 1 : 2)),
+        writerCalls == (unit == "current" ? 4 : (unit == "stale" ? 8 : 7)), redemptions == 1,
+        memory.calls() - setupCalls == writerCalls + redemptions,
+        waits == (unit == "fault" ? 0 : (unit == "current" ? 1 : 2)),
+        timeoutAllocations == (unit == "timeout" ? 1 : 0)
+      else { throw FixtureFailure.nativeShape }
+      facts = OwnedDeferredFacts(
+        oldControls: prerequisites.old, newControls: prerequisites.controls,
+        rawAttempts: prerequisites.attempts, rawHolders: prerequisites.holders,
+        writerCalls: writerCalls, redemptionCalls: redemptions, targetHolders: work.holders.count,
+        targetWaits: waits, timeoutAllocations: timeoutAllocations, qualified: true)
+    }
+    diagnostic.enter(.finalFacts)
+    guard let facts, facts.qualified else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  // F11 matrix: F11.current, F11.stale, F11.fault, F11.timeout
+  @Test(arguments: ["current", "stale", "fault", "timeout"])
+  func ownedFenceObservedActualCommitCurrentStaleFaultAndTimeoutInverses(row: String) throws {
+    guard ["current", "stale", "fault", "timeout"].contains(row) else { throw FixtureFailure.nativeShape }
+    let diagnostic = OwnedDeferredDiagnostic(
+      unit: row == "fault" ? .fault : (row == "timeout" ? .timeout : .stale))
+    let facts = try Self.ownedFenceDeferredTarget(row, diagnostic: diagnostic)
+    guard facts.qualified, facts.oldControls == 4, facts.newControls == 5,
+      facts.rawAttempts == 9, facts.rawHolders == 4
+    else { throw FixtureFailure.nativeShape }
+  }
+}
+
+extension OwnedProtocolProofWriteTests {
+  private static func ownedFenceCurrent(
+    _ receipt: ProtocolOwnedProofWriteReceipt, database: WorkspaceDatabase,
+    anchor: ProtocolVerificationSnapshot, binding: ProtocolMembershipBinding, reference: String,
+    inspector: PostgresConnection, stage: OwnedBindStageFixture,
+    admission: ProtocolProofMemoryAdmission, memory: OwnedPositiveCountedMemory,
+    body: OwnedBindProbe, commit: OwnedBindProbe, recipe: OwnedPositiveBodyRecipe,
+    invocationStart: Int, diagnostic: OwnedT11Diagnostic? = nil
+  ) throws -> (calls: Int, redemption: Int) {
+    diagnostic?.phase = .receiptImageAndCounters
+    let beforeRedemption = memory.calls()
+    guard receipt.operation == .fence, receipt.disposition == .committedCurrent,
+      beforeRedemption - invocationStart == 4, equalBytes(reference, stage.originalReference),
+      try ownedBindImage(inspector) == stage.expected,
+      try ownedBindProbe(inspector, "body_probe").advanced(from: body, by: 1),
+      try ownedBindProbe(inspector, "commit_probe").advanced(from: commit, by: 1)
+    else { throw FixtureFailure.nativeShape }
+    try ownedPositiveBodyShape(inspector, stage: stage, replacement: reference, fault: false)
+    guard try ownedDeferredCatalog(inspector) == recipe.catalog else { throw FixtureFailure.nativeShape }
+    // Redemption is sealed-context plus memory only. The following actual-object API calls
+    // independently validate native facts; redemption itself makes no native-currentness claim.
+    diagnostic?.phase = .receiptRedemption
+    let successor = try receipt.currentSuccessor(
+      expectedSnapshot: anchor, expectedTokenRef: reference, memoryAdmission: admission)
+    let afterRedemption = memory.calls()
+    guard afterRedemption - beforeRedemption == 1, successor.observation == nil else {
+      throw FixtureFailure.nativeShape
+    }
+    diagnostic?.phase = .receiptNativeValidation
+    try database.validateProtocolVerification(expectedSnapshot: successor)
+    try database.compareOriginalLinkedCaptureOwner(
+      expectedSnapshot: successor, accountID: binding.accountID,
+      databaseName: binding.databaseName, hubBase: base)
+    try database.compareOriginalLinkedCredentialReference(
+      expectedSnapshot: successor, expectedTokenRef: reference)
+    guard try ownedBindImage(inspector) == stage.expected else { throw FixtureFailure.nativeShape }
+    try ownedPositiveBodyShape(inspector, stage: stage, replacement: reference, fault: false)
+    guard try ownedDeferredCatalog(inspector) == recipe.catalog else { throw FixtureFailure.nativeShape }
+    return (beforeRedemption - invocationStart, afterRedemption - beforeRedemption)
+  }
+
+  private static func ownedFenceSettingsUnit(
+    _ device: OwnedT11Device, diagnostic: OwnedT11Diagnostic? = nil
+  ) throws -> OwnedT11Facts {
+    // No prerequisite borrowing: all four fresh raw fixtures finish teardown BEFORE this target.
+    let rawRows = try ownedFenceRawControls(diagnostic: diagnostic)
+    let raw = rawRows.count
+    guard raw == 4, rawRows.allSatisfy({ $0.qualified }) else { throw FixtureFailure.nativeShape }
+    diagnostic?.rawRow = .none
+    diagnostic?.phase = .targetFixture
+    var facts: OwnedT11Facts?
+    try withFixture { f in
+      diagnostic?.phase = .targetValidate
+      _ = try validateFixture(f)
+      let identity = try ownedT11Identity(f)
+      let endpoint = f.database.endpoint
+      var completed: (calls: Int, redemption: Int)?
+      try ownedT11WithInheritedDatabase(f, device: device, diagnostic: diagnostic) {
+        database, anchor, inheritedSettings, initialHighWater in
+        let f = Fixture(
+          database: database, inspector: f.inspector, link: f.link, binding: f.binding, anchor: anchor)
+        let chain = try ownedFenceChain(f)
+        let memory = chain.memory
+        let admission = chain.admission
+        let invocationStart = memory.calls()
+        let ordinary = try ownedT11OrdinarySettings(
+          database, expected: inheritedSettings, diagnostic: diagnostic)
+        let highWater = ordinary.highWater
+        guard highWater > initialHighWater else { throw FixtureFailure.nativeShape }
+        let stage = try ownedFenceStage(f)
+        guard stage.before == chain.image else { throw FixtureFailure.nativeShape }
+        let setupStamps = try ownedT11SetupStamps(stage.before)
+        let recipe = try ownedPositiveInstallBody(
+          f, stage: stage, replacement: stage.originalReference, fault: false)
+        let body = try ownedBindProbe(f.inspector, "body_probe")
+        let commit = try ownedBindProbe(f.inspector, "commit_probe")
+        guard body == OwnedBindProbe(last: 1, called: false),
+          commit == OwnedBindProbe(last: 1, called: false)
+        else { throw FixtureFailure.nativeShape }
+        try ownedPositiveBodyShape(
+          f.inspector, stage: stage, replacement: stage.originalReference, fault: false)
+        try ownedBindWriterReady(
+          f, stage: stage, replacement: stage.originalReference, body: body, commit: commit)
+        let hold = OwnedProofHold()
+        let state = OwnedBindHolderState()
+        let finished = OwnedBindFinished()
+        var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+        var writer: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+        // Installed before the first start. All holds release before EVERY retained join.
+        defer {
+          hold.release()
+          if let holder { _ = holder.join() }
+          if let writer { _ = writer.join() }
+        }
+        diagnostic?.phase = .holderReady
+        let application = "owned-fence-clock-\(UUID().uuidString)"
+        let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        holder = ownedBindHolder(
+          binDir: identity.binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+          database: endpoint.database, user: identity.user, application: application,
+          kind: .advisory, hold: hold, state: state)
+        let holderPID = try ownedBindHolderReady(state, hold: hold, deadline: readiness)
+        guard memory.calls() == invocationStart else { throw FixtureFailure.nativeShape }
+        diagnostic?.phase = .nativeWait
+        let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+        writer = ownedFenceWriter(
+          database: database, anchor: anchor, binding: f.binding, reference: stage.originalReference,
+          admission: admission, finished: finished)
+        try ownedFenceObserveWait(
+          f.inspector, database: endpoint.database, holderPID: holderPID,
+          knownOwnedPIDs: [identity.pid, holderPID], kind: .advisory, hold: hold,
+          finished: finished, memory: memory, invocationStart: invocationStart, deadline: deadline)
+        diagnostic?.phase = .markerAndRelease
+        let now = try ownedBindWall(f.inspector)
+        let sampleEnd = DispatchTime.now().uptimeNanoseconds
+        let (markerMillis, overflow) = now.addingReportingOverflow(10_000)
+        guard sampleEnd <= deadline, !overflow, markerMillis <= 0xffff_ffff_ffff,
+          markerMillis > highWater.millis, markerMillis > stage.lowerWall,
+          setupStamps.allSatisfy({ $0.millis < markerMillis }),
+          equalBytes(highWater.deviceId, stage.device), memory.calls() == invocationStart,
+          finished.pending(), hold.heldUnexpired()
+        else { throw FixtureFailure.nativeShape }
+        let marker = HLC(millis: markerMillis, counter: 0, deviceId: stage.device)
+        let expectedBody = HLC(millis: markerMillis, counter: 1, deviceId: stage.device)
+        // The actual B1/B2 chain and every preceding setup stamp are below the
+        // separately sampled post-chain ordinary high water and this future marker.
+        database.clock.observe(marker)
+        // No SQL, next, write, or scheduling between injection and prompt original-deadline release.
+        try ownedFenceReleasePreHold(
+          hold, finished: finished, memory: memory, invocationStart: invocationStart, retiring: false,
+          deadline: deadline)
+        diagnostic?.phase = .joinsAndHolderAck
+        let held = holder!.join()
+        let receipt = writer!.join()
+        guard held.normal else { throw FixtureFailure.nativeShape }
+        diagnostic?.phase = .markerReadback
+        try ownedT11MarkerObserved(
+          f.inspector, stage: stage, expected: expectedBody, marker: markerMillis)
+        let current = try ownedFenceCurrent(
+          receipt, database: database, anchor: anchor, binding: f.binding,
+          reference: stage.originalReference, inspector: f.inspector, stage: stage,
+          admission: admission, memory: memory, body: body, commit: commit, recipe: recipe,
+          invocationStart: invocationStart, diagnostic: diagnostic)
+        // This new ordinary next is strictly AFTER body-marker read and genuine redemption.
+        diagnostic?.phase = .ordinaryRestoration
+        _ = try ownedT11OrdinarySettings(database, expected: ordinary.settings, diagnostic: diagnostic)
+        diagnostic?.phase = .finalImageRecipe
+        guard try ownedBindImage(f.inspector) == stage.expected,
+          try ownedBindProbe(f.inspector, "body_probe").advanced(from: body, by: 1),
+          try ownedBindProbe(f.inspector, "commit_probe").advanced(from: commit, by: 1)
+        else { throw FixtureFailure.nativeShape }
+        try ownedPositiveBodyShape(
+          f.inspector, stage: stage, replacement: stage.originalReference, fault: false)
+        guard try ownedDeferredCatalog(f.inspector) == recipe.catalog else {
+          throw FixtureFailure.nativeShape
+        }
+        completed = current
+      }
+      // The helper has checked extra-close AND exact complete catalog restoration before here.
+      guard let completed else { throw FixtureFailure.nativeShape }
+      facts = OwnedT11Facts(
+        rawControls: raw, nativeWaits: 1, writerCalls: completed.calls,
+        redemptionCalls: completed.redemption, normalHolders: 1, normalContenders: 0,
+        body: 1, deferred: 1, settingsRestored: true, qualified: true)
+      diagnostic?.phase = .outerFixtureTeardown
+    }
+    diagnostic?.phase = .facts
+    guard let facts else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  private static func ownedFenceOrderUnit() throws -> OwnedT11Facts {
+    let rawRows = try ownedFenceRawControls()
+    let raw = rawRows.count
+    guard raw == 4, rawRows.allSatisfy({ $0.qualified }) else { throw FixtureFailure.nativeShape }
+    var facts: OwnedT11Facts?
+    try withFixture { f in
+      let chain = try ownedFenceChain(f)
+      let memory = chain.memory
+      let admission = chain.admission
+      let invocationStart = memory.calls()
+      let stage = try ownedFenceStage(f)
+      let recipe = try ownedPositiveInstallBody(
+        f, stage: stage, replacement: stage.originalReference, fault: false)
+      let body = try ownedBindProbe(f.inspector, "body_probe")
+      let commit = try ownedBindProbe(f.inspector, "commit_probe")
+      guard body == OwnedBindProbe(last: 1, called: false),
+        commit == OwnedBindProbe(last: 1, called: false)
+      else { throw FixtureFailure.nativeShape }
+      try ownedPositiveBodyShape(
+        f.inspector, stage: stage, replacement: stage.originalReference, fault: false)
+      guard try ownedDeferredCatalog(f.inspector) == recipe.catalog else { throw FixtureFailure.nativeShape }
+      try ownedBindWriterReady(
+        f, stage: stage, replacement: stage.originalReference, body: body, commit: commit)
+      let identity = try ownedT11Identity(f)
+      let endpoint = f.database.endpoint
+      let hold = OwnedProofHold()
+      let state = OwnedBindHolderState()
+      let finished = OwnedBindFinished()
+      let contenderState = OwnedT11ContenderState()
+      var holder: OwnedProofNativeWork<OwnedBindHolderResult>?
+      var writer: OwnedProofNativeWork<ProtocolOwnedProofWriteReceipt>?
+      var contender: OwnedProofNativeWork<OwnedT11ContenderResult>?
+      // Every partial start is covered before the first start. Release ALL holds, then join ALL.
+      defer {
+        hold.release()
+        if let holder { _ = holder.join() }
+        if let writer { _ = writer.join() }
+        if let contender { _ = contender.join() }
+      }
+      let holderApplication = "owned-fence-control-\(UUID().uuidString)"
+      let contenderApplication = "owned-fence-link-\(UUID().uuidString)"
+      let readiness = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+      holder = ownedT11ControlHolder(
+        binDir: identity.binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+        database: endpoint.database, user: identity.user, application: holderApplication,
+        controlKey: key, hold: hold, state: state)
+      let holderPID = try ownedBindHolderReady(state, hold: hold, deadline: readiness)
+      guard memory.calls() == invocationStart else { throw FixtureFailure.nativeShape }
+      // ONE original writer window covers both observations, contender startup and release.
+      let deadline = (DispatchTime.now() + .seconds(2)).uptimeNanoseconds
+      writer = ownedFenceWriter(
+        database: f.database, anchor: f.anchor, binding: f.binding, reference: stage.originalReference,
+        admission: admission, finished: finished)
+      let writerPID = try ownedFenceObserveControl(
+        f.inspector, database: endpoint.database, holderPID: holderPID,
+        knownOwnedPIDs: [identity.pid, holderPID], hold: hold,
+        finished: finished, memory: memory, invocationStart: invocationStart, deadline: deadline)
+      contender = ownedT11LinkContender(
+        binDir: identity.binDir, socketDir: endpoint.socketDir, port: endpoint.port,
+        database: endpoint.database, user: identity.user, application: contenderApplication,
+        state: contenderState)
+      let contenderPID = try ownedFenceContenderReady(
+        contenderState, hold: hold, finished: finished, memory: memory, invocationStart: invocationStart,
+        deadline: deadline)
+      guard contenderPID != identity.pid, contenderPID != holderPID, contenderPID != writerPID else {
+        throw FixtureFailure.nativeShape
+      }
+      try ownedFenceObserveContender(
+        f.inspector, database: endpoint.database, application: contenderApplication,
+        contenderPID: contenderPID, writerPID: writerPID, holderPID: holderPID,
+        knownOwnedPIDs: [identity.pid, holderPID, contenderPID], hold: hold,
+        finished: finished, contender: contenderState, memory: memory, invocationStart: invocationStart,
+        deadline: deadline)
+      try ownedFenceReleasePreHold(
+        hold, finished: finished, memory: memory, invocationStart: invocationStart, retiring: false,
+        deadline: deadline)
+      // Join EVERY operation before inspecting even the first result or any native image.
+      let held = holder!.join()
+      let receipt = writer!.join()
+      let contended = contender!.join()
+      guard held.normal, contended.normal else { throw FixtureFailure.nativeShape }
+      try ownedBindWriterObserved(f.inspector, stage: stage, actualDevice: f.database.deviceId)
+      let current = try ownedFenceCurrent(
+        receipt, database: f.database, anchor: f.anchor, binding: f.binding,
+        reference: stage.originalReference, inspector: f.inspector, stage: stage,
+        admission: admission, memory: memory, body: body, commit: commit, recipe: recipe,
+        invocationStart: invocationStart)
+      facts = OwnedT11Facts(
+        rawControls: raw, nativeWaits: 2, writerCalls: current.calls,
+        redemptionCalls: current.redemption, normalHolders: 1, normalContenders: 1,
+        body: 1, deferred: 1, settingsRestored: true, qualified: true)
+    }
+    guard let facts else { throw FixtureFailure.redactedFailure }
+    return facts
+  }
+
+  // F12 matrix: F12.isolation, F12.clock, F12.device, F12.local, F12.order
+  @Test(arguments: ["isolation", "clock", "device", "local", "order"])
+  func ownedFenceSessionSettingsClockAndLinkBeforeControlRemainFixed(row: String) throws {
+    if row == "order" {
+      let facts = try Self.ownedFenceOrderUnit()
+      guard facts.qualified, facts.rawControls == 4, facts.nativeWaits == 2,
+        facts.writerCalls == 4, facts.redemptionCalls == 1,
+        facts.normalHolders == 1, facts.normalContenders == 1
+      else { throw FixtureFailure.nativeShape }
+    } else {
+      guard ["isolation", "clock", "device", "local"].contains(row) else { throw FixtureFailure.nativeShape }
+      let facts = try Self.ownedFenceSettingsUnit(row == "local" ? .local : .nonlocal)
+      guard facts.qualified, facts.rawControls == 4, facts.nativeWaits == 1,
+        facts.writerCalls == 4, facts.redemptionCalls == 1, facts.settingsRestored,
+        facts.normalHolders == 1, facts.normalContenders == 0
+      else { throw FixtureFailure.nativeShape }
+    }
+  }
+}
+
+extension OwnedProtocolProofWriteTests {
+  // Recorded cleanup gates validate fixture admissibility only. They neither simulate native
+  // lost ACKs nor excuse release/join. Every native fixture below has already fully unwound.
+  private struct OwnedFenceCleanupFacts {
+    let holderNotExpired: Bool
+    let holderRollbackAcknowledged: Bool
+    let observedWithinOriginalDeadline: Bool
+    let exactNativeIdentity: Bool
+    let allHoldsReleased: Bool
+    let allWorkersJoined: Bool
+  }
+
+  private static func ownedFenceCleanupCheck(_ facts: OwnedFenceCleanupFacts) throws {
+    guard facts.holderNotExpired, facts.holderRollbackAcknowledged,
+      facts.observedWithinOriginalDeadline, facts.exactNativeIdentity,
+      facts.allHoldsReleased, facts.allWorkersJoined
+    else { throw FixtureFailure.nativeShape }
+  }
+
+  // F13 matrix: F13.catalog, F13.cleanup
+  @Test func ownedFenceRecipeCatalogAndCleanupFailuresInvalidateFixtures() throws {
+    let diagnostic = OwnedDeferredDiagnostic(unit: .stale)
+    let prerequisites = try Self.ownedFenceDeferredPrerequisites(diagnostic: diagnostic)
+    guard prerequisites.old == 4, prerequisites.controls == 5,
+      prerequisites.attempts == 9, prerequisites.holders == 4
+    else { throw FixtureFailure.nativeShape }
+    let variants = [
+      "publicObject", "publicTrigger", "functionBody", "triggerDeferrability", "triggerEnabled",
+      "sentinel", "databaseMeta", "deviceMeta", "referenceMeta", "publicTableList", "sequenceMeta",
+    ]
+    for variant in variants {
+      var rejected = false
+      try Self.withFixture { f in
+        let chain = try Self.ownedFenceChain(f)
+        let stage = try Self.ownedFenceStage(f)
+        guard stage.before == chain.image else { throw FixtureFailure.nativeShape }
+        let recipe = try Self.ownedPositiveInstallBody(
+          f, stage: stage, replacement: f.link.tokenRef, fault: false)
+        let body = try Self.ownedBindProbe(f.inspector, "body_probe")
+        let commit = try Self.ownedBindProbe(f.inspector, "commit_probe")
+        try Self.ownedPositiveBodyCheckpoint(
+          f, recipe: recipe, replacement: f.link.tokenRef, fault: false,
+          image: stage.before, body: body, commit: commit, bodies: 0, commits: 0)
+        switch variant {
+        case "publicObject":
+          try f.inspector.execute("CREATE TABLE public.owned_fence_unexpected(value text)")
+        case "publicTrigger":
+          try f.inspector.execute(
+            "CREATE TRIGGER owned_fence_unexpected AFTER UPDATE ON public.connections FOR EACH ROW EXECUTE FUNCTION \"owned_bind_stage\".\"body\"()"
+          )
+        case "functionBody":
+          try f.inspector.execute(
+            "CREATE OR REPLACE FUNCTION \"owned_bind_stage\".\"body\"() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $owned_fence$ BEGIN RETURN NEW; END $owned_fence$"
+          )
+        case "triggerDeferrability":
+          try f.inspector.execute("DROP TRIGGER owned_bind_commit_normal ON public.settings")
+          try f.inspector.execute(
+            "CREATE CONSTRAINT TRIGGER owned_bind_commit_normal AFTER UPDATE ON public.settings DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW EXECUTE FUNCTION \"owned_bind_stage\".\"commit_normal\"()"
+          )
+        case "triggerEnabled":
+          try f.inspector.execute("ALTER TABLE public.settings DISABLE TRIGGER owned_bind_body")
+        case "sentinel":
+          guard
+            try f.inspector.execute(
+              "UPDATE \"owned_bind_stage\".\"expected\" SET value=jsonb_set(value,'{value}',to_jsonb('FENCE_PRIVATE_DAMAGE'::text)) WHERE name='settings' AND value->>'key'=$1",
+              [Self.sentinelKey]
+            ).affected == 1
+          else { throw FixtureFailure.nativeShape }
+        case "databaseMeta":
+          guard
+            try f.inspector.execute(
+              "UPDATE \"owned_bind_stage\".\"meta\" SET database=database||'_other' WHERE singleton=1"
+            ).affected == 1
+          else { throw FixtureFailure.nativeShape }
+        case "deviceMeta":
+          guard
+            try f.inspector.execute(
+              "UPDATE \"owned_bind_stage\".\"meta\" SET expected_device='FENCE_PRIVATE_OTHER' WHERE singleton=1"
+            ).affected == 1
+          else { throw FixtureFailure.nativeShape }
+        case "referenceMeta":
+          guard
+            try f.inspector.execute(
+              "UPDATE \"owned_bind_stage\".\"meta\" SET original_ref='secret:FENCE_PRIVATE_OTHER' WHERE singleton=1"
+            ).affected == 1
+          else { throw FixtureFailure.nativeShape }
+        case "publicTableList":
+          guard
+            try f.inspector.execute("DELETE FROM \"owned_bind_stage\".\"names\" WHERE name='connections'")
+              .affected == 1
+          else { throw FixtureFailure.nativeShape }
+        case "sequenceMeta":
+          guard
+            try f.inspector.execute(
+              "UPDATE \"owned_bind_stage\".\"meta\" SET expected_sequence=jsonb_set(expected_sequence,'{last_value}','777'::jsonb) WHERE singleton=1"
+            ).affected == 1
+          else { throw FixtureFailure.nativeShape }
+        default: throw FixtureFailure.nativeShape
+        }
+        rejected = !Self.validates {
+          try Self.ownedPositiveBodyShape(
+            f.inspector, stage: stage, replacement: f.link.tokenRef, fault: false)
+          guard try Self.ownedDeferredCatalog(f.inspector) == recipe.catalog else {
+            throw FixtureFailure.nativeShape
+          }
+        }
+        // Actual fixture has body+commit probes. There is no owned product target to credit;
+        // these are fixture-integrity failures, not fence denials or physical absence claims.
+        guard try Self.ownedBindProbe(f.inspector, "body_probe") == body,
+          try Self.ownedBindProbe(f.inspector, "commit_probe") == commit,
+          try Self.ownedDeferredObservations(f.inspector).isEmpty
+        else { throw FixtureFailure.nativeShape }
+      }
+      guard rejected else { throw FixtureFailure.nativeShape }
+    }
+    // Pure recorded-fact variants, evaluated after all isolated fixtures have unwound.
+    // No live holder is deliberately expired, no release/join is omitted, and no native lost
+    // rollback ACK is injected. This validates structural gates only, with no receipt credit.
+    let valid = OwnedFenceCleanupFacts(
+      holderNotExpired: true, holderRollbackAcknowledged: true,
+      observedWithinOriginalDeadline: true, exactNativeIdentity: true,
+      allHoldsReleased: true, allWorkersJoined: true)
+    try Self.ownedFenceCleanupCheck(valid)
+    for variant in [
+      "autoexpiredHolder", "missingRollbackACK", "observationDeadline",
+      "identityMismatch", "guardBeforeFullDrain",
+    ] {
+      let invalid = OwnedFenceCleanupFacts(
+        holderNotExpired: variant != "autoexpiredHolder",
+        holderRollbackAcknowledged: variant != "missingRollbackACK",
+        observedWithinOriginalDeadline: variant != "observationDeadline",
+        exactNativeIdentity: variant != "identityMismatch",
+        allHoldsReleased: variant != "guardBeforeFullDrain",
+        allWorkersJoined: variant != "guardBeforeFullDrain")
+      guard !Self.validates({ try Self.ownedFenceCleanupCheck(invalid) }) else {
+        throw FixtureFailure.nativeShape
+      }
+    }
+  }
+}
