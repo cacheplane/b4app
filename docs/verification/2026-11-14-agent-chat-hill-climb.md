@@ -15,6 +15,8 @@ D-233 to D-236: four changes to how a thread reads, each kept because a check th
 - `xcodebuild build` of `B4App-macOS` and of `B4App-iOS` for the Simulator: both exit 0.
 - `Scripts/docs-index.sh --check`: passes with this record and D-233 to D-236.
 - The scroll suite (`TranscriptScrollTests`, twelve tests in thirteen cases) five times in a row: passed five of five.
+- In the running harness app (`./Scripts/test-macos-smoke.sh -only-testing:WorkspaceSmokeTests/ReadingSmokeTests`, the shipped `WorkspaceRootView` over a real coordinator and the fake Codex, 1100 by 700 pt, light): passed. A thread of forty-three cached messages opens at its end with no button; Copy on the fenced block puts exactly the seeded code on the pasteboard (a continuation backslash, two leading spaces, three spaces before a comment) and reads "Copied", then "Copy" again; scrolling back shows "Jump to latest" inside the transcript; a click at its centre returns to the last line and the button goes; scrolling back and returning to the end by hand also puts it away. Captures `docs/screenshots/transcript-jump-to-latest.png` and `transcript-code-copied.png`. XCTest reports the button as not hittable although the click lands; the journey clicks its centre. The other smoke journeys were not rerun; the host seeds the extra thread only for this test.
+- Found by that run, and on `main` as well (the same journey with `TranscriptView.swift` and `DenseTranscript.swift` from 9bb7c974 stops at the same step): a thread whose first message is several windows tall (120 lines) opens partway up it, with the later messages not laid out. Defect 18 below; the fixture uses forty short replies instead.
 - Not run: `Scripts/test-ios-layout.sh`, the hub's `cargo test` (nothing under `Hub/` changed), the live suites.
 
 ### Experiments
@@ -118,10 +120,11 @@ Hard gates: R02.1, R02.2, R07.2, R07.3, R10.2 and R11.2 pass at the fixture tier
 
 ### Not checked
 
-- Any live runtime, the running Mac app, the phone, a device.
+- Any live runtime, a signed Mac app, the phone, a device.
 - VoiceOver, keyboard-only use of the transcript, Dynamic Type sizes, high contrast, Reduce Motion.
 - Performance of any kind: no latency, memory or layout measurement was taken, and no budget was set.
-- "Jump to latest" and Copy were never pressed; the pasteboard write was not observed.
+- "Jump to latest" and Copy were pressed in the harness app on the Mac only (above): not in a signed build, not while a reply streams from a runtime, not on the phone.
+- Defect 18 (S2, open, on `main` too): a thread whose first message is several windows tall does not open at its end in the running app. A hosted `TranscriptView` with the same items does open at its end, so the hosted tests do not show it.
 - A human reader. The captures were read by the model that made the changes.
 
 ### Next

@@ -27,10 +27,18 @@ import XCTest
     self.lifetime = lifetime
   }
 
-  static func start(in test: XCTestCase, realB4: Bool = false) async throws -> SmokeFixture {
+  /// `reading` asks the host for a second, long thread that ends in a reply with a fenced block.
+  static func start(
+    in test: XCTestCase, realB4: Bool = false, reading: Bool = false
+  ) async throws
+    -> SmokeFixture
+  {
     let root = URL(fileURLWithPath: "/tmp/b4smk-\(UUID().uuidString.prefix(8))")
     try FileManager.default.createDirectory(
       at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    if reading {
+      _ = FileManager.default.createFile(atPath: root.appendingPathComponent("reading").path, contents: nil)
+    }
     let bundle = Bundle(for: RecoverySmokeTests.self)
     var products = bundle.bundleURL
     while products.path != "/",

@@ -98,6 +98,11 @@ import WorkspaceStorage
               id: "smoke-cached", threadId: thread.id, role: .assistant, type: "agentMessage",
               payload: ["text": "Cached transcript remains readable."], sequence: 2, provenance: .cache))
           _ = try database.saveDraft(threadId: thread.id, text: "Keep this smoke-test draft.")
+          // A second thread to read: only for the test that leaves `reading` in its root, so the
+          // other journeys' list has the one row it always had.
+          if FileManager.default.fileExists(atPath: root.appendingPathComponent("reading").path) {
+            try seedReading(database, connection: connection, root: root)
+          }
           threadId = thread.id
         }
       } catch {
@@ -114,6 +119,38 @@ import WorkspaceStorage
     } catch {
       await coordinator.close()
       throw error
+    }
+  }
+
+  /// A long cached thread that ends with a reply holding a fenced block, then a last line.
+  static let readingCode =
+    "swift test --filter SyncTests \\\n  --parallel   # two spaces before, three before the comment"
+
+  static func seedReading(_ database: WorkspaceDatabase, connection: Connection, root: URL) throws {
+    let thread = try database.insertThread(
+      ConversationThread(
+        id: "smoke-reading", connectionId: connection.id, nativeThreadId: "thr_reading",
+        nativeScope: connection.nativeScope ?? "", title: "Reading fixture",
+        context: root.appendingPathComponent("work").path))
+    let fence = "```"
+    // Forty short replies, not one tall one: a single message several windows tall does not open at
+    // its end in the running app (seen on main too; the hill-climb record's defect 18).
+    var texts: [(DisplayItemRole, String, String)] = [(.user, "userMessage", "How do I run the sync tests?")]
+    texts += (1...40).map {
+      (.assistant, "agentMessage", "Earlier reply \($0) of the reading fixture.\nIts second line.")
+    }
+    texts += [
+      (
+        .assistant, "agentMessage",
+        "Run them like this:\n\n\(fence)bash\n\(readingCode)\n\(fence)\n\nThe filter is a regular expression."
+      ),
+      (.assistant, "agentMessage", "End of the reading fixture."),
+    ]
+    for (index, entry) in texts.enumerated() {
+      _ = try database.insertDisplayItem(
+        DisplayItem(
+          id: "smoke-reading-\(index)", threadId: thread.id, role: entry.0, type: entry.1,
+          payload: ["text": .string(entry.2)], sequence: index + 1, provenance: .cache))
     }
   }
 

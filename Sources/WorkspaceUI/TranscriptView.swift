@@ -129,6 +129,8 @@ struct TranscriptView: View {
             proxy.scrollTo("bottom", anchor: .bottom)
           }
           .buttonStyle(.llaSecondary)
+          // The pill's fill is close to the page's: a rule keeps its edge visible over the transcript.
+          .overlay(Capsule().stroke(LLA.Color.rule, lineWidth: 1))
           .llaPopoverShadow()
           .padding(.bottom, LLA.Space.m)
           .accessibilityIdentifier("jump-to-latest")
