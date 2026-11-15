@@ -20,19 +20,25 @@ try:
     MAX_INPUT = 4194304
     MAX_SAMPLE = 262144
     MAX_OUTPUT = 65536
-    SOURCE_PINS = {'Sources/Coordinator/Accounts/AccountManager.swift': '2f8d3f7c8dbf2469e7366530737532a3c41991a795f13f46b8d01155dfb6aa25', 'Sources/Coordinator/HubSync/HubOwnerCarrier.swift': '23ce28f72f59ce22c68fb3a0620016e1b85bf56856ba066296837f0360fb6423', 'Sources/Coordinator/HubSync/HubSync.swift': '65ef4d84c37d1f70485e6052bb71b8e5626c5348334ecef9a9e53f330146f3d5', 'Sources/WorkspaceStorage/ProtocolActivation.swift': '378e1052777af215bd55d824a5d630a49ba5e1e3f5e865f1c2c608e32f97aef4', 'Tests/CoordinatorTests/HubOwnerCarrierTests.swift': '23a1c01b827d4d0ee1c533ba5c0391500efd37c28d0fa71182eecb43c70af23f'}
-    SOURCE_NAMES = ['AccountCommandTests.swift', 'AccountManagerTests.swift', 'AgentProtocolAccountMigrationL2Tests.swift', 'AgentProtocolAccountMigrationTests.swift', 'AgentProtocolArchiveATests.swift', 'AgentProtocolConnectionIdentityTests.swift', 'AgentProtocolFoundationFixture.swift', 'AgentProtocolGrantCredentialTests.swift', 'AgentProtocolIdentityManagedFixtures.swift', 'AgentProtocolLegacyManagedTests.swift', 'AgentProtocolMainTenAccountReopenTests.swift', 'AgentProtocolMigrationBackupPathTests.swift', 'AgentProtocolPrivateBackupTests.swift', 'AgentProtocolResourceFixture.swift', 'AgentProtocolRetirementTests.swift', 'AgentProtocolUnicodeIdentityTests.swift', 'CoordinatorTests.swift', 'EnvironmentServiceTests.swift', 'FakeB4Project.swift', 'HubLinkRelayTests.swift', 'HubOwnerCarrierTests.swift', 'HubPullTests.swift', 'HubSyncTests.swift', 'InspectionObservation.swift', 'InspectionObservationTests.swift', 'InspectionRequestObservation.swift', 'InspectionRequestObservationTests.swift', 'KeepAwakeTests.swift', 'LaunchAgentInstallTests.swift', 'LauncherTests.swift', 'LegacyAdoptionLiveTests.swift', 'LegacyAdoptionTests.swift', 'LocalServerTests.swift', 'OwnedCloseConcurrencyTests.swift', 'PairingTests.swift', 'RelayExecutorTests.swift', 'ScopeOwnerPublicationTests.swift', 'SessionTests.swift', 'SignedInCoordinator.swift', 'SleepWatcherTests.swift', 'SocketClosePreservationTests.swift', 'SocketLifecycleTests.swift', 'SocketResponseOwnershipTests.swift', 'SocketServerShutdownTests.swift', 'SyncSignal.swift', 'ThreadDeleteTests.swift', 'UsageTests.swift']
+    SOURCE_PINS = {'Sources/Coordinator/Accounts/AccountManager.swift': '2f8d3f7c8dbf2469e7366530737532a3c41991a795f13f46b8d01155dfb6aa25', 'Sources/Coordinator/HubSync/HubOwnerCarrier.swift': '61233c33d04d8a2318f025e727aec08107feb0dc72218f3d6fe2d1994c1d28b4', 'Sources/Coordinator/HubSync/HubSync.swift': '65ef4d84c37d1f70485e6052bb71b8e5626c5348334ecef9a9e53f330146f3d5', 'Sources/WorkspaceStorage/ProtocolActivation.swift': 'f2b28e208e58686cc95954255643af14240042ceeb4092980cc68177ad7dd421', 'Tests/CoordinatorTests/HubOwnerCarrierTests.swift': '23a1c01b827d4d0ee1c533ba5c0391500efd37c28d0fa71182eecb43c70af23f'}
+    SOURCE_NAMES = ['AccountCommandTests.swift', 'AccountManagerTests.swift', 'AccountSessionComparisonOwnerTests.swift', 'AgentProtocolAccountMigrationL2Tests.swift', 'AgentProtocolAccountMigrationTests.swift', 'AgentProtocolArchiveATests.swift', 'AgentProtocolConnectionIdentityTests.swift', 'AgentProtocolFoundationFixture.swift', 'AgentProtocolGrantCredentialTests.swift', 'AgentProtocolIdentityManagedFixtures.swift', 'AgentProtocolLegacyManagedTests.swift', 'AgentProtocolMainTenAccountReopenTests.swift', 'AgentProtocolMigrationBackupPathTests.swift', 'AgentProtocolPrivateBackupTests.swift', 'AgentProtocolResourceFixture.swift', 'AgentProtocolRetirementTests.swift', 'AgentProtocolUnicodeIdentityTests.swift', 'CoordinatorTests.swift', 'EnvironmentServiceTests.swift', 'FakeB4Project.swift', 'HubLinkRelayTests.swift', 'HubOwnerCarrierTests.swift', 'HubPullTests.swift', 'HubSyncTests.swift', 'InspectionObservation.swift', 'InspectionObservationTests.swift', 'InspectionRequestObservation.swift', 'InspectionRequestObservationTests.swift', 'KeepAwakeTests.swift', 'LaunchAgentInstallTests.swift', 'LauncherTests.swift', 'LegacyAdoptionLiveTests.swift', 'LegacyAdoptionTests.swift', 'LocalServerTests.swift', 'OwnedCloseConcurrencyTests.swift', 'PairingTests.swift', 'RelayExecutorTests.swift', 'ScopeOwnerPublicationTests.swift', 'SessionTests.swift', 'SignedInCoordinator.swift', 'SleepWatcherTests.swift', 'SocketClosePreservationTests.swift', 'SocketLifecycleTests.swift', 'SocketResponseOwnershipTests.swift', 'SocketServerShutdownTests.swift', 'SyncSignal.swift', 'ThreadDeleteTests.swift', 'UsageTests.swift']
     ARGUMENT_TEMPLATE = ['-target', 'arm64-apple-macosx26.0', '-incremental', '-enable-batch-mode', '-serialize-diagnostics', '-index-store-path', '{CHECKOUT}/.build/arm64-apple-macosx/debug/index/store', '-Onone', '-enable-testing', '-Xfrontend', '-enable-cross-import-overlays', '-j3', '-DSWIFT_PACKAGE', '-DDEBUG', '-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOLLHTTP.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOLLHTTP/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOAtomics.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOAtomics/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-atomics/Sources/_AtomicsShims/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOWASI.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOWASI/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOWindows/include/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOWindows/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOLinux.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOLinux/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIODarwin.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIODarwin/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOFreeBSD.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOFreeBSD/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOOpenBSD.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOOpenBSD/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/arm64-apple-macosx/debug/CNIOPosix.build/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-nio/Sources/CNIOPosix/include', '-Xcc', '-fmodule-map-file={CHECKOUT}/.build/checkouts/swift-subprocess/Sources/_SubprocessCShims/include/module.modulemap', '-Xcc', '-I', '-Xcc', '{CHECKOUT}/.build/checkouts/swift-subprocess/Sources/_SubprocessCShims/include', '-module-cache-path', '{CHECKOUT}/.build/arm64-apple-macosx/debug/ModuleCache', '-parseable-output', '-parse-as-library', '-swift-version', '6', '-enable-upcoming-feature', 'NonisolatedNonsendingByDefault', '-enable-upcoming-feature', 'InferIsolatedConformances', '-plugin-path', '/Applications/Xcode_26.6.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing', '-sdk', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk', '-F', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks', '-I', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib', '-L', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib', '-g', '-Xcc', '-isysroot', '-Xcc', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk', '-Xcc', '-F', '-Xcc', '/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks', '-Xcc', '-fPIC', '-Xcc', '-g', '-package-name', 'b4app']
     TOP_FIELDS = {'builtTestProducts': 'array', 'copyCommands': 'object', 'explicitTargetDependencyImportCheckingMode': 'object', 'generatedSourceTargetSet': 'array', 'pluginDescriptions': 'array', 'swiftCommands': 'object', 'swiftFrontendCommands': 'object', 'swiftTargetScanArgs': 'object', 'targetDependencyMap': 'object', 'testDiscoveryCommands': 'object', 'testEntryPointCommands': 'object', 'traitConfiguration': 'object', 'writeCommands': 'object'}
     FIELD_TYPES = {'executable': 'string', 'fileList': 'string', 'importPath': 'string', 'inputs': 'array', 'isLibrary': 'boolean', 'moduleName': 'string', 'moduleOutputPath': 'string', 'objects': 'array', 'otherArguments': 'array', 'outputFileMapPath': 'string', 'outputs': 'array', 'prepareForIndexing': 'boolean', 'sources': 'array', 'tempsPath': 'string', 'wholeModuleOptimization': 'boolean'}
     ORIGIN_FIXTURES = [('Positive.swift', 'import Foundation\n@testable import Coordinator\ntypealias Origin = HubSync.ConfiguredClientOrigin\nfunc readIdentity(_ original: Origin) -> UUID { original.identity }\n', '0c951a76d897a2bc9512ccd34b37e12cad203d81f63c29b692b9d1de4a2c4e36'), ('PrivateInit.swift', 'import Foundation\n@testable import Coordinator\nlet forbidden = HubSync.ConfiguredClientOrigin.init(hub:database:baseURL:reference:store:makeAPI:)\n', '19552054a41d62dc904c2c4631687c61c2d4524d4758e884156bfa95f2cd8da6'), ('ImmutableIdentity.swift', 'import Foundation\n@testable import Coordinator\nfunc mutate(_ original: HubSync.ConfiguredClientOrigin) {\n  original.identity = UUID()\n}\n', '2236ff3f57371ef42ed1c9e1fc4b9ce0ad8e50195bf170d3b3de13c031fdbd8f')]
-    RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': '378e1052777af215bd55d824a5d630a49ba5e1e3f5e865f1c2c608e32f97aef4', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '395561fb60995372be63db57686e4fb646afb17181aa288cec6c7b6d0602fb0e', 'Sources/WorkspaceStorage/PostgresClient.swift': 'd713d50ed4183abb642f4ca6689d773c8b25306ac225ea0dd9936e0704cfc803', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '69a1d5532b26c079ef3b185cf2f5a2590e81414c7117e477618f15af8662e56c'}
+    RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': 'f2b28e208e58686cc95954255643af14240042ceeb4092980cc68177ad7dd421', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '83ae4d0033034e1a29eaaad6387f4239b6ce08e5d1272e54cca91163451d52ea', 'Sources/WorkspaceStorage/PostgresClient.swift': 'e129b7fcf315bccb5659461cc7cbc16c0132b90e253568bd8e2942ff668106e2', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '69a1d5532b26c079ef3b185cf2f5a2590e81414c7117e477618f15af8662e56c'}
     RECEIPT_FIXTURES = [('ReceiptPositive.swift', 'import Foundation\n@testable import WorkspaceStorage\nfunc readReceipt(_ original: ProtocolOwnedProofWriteReceipt) -> Bool {\n  original.disposition == .committedCurrent\n}\n', 'd4e6ed95cb6e848538d7d3bf06d5ea11696c39682cb1139a335bf88efe57a6ec'), ('ReceiptPrivateInit.swift', 'import Foundation\n@testable import WorkspaceStorage\nlet forbidden = ProtocolOwnedProofWriteReceipt.init(payload:)\n', '1dcf49dae19150643bb72c35272a70e236aa240cdb82b3baa915ce70bddee104'), ('ReceiptImmutable.swift', 'import Foundation\n@testable import WorkspaceStorage\nfunc mutate(_ original: inout ProtocolOwnedProofWriteReceipt) {\n  original.disposition = .committedCurrent\n}\n', '62eab97c64f20a5d70e8c13f6527d2856ea281afa0f2e3c3f704dcb1f572bd53')]
-    if len(sys.argv) != 2 or sys.argv[0] != "-" or sys.argv[1] not in ("origin", "receipt"):
+    ACCOUNT_SESSION_SOURCE_PINS = {'Sources/WorkspaceStorage/LibPQ.swift': '054d7d50a95231af518dbebce4162f7a9284c8c1f3b7596bb62f930edcc88513', 'Sources/WorkspaceStorage/PostgresClient.swift': 'e129b7fcf315bccb5659461cc7cbc16c0132b90e253568bd8e2942ff668106e2', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '83ae4d0033034e1a29eaaad6387f4239b6ce08e5d1272e54cca91163451d52ea', 'Sources/WorkspaceStorage/ProtocolActivation.swift': 'f2b28e208e58686cc95954255643af14240042ceeb4092980cc68177ad7dd421', 'Sources/Coordinator/HubSync/HubOwnerCarrier.swift': '61233c33d04d8a2318f025e727aec08107feb0dc72218f3d6fe2d1994c1d28b4', 'Sources/WorkspaceStorage/AccountSessionComparison.swift': '3209f1d507b6d40be025d6b6eadf3604fef76c6469600701a1dd6ecffc8b0598', 'Tests/WorkspaceStorageTests/AccountSessionComparisonTests.swift': 'a59a7b7224d86e8aa8c072aa7d14c0743c6e0b391d49f0548ac579ae8d4a8d08', 'Tests/CoordinatorTests/AccountSessionComparisonOwnerTests.swift': 'e9109716f7704cf96753d80a1e7ba5053e1e1f1f17adff5253a7d1a6686c5904'}
+    ACCOUNT_SESSION_BUNDLES = ('p2b-package', 'p2b-storage-fields', 'p2b-coordinator', 'p2b-check-boundary', 'p2b-probe-boundary', 'p2b-reference-receipt', 'p2b-presence-authority', 'p2b-decoder-boundary', 'p2b-fileprivate-contexts')
+    ACCOUNT_SESSION_FIXTURES = {'p2b-package': [('SessionPackagePositive.swift', 'import Foundation\nimport WorkspaceStorage\nfunc check(_ db: WorkspaceDatabase) throws -> AccountSessionComparisonSnapshot {\n  let memory = AccountSessionComparisonCheck {}\n  let result = try db.captureAccountSessionComparison(\n    accountID: "fixture", databaseName: db.endpoint.database,\n    hubBase: "https://p2b.invalid", deviceID: "fixture", tokenReference: nil,\n    memoryCheck: memory)\n  try db.compareOriginalAccountSession(expectedSnapshot: result, memoryCheck: memory)\n  switch result.presence {\n  case .nativeAbsent, .nativeLinked: return result\n  }\n}\n', 'b39d9d25ce58637baa3db4cb2df729659f599e7b8db630ad4fb115016568d506'), ('SessionPackageInit.swift', 'import Foundation\n@testable import WorkspaceStorage\nlet forbidden = AccountSessionComparisonSnapshot.init\n', '0bfee3996afa2bf677d23298b1900c1d79c41a8dfd6ae72b717183dd8ca688b5'), ('SessionPackagePresence.swift', 'import Foundation\nimport WorkspaceStorage\nfunc mutate(_ result: inout AccountSessionComparisonSnapshot) {\n  let value = AccountSessionPresence.nativeAbsent\n  result.presence = value\n}\n', 'd80adde73e6e0e64a064e6c5a92a351d752ac663f4cdc59db1981478120c4592')], 'p2b-storage-fields': [('SessionStorageDataPositive.swift', 'import Foundation\n@testable import WorkspaceStorage\nfunc data() {\n  let facts = AccountSessionNativeFacts(databaseName: "fixture", link: .absent)\n  let raw = AccountSessionRawResult(rowCount: 1, fieldCount: 7, fields: [])\n  let field = AccountSessionRawField(\n    label: "database_name", oid: 25, isNull: 0, length: 1, bytes: [120])\n  _ = (facts, raw, field, AccountSessionNativeLink.absent)\n}\n', '20a5b0bfbb959e1b978b97d369461e26582d7d8d69fce4e3841c86db574013dc'), ('SessionStorageContext.swift', 'import Foundation\n@testable import WorkspaceStorage\nfunc read(_ result: AccountSessionComparisonSnapshot) {\n  _ = result.context\n}\n', 'ccba97b7e04740dc137bdae3c877d06519c169cac811f29c6d2a9bcce224f876'), ('SessionStorageFacts.swift', 'import Foundation\n@testable import WorkspaceStorage\nfunc read(_ result: AccountSessionComparisonSnapshot) {\n  _ = result.facts\n}\n', 'c2509e47068be9d640a7b12d72477e7687a839d5c38cab4ba7fb5193f34ca37e')], 'p2b-coordinator': [('SessionCoordinatorPositive.swift', 'import Foundation\nimport WorkspaceStorage\n@testable import Coordinator\nfunc capture(_ owner: HubOwnerCarrier) throws -> HubOwnerCarrier.AccountSessionComparison {\n  let result = try owner.captureInstalledAccountSessionComparison()\n  try result.requireOriginalNativeSession()\n  _ = result.presence\n  return result\n}\n', '78da935aca0ad1ac04e87d4eb33f3e17bb487e132204d3f99b3ae9e116351ebf'), ('SessionCoordinatorInit.swift', 'import Foundation\nimport WorkspaceStorage\n@testable import Coordinator\nlet forbidden = HubOwnerCarrier.AccountSessionComparison.init\n', '967c24c798ca9aef45b70bedf51c6a6921540ca5df42b0c97d2cbbdfea95a226'), ('SessionCoordinatorPayload.swift', 'import Foundation\nimport WorkspaceStorage\n@testable import Coordinator\nfunc read(_ result: HubOwnerCarrier.AccountSessionComparison) {\n  _ = result.snapshot\n}\n', 'ebf860f2a75bb29114116a296b2f6c090567881d382ea676782bd027721ee5c8')], 'p2b-check-boundary': [('SessionOpenCheckPositive.swift', 'import Foundation\nimport WorkspaceStorage\nlet allowedComparisonCheck = AccountSessionComparisonCheck {}\n', '797049ffa4bd1d085bff8b512739d53a8934ca12178bf322a865bb3869c2fd3a'), ('SessionCheckClosure.swift', 'import Foundation\nimport WorkspaceStorage\nfunc read(_ check: AccountSessionComparisonCheck) {\n  _ = check.check\n}\n', '34d6014c6ea2758bd057950f6d4b971e57aa09da91dbee77fe216fe998c52a92'), ('SessionFactoryInjection.swift', 'import Foundation\nimport WorkspaceStorage\n@testable import Coordinator\nfunc inject(_ owner: HubOwnerCarrier, _ check: AccountSessionComparisonCheck) throws {\n  _ = try owner.captureInstalledAccountSessionComparison(memoryCheck: check)\n}\n', '2d53d0f24cda3ea1ad31c84648b2d3e4b5312f388edadaf5d18465067baf860e')], 'p2b-probe-boundary': [('SessionProbePositive.swift', 'import Foundation\n@testable import WorkspaceStorage\nfunc probe() {\n  let hold = AccountSessionComparisonTestHold(\n    phase: .afterConnectBeforeG3, expiry: DispatchTime.now() + .seconds(10))\n  let probe = AccountSessionComparisonTestProbe(hold: hold)\n  let sample: AccountSessionComparisonTestSample = probe.snapshot()\n  _ = (sample, AccountSessionComparisonPhase.afterSlotSignal)\n  _ = AccountSessionComparisonCommand.rollback\n  probe.releaseHold()\n}\n', '0362f2e9e14409bc483cdfdd280c72a53c95be6e5824753f90b6ef667a5ba61c'), ('SessionPackageProbe.swift', 'import Foundation\nimport WorkspaceStorage\nlet forbidden = AccountSessionComparisonTestProbe.self\n', 'b4f12491e080e1e30457691530d0c90462e1c2874f0878e6101c6790a25d2b86'), ('SessionNativeHolder.swift', 'import Foundation\n@testable import WorkspaceStorage\nlet forbidden = AccountSessionNativeConnection.self\n', '982527f45d52e540a88e7d5aa1c68a3838b31df4ffe0a4b890531f7c98c921aa')], 'p2b-reference-receipt': [('SessionReferencePositive.swift', 'import Foundation\n@testable import WorkspaceStorage\nfunc metadata() throws {\n  _ = ProtocolCredentialReference("secret:fixture")\n  _ = try ProtocolNativeMembership.canonicalComparisonBase("https://p2b.invalid")\n}\n', '3a6367c3f8c66ac9bec2e45b0f89fff957d36b3a54781fcc2368c15947494d54'), ('SessionReferenceRaw.swift', 'import Foundation\n@testable import WorkspaceStorage\nfunc read(_ reference: ProtocolCredentialReference) {\n  _ = reference.rawValue\n}\n', '09693c10692a829f9ee3ea111ec68fa71c62a3342b23ab86529a79ad8dbdce8b'), ('SessionSnapshotReceipt.swift', 'import Foundation\nimport WorkspaceStorage\nfunc convert(_ result: AccountSessionComparisonSnapshot) -> ProtocolOwnedProofWriteReceipt {\n  result\n}\n', '32e5bf6dc81e853200123975a3adba773e6ce649f76d8ba9c904dcf02c40db11')], 'p2b-presence-authority': [('SessionPresencePositive.swift', 'import Foundation\nimport WorkspaceStorage\nlet classifications: [AccountSessionPresence] = [.nativeAbsent, .nativeLinked]\n', 'aecb3a5c86804bbb846f5fb6b2a5b26317d259e70d489a388a70f9266d6731ff'), ('SessionWrapperCarrier.swift', 'import Foundation\nimport WorkspaceStorage\n@testable import Coordinator\nfunc convert(_ result: HubOwnerCarrier.AccountSessionComparison) -> HubOwnerCarrier {\n  result\n}\n', '34659aadd777649d7aa01535cfe46087d4f9682b945182937ad38d189e3754cb'), ('SessionSnapshotVerification.swift', 'import Foundation\nimport WorkspaceStorage\nfunc convert(_ result: AccountSessionComparisonSnapshot) -> ProtocolVerificationSnapshot {\n  result\n}\n', 'c5b09167b829b5bb20579da9df819d13815146b76c020cc08d944bd8f3eec5ef')], 'p2b-decoder-boundary': [('SessionDecoderPositive.swift', 'import Foundation\n@testable import WorkspaceStorage\nfunc native(_ result: LibPQ.Result, _ lib: LibPQ) throws -> AccountSessionNativeFacts {\n  try AccountSessionFactsDecoder.decodeNative(result, lib: lib)\n}\nfunc pure(_ result: AccountSessionRawResult) throws -> AccountSessionNativeFacts {\n  try AccountSessionFactsDecoder.decode(result)\n}\n', 'e46bef6669f472442a11a66a512be8515ec80892f7dac5d6bbb2678be6964e37'), ('SessionSnapshotDatabase.swift', 'import Foundation\n@testable import WorkspaceStorage\nfunc read(_ result: AccountSessionComparisonSnapshot) {\n  _ = result.database\n}\n', 'c0abf4749eac4fed6927375b678472d6c4a5b5e337ddb904a45487196da5e7f0'), ('SessionArbitrarySQL.swift', 'import Foundation\nimport WorkspaceStorage\nfunc inject(\n  _ db: WorkspaceDatabase, _ result: AccountSessionComparisonSnapshot,\n  _ check: AccountSessionComparisonCheck) throws {\n  try db.compareOriginalAccountSession(expectedSnapshot: result, memoryCheck: check, sql: "SELECT 1")\n}\n', '5092def7fe0dae5f059c61579221ebf091e67f84633a17031adb159a176c681e')], 'p2b-fileprivate-contexts': [('SessionContextsPositive.swift', 'import Foundation\n@testable import WorkspaceStorage\n@testable import Coordinator\nfunc available(_ owner: HubOwnerCarrier, _ raw: AccountSessionRawResult) throws {\n  _ = try owner.captureInstalledAccountSessionComparison()\n  _ = try AccountSessionFactsDecoder.decode(raw)\n}\n', 'e25b253db02da500623bd569ccaf0238785ad91e636d8f59c30ecf7e6963d2de'), ('SessionStorageContextType.swift', 'import Foundation\n@testable import WorkspaceStorage\nlet forbidden = AccountSessionCapturedContext.self\n', '0ac91367744bdfd490d0cfc9c113001a42c282d4f17f97cb82ea4a9fb3820424'), ('SessionCoordinatorContextType.swift', 'import Foundation\n@testable import WorkspaceStorage\n@testable import Coordinator\nlet forbidden = HubOwnerCarrier.AccountSessionContext.self\n', '0df36d05346433a6553b059bcd4cc8fdfef3396af78aaa060b97143fcf3d2217')]}
+    ACCOUNT_SESSION_EXPECTATIONS = {'SessionPackageInit.swift': (3, 'initializer', 'AccountSessionComparisonSnapshot', 'init(database:context:facts:)'), 'SessionPackagePresence.swift': (5, 'get-only', 'presence', ''), 'SessionStorageContext.swift': (4, 'fileprivate-field', 'context', ''), 'SessionStorageFacts.swift': (4, 'fileprivate-field', 'facts', ''), 'SessionCoordinatorInit.swift': (4, 'initializer', 'AccountSessionComparison', 'init(original:context:snapshot:)'), 'SessionCoordinatorPayload.swift': (5, 'fileprivate-field', 'snapshot', ''), 'SessionCheckClosure.swift': (4, 'private-field', 'check', ''), 'SessionFactoryInjection.swift': (5, 'extra-argument', 'memoryCheck', 'captureInstalledAccountSessionComparison()'), 'SessionPackageProbe.swift': (3, 'hidden-type', 'AccountSessionComparisonTestProbe', ''), 'SessionNativeHolder.swift': (3, 'hidden-type', 'AccountSessionNativeConnection', ''), 'SessionReferenceRaw.swift': (4, 'fileprivate-field', 'rawValue', ''), 'SessionSnapshotReceipt.swift': (4, 'conversion', 'AccountSessionComparisonSnapshot', 'ProtocolOwnedProofWriteReceipt'), 'SessionWrapperCarrier.swift': (5, 'conversion', 'HubOwnerCarrier.AccountSessionComparison', 'HubOwnerCarrier'), 'SessionSnapshotVerification.swift': (4, 'conversion', 'AccountSessionComparisonSnapshot', 'ProtocolVerificationSnapshot'), 'SessionSnapshotDatabase.swift': (4, 'fileprivate-field', 'database', ''), 'SessionArbitrarySQL.swift': (6, 'extra-argument', 'sql', 'compareOriginalAccountSession(expectedSnapshot:memoryCheck:)'), 'SessionStorageContextType.swift': (3, 'hidden-type', 'AccountSessionCapturedContext', ''), 'SessionCoordinatorContextType.swift': (4, 'hidden-type', 'AccountSessionContext', '')}
+    BUNDLE_FIXTURES = {"origin": ORIGIN_FIXTURES, "receipt": RECEIPT_FIXTURES, **ACCOUNT_SESSION_FIXTURES}
+    BUNDLE_MODULES = {"origin": "HubOwnerOriginSealProbe", "receipt": "OwnedProofReceiptSealProbe", **{'p2b-package': 'AccountSessionPackageSealProbe', 'p2b-storage-fields': 'AccountSessionStorageFieldsSealProbe', 'p2b-coordinator': 'AccountSessionCoordinatorSealProbe', 'p2b-check-boundary': 'AccountSessionCheckBoundarySealProbe', 'p2b-probe-boundary': 'AccountSessionProbeBoundarySealProbe', 'p2b-reference-receipt': 'AccountSessionReferenceReceiptSealProbe', 'p2b-presence-authority': 'AccountSessionPresenceAuthoritySealProbe', 'p2b-decoder-boundary': 'AccountSessionDecoderBoundarySealProbe', 'p2b-fileprivate-contexts': 'AccountSessionFileprivateContextsSealProbe'}}
+    if len(sys.argv) != 2 or sys.argv[0] != "-" or sys.argv[1] not in BUNDLE_FIXTURES:
         raise ValueError()
     BUNDLE = sys.argv[1]
-    FIXTURES = ORIGIN_FIXTURES if BUNDLE == "origin" else RECEIPT_FIXTURES
-    MODULE_NAME = "HubOwnerOriginSealProbe" if BUNDLE == "origin" else "OwnedProofReceiptSealProbe"
+    FIXTURES = BUNDLE_FIXTURES[BUNDLE]
+    MODULE_NAME = BUNDLE_MODULES[BUNDLE]
     DEVELOPER = "/Applications/Xcode_26.6.app/Contents/Developer"
     TOOLCHAIN = DEVELOPER + "/Toolchains/XcodeDefault.xctoolchain"
     COMPILER = TOOLCHAIN + "/usr/bin/swiftc"
@@ -194,13 +200,15 @@ try:
         require(isinstance(sample, dict) and set(sample) == {
             "compiler_controls", "compiler_helper", "coordinator_module", "description", "github", "kind", "schema_version",
             "selected_command", "selected_command_fields", "selected_command_key", "selected_tree_nodes",
-            "semantic_fields_qualified", "source_sha256", "receipt_source_sha256", "storage_module", "workflow_sha256"}, "sample_schema")
+            "semantic_fields_qualified", "source_sha256", "receipt_source_sha256", "storage_module", "workflow_sha256",
+            "account_session_source_sha256", "account_session_controls"}, "sample_schema")
         require(field_types(sample) == {
             "compiler_controls": "object", "compiler_helper": "object", "coordinator_module": "object", "description": "object", "github": "object",
             "kind": "string", "schema_version": "integer", "selected_command": "object", "selected_command_fields": "array",
             "selected_command_key": "string", "selected_tree_nodes": "integer", "semantic_fields_qualified": "boolean",
             "source_sha256": "object", "receipt_source_sha256": "object", "storage_module": "object",
-            "workflow_sha256": "string"}, "sample_field_types")
+            "workflow_sha256": "string", "account_session_source_sha256": "object",
+            "account_session_controls": "object"}, "sample_field_types")
         require(field_types(sample["compiler_controls"]) == {
             "count": "integer", "controls_per_bundle": "integer", "bundles": "array",
             "status": "string", "semantic_vectors_qualified": "boolean"}, "sample_control_types")
@@ -218,11 +226,22 @@ try:
         require(field_types(sample["description"]) == {
             "requested_relative_path": "string", "resolved_relative_path": "string", "sha256": "string", "bytes": "integer",
             "top_level_fields": "array", "swift_commands_count": "integer"}, "sample_description_types")
-        require(type(sample["schema_version"]) is int and sample["schema_version"] == 2
+        require(type(sample["schema_version"]) is int and sample["schema_version"] == 3
                 and sample["kind"] == "METADATA_ONLY_COMPILER_CONTROLS_HELD"
                 and sample["semantic_fields_qualified"] is False
                 and sample["compiler_controls"] == {"count": 6, "controls_per_bundle": 3, "bundles": ["origin", "receipt"], "status": "HELD", "semantic_vectors_qualified": False},
                 "sample_contract")
+        require(field_types(sample["account_session_controls"]) == {
+            "count": "integer", "controls_per_bundle": "integer", "bundles": "array",
+            "status": "string", "semantic_vectors_qualified": "boolean"}, "sample_account_session_control_types")
+        require(sample["account_session_controls"] == {
+            "count": 27, "controls_per_bundle": 3, "bundles": list(ACCOUNT_SESSION_BUNDLES),
+            "status": "HELD", "semantic_vectors_qualified": False}, "sample_account_session_contract")
+        require(sample["account_session_source_sha256"] == ACCOUNT_SESSION_SOURCE_PINS,
+                "sample_account_session_source_pin")
+        for relative, expected in ACCOUNT_SESSION_SOURCE_PINS.items():
+            _, content = read_regular(checkout / relative, checkout, MAX_INPUT)
+            require(hashlib.sha256(content).hexdigest() == expected, "current_account_session_source_pin")
         sha, run_id, attempt = (os.environ[name] for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))
         require(re.fullmatch(r"[0-9a-f]{40}", sha) is not None
                 and re.fullmatch(r"[1-9][0-9]{0,19}", run_id) is not None
@@ -318,7 +337,7 @@ try:
         require(sample["storage_module"] == {
             "relative_to_description_parent": "Modules/WorkspaceStorage.swiftmodule", "exists": storage_exists,
             "freshness_proven": False, "import_proven": False}, "storage_module_sample_shape")
-        if BUNDLE == "receipt":
+        if BUNDLE != "origin":
             require(storage_exists, "storage_module_missing")
         checkouts = check_path(str(checkout / ".build/checkouts"), build, "directory")
         for start in range(15, 81, 6):
@@ -372,7 +391,7 @@ try:
                      "DEVELOPER_DIR": DEVELOPER, "TMPDIR": str(private)}
         require(not CANCELLED and time.monotonic() <= START + 4.0, "preparation_budget")
         emit("owner_carrier_compiler_profile", schema_fields=15, original_tokens=116, normalized_tokens=107,
-             sources=47, inputs=51, outputs=48, sample_sha256=hashlib.sha256(sample_bytes).hexdigest(),
+             sources=48, inputs=52, outputs=49, sample_sha256=hashlib.sha256(sample_bytes).hexdigest(),
              description_sha256=hashlib.sha256(description_bytes).hexdigest(), workflow_sha256=sample["workflow_sha256"],
              normal_driver_job_completion_trusted=True, descendant_quiescence_proven=False)
         require(not CANCELLED and time.monotonic() <= START + 4.0, "preparation_budget")
@@ -529,7 +548,107 @@ try:
             seen.append(number)
         require(line_number in seen and annotations == 1, "diagnostic_context_missing")
 
+    def account_session_diagnostics(data, ordinal, path, fixture, checkout):
+        if ordinal == 1:
+            require(not data, "positive_output")
+            return 0, 0, 0
+        require(path.name in ACCOUNT_SESSION_EXPECTATIONS, "account_session_expectation")
+        error_line, category, target, detail = ACCOUNT_SESSION_EXPECTATIONS[path.name]
+        try:
+            text = data.decode("ascii")
+        except UnicodeError:
+            raise Failure("diagnostic_decode") from None
+        require(not any((ord(c) < 32 and c != "\n") or 127 <= ord(c) <= 159 for c in text),
+                "diagnostic_control")
+        require(not any(token in text.lower() for token in (
+            "no such module", "could not build", "failed to build", "cannot load module",
+            "could not find module", "timed out", "timeout", "signal", "stack dump")),
+                "account_session_infrastructure_diagnostic")
+        source = {index + 1: value for index, value in enumerate(fixture.split("\n"))}
+        require(error_line in source, "account_session_expected_line")
+        raw_lines = text.splitlines()
+        require(len(raw_lines) <= 64 and raw_lines.count("") <= 8, "diagnostic_line_bound")
+        blocks = []
+        for rendered in raw_lines:
+            match = re.fullmatch(r"(.+):([1-9][0-9]*):([1-9][0-9]*): (error|note|warning): (.+)", rendered)
+            if match:
+                blocks.append((match.groups(), []))
+            else:
+                require(bool(blocks), "diagnostic_header")
+                blocks[-1][1].append(rendered)
+        require(1 <= len(blocks) <= 4, "diagnostic_block_count")
+        header, context = blocks[0]
+        file_name, line_text, column_text, severity, message = header
+        require(len(line_text) <= 5 and len(column_text) <= 5, "diagnostic_location")
+        column = int(column_text)
+        require(file_name == str(path) and int(line_text) == error_line and severity == "error"
+                and 1 <= column <= len(source[error_line]) + 1, "intended_error_location")
+        note_messages = ()
+        if category == "initializer":
+            type_names = (target, "WorkspaceStorage." + target, "HubOwnerCarrier." + target,
+                          "Coordinator.HubOwnerCarrier." + target)
+            intended = message in tuple(
+                "'" + name + "' initializer is inaccessible due to 'fileprivate' protection level"
+                for name in type_names) or message == (
+                    "'" + detail + "' is inaccessible due to 'fileprivate' protection level")
+            note_messages = ("'" + detail + "' declared here",)
+        elif category in ("fileprivate-field", "private-field"):
+            level = "fileprivate" if category == "fileprivate-field" else "private"
+            intended = message == "'" + target + "' is inaccessible due to '" + level + "' protection level"
+            note_messages = ("'" + target + "' declared here",)
+        elif category == "get-only":
+            intended = message == "cannot assign to property: '" + target + "' is a get-only property"
+            note_messages = ("'" + target + "' declared here",)
+        elif category == "hidden-type":
+            intended = message in (
+                "cannot find '" + target + "' in scope", "cannot find type '" + target + "' in scope",
+                "'" + target + "' is inaccessible due to 'fileprivate' protection level",
+                "'" + target + "' is inaccessible due to 'internal' protection level",
+                "'" + target + "' is not a member type of struct 'Coordinator.HubOwnerCarrier'",
+                "'" + target + "' is not a member type of struct 'HubOwnerCarrier'",
+            )
+            note_messages = ("'" + target + "' declared here",)
+        elif category == "extra-argument":
+            intended = message == "extra argument '" + target + "' in call"
+            if target == "memoryCheck":
+                intended = intended or message == "argument passed to call that takes no arguments"
+            note_messages = ("'" + detail + "' declared here",)
+        elif category == "conversion":
+            quoted = re.findall(r"'([^']+)'", message)
+            types = {value.removeprefix("WorkspaceStorage.").removeprefix("Coordinator.") for value in quoted}
+            intended = (message.startswith("cannot convert return expression of type ")
+                        and " to return type " in message
+                        and bool({target, target.rsplit(".", 1)[-1]} & types)
+                        and detail in types)
+        else:
+            raise Failure("account_session_expectation_category")
+        require(intended, "intended_account_session_error")
+        seen = []
+        annotations = 0
+        for rendered in context:
+            if rendered == "":
+                continue
+            annotation = "  | " + " " * (column - 1) + "`- error: " + message
+            if rendered == annotation:
+                require(bool(seen) and seen[-1] == error_line and annotations == 0, "diagnostic_annotation")
+                annotations += 1
+                continue
+            match = re.fullmatch(r"([ 0-9]{1,2}) \| (.*)", rendered)
+            require(match is not None, "diagnostic_context_form")
+            number_text, value = match.groups()
+            number = int(number_text)
+            require(number in source and value == source[number]
+                    and rendered == f"{number:>1} | {source[number]}", "diagnostic_context_text")
+            require(not seen or number == seen[-1] + 1, "diagnostic_context_order")
+            seen.append(number)
+        require(error_line in seen and annotations == 1, "diagnostic_context_missing")
+        for header, context in blocks[1:]:
+            auxiliary_note(header, context, note_messages)
+        return error_line, column, len(blocks) - 1
+
     def diagnostics(data, ordinal, path, fixture, checkout):
+        if BUNDLE in ACCOUNT_SESSION_BUNDLES:
+            return account_session_diagnostics(data, ordinal, path, fixture, checkout)
         if ordinal == 1:
             require(not data, "positive_output")
             return 0, 0, 0

@@ -63,6 +63,9 @@ public struct ProtocolNativeMembership: Sendable, Equatable, CustomStringConvert
       && ProtocolActivationControl.bytesEqual(a.deviceID, b.deviceID)
       && ProtocolActivationControl.bytesEqual(a.linkJoinedAt, b.linkJoinedAt)
   }
+  static func canonicalComparisonBase(_ value: String) throws -> String {
+    try ProtocolActivationControl.canonicalBase(value)
+  }
   public var description: String { "ProtocolNativeMembership(redacted)" }
   public var debugDescription: String { description }
   public var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }

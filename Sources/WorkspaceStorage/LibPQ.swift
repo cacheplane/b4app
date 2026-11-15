@@ -29,6 +29,7 @@ final class LibPQ: @unchecked Sendable {
   let fname: @convention(c) (Result?, Int32) -> UnsafePointer<CChar>?
   let ftype: @convention(c) (Result?, Int32) -> UInt32
   let getvalue: @convention(c) (Result?, Int32, Int32) -> UnsafePointer<CChar>?
+  let getlength: @convention(c) (Result?, Int32, Int32) -> Int32
   let getisnull: @convention(c) (Result?, Int32, Int32) -> Int32
   let cmdTuples: @convention(c) (Result?) -> UnsafePointer<CChar>?
   let clear: @convention(c) (Result?) -> Void
@@ -78,6 +79,7 @@ final class LibPQ: @unchecked Sendable {
       ftype: try symbol("PQftype", as: (@convention(c) (Result?, Int32) -> UInt32).self),
       getvalue: try symbol(
         "PQgetvalue", as: (@convention(c) (Result?, Int32, Int32) -> UnsafePointer<CChar>?).self),
+      getlength: try symbol("PQgetlength", as: (@convention(c) (Result?, Int32, Int32) -> Int32).self),
       getisnull: try symbol("PQgetisnull", as: (@convention(c) (Result?, Int32, Int32) -> Int32).self),
       cmdTuples: try symbol("PQcmdTuples", as: (@convention(c) (Result?) -> UnsafePointer<CChar>?).self),
       clear: try symbol("PQclear", as: (@convention(c) (Result?) -> Void).self))
@@ -104,6 +106,7 @@ final class LibPQ: @unchecked Sendable {
     fname: @escaping @convention(c) (Result?, Int32) -> UnsafePointer<CChar>?,
     ftype: @escaping @convention(c) (Result?, Int32) -> UInt32,
     getvalue: @escaping @convention(c) (Result?, Int32, Int32) -> UnsafePointer<CChar>?,
+    getlength: @escaping @convention(c) (Result?, Int32, Int32) -> Int32,
     getisnull: @escaping @convention(c) (Result?, Int32, Int32) -> Int32,
     cmdTuples: @escaping @convention(c) (Result?) -> UnsafePointer<CChar>?,
     clear: @escaping @convention(c) (Result?) -> Void
@@ -122,6 +125,7 @@ final class LibPQ: @unchecked Sendable {
     self.fname = fname
     self.ftype = ftype
     self.getvalue = getvalue
+    self.getlength = getlength
     self.getisnull = getisnull
     self.cmdTuples = cmdTuples
     self.clear = clear

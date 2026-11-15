@@ -349,3 +349,115 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
     return key
   }
 }
+
+extension HubOwnerCarrier {
+  fileprivate struct AccountSessionContext: Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible, CustomReflectable
+  {
+    let accountID: String
+    let databaseName: String
+    let hubBase: String
+    let deviceID: String
+    let tokenReference: String?
+
+    fileprivate init(account: AccountRow) {
+      accountID = account.id
+      databaseName = account.database
+      hubBase = account.hubURL
+      deviceID = account.deviceId
+      tokenReference = account.tokenRef
+    }
+
+    fileprivate func requireMatches(_ account: AccountRow) throws {
+      guard accountID.utf8.elementsEqual(account.id.utf8),
+        databaseName.utf8.elementsEqual(account.database.utf8),
+        hubBase.utf8.elementsEqual(account.hubURL.utf8),
+        deviceID.utf8.elementsEqual(account.deviceId.utf8)
+      else { throw HubOwnerCarrier.comparisonFailure }
+      switch (tokenReference, account.tokenRef) {
+      case (nil, nil): break
+      case (.some(let original), .some(let current)):
+        guard original.utf8.elementsEqual(current.utf8) else { throw HubOwnerCarrier.comparisonFailure }
+      default: throw HubOwnerCarrier.comparisonFailure
+      }
+    }
+
+    var description: String { "AccountSessionContext(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+  }
+
+  /// Original weak lifecycle owners plus immutable context/native data; never an admission role.
+  struct AccountSessionComparison: Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible, CustomReflectable
+  {
+    fileprivate let original: HubOwnerCarrier
+    fileprivate let context: AccountSessionContext
+    fileprivate let snapshot: AccountSessionComparisonSnapshot
+
+    fileprivate init(
+      original: HubOwnerCarrier, context: AccountSessionContext,
+      snapshot: AccountSessionComparisonSnapshot
+    ) {
+      self.original = original
+      self.context = context
+      self.snapshot = snapshot
+    }
+
+    var presence: AccountSessionPresence { snapshot.presence }
+
+    func requireOriginalNativeSession() throws {
+      do {
+        let original = self.original
+        let context = self.context
+        guard case .scopeOwner(let local) = original.payload else { throw HubOwnerCarrier.comparisonFailure }
+        let owners = try original.liveScopeOwners(local)
+        // Retain these exact owners in this OUTER frame through every storage cleanup/error.
+        defer { withExtendedLifetime(owners) {} }
+        try original.requireInstalledScopeOwnerMemory()
+        try context.requireMatches(owners.scope.account)
+        try original.requireInstalledScopeOwnerMemory()
+        let checkBody: @Sendable () throws -> Void = { [original, owners, context] in
+          try original.requireInstalledScopeOwnerMemory()
+          try context.requireMatches(owners.scope.account)
+          try original.requireInstalledScopeOwnerMemory()
+        }
+        let check = AccountSessionComparisonCheck(checkBody)
+        defer { withExtendedLifetime((checkBody, check)) {} }
+        try owners.scope.database.compareOriginalAccountSession(
+          expectedSnapshot: snapshot, memoryCheck: check)
+        try checkBody()
+      } catch { throw HubOwnerCarrier.comparisonFailure }
+    }
+
+    var description: String { "AccountSessionComparison(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+  }
+
+  /// Dormant installed-owner-only capture; no active caller or injected owner/check is admitted.
+  func captureInstalledAccountSessionComparison() throws -> AccountSessionComparison {
+    do {
+      let original = self
+      guard case .scopeOwner(let local) = original.payload else { throw Self.comparisonFailure }
+      let owners = try original.liveScopeOwners(local)
+      defer { withExtendedLifetime(owners) {} }
+      try original.requireInstalledScopeOwnerMemory()
+      let context = AccountSessionContext(account: owners.scope.account)
+      try original.requireInstalledScopeOwnerMemory()
+      let checkBody: @Sendable () throws -> Void = { [original, owners, context] in
+        try original.requireInstalledScopeOwnerMemory()
+        try context.requireMatches(owners.scope.account)
+        try original.requireInstalledScopeOwnerMemory()
+      }
+      let check = AccountSessionComparisonCheck(checkBody)
+      defer { withExtendedLifetime((checkBody, check)) {} }
+      let snapshot = try owners.scope.database.captureAccountSessionComparison(
+        accountID: context.accountID, databaseName: context.databaseName,
+        hubBase: context.hubBase, deviceID: context.deviceID,
+        tokenReference: context.tokenReference, memoryCheck: check)
+      try checkBody()
+      return AccountSessionComparison(original: original, context: context, snapshot: snapshot)
+    } catch { throw Self.comparisonFailure }
+  }
+}

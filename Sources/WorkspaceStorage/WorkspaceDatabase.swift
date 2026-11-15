@@ -1244,3 +1244,19 @@ extension WorkspaceDatabase {
     try pool.withOwnedProofConnection(body)
   }
 }
+
+extension WorkspaceDatabase {
+  func readAccountSessionNativeFacts(
+    memoryCheck: AccountSessionComparisonCheck
+  ) throws -> AccountSessionNativeFacts {
+    try pool.readAccountSessionNativeFacts(memoryCheck: memoryCheck)
+  }
+
+  func installAccountSessionComparisonTestProbe(_ probe: AccountSessionComparisonTestProbe) -> Bool {
+    pool.installAccountSessionComparisonTestProbe(probe)
+  }
+
+  func clearAccountSessionComparisonTestProbe(_ expected: AccountSessionComparisonTestProbe) -> Bool {
+    pool.clearAccountSessionComparisonTestProbe(expected)
+  }
+}
