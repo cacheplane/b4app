@@ -128,4 +128,48 @@ import WorkspaceProtocol
     #expect(DenseTranscript.statusLabel("unknown") == "Unknown")
     #expect(DenseTranscript.statusLabel("somethingNew") == "somethingNew")
   }
+
+  // MARK: the window of latest rows
+
+  private func entries(_ count: Int, usersAt users: Set<Int> = []) -> [DenseTranscript.Entry] {
+    (0..<count).map { index in
+      .item(users.contains(index) ? user("e\(index)") : message("e\(index)"))
+    }
+  }
+
+  @Test func aThreadWithinAPageIsDrawnWhole() {
+    let all = entries(DenseTranscript.page)
+    #expect(DenseTranscript.window(all, shown: DenseTranscript.page) == .init(hidden: 0, entries: all))
+    #expect(DenseTranscript.window([], shown: DenseTranscript.page) == .init(hidden: 0, entries: []))
+  }
+
+  @Test func aLongerThreadDrawsItsLatestPage() {
+    let all = entries(400)
+    let window = DenseTranscript.window(all, shown: DenseTranscript.page)
+    #expect(window.hidden == 250)
+    #expect(window.entries.map(\.id) == all.suffix(150).map(\.id))
+    // A page more.
+    #expect(DenseTranscript.window(all, shown: 2 * DenseTranscript.page).hidden == 100)
+    #expect(DenseTranscript.window(all, shown: 3 * DenseTranscript.page).hidden == 0)
+  }
+
+  /// The cut moves back to a user's message that stands just before it, and no further than that.
+  @Test func theWindowBeginsAtANearbyUserMessage() {
+    let near = DenseTranscript.window(entries(400, usersAt: [100, 240]), shown: DenseTranscript.page)
+    #expect(near.hidden == 240)
+    #expect(near.entries.first?.id == "e240")
+    let onTheCut = DenseTranscript.window(entries(400, usersAt: [250]), shown: DenseTranscript.page)
+    #expect(onTheCut.hidden == 250)
+    let far = DenseTranscript.window(entries(400, usersAt: [100]), shown: DenseTranscript.page)
+    #expect(far.hidden == 250)
+  }
+
+  /// Nothing is dropped or drawn twice: what is hidden and what is drawn make the thread.
+  @Test func hiddenAndDrawnMakeTheWholeThread() {
+    let all = entries(1_000, usersAt: Set(stride(from: 0, to: 1_000, by: 7)))
+    for pages in 1...8 {
+      let window = DenseTranscript.window(all, shown: pages * DenseTranscript.page)
+      #expect(all.prefix(window.hidden).map(\.id) + window.entries.map(\.id) == all.map(\.id))
+    }
+  }
 }

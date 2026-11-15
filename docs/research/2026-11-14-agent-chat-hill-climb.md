@@ -72,7 +72,7 @@ Severity is S4 (integrity or control), S3 (misleads or blocks a core task), S2 (
 | 15 | A new turn started from another device takes a reader who scrolled back to the end, as a local send does | Read (D-223 call 7) | S1 | Open |
 | 16 | A Codex request the adapter declines automatically resolves without a thread id, so its row can stay pending until Codex resolves it | Risk | S2 | Open |
 | 17 | Headings, lists and tables in a reply are literal text; tool output and diffs have no Copy | Read | S1 | Open |
-| 18 | A thread whose first message is several windows tall opens partway up it in the running app, the later messages not laid out; also on `main` | Reproduced in the harness app on both; not in a hosted view | S2 | Open |
+| 18 | A thread whose first message is several windows tall opens partway up it in the running app, the later messages not laid out; also on `main` | Reproduced in the harness app on both; not in a hosted view | S2 | D-237 |
 
 ## What was reusable
 

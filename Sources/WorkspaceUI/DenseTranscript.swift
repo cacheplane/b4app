@@ -190,6 +190,30 @@ enum DenseTranscript {
     }
   }
 
+  /// How many rows a thread draws before "Show earlier": the transcript lays out every row it draws.
+  static let page = 150
+
+  /// The latest part of a thread's rows, and how many earlier ones it leaves out.
+  struct Window: Equatable, Sendable {
+    var hidden: Int
+    var entries: [Entry]
+  }
+
+  /// The last `shown` entries, begun at a user's message when one stands within `page / 5` entries
+  /// before the cut, so a turn is not begun in its middle when its start is near.
+  static func window(_ entries: [Entry], shown: Int) -> Window {
+    guard entries.count > shown, shown > 0 else { return Window(hidden: 0, entries: entries) }
+    var start = entries.count - shown
+    let reach = max(start - page / 5, 0)
+    if let turnStart = entries[reach..<start + 1].lastIndex(where: { entry in
+      if case .item(let item) = entry { return item.role == .user }
+      return false
+    }) {
+      start = turnStart
+    }
+    return Window(hidden: start, entries: Array(entries[start...]))
+  }
+
   /// The group each item belongs to, in the order given: its turn, a history group opened by a
   /// turnless user message, or the group of the item before it; nil before any group.
   private static func groupKeys(_ items: [DisplayItem]) -> [String?] {

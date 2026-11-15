@@ -9,7 +9,20 @@ import WorkspaceProtocol
   /// the transcript neither pins its bottom edge nor follows the stream, so the opened line stays put.
   private(set) var holds = false
 
+  /// How many of the thread's latest rows are drawn; "Show earlier" adds a page.
+  private(set) var shown = DenseTranscript.page
+  /// The row that stood first when "Show earlier" was pressed: it is kept at the top of the view as
+  /// the earlier rows are drawn above it.
+  private(set) var kept: String?
+
   init(open: Set<String> = []) { self.open = open }
+
+  /// The reader asked for earlier rows: a page more, and the view is theirs until they return to the end.
+  func showEarlier(keeping first: String?) {
+    kept = first
+    shown += DenseTranscript.page
+    holds = true
+  }
 
   func toggle(_ group: String) {
     if open.contains(group) { open.remove(group) } else { open.insert(group) }
@@ -29,6 +42,8 @@ import WorkspaceProtocol
 
   func reset() {
     if !open.isEmpty { open = [] }
+    if shown != DenseTranscript.page { shown = DenseTranscript.page }
+    kept = nil
     release()
   }
 }
@@ -107,7 +122,7 @@ struct TranscriptView: View {
         .scrollDismissesKeyboard(.interactively)
       #endif
       // A thread opens at its latest message. When the content shrinks (a Stop drops a reply's live
-      // text, a reload re-lays the lazy stack), keep the bottom edge in place; scrolling to "bottom" in
+      // text, a reload draws fewer rows), keep the bottom edge in place; scrolling to "bottom" in
       // the same update reads the old layout and leaves the view past the new end.
       // While an opened turn holds the view, its top edge is kept instead, so the line the reader
       // pressed stays where it was as its steps are drawn under it and the stream goes on below.
@@ -136,6 +151,10 @@ struct TranscriptView: View {
           .accessibilityIdentifier("jump-to-latest")
           .accessibilityHint("Scrolls to the end of the thread and follows new output")
         }
+      }
+      // Earlier rows were drawn above: the row that stood first stays at the top of the view.
+      .onChange(of: folds.shown) { _, _ in
+        if let kept = folds.kept { proxy.scrollTo(kept, anchor: .top) }
       }
       .onChange(of: detail.items.count) { _, _ in follow(proxy) }
       .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in follow(proxy) }
@@ -177,37 +196,41 @@ struct TranscriptContent: View {
   var pendingStatus: String? = nil
   var dense = false
   let folds: TranscriptFolds
-  /// The transcript scrolls, so its stack is lazy. A test measuring the content outside a scroll view
-  /// turns this off: a lazy stack there estimates the height of rows it has not laid out.
-  var lazy = true
-
   var body: some View {
-    Group {
-      if lazy {
-        LazyVStack(alignment: .leading, spacing: LLA.Space.l) { rows }
-      } else {
-        VStack(alignment: .leading, spacing: LLA.Space.l) { rows }
-      }
-    }
-    .padding(.horizontal, LLA.Metrics.margin)
-    .padding(.vertical, LLA.Metrics.margin)
-    .frame(maxWidth: LLA.Metrics.column, alignment: .leading)
-    .frame(maxWidth: .infinity)
+    // Not a lazy stack. A lazy stack sizes rows it has not laid out by estimate, and with the bottom
+    // edge pinned it kept that estimate: a thread whose first reply was several windows tall opened
+    // partway up it with the later messages never laid out, and a short thread could stop following
+    // its stream. Every drawn row is laid out, and `DenseTranscript.window` bounds how many there are.
+    VStack(alignment: .leading, spacing: LLA.Space.l) { rows }
+      .padding(.horizontal, LLA.Metrics.margin)
+      .padding(.vertical, LLA.Metrics.margin)
+      .frame(maxWidth: LLA.Metrics.column, alignment: .leading)
+      .frame(maxWidth: .infinity)
   }
 
   /// Dense folds each turn's work into a line; normal draws every item. Both settle an ended turn's
   /// open steps and put its note with it.
-  private var entries: [DenseTranscript.Entry] {
-    dense
-      ? DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open)
-      : DenseTranscript.plain(items: detail.items, turns: detail.turns)
+  private var window: DenseTranscript.Window {
+    DenseTranscript.window(
+      dense
+        ? DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open)
+        : DenseTranscript.plain(items: detail.items, turns: detail.turns),
+      shown: folds.shown)
   }
 
   @ViewBuilder private var rows: some View {
     if detail.items.isEmpty && pending == nil {
       Text("No messages yet. Say something below.").llaMuted()
     }
-    ForEach(entries) { entry in
+    let window = window
+    if window.hidden > 0 {
+      Button("Show earlier") { folds.showEarlier(keeping: window.entries.first?.id) }
+        .buttonStyle(.llaLink)
+        .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row)
+        .accessibilityLabel("Show earlier, \(window.hidden) more")
+        .accessibilityIdentifier("show-earlier")
+    }
+    ForEach(window.entries) { entry in
       switch entry {
       case .item(let item):
         TranscriptRow(item: item, liveText: item.nativeItemId.flatMap { detail.liveText[$0] })
@@ -218,7 +241,7 @@ struct TranscriptContent: View {
         }
         .id(entry.id)
       case .note(let turn):
-        TurnNoteRow(turn: turn)
+        TurnNoteRow(turn: turn).id(entry.id)
       }
     }
     if let pending {
@@ -261,7 +284,7 @@ struct StepsLineRow: View {
         if !segments.isEmpty { parts }
         // A running step's name is free text ("swift test"), so a dot keeps the action word from
         // reading as its last word. It is part of the action's text, not a view of its own: a third
-        // view in the row kept the lazy stack from settling (`DenseTranscriptViewTests`).
+        // view in the row kept a lazy stack from settling when the transcript had one.
         // Stacked, the action word has the row's width to itself and wraps rather than overrun it.
         Text(segments.isEmpty || stacked ? line.action(open: open) : "· \(line.action(open: open))")
           .foregroundStyle(LLA.Color.muted)
