@@ -17,14 +17,14 @@ struct ConnectionsView: View {
         if let error = model.diagnosticsError {
           Text(error).font(LLAFont.small).foregroundStyle(LLA.Color.danger)
         }
-        if model.connections.isEmpty {
+        if model.enabledConnections.isEmpty {
           Text(
             WorkspaceDevice.managesWorkspace
               ? "No connections yet. Add Codex, Claude, or a B4 agent with +." : "No connections yet."
           )
           .llaSmallMuted()
         }
-        ForEach(model.connections) { connection in
+        ForEach(model.enabledConnections) { connection in
           ConnectionCardView(model: model, connection: connection) { editing = connection }
         }
         if let error = model.lastError, model.settingsVisible, model.settingsPage == .connections {
@@ -54,7 +54,7 @@ struct ConnectionsView: View {
       // alone, and one checked in the last two minutes is not checked again.
       let busy = Set(
         model.activeTurns.keys.compactMap { id in model.threads.first { $0.id == id }?.connectionId })
-      for connection in model.connections where !busy.contains(connection.id) {
+      for connection in model.enabledConnections where !busy.contains(connection.id) {
         await model.checkInBackground(id: connection.id)
       }
     }

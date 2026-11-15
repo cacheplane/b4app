@@ -93,7 +93,7 @@ public actor Router {
     case .connectionList, .threadList, .draftRead, .draftSave, .eventsSnapshot, .connectionAdd,
       .connectionInspect, .connectionLogin, .threadCreate, .threadRead, .threadUpdate, .threadReconcile,
       .turnSend, .turnInterrupt, .turnAbandon, .requestRespond, .credentialAdd, .serverAdd, .serverList,
-      .serverStart, .serverStatus, .serverLogs, .serverRestart, .serverStop, .serverInspect,
+      .serverStart, .serverStatus, .serverLogs, .serverRestart, .serverStop, .serverInspect, .serverRemove,
       .workspaceActiveWork, .workspaceStopLocalWork, .workspaceReconcile, .databaseStatus, .databaseBackup,
       .databaseRestore, .databaseImportSQLite, .hubStatus, .hubLeave, .hubPair, .hubPairStatus,
       .settingsRead, .settingsUpdate, .environmentList, .environmentCreate, .environmentUpdate,
@@ -329,6 +329,10 @@ public actor Router {
       let params = try command.params(for: ServerStop.self)
       return try JSONValue(
         encoding: try await servers.stop(id: params.serverId, force: params.force ?? false))
+    case .serverRemove:
+      let params = try command.params(for: ServerRemove.self)
+      return try JSONValue(
+        encoding: try await servers.remove(id: params.serverId, force: params.force ?? false))
     case .serverRestart:
       let params = try command.params(for: ServerRestart.self)
       return try JSONValue(

@@ -95,6 +95,7 @@ struct B4ProjectCard: View {
   @Bindable var model: WorkspaceModel
   let server: LocalServer
   @State private var showingLog = false
+  @State private var confirmingRemove = false
   @Environment(\.dynamicTypeSize) private var typeSize
   @ScaledMetric(relativeTo: .body) private var markSlot: CGFloat = 24
 
@@ -121,6 +122,12 @@ struct B4ProjectCard: View {
       }
     }
     .sheet(isPresented: $showingLog) { ServerLogSheet(model: model, server: server) }
+    .alert(model.removeConfirmation(for: server).title, isPresented: $confirmingRemove) {
+      Button("Remove", role: .destructive) { Task { await model.removeServer(id: server.id) } }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(model.removeConfirmation(for: server).message)
+    }
     .accessibilityElement(children: .contain)
   }
 
@@ -213,6 +220,10 @@ struct B4ProjectCard: View {
       Button("Inspect agents") { Task { await model.inspectServer(id: server.id) } }
         .disabled(running && server.health == .starting)
       Button("Show log") { showingLog = true }
+      Divider()
+      Button("Remove…", role: .destructive) { confirmingRemove = true }
+        .disabled(model.busy)
+        .accessibilityIdentifier("server-remove-\(server.name)")
     } label: {
       Image(systemName: "ellipsis")
         .font(.system(size: 13, weight: .semibold))

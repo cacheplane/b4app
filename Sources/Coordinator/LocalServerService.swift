@@ -289,6 +289,25 @@ public actor LocalServerService {
     try await stop(id: id, force: force, gracePeriod: Self.stopGracePeriod)
   }
 
+  /// Take a project off this Mac (D-231). The server is stopped first, with a stop's refusal while a
+  /// turn is running; a process that is not provably ours is left running, as a stop leaves it. Then
+  /// the row goes and its route connections are disabled in one write, and the app's own log file is
+  /// deleted. The project's folder is never touched.
+  public func remove(id: String, force: Bool) async throws -> ServerRemove.Result {
+    let stopped = try await stop(id: id, force: force).server
+    let connections = try db.deleteLocalServer(id: id)
+    if let logPath = stopped.logPath { try? FileManager.default.removeItem(atPath: logPath) }
+    logger.info("removed \(stopped.name, privacy: .public)")
+    for connection in connections {
+      connectionContinuation.yield(
+        AdapterEvent.connectionChanged(
+          connectionId: connection.id, status: .offline, authStatus: connection.authStatus,
+          transport: .disconnected, message: "Its project was removed from this Mac."))
+    }
+    await context.eventLog.publish(AdapterEvent.serverRemoved(serverId: id))
+    return ServerRemove.Result(serverId: id)
+  }
+
   /// `stop` with the time between SIGTERM and SIGKILL.
   private func stop(id: String, force: Bool, gracePeriod: Duration) async throws -> ServerAdd.Result {
     while let current = inFlight[id] { await settle(id, current.task) }

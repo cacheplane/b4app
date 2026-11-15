@@ -10,6 +10,7 @@ struct Server: AsyncParsableCommand {
     abstract: "Register and run local B4 projects as owned servers.",
     subcommands: [
       Add.self, List.self, Start.self, Status.self, Logs.self, Restart.self, Stop.self, Inspect.self,
+      Remove.self,
     ])
 
   /// Start, restart, add, and inspect wait for readiness or route discovery (design D-028 notes).
@@ -217,6 +218,39 @@ struct Server: AsyncParsableCommand {
       false
     func run() async throws {
       await Server.lifecycle(ServerRestart.self, name: name, force: force, json: global.json)
+    }
+  }
+
+  struct Remove: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+      abstract:
+        "Take a project off this Mac: stop its server and disable its route connections. Threads are kept, read-only; the project's folder is not touched."
+    )
+    @OptionGroup var global: GlobalOptions
+    @Argument var name: String
+    @Flag(help: "Remove even while a route connection has a running turn (the turn is lost).") var force =
+      false
+    func run() async throws {
+      do {
+        let client = try await Link.open()
+        let target = try await Server.resolve(client, name)
+        let result = try await client.request(
+          ServerRemove.self, ServerLifecycleParams(serverId: target.id, force: force ? true : nil),
+          options: Link.mutation(timeout: Server.longOperation))
+        await client.close()
+        print(global.json ? try Format.jsonOk(result) : "Removed \(target.name).")
+        Foundation.exit(Exit.ok)
+      } catch {
+        let failure = WorkspaceError.from(error)
+        if !global.json, failure.details?["reason"]?.stringValue == "turn_active" {
+          let threads = failure.details?["threadIds"]?.arrayValue?.compactMap(\.stringValue) ?? []
+          FileHandle.standardError.write(
+            Data(
+              "Running turns on threads: \(threads.joined(separator: ", ")). Pass --force to remove anyway.\n"
+                .utf8))
+        }
+        Output.fail(error, json: global.json)
+      }
     }
   }
 
