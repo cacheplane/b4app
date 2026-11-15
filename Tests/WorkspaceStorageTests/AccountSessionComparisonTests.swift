@@ -601,16 +601,14 @@ import WorkspaceProtocol
     for guardNumber in 0...9 {
       try P2BNativeFixture.withFixture { f in
         let probe = try f.probe()
-        let calls = Mutex(0)
+        let calls = P2BCheckCounter()
         let check = AccountSessionComparisonCheck {
-          let n = calls.withLock {
-            $0 += 1; return $0
-          }
+          let n = calls.increment()
           if n == guardNumber + 1 { throw P2BSensitiveFailure() }
         }
         p2bRefusal { _ = try f.capture(check: check) }
         let sample = probe.snapshot()
-        let callsStop = calls.withLock { $0 } == guardNumber + 1
+        let callsStop = calls.read() == guardNumber + 1
         let starts = sample.commandStarts
         let expectedNormal = guardNumber <= 3 ? 0 : min(guardNumber - 3, 4)
         let normalCount = starts[0...3].reduce(0, +) == UInt(expectedNormal)
@@ -1050,6 +1048,17 @@ extension P2BNativeFixture {
     }
   }
 }
+
+private final class P2BCheckCounter: Sendable {
+  private let value = Mutex(0)
+  func increment() -> Int {
+    value.withLock {
+      $0 += 1; return $0
+    }
+  }
+  func read() -> Int { value.withLock { $0 } }
+}
+
 private struct P2BSensitiveFailure: Error, CustomStringConvertible {
   var description: String { "secret:sensitive-callback-https://private.invalid/SELECT" }
 }
