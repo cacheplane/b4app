@@ -380,7 +380,8 @@ struct TranscriptRow: View {
         // Trimmed: a reply's trailing blank lines otherwise widen the gap to the next item unevenly.
         MarkdownText(
           text: (liveText ?? item.payload["text"]?.stringValue ?? "").trimmingCharacters(
-            in: .whitespacesAndNewlines)
+            in: .whitespacesAndNewlines),
+          streaming: liveText != nil
         )
         .frame(maxWidth: .infinity, alignment: .leading)
       } else {
@@ -408,8 +409,34 @@ struct TranscriptRow: View {
   }
 }
 
-/// Markdown rendered through Foundation's parser: no HTML, no scripts, links stay inert text.
+/// A reply: prose through Foundation's parser (no HTML, no scripts, links stay inert text) and each
+/// fenced block as code. A reply with no fence is one text, as it always was.
 struct MarkdownText: View {
+  let text: String
+  /// The reply is still arriving: an open fence may yet close, so it offers no Copy.
+  var streaming = false
+
+  var body: some View {
+    let blocks = MarkdownBlocks.split(text)
+    if blocks.contains(where: { if case .code = $0 { true } else { false } }) {
+      VStack(alignment: .leading, spacing: LLA.Space.m) {
+        ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+          switch block {
+          case .prose(let prose): MarkdownProse(text: prose)
+          case .code(let language, let code, let closed):
+            CodeFence(language: language, code: code, copyable: closed || !streaming)
+          }
+        }
+      }
+    } else {
+      MarkdownProse(text: text)
+    }
+  }
+}
+
+/// Inline Markdown, whitespace kept. Equatable so a block whose text did not change is not parsed
+/// again as the reply's last block streams.
+struct MarkdownProse: View, Equatable {
   let text: String
 
   var body: some View {
@@ -426,6 +453,72 @@ struct MarkdownText: View {
     .llaBody()
     .lineSpacing(4)
     .textSelection(.enabled)
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+/// A fenced block: its language, Copy, and the code at its full height, scrolling sideways inside the
+/// block when a line is wider than the column. Copy takes the code exactly, without fence or language.
+struct CodeFence: View, Equatable {
+  let language: String?
+  let code: String
+  let copyable: Bool
+  @State private var copied = false
+
+  nonisolated static func == (lhs: CodeFence, rhs: CodeFence) -> Bool {
+    lhs.language == rhs.language && lhs.code == rhs.code && lhs.copyable == rhs.copyable
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: LLA.Space.s) {
+        Text(language ?? "code").font(LLAFont.caption).foregroundStyle(LLA.Color.codeFg.opacity(0.7))
+        Spacer()
+        if copyable {
+          Button(copied ? "Copied" : "Copy") {
+            Clipboard.copy(code)
+            copied = true
+            Task {
+              try? await Task.sleep(for: .seconds(2))
+              copied = false
+            }
+          }
+          .buttonStyle(.plain)
+          .font(LLAFont.caption)
+          .foregroundStyle(LLA.Color.codeFg)
+          .frame(minHeight: LLA.Metrics.row)
+          .contentShape(Rectangle())
+          .accessibilityLabel(copied ? "Copied" : "Copy code")
+          .accessibilityIdentifier("copy-code")
+        }
+      }
+      .padding(.horizontal, LLA.Space.m)
+      .frame(minHeight: max(LLA.Metrics.row, 32))
+      ScrollView(.horizontal) {
+        Text(code.isEmpty ? " " : code)
+          .font(LLAFont.codeSmall)
+          .foregroundStyle(LLA.Color.codeFg)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: true, vertical: true)
+          .padding([.horizontal, .bottom], LLA.Space.m)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous).fill(LLA.Color.codeBg))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(language.map { "\($0) code" } ?? "Code")
+  }
+}
+
+/// The system pasteboard, for a Copy the reader pressed.
+enum Clipboard {
+  @MainActor static func copy(_ text: String) {
+    #if os(macOS)
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(text, forType: .string)
+    #else
+      UIPasteboard.general.string = text
+    #endif
   }
 }
 
