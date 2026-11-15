@@ -15,7 +15,7 @@ The checks for D-229. Branch `blove/ci-waits-and-queue`, from `main` 3a32af8.
 - `python3 -m unittest discover -s Scripts/tests -p 'test_*.py'`: 47 passed, among them the scope's cases (a path outside the trees, a rename out of a tree, an empty or short list) and the workflow's shape (every macOS job runs unless the scope said `false`; the builds' check reads the four build steps and accepts a skip only with that `false`).
 - `actionlint` clean; `swift format lint --strict --recursive Sources Tests Apps Package.swift` clean; `Scripts/docs-index.sh --check` passes.
 
-### The first hosted run (43629968947, this branch's first commit 2ef0000, all 10 checks passed)
+### The first hosted run (43629968947, this branch's first commit 5ddc0f8, all 10 checks passed)
 
 | Job | Waited for a runner | Ran | Its test step: before, now | Its tests alone: before, now |
 | --- | --- | --- | --- | --- |
