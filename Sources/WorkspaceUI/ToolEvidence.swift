@@ -28,6 +28,8 @@ enum ToolEvidence {
     /// The payload as JSON with sorted keys, cut at `rawLimit`, when nothing above was found: an unknown item type is
     /// still inspectable.
     var raw: String?
+    /// `raw` is not the whole payload: the card says so.
+    var rawCut = false
   }
 
   static let rawLimit = 2_000
@@ -43,7 +45,9 @@ enum ToolEvidence {
       exitCode: payload["exitCode"]?.numberValue.map { Int($0) }, changes: changes, raw: nil)
     if detail.cwd == nil, detail.input == nil, detail.output == .none, detail.exitCode == nil, changes.isEmpty
     {
-      detail.raw = String((text(payload) ?? String(describing: payload)).prefix(rawLimit))
+      let whole = text(payload) ?? String(describing: payload)
+      detail.raw = String(whole.prefix(rawLimit))
+      detail.rawCut = whole.count > rawLimit
     }
     return detail
   }

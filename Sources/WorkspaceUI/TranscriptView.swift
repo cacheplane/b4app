@@ -555,6 +555,9 @@ struct ToolCard: View {
         }
         if let raw = detail.raw {
           Text(raw).llaCodeMuted().textSelection(.enabled)
+          if detail.rawCut {
+            Text("Cut at \(ToolEvidence.rawLimit) characters.").llaSmallMuted()
+          }
         }
       }
     }

@@ -90,5 +90,7 @@ import WorkspaceProtocol
         "plan_update", ["event": "plan_update", "zdata": .string(String(repeating: "x", count: 5_000))]))
     #expect(detail.raw?.hasPrefix("{\n  \"event\" : \"plan_update\"") == true)
     #expect(detail.raw?.count == ToolEvidence.rawLimit)
+    #expect(detail.rawCut)
+    #expect(!ToolEvidence.detail(of: tool("plan_update", ["event": "plan_update"])).rawCut)
   }
 }
