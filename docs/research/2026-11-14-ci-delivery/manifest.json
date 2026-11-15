@@ -196,6 +196,16 @@
         "E3 kept: journey sums 268 and 401 s",
         "the run's longest job was 1,083 s and its macOS runner time 3,793 s, against baseline medians of 967 and 3,235 s; neither threshold is met and no improvement is claimed"
       ]
+    },
+    {
+      "at": "2026-11-15T07:10:00Z",
+      "why": "the second hosted run, 43684652276 (commit 46abf6e: E3 and E4, E2 reverted; green on the first attempt); no threshold or rule changes",
+      "changes": [
+        "longest job 985 s and macOS runner time 3,155 s against baseline medians of 967 and 3,235 s; neither threshold is met",
+        "E4's rule was met again (the output arrived), and E4 was reverted at the owner's word: the beta build took 209 and 191 s in shard 1 against 92 to 135 s in the package job and shortened the longest job in neither run",
+        "E3 kept: journey sums 278 and 408 s",
+        "the workflow, the layout script and its tests are main's (9bb7c97); the branch keeps E3, Scripts/ci_timings.py and the combining checks' shell tests"
+      ]
     }
   ]
 }
