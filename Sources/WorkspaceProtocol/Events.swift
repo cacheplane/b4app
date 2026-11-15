@@ -19,6 +19,8 @@ public enum EventKind: String, Codable, Sendable, CaseIterable {
   case adapterError = "adapter.error"
   case threadUpdated = "thread.updated"
   case serverChanged = "server.changed"
+  /// A managed server was removed. `payload["serverId"]` names it.
+  case serverRemoved = "server.removed"
   /// An environment, or the set of its folders, changed. `payload["environmentId"]` names it.
   case environmentChanged = "environment.changed"
   /// A runtime reported its plan allowance. `payload["reading"]` is a `UsageReading`.
@@ -85,6 +87,11 @@ public struct AdapterEvent: Codable, Sendable, Equatable {
   /// A managed server row changed (health, pid, port, routes). Not tied to a connection.
   public static func serverChanged(_ server: LocalServer) throws -> AdapterEvent {
     AdapterEvent(kind: .serverChanged, connectionId: "", payload: ["server": try JSONValue(encoding: server)])
+  }
+
+  /// A managed server's registration was removed. Not tied to a connection.
+  public static func serverRemoved(serverId: String) -> AdapterEvent {
+    AdapterEvent(kind: .serverRemoved, connectionId: "", payload: ["serverId": .string(serverId)])
   }
 
   /// An environment was created, renamed, deleted, or gained or lost a folder. Not tied to a connection.

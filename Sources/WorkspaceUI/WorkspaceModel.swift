@@ -535,6 +535,10 @@ public final class WorkspaceModel {
 
   public func connection(id: String) -> Connection? { connections.first { $0.id == id } }
 
+  /// The connections Settings lists and checks. A removed project's are disabled (D-231): they are kept
+  /// for their threads, and there is nothing to set up or check on them.
+  public var enabledConnections: [Connection] { connections.filter(\.enabled) }
+
   /// Connections that can start a thread right now.
   public var conversationReadyConnections: [Connection] {
     connections.filter { $0.enabled && $0.status == .ready }
@@ -883,6 +887,35 @@ public final class WorkspaceModel {
 
   public func restartServer(id: String, force: Bool = false) async {
     await lifecycle(ServerRestart.self, id: id, force: force, restart: true)
+  }
+
+  /// Take a project off this Mac (D-231). The card has confirmed it, running turn and all, so it is
+  /// forced; the connections it disables come with the snapshot.
+  public func removeServer(id: String) async {
+    let removed = await perform {
+      try await $0.request(
+        ServerRemove.self, ServerLifecycleParams(serverId: id, force: true),
+        options: Self.mutation(timeout: Self.serverOperation))
+    }
+    guard removed != nil else { return }
+    forget(serverId: id)
+    try? await refreshSnapshot()
+  }
+
+  /// What the card asks before removing a project: what goes, what stays, and a running turn if any.
+  public func removeConfirmation(for server: LocalServer) -> (title: String, message: String) {
+    let routes = Set(connections.filter { $0.localServerId == server.id }.map(\.id))
+    let running = threads.contains { routes.contains($0.connectionId) && activeTurns[$0.id] != nil }
+    var message =
+      "Its server is stopped and its agents are disconnected. Their threads stay and can be read, but not continued. Nothing in the project's folder is changed."
+    if running { message += " A running turn will be lost." }
+    return ("Remove \"\(server.name)\"?", message)
+  }
+
+  private func forget(serverId: String) {
+    servers.removeAll { $0.id == serverId }
+    serverLogs[serverId] = nil
+    if pendingForceStop?.serverId == serverId { pendingForceStop = nil }
   }
 
   private func lifecycle<C: WorkspaceCommand>(_ command: C.Type, id: String, force: Bool, restart: Bool) async
@@ -1777,6 +1810,12 @@ public final class WorkspaceModel {
       }
     case .serverChanged:
       if let server = try? event.payload["server"]?.decode(LocalServer.self) { merge(server) }
+    case .serverRemoved:
+      // Removed from the CLI or another window: its connections are disabled, so refetch them.
+      if let id = event.payload["serverId"]?.stringValue, servers.contains(where: { $0.id == id }) {
+        forget(serverId: id)
+        Task { try? await refreshSnapshot() }
+      }
     case .usageChanged:
       applyUsage(event)
     case .connectionChanged:
