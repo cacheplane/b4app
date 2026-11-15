@@ -193,32 +193,29 @@ struct TranscriptContent: View {
     .frame(maxWidth: .infinity)
   }
 
+  /// Dense folds each turn's work into a line; normal draws every item. Both settle an ended turn's
+  /// open steps and put its note with it.
+  private var entries: [DenseTranscript.Entry] {
+    dense
+      ? DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open)
+      : DenseTranscript.plain(items: detail.items, turns: detail.turns)
+  }
+
   @ViewBuilder private var rows: some View {
     if detail.items.isEmpty && pending == nil {
       Text("No messages yet. Say something below.").llaMuted()
     }
-    if dense {
-      ForEach(DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open)) {
-        entry in
-        switch entry {
-        case .item(let item):
-          TranscriptRow(item: item, liveText: item.nativeItemId.flatMap { detail.liveText[$0] })
-            .id(item.id)
-        case .line(let line):
-          StepsLineRow(line: line, open: folds.open.contains(line.group)) {
-            folds.toggle(line.group)
-          }
-          .id(entry.id)
-        case .note(let turn):
-          TurnNoteRow(turn: turn)
-        }
-      }
-    } else {
-      ForEach(detail.items) { item in
+    ForEach(entries) { entry in
+      switch entry {
+      case .item(let item):
         TranscriptRow(item: item, liveText: item.nativeItemId.flatMap { detail.liveText[$0] })
           .id(item.id)
-      }
-      ForEach(detail.turns.filter { $0.status == .terminal && $0.outcome != .completed }) { turn in
+      case .line(let line):
+        StepsLineRow(line: line, open: folds.open.contains(line.group)) {
+          folds.toggle(line.group)
+        }
+        .id(entry.id)
+      case .note(let turn):
         TurnNoteRow(turn: turn)
       }
     }
@@ -488,7 +485,7 @@ struct CollapsibleCard<Content: View>: View {
             Text(title).llaCode().lineLimit(stacked ? 4 : 1).truncationMode(.middle)
             if !stacked { Spacer() }
             HStack(spacing: LLA.Space.s) {
-              if let status { LLABadge(status, tone: statusTone(status)) }
+              if let status { LLABadge(DenseTranscript.statusLabel(status), tone: statusTone(status)) }
               Text(expanded ? "Hide" : "Show").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
             }
           }
