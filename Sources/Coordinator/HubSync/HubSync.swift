@@ -90,6 +90,78 @@ public actor HubSync {
     }
   }
 
+  struct ScopeAttachmentIdentity: Sendable, Equatable, CustomStringConvertible,
+    CustomDebugStringConvertible, CustomReflectable
+  {
+    let owner: AccountManager.Slot.ScopeOwnerKey
+    let hub: ObjectIdentifier
+    let database: ObjectIdentifier
+    let configuredOrigin: UUID?
+
+    fileprivate init(
+      owner: AccountManager.Slot.ScopeOwnerKey, hub: ObjectIdentifier,
+      database: ObjectIdentifier, configuredOrigin: UUID?
+    ) {
+      self.owner = owner
+      self.hub = hub
+      self.database = database
+      self.configuredOrigin = configuredOrigin
+    }
+
+    var description: String { "ScopeAttachmentIdentity(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+  }
+
+  struct ScopeOwnerAttachment: Sendable, CustomStringConvertible, CustomDebugStringConvertible,
+    CustomReflectable
+  {
+    let identity: ScopeAttachmentIdentity
+    fileprivate init(identity: ScopeAttachmentIdentity) { self.identity = identity }
+
+    var description: String { "ScopeOwnerAttachment(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+  }
+
+  private var dormantScopeOwner: (owner: HubOwnerCarrier, attachment: ScopeOwnerAttachment)?
+
+  /// Records only the exact reserved local owner and this actor's current origin stamp.
+  func attachReservedScopeOwner(_ owner: HubOwnerCarrier) throws -> ScopeOwnerAttachment {
+    guard !closed else { throw HubOwnerCarrier.comparisonFailure }
+    let key = try owner.reservedScopeAttachmentKey(for: self, database: database)
+    let origin = configuredClient
+    if let origin {
+      try origin.requireInstalledMemory()
+      guard origin.hubIdentity == ObjectIdentifier(self), origin.database === database else {
+        throw HubOwnerCarrier.comparisonFailure
+      }
+    }
+    let identity = ScopeAttachmentIdentity(
+      owner: key, hub: ObjectIdentifier(self), database: ObjectIdentifier(database),
+      configuredOrigin: origin?.identity)
+    if let current = dormantScopeOwner, current.attachment.identity.owner == key {
+      guard current.attachment.identity == identity else { throw HubOwnerCarrier.comparisonFailure }
+      try owner.requireReservedScopeOwnerMemory()
+      return current.attachment
+    }
+    try owner.requireReservedScopeOwnerMemory()
+    let attachment = ScopeOwnerAttachment(identity: identity)
+    let displaced = dormantScopeOwner
+    dormantScopeOwner = (owner, attachment)
+    withExtendedLifetime(displaced) {}
+    return attachment
+  }
+
+  @discardableResult
+  func detachDormantScopeOwner(_ attachment: ScopeOwnerAttachment) -> Bool {
+    guard dormantScopeOwner?.attachment.identity == attachment.identity else { return false }
+    let displaced = dormantScopeOwner
+    dormantScopeOwner = nil
+    withExtendedLifetime(displaced) {}
+    return true
+  }
+
   static let batchRows = 500
   static let batchBytes = 8 * 1024 * 1024
 

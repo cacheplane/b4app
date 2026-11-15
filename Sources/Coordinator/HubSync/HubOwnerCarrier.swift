@@ -17,13 +17,33 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
     case sessionDisposal(AccountManager.Slot.CleanupKey)
   }
 
-  private let manager: AccountManager.Slot.WeakOwner<AccountManager>
-  private let scope: AccountManager.Slot.WeakOwner<AccountScope>
-  private let slot: AccountManager.Slot.WeakOwner<AccountManager.Slot>
-  private let database: WorkspaceDatabase
-  private let originalSnapshot: ProtocolVerificationSnapshot
-  private let origin: HubSync.ConfiguredClientOrigin
-  private let purpose: Purpose
+  private struct Owners: Sendable {
+    let manager: AccountManager.Slot.WeakOwner<AccountManager>
+    let scope: AccountManager.Slot.WeakOwner<AccountScope>
+    let slot: AccountManager.Slot.WeakOwner<AccountManager.Slot>
+    let database: WorkspaceDatabase
+  }
+
+  private struct ScopePayload: Sendable {
+    let owners: Owners
+    let reservation: AccountManager.Slot.ScopeOwnerReservation
+  }
+
+  private struct NetworkPayload: Sendable {
+    let owners: Owners
+    let originalSnapshot: ProtocolVerificationSnapshot
+    let origin: HubSync.ConfiguredClientOrigin
+    let purpose: Purpose
+  }
+
+  private enum Payload: Sendable {
+    case scopeOwner(ScopePayload)
+    case network(NetworkPayload)
+  }
+
+  private let payload: Payload
+
+  private init(scopeOwner: ScopePayload) { payload = .scopeOwner(scopeOwner) }
 
   private init(
     manager: AccountManager.Slot.WeakOwner<AccountManager>,
@@ -32,21 +52,23 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
     originalSnapshot: ProtocolVerificationSnapshot, origin: HubSync.ConfiguredClientOrigin,
     purpose: Purpose
   ) {
-    self.manager = manager
-    self.scope = scope
-    self.slot = slot
-    self.database = database
-    self.originalSnapshot = originalSnapshot
-    self.origin = origin
-    self.purpose = purpose
+    payload = .network(
+      NetworkPayload(
+        owners: Owners(manager: manager, scope: scope, slot: slot, database: database),
+        originalSnapshot: originalSnapshot, origin: origin, purpose: purpose))
+  }
+
+  private func networkPayload() throws -> NetworkPayload {
+    guard case .network(let network) = payload else { throw Self.comparisonFailure }
+    return network
   }
 
   var description: String { "HubOwnerCarrier(redacted)" }
   var debugDescription: String { description }
   var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
 
-  private var ownerKey: AccountManager.Slot.OwnerKey {
-    switch purpose {
+  private func ownerKey(in network: NetworkPayload) -> AccountManager.Slot.OwnerKey {
+    switch network.purpose {
     case .ordinary(let key): key.owner
     case .finalPush(let key), .sessionDisposal(let key): key.owner
     }
@@ -56,10 +78,15 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
   private func liveOwners() throws -> (
     manager: AccountManager, scope: AccountScope, slot: AccountManager.Slot
   ) {
-    guard let manager = manager.value, let scope = scope.value, let slot = slot.value else {
+    let network = try networkPayload()
+    let database = network.owners.database
+    let origin = network.origin
+    guard let manager = network.owners.manager.value, let scope = network.owners.scope.value,
+      let slot = network.owners.slot.value
+    else {
       throw Self.comparisonFailure
     }
-    let closed = ownerKey.closed
+    let closed = ownerKey(in: network).closed
     guard closed.manager == ObjectIdentifier(manager), closed.slot == ObjectIdentifier(slot),
       manager.slot === slot, closed.scope == ObjectIdentifier(scope),
       closed.scopeInstance == scope.instance, closed.hub == ObjectIdentifier(scope.hub),
@@ -67,6 +94,72 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
       origin.database === database, closed.hub == origin.hubIdentity, closed.origin == origin.identity
     else { throw Self.comparisonFailure }
     return (manager, scope, slot)
+  }
+
+  /// A local owner retains only its original database and weak lifecycle owners.
+  private func liveScopeOwners(
+    _ local: ScopePayload
+  ) throws -> (
+    manager: AccountManager, scope: AccountScope, slot: AccountManager.Slot
+  ) {
+    guard let manager = local.owners.manager.value, let scope = local.owners.scope.value,
+      let slot = local.owners.slot.value
+    else { throw Self.comparisonFailure }
+    let closed = local.reservation.key.closed
+    guard closed.manager == ObjectIdentifier(manager), closed.slot == ObjectIdentifier(slot),
+      manager.slot === slot, closed.scope == ObjectIdentifier(scope),
+      closed.scopeInstance == scope.instance, closed.hub == ObjectIdentifier(scope.hub),
+      closed.database == ObjectIdentifier(scope.database), scope.database === local.owners.database,
+      local.reservation.manager.value === manager, local.reservation.scope.value === scope,
+      local.reservation.slot.value === slot
+    else { throw Self.comparisonFailure }
+    return (manager, scope, slot)
+  }
+
+  static func makeScopeOwner(
+    reservation: AccountManager.Slot.ScopeOwnerReservation,
+    manager: AccountManager, scope: AccountScope
+  ) throws -> Self {
+    do {
+      guard reservation.manager.value === manager, reservation.scope.value === scope,
+        reservation.slot.value === manager.slot
+      else { throw comparisonFailure }
+      defer { withExtendedLifetime((manager, scope)) {} }
+      let carrier = Self(
+        scopeOwner: ScopePayload(
+          owners: Owners(
+            manager: reservation.manager, scope: reservation.scope, slot: reservation.slot,
+            database: scope.database), reservation: reservation))
+      try carrier.requireReservedScopeOwnerMemory()
+      return carrier
+    } catch { throw comparisonFailure }
+  }
+
+  func requireReservedScopeOwnerMemory() throws {
+    guard case .scopeOwner(let local) = payload else { throw Self.comparisonFailure }
+    let owners = try liveScopeOwners(local)
+    defer { withExtendedLifetime(owners) {} }
+    try owners.slot.requireReservedScopeOwner(local.reservation)
+  }
+
+  func requireInstalledScopeOwnerMemory() throws {
+    guard case .scopeOwner(let local) = payload else { throw Self.comparisonFailure }
+    let owners = try liveScopeOwners(local)
+    defer { withExtendedLifetime(owners) {} }
+    try owners.slot.requireInstalledScopeOwner(local.reservation.key)
+  }
+
+  func reservedScopeAttachmentKey(
+    for hub: HubSync, database: WorkspaceDatabase
+  ) throws -> AccountManager.Slot.ScopeOwnerKey {
+    guard case .scopeOwner(let local) = payload else { throw Self.comparisonFailure }
+    let owners = try liveScopeOwners(local)
+    defer { withExtendedLifetime((owners, hub, database)) {} }
+    guard owners.scope.hub === hub, owners.scope.database === database,
+      local.owners.database === database
+    else { throw Self.comparisonFailure }
+    try requireReservedScopeOwnerMemory()
+    return local.reservation.key
   }
 
   static func makeOrdinary(
@@ -94,7 +187,8 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
     phase: AccountManager.Slot.FinalPushRegistration, original: Self
   ) throws -> Self {
     do {
-      guard case .ordinary(let ordinary) = original.purpose,
+      let network = try original.networkPayload()
+      guard case .ordinary(let ordinary) = network.purpose,
         phase.key.owner == ordinary.owner, phase.key.phase == .finalPush
       else { throw comparisonFailure }
       let owners = try original.liveOwners()
@@ -102,7 +196,7 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
       guard phase.manager.value === owners.manager, phase.scope.value === owners.scope,
         phase.slot.value === owners.slot
       else { throw comparisonFailure }
-      let carrier = original.replacingPurpose(.finalPush(phase.key))
+      let carrier = original.replacingPurpose(.finalPush(phase.key), network: network)
       try carrier.requireFinalPushMemory()
       try carrier.compareOriginalCaptureAndReference(sessionDisposal: false)
       try carrier.requireFinalPushMemory()
@@ -116,7 +210,8 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
     phase: AccountManager.Slot.SessionDisposalRegistration, original: Self
   ) throws -> Self {
     do {
-      guard case .ordinary(let ordinary) = original.purpose,
+      let network = try original.networkPayload()
+      guard case .ordinary(let ordinary) = network.purpose,
         phase.key.owner == ordinary.owner, phase.key.phase == .sessionDisposal
       else { throw comparisonFailure }
       let owners = try original.liveOwners()
@@ -124,7 +219,7 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
       guard phase.manager.value === owners.manager, phase.scope.value === owners.scope,
         phase.slot.value === owners.slot
       else { throw comparisonFailure }
-      let carrier = original.replacingPurpose(.sessionDisposal(phase.key))
+      let carrier = original.replacingPurpose(.sessionDisposal(phase.key), network: network)
       try carrier.requireSessionDisposalMemory()
       try carrier.compareOriginalCaptureAndReference(sessionDisposal: true)
       try carrier.requireSessionDisposalMemory()
@@ -132,14 +227,19 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
     } catch { throw comparisonFailure }
   }
 
-  private func replacingPurpose(_ purpose: Purpose) -> Self {
+  private func replacingPurpose(_ purpose: Purpose, network: NetworkPayload) -> Self {
     Self(
-      manager: manager, scope: scope, slot: slot, database: database,
-      originalSnapshot: originalSnapshot, origin: origin, purpose: purpose)
+      manager: network.owners.manager, scope: network.owners.scope, slot: network.owners.slot,
+      database: network.owners.database, originalSnapshot: network.originalSnapshot,
+      origin: network.origin, purpose: purpose)
   }
 
   private func compareOriginalCaptureAndReference(sessionDisposal: Bool) throws {
     do {
+      let network = try networkPayload()
+      let database = network.owners.database
+      let originalSnapshot = network.originalSnapshot
+      let origin = network.origin
       let owners = try liveOwners()
       defer { withExtendedLifetime(owners) {} }
       let account = owners.scope.account
@@ -166,14 +266,15 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
   }
 
   func registerChild() throws -> Self {
-    guard case .ordinary(let parent) = purpose else { throw Self.comparisonFailure }
+    let network = try networkPayload()
+    guard case .ordinary(let parent) = network.purpose else { throw Self.comparisonFailure }
     let owners = try liveOwners()
     defer { withExtendedLifetime(owners) {} }
     try requireOrdinaryMemory()
     let registration = try owners.slot.registerChild(
       parent: parent, manager: owners.manager, scope: owners.scope)
     do {
-      let child = replacingPurpose(.ordinary(registration.key))
+      let child = replacingPurpose(.ordinary(registration.key), network: network)
       try child.requireOrdinaryMemory()
       return child
     } catch {
@@ -183,7 +284,9 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
   }
 
   func requireOrdinaryMemory() throws {
-    guard case .ordinary(let key) = purpose else { throw Self.comparisonFailure }
+    let network = try networkPayload()
+    let origin = network.origin
+    guard case .ordinary(let key) = network.purpose else { throw Self.comparisonFailure }
     let owners = try liveOwners()
     defer { withExtendedLifetime(owners) {} }
     try origin.requireInstalledMemory()
@@ -192,7 +295,9 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
   }
 
   func requireFinalPushMemory() throws {
-    guard case .finalPush(let key) = purpose else { throw Self.comparisonFailure }
+    let network = try networkPayload()
+    let origin = network.origin
+    guard case .finalPush(let key) = network.purpose else { throw Self.comparisonFailure }
     let owners = try liveOwners()
     defer { withExtendedLifetime(owners) {} }
     try origin.requireInstalledMemory()
@@ -201,7 +306,9 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
   }
 
   func requireSessionDisposalMemory() throws {
-    guard case .sessionDisposal(let key) = purpose else { throw Self.comparisonFailure }
+    let network = try networkPayload()
+    let origin = network.origin
+    guard case .sessionDisposal(let key) = network.purpose else { throw Self.comparisonFailure }
     let owners = try liveOwners()
     defer { withExtendedLifetime(owners) {} }
     try origin.requireInstalledMemory()
@@ -212,7 +319,8 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
   // These three bridges reveal only the sealed original owner. In particular they do not require
   // obsolete ordinary admission after cleanup acceptance, and cannot mint or retag any key.
   func originalScope(for manager: AccountManager) throws -> AccountScope {
-    guard case .ordinary = purpose else { throw Self.comparisonFailure }
+    let network = try networkPayload()
+    guard case .ordinary = network.purpose else { throw Self.comparisonFailure }
     let owners = try liveOwners()
     defer { withExtendedLifetime(owners) {} }
     guard owners.manager === manager else { throw Self.comparisonFailure }
@@ -220,7 +328,8 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
   }
 
   func originalOwnerKey(for manager: AccountManager) throws -> AccountManager.Slot.OwnerKey {
-    guard case .ordinary(let key) = purpose else { throw Self.comparisonFailure }
+    let network = try networkPayload()
+    guard case .ordinary(let key) = network.purpose else { throw Self.comparisonFailure }
     let owners = try liveOwners()
     defer { withExtendedLifetime(owners) {} }
     guard owners.manager === manager else { throw Self.comparisonFailure }
@@ -228,8 +337,9 @@ struct HubOwnerCarrier: Sendable, CustomStringConvertible, CustomDebugStringConv
   }
 
   func cleanupKey(for manager: AccountManager) throws -> AccountManager.Slot.CleanupKey {
+    let network = try networkPayload()
     let key: AccountManager.Slot.CleanupKey
-    switch purpose {
+    switch network.purpose {
     case .ordinary: throw Self.comparisonFailure
     case .finalPush(let original), .sessionDisposal(let original): key = original
     }

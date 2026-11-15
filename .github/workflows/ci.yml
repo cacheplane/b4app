@@ -198,16 +198,16 @@ jobs:
           MAX_NODES = 16384
           MAX_DEPTH = 64
           SOURCE_PINS = {
-              "Sources/Coordinator/HubSync/HubOwnerCarrier.swift": "217eee004c3d36fbeffc4a7efb96bc9eee955ca656eacc0e000dcb619332f51b",
-              "Sources/Coordinator/Accounts/AccountManager.swift": "06119d341433560101eca806f4497eb4ae93b9b99c06db2968ce33e8520d2cfe",
-              "Sources/Coordinator/HubSync/HubSync.swift": "1e5524a1fb3616c6ce2db218168b3c4d144ba57821c51b5c06dbdbcdc2b7338c",
+              "Sources/Coordinator/HubSync/HubOwnerCarrier.swift": "23ce28f72f59ce22c68fb3a0620016e1b85bf56856ba066296837f0360fb6423",
+              "Sources/Coordinator/Accounts/AccountManager.swift": "2f8d3f7c8dbf2469e7366530737532a3c41991a795f13f46b8d01155dfb6aa25",
+              "Sources/Coordinator/HubSync/HubSync.swift": "65ef4d84c37d1f70485e6052bb71b8e5626c5348334ecef9a9e53f330146f3d5",
               "Sources/WorkspaceStorage/ProtocolActivation.swift": "378e1052777af215bd55d824a5d630a49ba5e1e3f5e865f1c2c608e32f97aef4",
               "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "23a1c01b827d4d0ee1c533ba5c0391500efd37c28d0fa71182eecb43c70af23f",
           }
 
           RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': '378e1052777af215bd55d824a5d630a49ba5e1e3f5e865f1c2c608e32f97aef4', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '395561fb60995372be63db57686e4fb646afb17181aa288cec6c7b6d0602fb0e', 'Sources/WorkspaceStorage/PostgresClient.swift': 'd713d50ed4183abb642f4ca6689d773c8b25306ac225ea0dd9936e0704cfc803', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '69a1d5532b26c079ef3b185cf2f5a2590e81414c7117e477618f15af8662e56c'}
           HELPER_RELATIVE = "Scripts/check-owner-carrier-compiler-controls.py"
-          HELPER_SHA256 = "2f73ce61079bc01748c3cbd8111c465419d187346563c160765460ee78e5169f"
+          HELPER_SHA256 = "ef63c71f44dacb6b11d82e248ae3535991fa5f3b3b7273f7ff86e287804209c1"
 
           class Rejected(Exception):
               pass
@@ -469,7 +469,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "2f73ce61079bc01748c3cbd8111c465419d187346563c160765460ee78e5169f"
+              expected = "ef63c71f44dacb6b11d82e248ae3535991fa5f3b3b7273f7ff86e287804209c1"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -520,7 +520,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "2f73ce61079bc01748c3cbd8111c465419d187346563c160765460ee78e5169f"
+              expected = "ef63c71f44dacb6b11d82e248ae3535991fa5f3b3b7273f7ff86e287804209c1"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -547,6 +547,12 @@ jobs:
       - name: Focused owned protocol proof writer regressions
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' && steps.owner-carrier-origin-controls.outcome == 'success' && steps.owner-carrier-receipt-controls.outcome == 'success' }}
         run: swift test --filter OwnedProtocolProofWriteTests
+      - name: Focused scope owner publication regressions
+        id: scope-owner-publication-controls
+        if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' && steps.owner-carrier-origin-controls.outcome == 'success' && steps.owner-carrier-receipt-controls.outcome == 'success' }}
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
+        run: swift test --filter ScopeOwnerPublicationTests
       # The two iOS app builds, which had a macOS job of their own with the two macOS builds (those
       # are in the smoke job). They run whatever the tests did, and the "apps" job below reports all
       # four under the required name from these steps' outcomes, not from this job's result.

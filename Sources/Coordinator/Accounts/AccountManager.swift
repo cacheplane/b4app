@@ -196,6 +196,109 @@ public actor AccountManager {
       }
     }
 
+    struct ClosedScopeKey: Sendable, Hashable, CustomStringConvertible, CustomDebugStringConvertible,
+      CustomReflectable
+    {
+      let manager: ObjectIdentifier
+      let slot: ObjectIdentifier
+      let scope: ObjectIdentifier
+      let hub: ObjectIdentifier
+      let database: ObjectIdentifier
+      let scopeInstance: UUID
+      fileprivate init(manager: AccountManager, slot: Slot, scope: AccountScope) {
+        self.manager = ObjectIdentifier(manager)
+        self.slot = ObjectIdentifier(slot)
+        self.scope = ObjectIdentifier(scope)
+        hub = ObjectIdentifier(scope.hub)
+        database = ObjectIdentifier(scope.database)
+        scopeInstance = scope.instance
+      }
+      var description: String { "ClosedScopeKey(redacted)" }
+      var debugDescription: String { description }
+      var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+    }
+
+    struct ScopeOwnerKey: Sendable, Hashable, CustomStringConvertible, CustomDebugStringConvertible,
+      CustomReflectable
+    {
+      let closed: ClosedScopeKey
+      let revision: UInt64
+      fileprivate init(closed: ClosedScopeKey, revision: UInt64) {
+        self.closed = closed
+        self.revision = revision
+      }
+      var description: String { "ScopeOwnerKey(redacted)" }
+      var debugDescription: String { description }
+      var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+    }
+
+    struct ScopePreparation: Sendable, CustomStringConvertible, CustomDebugStringConvertible,
+      CustomReflectable
+    {
+      let manager: WeakOwner<AccountManager>
+      let slot: WeakOwner<Slot>
+      let currentIdentity: ObjectIdentifier?
+      let lifecycleSerial: UInt64
+      fileprivate init(
+        manager: AccountManager, slot: Slot, currentIdentity: ObjectIdentifier?, lifecycleSerial: UInt64
+      ) {
+        self.manager = WeakOwner(manager)
+        self.slot = WeakOwner(slot)
+        self.currentIdentity = currentIdentity
+        self.lifecycleSerial = lifecycleSerial
+      }
+      var description: String { "ScopePreparation(redacted)" }
+      var debugDescription: String { description }
+      var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+    }
+
+    struct ScopeOwnerReservation: Sendable, CustomStringConvertible, CustomDebugStringConvertible,
+      CustomReflectable
+    {
+      let key: ScopeOwnerKey
+      let preparation: ScopePreparation
+      let manager: WeakOwner<AccountManager>
+      let scope: WeakOwner<AccountScope>
+      let slot: WeakOwner<Slot>
+      fileprivate init(
+        key: ScopeOwnerKey, preparation: ScopePreparation, manager: AccountManager,
+        scope: AccountScope, slot: Slot
+      ) {
+        self.key = key
+        self.preparation = preparation
+        self.manager = WeakOwner(manager)
+        self.scope = WeakOwner(scope)
+        self.slot = WeakOwner(slot)
+      }
+      var description: String { "ScopeOwnerReservation(redacted)" }
+      var debugDescription: String { description }
+      var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+    }
+
+    struct ScopePublication: Sendable, CustomStringConvertible, CustomDebugStringConvertible,
+      CustomReflectable
+    {
+      let key: ScopeOwnerKey
+      let displacedScope: AccountScope?
+      fileprivate init(key: ScopeOwnerKey, displacedScope: AccountScope?) {
+        self.key = key
+        self.displacedScope = displacedScope
+      }
+      var description: String { "ScopePublication(redacted)" }
+      var debugDescription: String { description }
+      var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+    }
+
+    private struct PendingScopeOwner {
+      let key: ScopeOwnerKey
+      let currentIdentity: ObjectIdentifier?
+      let lifecycleSerial: UInt64
+    }
+    private struct InstalledScopeOwner {
+      let key: ScopeOwnerKey
+      let attachment: HubSync.ScopeAttachmentIdentity
+    }
+
     private struct CleanupRecord {
       let key: CleanupKey
       var active: Bool
@@ -207,6 +310,12 @@ public actor AccountManager {
       var owner: OwnerKey?
       var producers: Set<UUID> = []
       var cleanup: CleanupRecord?
+      var pendingScopeOwner: PendingScopeOwner?
+      var installedScopeOwner: InstalledScopeOwner?
+      var lifecycleSerial: UInt64 = 0
+      var scopePreparationsDisabled = false
+      var scopeCounterSeedUsed = false
+      var scopeHistoryStarted = false
     }
     private let value = Mutex(State())
 
@@ -217,10 +326,12 @@ public actor AccountManager {
       // Transfer the old strong current out before it can run a destructor. The input also remains
       // strongly held outside the cell while its scalar identity and ownership are exchanged.
       let displaced = value.withLock { state -> AccountScope? in
+        Self.invalidateScopePreparations(&state)
         guard state.currentIdentity != identity else { return nil }
         let previous = state.current
         state.current = scope
         state.currentIdentity = identity
+        state.installedScopeOwner = nil
         state.owner = nil
         state.producers.removeAll()
         if identity != nil { state.cleanup = nil }
@@ -228,6 +339,196 @@ public actor AccountManager {
       }
       withExtendedLifetime(scope) {}
       withExtendedLifetime(displaced) {}
+    }
+
+    /// Scalar-only invalidation; accepted lifecycle mutations never reset or wrap this serial.
+    private static func invalidateScopePreparations(_ state: inout State) {
+      state.scopeHistoryStarted = true
+      state.pendingScopeOwner = nil
+      if state.lifecycleSerial < UInt64.max { state.lifecycleSerial += 1 }
+      if state.lifecycleSerial == UInt64.max { state.scopePreparationsDisabled = true }
+    }
+
+    private func preparationManager(_ preparation: ScopePreparation) -> AccountManager? {
+      guard let manager = preparation.manager.value, let slot = preparation.slot.value,
+        slot === self, manager.slot === self
+      else { return nil }
+      return manager
+    }
+
+    /// Full original-object checks and all weak upgrades run outside the Slot cell.
+    private func reservationOwners(
+      _ reservation: ScopeOwnerReservation
+    ) -> (
+      manager: AccountManager, scope: AccountScope, slot: Slot
+    )? {
+      guard let manager = reservation.manager.value, let scope = reservation.scope.value,
+        let slot = reservation.slot.value, slot === self, manager.slot === self,
+        let preparationManager = preparationManager(reservation.preparation),
+        preparationManager === manager
+      else { return nil }
+      let closed = reservation.key.closed
+      guard closed.manager == ObjectIdentifier(manager), closed.slot == ObjectIdentifier(self),
+        closed.scope == ObjectIdentifier(scope), closed.hub == ObjectIdentifier(scope.hub),
+        closed.database == ObjectIdentifier(scope.database), closed.scopeInstance == scope.instance
+      else { return nil }
+      return (manager, scope, slot)
+    }
+
+    private static func matchesPending(
+      _ state: State, key: ScopeOwnerKey, currentIdentity: ObjectIdentifier?, lifecycleSerial: UInt64
+    ) -> Bool {
+      !state.scopePreparationsDisabled && state.pendingScopeOwner?.key == key
+        && state.pendingScopeOwner?.currentIdentity == currentIdentity
+        && state.pendingScopeOwner?.lifecycleSerial == lifecycleSerial
+        && state.lifecycleSerial == lifecycleSerial && state.currentIdentity == currentIdentity
+    }
+
+    func beginScopePreparation(manager: AccountManager) throws -> ScopePreparation {
+      guard manager.slot === self else { throw HubOwnerCarrier.comparisonFailure }
+      defer { withExtendedLifetime(manager) {} }
+      let baseline = value.withLock { state -> (ObjectIdentifier?, UInt64)? in
+        guard !state.scopePreparationsDisabled, state.lifecycleSerial < UInt64.max else { return nil }
+        state.scopeHistoryStarted = true
+        return (state.currentIdentity, state.lifecycleSerial)
+      }
+      guard let baseline else { throw HubOwnerCarrier.comparisonFailure }
+      return ScopePreparation(
+        manager: manager, slot: self, currentIdentity: baseline.0, lifecycleSerial: baseline.1)
+    }
+
+    func reserveScopeOwner(
+      preparation: ScopePreparation, manager: AccountManager, scope: AccountScope
+    ) throws -> ScopeOwnerReservation {
+      guard let originalManager = preparationManager(preparation), originalManager === manager else {
+        throw HubOwnerCarrier.comparisonFailure
+      }
+      defer { withExtendedLifetime((originalManager, manager, scope)) {} }
+      let closed = ClosedScopeKey(manager: manager, slot: self, scope: scope)
+      let currentIdentity = preparation.currentIdentity
+      let lifecycleSerial = preparation.lifecycleSerial
+      let key = value.withLock { state -> ScopeOwnerKey? in
+        guard !state.scopePreparationsDisabled, state.lifecycleSerial == lifecycleSerial,
+          state.currentIdentity == currentIdentity
+        else { return nil }
+        state.scopeHistoryStarted = true
+        state.pendingScopeOwner = nil
+        guard state.revision < UInt64.max else { return nil }
+        state.revision += 1
+        let key = ScopeOwnerKey(closed: closed, revision: state.revision)
+        state.pendingScopeOwner = PendingScopeOwner(
+          key: key, currentIdentity: currentIdentity,
+          lifecycleSerial: lifecycleSerial)
+        return key
+      }
+      guard let key else { throw HubOwnerCarrier.comparisonFailure }
+      return ScopeOwnerReservation(
+        key: key, preparation: preparation, manager: manager, scope: scope, slot: self)
+    }
+
+    func requireReservedScopeOwner(_ reservation: ScopeOwnerReservation) throws {
+      guard let owners = reservationOwners(reservation) else { throw HubOwnerCarrier.comparisonFailure }
+      defer { withExtendedLifetime(owners) {} }
+      let key = reservation.key
+      let currentIdentity = reservation.preparation.currentIdentity
+      let lifecycleSerial = reservation.preparation.lifecycleSerial
+      let admitted = value.withLock {
+        Self.matchesPending($0, key: key, currentIdentity: currentIdentity, lifecycleSerial: lifecycleSerial)
+      }
+      guard admitted else { throw HubOwnerCarrier.comparisonFailure }
+    }
+
+    @discardableResult
+    func cancelScopeOwnerReservation(_ reservation: ScopeOwnerReservation) -> Bool {
+      guard let owners = reservationOwners(reservation) else { return false }
+      defer { withExtendedLifetime(owners) {} }
+      let key = reservation.key
+      return value.withLock { state in
+        guard state.pendingScopeOwner?.key == key else { return false }
+        state.pendingScopeOwner = nil
+        return true
+      }
+    }
+
+    func publishReservedScope(
+      _ scope: AccountScope, reservation: ScopeOwnerReservation,
+      attachment: HubSync.ScopeOwnerAttachment, manager: AccountManager
+    ) throws -> ScopePublication {
+      guard let owners = reservationOwners(reservation), owners.manager === manager,
+        owners.scope === scope
+      else { throw HubOwnerCarrier.comparisonFailure }
+      defer { withExtendedLifetime((owners, scope, manager)) {} }
+      let identity = attachment.identity
+      let key = reservation.key
+      let scopeIdentity = ObjectIdentifier(scope)
+      let currentIdentity = reservation.preparation.currentIdentity
+      let lifecycleSerial = reservation.preparation.lifecycleSerial
+      guard identity.owner == key, identity.hub == ObjectIdentifier(scope.hub),
+        identity.database == ObjectIdentifier(scope.database), identity.hub == key.closed.hub,
+        identity.database == key.closed.database
+      else { throw HubOwnerCarrier.comparisonFailure }
+      let published = value.withLock { state -> (ScopeOwnerKey, AccountScope?)? in
+        guard
+          Self.matchesPending(
+            state, key: key, currentIdentity: currentIdentity, lifecycleSerial: lifecycleSerial)
+        else { return nil }
+        let displaced = state.current
+        state.current = scope
+        state.currentIdentity = scopeIdentity
+        state.installedScopeOwner = InstalledScopeOwner(key: key, attachment: identity)
+        state.pendingScopeOwner = nil
+        state.owner = nil
+        state.producers.removeAll()
+        state.cleanup = nil
+        Self.invalidateScopePreparations(&state)
+        return (key, displaced)
+      }
+      guard let published else { throw HubOwnerCarrier.comparisonFailure }
+      return ScopePublication(key: published.0, displacedScope: published.1)
+    }
+
+    func requireInstalledScopeOwner(_ key: ScopeOwnerKey) throws {
+      let admitted = value.withLock { state in
+        state.currentIdentity == key.closed.scope && state.installedScopeOwner?.key == key
+      }
+      guard admitted else { throw HubOwnerCarrier.comparisonFailure }
+    }
+
+    func acceptScopeTransition(expectedPreparation: ScopePreparation) -> Bool {
+      guard let manager = preparationManager(expectedPreparation) else { return false }
+      defer { withExtendedLifetime(manager) {} }
+      let currentIdentity = expectedPreparation.currentIdentity
+      let lifecycleSerial = expectedPreparation.lifecycleSerial
+      return value.withLock { state in
+        guard !state.scopePreparationsDisabled, state.lifecycleSerial == lifecycleSerial,
+          state.currentIdentity == currentIdentity
+        else { return false }
+        Self.invalidateScopePreparations(&state)
+        state.installedScopeOwner = nil
+        state.owner = nil
+        state.producers.removeAll()
+        return true
+      }
+    }
+
+    func scopeOwnershipObservation() -> (scope: AccountScope?, owner: ScopeOwnerKey?) {
+      value.withLock { ($0.current, $0.installedScopeOwner?.key) }
+    }
+
+    func seedScopeOwnerCountersForTesting(ownerRevision: UInt64, lifecycleSerial: UInt64) throws {
+      let seeded = value.withLock { state in
+        guard !state.scopeCounterSeedUsed, !state.scopeHistoryStarted, state.current == nil,
+          state.currentIdentity == nil, state.owner == nil, state.pendingScopeOwner == nil,
+          state.installedScopeOwner == nil, state.cleanup == nil, state.producers.isEmpty,
+          state.revision == 0, state.lifecycleSerial == 0, !state.scopePreparationsDisabled
+        else { return false }
+        state.revision = ownerRevision
+        state.lifecycleSerial = lifecycleSerial
+        state.scopePreparationsDisabled = lifecycleSerial == UInt64.max
+        state.scopeCounterSeedUsed = true
+        return true
+      }
+      guard seeded else { throw HubOwnerCarrier.comparisonFailure }
     }
 
     private func matches(_ closed: ClosedOwnerKey, manager: AccountManager, scope: AccountScope) -> Bool {
@@ -256,6 +557,8 @@ public actor AccountManager {
       let producer = UUID()
       let key = value.withLock { state -> OrdinaryKey? in
         guard state.currentIdentity == original.scope else { return nil }
+        Self.invalidateScopePreparations(&state)
+        state.installedScopeOwner = nil
         // Fresh registration revokes every older owner and cleanup, including the same objects.
         state.owner = nil
         state.producers.removeAll()
@@ -302,6 +605,7 @@ public actor AccountManager {
     func retireOrdinary(_ owner: OwnerKey) -> Bool {
       value.withLock { state in
         guard state.owner == owner else { return false }
+        Self.invalidateScopePreparations(&state)
         state.owner = nil
         state.producers.removeAll()
         return true
@@ -329,6 +633,7 @@ public actor AccountManager {
         guard state.currentIdentity == owner.closed.scope, state.owner == owner,
           !state.producers.isEmpty, state.cleanup == nil
         else { return nil }
+        Self.invalidateScopePreparations(&state)
         // Accepted cleanup permanently retires ordinary producers before any later comparison.
         state.owner = nil
         state.producers.removeAll()
@@ -527,6 +832,48 @@ public actor AccountManager {
         throw HubOwnerCarrier.comparisonFailure
       }
     } catch { throw HubOwnerCarrier.comparisonFailure }
+  }
+
+  struct PreparedScopeOwner: Sendable, CustomStringConvertible, CustomDebugStringConvertible,
+    CustomReflectable
+  {
+    let reservation: Slot.ScopeOwnerReservation
+    let carrier: HubOwnerCarrier
+    fileprivate init(reservation: Slot.ScopeOwnerReservation, carrier: HubOwnerCarrier) {
+      self.reservation = reservation
+      self.carrier = carrier
+    }
+    var description: String { "PreparedScopeOwner(redacted)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
+  }
+
+  /// Dormant handoffs only: Accounts remains responsible for any later resource lifecycle work.
+  func beginDormantScopePreparation() throws -> Slot.ScopePreparation {
+    try slot.beginScopePreparation(manager: self)
+  }
+
+  func reserveDormantScopeOwner(
+    preparation: Slot.ScopePreparation, expectedScope: AccountScope
+  ) throws -> PreparedScopeOwner {
+    let reservation = try slot.reserveScopeOwner(
+      preparation: preparation, manager: self, scope: expectedScope)
+    do {
+      let carrier = try HubOwnerCarrier.makeScopeOwner(
+        reservation: reservation, manager: self, scope: expectedScope)
+      return PreparedScopeOwner(reservation: reservation, carrier: carrier)
+    } catch {
+      slot.cancelScopeOwnerReservation(reservation)
+      throw HubOwnerCarrier.comparisonFailure
+    }
+  }
+
+  func publishDormantReservedScope(
+    expectedScope: AccountScope, prepared: PreparedScopeOwner,
+    attachment: HubSync.ScopeOwnerAttachment
+  ) throws -> Slot.ScopePublication {
+    try slot.publishReservedScope(
+      expectedScope, reservation: prepared.reservation, attachment: attachment, manager: self)
   }
 
   private func requireDormantCurrent(_ scope: AccountScope, account: AccountRow) throws {
