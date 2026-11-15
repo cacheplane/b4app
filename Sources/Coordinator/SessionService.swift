@@ -275,9 +275,14 @@ public actor SessionService {
 
   /// A managed route connection is reachable only while its server is ready; nothing is auto-started.
   private func managedServerOutage(_ connection: Connection) async -> WorkspaceError? {
-    guard connection.b4Mode == .managedLocal, let serverId = connection.localServerId,
-      let servers = context.servers
-    else { return nil }
+    guard connection.b4Mode == .managedLocal, let servers = context.servers else { return nil }
+    // Its project was removed (D-231): there is no server to start, and the old port may be anyone's.
+    guard let serverId = connection.localServerId else {
+      return WorkspaceError(
+        .endpointUnavailable,
+        "This thread's B4 project was removed from this Mac. Add the project again to start a new thread.",
+        details: ["reason": "server_removed"])
+    }
     if await servers.isReady(id: serverId) { return nil }
     let name = (try? await servers.resolve(serverId))?.name ?? serverId
     return WorkspaceError(
