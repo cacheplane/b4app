@@ -611,7 +611,7 @@ import WorkspaceProtocol
         let callsStop = calls.read() == guardNumber + 1
         let starts = sample.commandStarts
         let expectedNormal = guardNumber <= 3 ? 0 : min(guardNumber - 3, 4)
-        let normalCount = starts[0...3].reduce(0, +) == UInt(expectedNormal)
+        let normalCount = starts[0] + starts[1] + starts[2] + starts[3] == UInt(expectedNormal)
         let rollbackOnce = sample.rollbackAttempts == (guardNumber >= 4 ? 1 : 0)
         let refusedBit =
           guardNumber >= 1 && guardNumber <= 8
