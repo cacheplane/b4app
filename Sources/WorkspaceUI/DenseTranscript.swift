@@ -124,21 +124,11 @@ enum DenseTranscript {
     var groupOrder: [String] = []
     var members: [String: [DisplayItem]] = [:]
     var layoutOrder: [Entry?] = []  // a plain item, or nil where the next group goes
-    var current: String?
-    for item in ordered {
-      let key: String?
-      if let turnId = item.turnId {
-        key = turnId
-      } else if item.role == .user {
-        key = "h-\(item.id)"
-      } else {
-        key = current
-      }
+    for (item, key) in zip(ordered, groupKeys(ordered)) {
       guard let key else {
         layoutOrder.append(.item(item))
         continue
       }
-      current = key
       if members[key] == nil {
         groupOrder.append(key)
         layoutOrder.append(nil)
@@ -162,6 +152,58 @@ enum DenseTranscript {
     return result
   }
 
+  /// Normal density: every item in the order given, a step of an ended turn settled as at dense, and
+  /// each turn's note after that turn's last item (a turn with no items: after everything).
+  static func plain(items: [DisplayItem], turns: [Turn]) -> [Entry] {
+    let known = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    let keys = groupKeys(items)
+    var last: [String: Int] = [:]
+    for (index, key) in keys.enumerated() {
+      if let key { last[key] = index }
+    }
+    var result: [Entry] = []
+    for (index, item) in items.enumerated() {
+      guard let key = keys[index] else {
+        result.append(.item(item))
+        continue
+      }
+      result.append(.item(settled(item, in: known[key])))
+      if last[key] == index, let turn = known[key], hasNote(turn) { result.append(.note(turn)) }
+    }
+    for turn in turns where last[turn.id] == nil && hasNote(turn) {
+      result.append(.note(turn))
+    }
+    return result
+  }
+
+  /// The word a step's badge draws for its status. "In progress" and not "Running": a runtime opens
+  /// a step when it names the tool, before its arguments are complete or a permission is answered.
+  static func statusLabel(_ status: String) -> String {
+    switch status {
+    case "inProgress": return "In progress"
+    case "completed": return "Completed"
+    case "failed": return "Failed"
+    case "declined": return "Declined"
+    case "stopped": return "Unfinished"
+    case "unknown": return "Unknown"
+    default: return status
+    }
+  }
+
+  /// The group each item belongs to, in the order given: its turn, a history group opened by a
+  /// turnless user message, or the group of the item before it; nil before any group.
+  private static func groupKeys(_ items: [DisplayItem]) -> [String?] {
+    var current: String?
+    return items.map { item in
+      if let turnId = item.turnId {
+        current = turnId
+      } else if item.role == .user {
+        current = "h-\(item.id)"
+      }
+      return current
+    }
+  }
+
   private static let runningStatuses: Set<TurnStatus> = [.submitting, .running, .waitingForUser, .stopping]
 
   private static func hasNote(_ turn: Turn) -> Bool {
@@ -171,9 +213,7 @@ enum DenseTranscript {
   /// One group: the user's messages, the line, what the turn shows, its system items, its note.
   private static func layout(key: String, items: [DisplayItem], turn: Turn?, isOpen: Bool) -> [Entry] {
     let running = turn.map { runningStatuses.contains($0.status) } ?? false
-    // A turn that is not running never shows a running step, except one whose outcome is unknown.
-    let stopsSteps = !running && turn?.status != .reconciling
-    let shown = stopsSteps ? items.map(stopped) : items
+    let shown = items.map { settled($0, in: turn) }
 
     let users = shown.filter { $0.role == .user }
     let systems = shown.filter { $0.role == .system }
@@ -241,12 +281,15 @@ enum DenseTranscript {
     return String(name.prefix(nameLimit - 1)) + "…"
   }
 
-  /// A step still in progress in a turn that has ended reads "stopped"; the stored item is untouched.
-  private static func stopped(_ item: DisplayItem) -> DisplayItem {
+  /// A step still in progress in a turn that is not running never reads as in progress: "stopped"
+  /// (drawn "Unfinished") once the turn has ended, since nothing recorded says it finished, and
+  /// "unknown" while the turn's outcome is unknown. The stored item is untouched.
+  private static func settled(_ item: DisplayItem, in turn: Turn?) -> DisplayItem {
+    if let turn, runningStatuses.contains(turn.status) { return item }
     guard item.role == .tool, item.payload["status"]?.stringValue == "inProgress",
       case .object(var members) = item.payload
     else { return item }
-    members["status"] = .string("stopped")
+    members["status"] = .string(turn?.status == .reconciling ? "unknown" : "stopped")
     var copy = item
     copy.payload = .object(members)
     return copy

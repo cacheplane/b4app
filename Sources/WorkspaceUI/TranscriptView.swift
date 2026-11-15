@@ -16,6 +16,12 @@ import WorkspaceProtocol
     holds = true
   }
 
+  /// The reader scrolled back from the end: the same hold as opening a turn, so neither the stream nor
+  /// a turn's end moves what they are reading.
+  func hold() {
+    if !holds { holds = true }
+  }
+
   /// The bottom pin and the following come back.
   func release() {
     if holds { holds = false }
@@ -27,15 +33,43 @@ import WorkspaceProtocol
   }
 }
 
-/// The content's height and whether its end is in view (within 8 pt of the viewport's). The height is
-/// part of it so a toggle that leaves the content fitting the viewport still reports in.
-private struct TranscriptEnd: Equatable {
+/// The content's height, where the viewport's top edge stands in it, and whether its end is in view
+/// (within 8 pt of the viewport's). The height is part of it so a toggle that leaves the content
+/// fitting the viewport still reports in.
+struct TranscriptEnd: Equatable {
   var height: CGFloat
+  var top: CGFloat
   var reached: Bool
+  /// The end marker is out of view: more than the transcript's bottom padding lies below the viewport.
+  /// Following the stream rests the view with that padding below it, so nearer than this is the end.
+  var away: Bool
+
+  init(height: CGFloat, top: CGFloat, reached: Bool, away: Bool) {
+    self.height = height
+    self.top = top
+    self.reached = reached
+    self.away = away
+  }
 
   init(_ geometry: ScrollGeometry) {
     height = geometry.contentSize.height
-    reached = geometry.visibleRect.maxY >= geometry.contentSize.height - 8
+    top = geometry.visibleRect.minY
+    let below = geometry.contentSize.height - geometry.visibleRect.maxY
+    reached = below <= 8
+    away = below > LLA.Metrics.margin + 8
+  }
+
+  /// What a change of geometry says about the reader. The end in view: following. The viewport's top
+  /// edge moved up over content of the same height, the end marker out of view: the reader went back (a
+  /// wheel, a drag, Page Up, the scroller). Content growing under a still viewport, the view being
+  /// taken down to the end, and a layout pass that resizes the content and moves the view with it are
+  /// none of these: the top edge stays or moves down, or the height changed in the same step.
+  enum Intent: Equatable { case following, reading, unchanged }
+
+  static func intent(from old: TranscriptEnd, to new: TranscriptEnd) -> Intent {
+    if new.reached { return .following }
+    return new.away && new.top < old.top - 0.5 && abs(new.height - old.height) <= 0.5
+      ? .reading : .unchanged
   }
 }
 
@@ -79,8 +113,29 @@ struct TranscriptView: View {
       // pressed stays where it was as its steps are drawn under it and the stream goes on below.
       .defaultScrollAnchor(.bottom, for: .initialOffset)
       .defaultScrollAnchor(folds.holds ? .top : .bottom, for: .sizeChanges)
-      .onScrollGeometryChange(for: TranscriptEnd.self, of: TranscriptEnd.init) { _, end in
-        if end.reached { folds.release() }
+      .onScrollGeometryChange(for: TranscriptEnd.self, of: TranscriptEnd.init) { old, end in
+        switch TranscriptEnd.intent(from: old, to: end) {
+        case .following: folds.release()
+        case .reading: folds.hold()
+        case .unchanged: break
+        }
+      }
+      // While the view is held, the latest content is out of sight below: one press goes back to it
+      // and follows the stream again.
+      .overlay(alignment: .bottom) {
+        if folds.holds {
+          Button("Jump to latest") {
+            folds.release()
+            proxy.scrollTo("bottom", anchor: .bottom)
+          }
+          .buttonStyle(.llaSecondary)
+          // The pill's fill is close to the page's: a rule keeps its edge visible over the transcript.
+          .overlay(Capsule().stroke(LLA.Color.rule, lineWidth: 1))
+          .llaPopoverShadow()
+          .padding(.bottom, LLA.Space.m)
+          .accessibilityIdentifier("jump-to-latest")
+          .accessibilityHint("Scrolls to the end of the thread and follows new output")
+        }
       }
       .onChange(of: detail.items.count) { _, _ in follow(proxy) }
       .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in follow(proxy) }
@@ -107,7 +162,8 @@ struct TranscriptView: View {
     }
   }
 
-  /// Keeps the end in view as the thread grows, unless an opened turn holds the view.
+  /// Keeps the end in view as the thread grows, unless an opened turn or a reader who scrolled back
+  /// holds the view.
   private func follow(_ proxy: ScrollViewProxy) {
     guard !folds.holds else { return }
     proxy.scrollTo("bottom", anchor: .bottom)
@@ -139,32 +195,29 @@ struct TranscriptContent: View {
     .frame(maxWidth: .infinity)
   }
 
+  /// Dense folds each turn's work into a line; normal draws every item. Both settle an ended turn's
+  /// open steps and put its note with it.
+  private var entries: [DenseTranscript.Entry] {
+    dense
+      ? DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open)
+      : DenseTranscript.plain(items: detail.items, turns: detail.turns)
+  }
+
   @ViewBuilder private var rows: some View {
     if detail.items.isEmpty && pending == nil {
       Text("No messages yet. Say something below.").llaMuted()
     }
-    if dense {
-      ForEach(DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open)) {
-        entry in
-        switch entry {
-        case .item(let item):
-          TranscriptRow(item: item, liveText: item.nativeItemId.flatMap { detail.liveText[$0] })
-            .id(item.id)
-        case .line(let line):
-          StepsLineRow(line: line, open: folds.open.contains(line.group)) {
-            folds.toggle(line.group)
-          }
-          .id(entry.id)
-        case .note(let turn):
-          TurnNoteRow(turn: turn)
-        }
-      }
-    } else {
-      ForEach(detail.items) { item in
+    ForEach(entries) { entry in
+      switch entry {
+      case .item(let item):
         TranscriptRow(item: item, liveText: item.nativeItemId.flatMap { detail.liveText[$0] })
           .id(item.id)
-      }
-      ForEach(detail.turns.filter { $0.status == .terminal && $0.outcome != .completed }) { turn in
+      case .line(let line):
+        StepsLineRow(line: line, open: folds.open.contains(line.group)) {
+          folds.toggle(line.group)
+        }
+        .id(entry.id)
+      case .note(let turn):
         TurnNoteRow(turn: turn)
       }
     }
@@ -329,7 +382,8 @@ struct TranscriptRow: View {
         // Trimmed: a reply's trailing blank lines otherwise widen the gap to the next item unevenly.
         MarkdownText(
           text: (liveText ?? item.payload["text"]?.stringValue ?? "").trimmingCharacters(
-            in: .whitespacesAndNewlines)
+            in: .whitespacesAndNewlines),
+          streaming: liveText != nil
         )
         .frame(maxWidth: .infinity, alignment: .leading)
       } else {
@@ -357,8 +411,34 @@ struct TranscriptRow: View {
   }
 }
 
-/// Markdown rendered through Foundation's parser: no HTML, no scripts, links stay inert text.
+/// A reply: prose through Foundation's parser (no HTML, no scripts, links stay inert text) and each
+/// fenced block as code. A reply with no fence is one text, as it always was.
 struct MarkdownText: View {
+  let text: String
+  /// The reply is still arriving: an open fence may yet close, so it offers no Copy.
+  var streaming = false
+
+  var body: some View {
+    let blocks = MarkdownBlocks.split(text)
+    if blocks.contains(where: { if case .code = $0 { true } else { false } }) {
+      VStack(alignment: .leading, spacing: LLA.Space.m) {
+        ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+          switch block {
+          case .prose(let prose): MarkdownProse(text: prose)
+          case .code(let language, let code, let closed):
+            CodeFence(language: language, code: code, copyable: closed || !streaming)
+          }
+        }
+      }
+    } else {
+      MarkdownProse(text: text)
+    }
+  }
+}
+
+/// Inline Markdown, whitespace kept. Equatable so a block whose text did not change is not parsed
+/// again as the reply's last block streams.
+struct MarkdownProse: View, Equatable {
   let text: String
 
   var body: some View {
@@ -375,6 +455,72 @@ struct MarkdownText: View {
     .llaBody()
     .lineSpacing(4)
     .textSelection(.enabled)
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+/// A fenced block: its language, Copy, and the code at its full height, scrolling sideways inside the
+/// block when a line is wider than the column. Copy takes the code exactly, without fence or language.
+struct CodeFence: View, Equatable {
+  let language: String?
+  let code: String
+  let copyable: Bool
+  @State private var copied = false
+
+  nonisolated static func == (lhs: CodeFence, rhs: CodeFence) -> Bool {
+    lhs.language == rhs.language && lhs.code == rhs.code && lhs.copyable == rhs.copyable
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: LLA.Space.s) {
+        Text(language ?? "code").font(LLAFont.caption).foregroundStyle(LLA.Color.codeFg.opacity(0.7))
+        Spacer()
+        if copyable {
+          Button(copied ? "Copied" : "Copy") {
+            Clipboard.copy(code)
+            copied = true
+            Task {
+              try? await Task.sleep(for: .seconds(2))
+              copied = false
+            }
+          }
+          .buttonStyle(.plain)
+          .font(LLAFont.caption)
+          .foregroundStyle(LLA.Color.codeFg)
+          .frame(minHeight: LLA.Metrics.row)
+          .contentShape(Rectangle())
+          .accessibilityLabel(copied ? "Copied" : "Copy code")
+          .accessibilityIdentifier("copy-code")
+        }
+      }
+      .padding(.horizontal, LLA.Space.m)
+      .frame(minHeight: max(LLA.Metrics.row, 32))
+      ScrollView(.horizontal) {
+        Text(code.isEmpty ? " " : code)
+          .font(LLAFont.codeSmall)
+          .foregroundStyle(LLA.Color.codeFg)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: true, vertical: true)
+          .padding([.horizontal, .bottom], LLA.Space.m)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(RoundedRectangle(cornerRadius: LLA.Radius.card, style: .continuous).fill(LLA.Color.codeBg))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(language.map { "\($0) code" } ?? "Code")
+  }
+}
+
+/// The system pasteboard, for a Copy the reader pressed.
+enum Clipboard {
+  @MainActor static func copy(_ text: String) {
+    #if os(macOS)
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(text, forType: .string)
+    #else
+      UIPasteboard.general.string = text
+    #endif
   }
 }
 
@@ -383,24 +529,37 @@ struct ToolCard: View {
 
   var body: some View {
     CollapsibleCard(title: title, status: item.payload["status"]?.stringValue) {
+      let detail = ToolEvidence.detail(of: item)
       VStack(alignment: .leading, spacing: LLA.Space.s) {
-        if let cwd = item.payload["cwd"]?.stringValue {
+        if let cwd = detail.cwd {
           Text(cwd).llaCodeMuted()
         }
-        if let output = item.payload["aggregatedOutput"]?.stringValue ?? item.payload["output"]?.stringValue,
-          !output.isEmpty
-        {
+        if let input = detail.input {
+          Text("Input").llaCaption()
+          LLACodeBlock(input)
+        }
+        switch detail.output {
+        case .none: EmptyView()
+        // A result with no text is still a result; say so rather than draw nothing.
+        case .empty: Text("No text output.").llaSmallMuted()
+        case .text(let output):
+          if detail.input != nil { Text("Output").llaCaption() }
           LLACodeBlock(output)
         }
-        ForEach(Array((item.payload["changes"]?.arrayValue ?? []).enumerated()), id: \.offset) { _, change in
-          Text(change["path"]?.stringValue ?? "").font(LLAFont.mono(12, weight: .semibold)).foregroundStyle(
-            LLA.Color.ink)
-          if let diff = change["diff"]?.stringValue {
+        if let exitCode = detail.exitCode {
+          Text("Exit code \(exitCode)").llaSmallMuted()
+        }
+        ForEach(Array(detail.changes.enumerated()), id: \.offset) { _, change in
+          Text(change.path).font(LLAFont.mono(12, weight: .semibold)).foregroundStyle(LLA.Color.ink)
+          if let diff = change.diff {
             LLACodeBlock(diff)
           }
         }
-        if item.payload["aggregatedOutput"] == nil, item.payload["changes"] == nil {
-          Text(String(describing: item.payload).prefix(2_000)).llaCodeMuted().textSelection(.enabled)
+        if let raw = detail.raw {
+          Text(raw).llaCodeMuted().textSelection(.enabled)
+          if detail.rawCut {
+            Text("Cut at \(ToolEvidence.rawLimit) characters.").llaSmallMuted()
+          }
         }
       }
     }
@@ -434,7 +593,7 @@ struct CollapsibleCard<Content: View>: View {
             Text(title).llaCode().lineLimit(stacked ? 4 : 1).truncationMode(.middle)
             if !stacked { Spacer() }
             HStack(spacing: LLA.Space.s) {
-              if let status { LLABadge(status, tone: statusTone(status)) }
+              if let status { LLABadge(DenseTranscript.statusLabel(status), tone: statusTone(status)) }
               Text(expanded ? "Hide" : "Show").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
             }
           }

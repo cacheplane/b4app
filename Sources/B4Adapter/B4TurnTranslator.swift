@@ -125,9 +125,13 @@ public struct B4TurnTranslator: Sendable {
     return B4Protocol.stepStatus(ofToolMessage: kwargs) == "denied"
   }
 
+  /// A result is a failure only when it says so: the `ToolMessage`'s own status or B4's step, or, for
+  /// a bare result, an `error` that holds something. `error: null`, `false`, `0`, an empty string and
+  /// an empty list are results.
   static func toolFailed(_ output: JSONValue) -> Bool {
-    if output["lc"] != nil { return output["kwargs"]?["status"]?.stringValue == "error" }
-    return output["error"] != nil
+    if output["lc"] != nil, let kwargs = output["kwargs"] { return B4Protocol.toolMessageFailed(kwargs) }
+    guard let error = output["error"] else { return false }
+    return !error.isNull
   }
 
   private mutating func track(_ id: String, name: String) {

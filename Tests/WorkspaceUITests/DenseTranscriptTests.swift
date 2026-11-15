@@ -293,7 +293,8 @@ import WorkspaceProtocol
     let steps = try #require(line(result))
     #expect(!steps.running)
     #expect(steps.text == "1 step")
-    #expect(steps.folded.first?.payload["status"] == .string("inProgress"))
+    // Its open step is neither in progress nor stopped: nothing says which.
+    #expect(steps.folded.first?.payload["status"] == .string("unknown"))
     #expect(!ids(result).contains("note-t1"))
   }
 

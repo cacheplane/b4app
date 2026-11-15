@@ -718,6 +718,53 @@
       #expect(abs(view.below - below) <= 0.5, "the answer moved by \(below - view.below)")
     }
 
+    // MARK: reading back (F14)
+
+    /// A reader who scrolled back, with nothing opened, is left where they are while the reply streams
+    /// and a step arrives; going back to the end follows the stream again. Both densities.
+    @Test(arguments: [true, false]) func readingBackIsNotPulledToTheEndByTheStream(dense: Bool) async throws {
+      let view = try Hosted(twelveAndARunningTurn(), dense: dense)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      let origin = view.origin
+
+      let height = view.documentHeight
+      view.host.detail.liveText["n13"] = lines(20)
+      view.host.detail.items.append(step("s13-1", turn: "t13", sequence: 132, status: "inProgress"))
+      try await view.until("the reply grows") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5, "the stream moved the reader by \(view.origin - origin)")
+
+      try await view.scrollToEnd()
+      let later = view.documentHeight
+      view.host.detail.liveText["n13"] = lines(40)
+      try await view.until("the reply grows again") { view.documentHeight > later + 1 }
+      try await view.settle()
+      #expect(view.atEnd, "below the viewport: \(view.below)")
+    }
+
+    /// The turn the reader was not following ends: the view stays where they are reading.
+    @Test func readingBackIsNotPulledToTheEndWhenTheTurnEnds() async throws {
+      let view = try Hosted(twelveAndARunningTurn(), dense: false)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      let origin = view.origin
+
+      var ended = view.host.detail
+      if let index = ended.items.firstIndex(where: { $0.id == "a13" }) {
+        ended.items[index].payload = .object(["text": .string(lines(12))])
+      }
+      ended.liveText = [:]
+      ended.turns[ended.turns.count - 1] = turn(13)
+      let height = view.documentHeight
+      view.host.detail = ended
+      try await view.until("the answer is drawn") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5, "the turn's end moved the reader by \(view.origin - origin)")
+    }
+
     @Test func withNothingToggledNormalDensityScrollsAsToday() async throws {
       let view = try Hosted(twelveAndARunningTurn(), dense: false)
       defer { view.close() }
