@@ -434,24 +434,34 @@ struct ToolCard: View {
 
   var body: some View {
     CollapsibleCard(title: title, status: item.payload["status"]?.stringValue) {
+      let detail = ToolEvidence.detail(of: item)
       VStack(alignment: .leading, spacing: LLA.Space.s) {
-        if let cwd = item.payload["cwd"]?.stringValue {
+        if let cwd = detail.cwd {
           Text(cwd).llaCodeMuted()
         }
-        if let output = item.payload["aggregatedOutput"]?.stringValue ?? item.payload["output"]?.stringValue,
-          !output.isEmpty
-        {
+        if let input = detail.input {
+          Text("Input").llaCaption()
+          LLACodeBlock(input)
+        }
+        switch detail.output {
+        case .none: EmptyView()
+        // A result with no text is still a result; say so rather than draw nothing.
+        case .empty: Text("No text output.").llaSmallMuted()
+        case .text(let output):
+          if detail.input != nil { Text("Output").llaCaption() }
           LLACodeBlock(output)
         }
-        ForEach(Array((item.payload["changes"]?.arrayValue ?? []).enumerated()), id: \.offset) { _, change in
-          Text(change["path"]?.stringValue ?? "").font(LLAFont.mono(12, weight: .semibold)).foregroundStyle(
-            LLA.Color.ink)
-          if let diff = change["diff"]?.stringValue {
+        if let exitCode = detail.exitCode {
+          Text("Exit code \(exitCode)").llaSmallMuted()
+        }
+        ForEach(Array(detail.changes.enumerated()), id: \.offset) { _, change in
+          Text(change.path).font(LLAFont.mono(12, weight: .semibold)).foregroundStyle(LLA.Color.ink)
+          if let diff = change.diff {
             LLACodeBlock(diff)
           }
         }
-        if item.payload["aggregatedOutput"] == nil, item.payload["changes"] == nil {
-          Text(String(describing: item.payload).prefix(2_000)).llaCodeMuted().textSelection(.enabled)
+        if let raw = detail.raw {
+          Text(raw).llaCodeMuted().textSelection(.enabled)
         }
       }
     }

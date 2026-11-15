@@ -186,6 +186,77 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(items[1].payload["output"]?.stringValue == "Permission denied by user: tool deploy")
   }
 
+  /// F05: a result is a failure only when it says so. `error: null`, `false`, `0`, an empty string
+  /// and an empty list are results like any other.
+  @Test func aNullErrorAndFalsyResultsAreNotFailures() {
+    #expect(!B4TurnTranslator.toolFailed(["error": .null, "rows": []]))
+    #expect(!B4TurnTranslator.toolFailed(false))
+    #expect(!B4TurnTranslator.toolFailed(0))
+    #expect(!B4TurnTranslator.toolFailed(""))
+    #expect(!B4TurnTranslator.toolFailed([]))
+    #expect(!B4TurnTranslator.toolFailed(.null))
+    #expect(B4TurnTranslator.toolFailed(["error": "boom"]))
+    #expect(B4TurnTranslator.toolFailed(["error": ["message": "boom"]]))
+    func toolMessage(_ kwargs: JSONValue) -> JSONValue {
+      [
+        "lc": 1, "type": "constructor", "id": ["langchain_core", "messages", "ToolMessage"], "kwargs": kwargs,
+      ]
+    }
+    #expect(!B4TurnTranslator.toolFailed(toolMessage(["content": "", "status": "success"])))
+    #expect(B4TurnTranslator.toolFailed(toolMessage(["content": "boom", "status": "error"])))
+    // B4's own step says it failed, whatever LangChain's status reads.
+    #expect(
+      B4TurnTranslator.toolFailed(
+        toolMessage(["content": "boom", "additional_kwargs": ["b4_step": ["v": 1, "status": "failed"]]])))
+  }
+
+  /// F13: history keeps what the checkpoint recorded for each call. A failed call is not restored as
+  /// completed, and a call with no result is not given one.
+  @Test func historyKeepsAFailedCallFailedAndACallWithNoResultOpen() {
+    func lc(_ cls: String, _ kwargs: JSONValue) -> JSONValue {
+      ["lc": 1, "type": "constructor", "id": ["langchain_core", "messages", .string(cls)], "kwargs": kwargs]
+    }
+    let items = B4Protocol.snapshotItems(
+      stateValues: [
+        "messages": [
+          lc("HumanMessage", ["content": "migrate"]),
+          lc(
+            "AIMessage",
+            [
+              "content": "",
+              "tool_calls": [
+                ["id": "call_1", "name": "migrate", "args": [:]],
+                ["id": "call_2", "name": "status", "args": [:]],
+                ["id": "call_3", "name": "count", "args": [:]],
+                ["id": "call_4", "name": "deploy", "args": [:]],
+                ["id": "call_5", "name": "lint", "args": [:]],
+              ],
+            ]),
+          lc("ToolMessage", ["content": "relation exists", "tool_call_id": "call_1", "status": "error"]),
+          lc(
+            "ToolMessage",
+            [
+              "content": "timeout", "tool_call_id": "call_2",
+              "additional_kwargs": ["b4_step": ["v": 1, "status": "failed"]],
+            ]),
+          lc("ToolMessage", ["content": "", "tool_call_id": "call_3", "status": "success"]),
+          lc("ToolMessage", ["content": "ok", "tool_call_id": "call_5"]),
+        ]
+      ])
+    let calls = Dictionary(
+      uniqueKeysWithValues: items.compactMap { item in item.nativeItemId.map { ($0, item) } })
+    #expect(calls["call_1"]?.payload["status"]?.stringValue == "failed")
+    #expect(calls["call_1"]?.payload["output"]?.stringValue == "relation exists")
+    #expect(calls["call_2"]?.payload["status"]?.stringValue == "failed")
+    // An empty result is a result.
+    #expect(calls["call_3"]?.payload["status"]?.stringValue == "completed")
+    #expect(calls["call_3"]?.payload["output"]?.stringValue == "")
+    // No ToolMessage: nothing recorded says the call finished.
+    #expect(calls["call_4"]?.payload["status"]?.stringValue == "inProgress")
+    #expect(calls["call_4"]?.payload["output"] == nil)
+    #expect(calls["call_5"]?.payload["status"]?.stringValue == "completed")
+  }
+
   @Test func aParkKeepsTheTurnOpenUntilTheResumeStreamFinishes() {
     var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 3)
     var events: [AdapterEvent] = []
