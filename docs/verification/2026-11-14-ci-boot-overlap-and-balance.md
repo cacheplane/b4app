@@ -1,8 +1,8 @@
 ## 2026-11-14: CI's layout build during the boot, rebalanced shards, and where a run's time goes
 
-The checks for D-232, and the record of a review of the delivery paths against a fixed rubric. Branch `blove/ci-cd-optimization-f1bf66`, from `main` 9bb7c97. Verdict at the end: **incomplete**. The first candidate (E2 to E4) had one hosted run, 43678912064, in "The first hosted run" below; E2 failed its rule there and was reverted. The second candidate (E3 and E4) had one too, 43684652276; E4 cost runner time on both and was reverted at the owner's word. What remains is E3, the timing tool and the checks' shell tests, on D-229's workflow. No improvement is claimed.
+The checks for D-232, and the record of a review of the delivery paths against a fixed rubric. Branch `blove/ci-cd-optimization-f1bf66`, from `main` 9bb7c97. Verdict at the end: **incomplete**. The first candidate (E2 to E4) had one hosted run, 43678912064, in "The first hosted run" below; E2 failed its rule there and was reverted. The second candidate (E3 and E4) had one too, 43684652276; E4 cost runner time on both and was reverted at the owner's word. What remains is E3, the timing tool and the checks' shell tests, and E5 (the iOS app builds compile `arm64` only, the owner's decision), which has no hosted run yet. No improvement is claimed.
 
-The comparison was fixed before any candidate result was read: `docs/research/2026-11-14-ci-delivery/manifest.json` (scope, obligations, gates, thresholds, decision rules, exclusions, and five dated amendments). The raw rows are `observations.json` beside it, written by `Scripts/ci_timings.py collect`; every hosted figure below can be recomputed from it with `summarize` and `steps`, except the three marked "from logs", which come from job logs and result bundles that GitHub keeps for the runs named.
+The comparison was fixed before any candidate result was read: `docs/research/2026-11-14-ci-delivery/manifest.json` (scope, obligations, gates, thresholds, decision rules, exclusions, and six dated amendments). The raw rows are `observations.json` beside it, written by `Scripts/ci_timings.py collect`; every hosted figure below can be recomputed from it with `summarize` and `steps`, except the three marked "from logs", which come from job logs and result bundles that GitHub keeps for the runs named.
 
 ### Scope
 
@@ -174,9 +174,17 @@ The longest job is 2% longer than the baseline's median and the macOS runner tim
 - **E3.** Journey sums 278 s (shard 1) and 408 s (shard 2); with `testSyncCopyJourneys` (57 s) in shard 2 they would have been 221 and 465 s. All 16 tests passed with no repetition. Shard 2's tests took 556 s for 408 s of journeys and shard 1's 322 s for 278 s.
 - **E4.** The output arrived again (`iOS builds: success/success`). The beta build took 191 s in shard 1. Without it shard 1 would have run about 760 s and the package job, with it at the baseline's 92 to 135 s, about 740 to 780 s: shard 2 is the longest either way, and the move cost about 55 to 100 s of runner time.
 
+### The third hosted run, and E5
+
+Run 43739628332, commit e860316 (`main`'s workflow with E3 alone), first attempt, green. Package 909 s, smoke 742 s, shard 1 753 s, shard 2 929 s: the longest job 929 s and the macOS runner time 3,333 s, against baseline medians of 967 and 3,235 s. Both are inside the baseline's range; neither threshold is met. Its result bundles were not read.
+
+E5, after the owner said nobody builds the iOS app on an Intel Mac: `ARCHS=arm64` on the two iOS app build steps. The rule was written first (the manifest's sixth amendment). Local, one build each way in its own DerivedData: the generic build ran 408 `SwiftCompile` tasks, 204 for each architecture, in 76 s; the `arm64` one ran 204, none for `x86_64`, in 33 s; both succeeded. The local half of the rule is met (at most 60% of the tasks). The hosted half asks for the two steps' sum to be at least 25% under the baseline's median of 271 s (232 to 314 s in four runs) in each of two runs; on run 43739628332, without E5, they took 153 and 109 s. No hosted run of E5 exists yet. A test holds the setting on the two iOS builds and off the two macOS builds. What CI stops showing: that the app compiles for the Intel Simulator.
+
+Larger macOS runners were looked up, not tried: GitHub offers them only on its Team and Enterprise Cloud plans and bills them by the minute in public repositories (5-core M2 Pro, $0.102 a minute); this organization is on the free plan, where the standard runners cost a public repository nothing. That is the owner's to decide and nothing here depends on it.
+
 ### Verdict: incomplete
 
-E2 and E4 are reverted: `.github/workflows/ci.yml`, `Scripts/test-ios-layout.sh` and its tests are `main`'s (9bb7c97). The branch changes the shard plan (E3), adds `Scripts/ci_timings.py` and its tests, and adds the combining checks' shell tests, now against `main`'s two-job form of the builds' check. Findings F1, F4, F5, F6, F8 and F10 were about E2 or E4 and no longer arise. Local after the reverts: 55 script tests pass, `actionlint` is clean, `Scripts/docs-index.sh --check` passes.
+E2 and E4 are reverted: `.github/workflows/ci.yml`, `Scripts/test-ios-layout.sh` and its tests are `main`'s (9bb7c97). The branch changes the shard plan (E3), adds `Scripts/ci_timings.py` and its tests, and adds the combining checks' shell tests, now against `main`'s two-job form of the builds' check. Findings F1, F4, F5, F6, F8 and F10 were about E2 or E4 and no longer arise. Local after the reverts and E5: 56 script tests pass, `actionlint` is clean, `Scripts/docs-index.sh --check` passes.
 
 No required check fails and no S3 or S4 finding is open. One required check is untested, C15.3: there is no holdout, and the plan with `main`'s workflow has not run hosted as such (the second run had the same plan with E4). No improvement is claimed, and on the two hosted runs none is shown: neither threshold was met in either.
 
@@ -184,6 +192,6 @@ What is left:
 
 - E3 held on both runs (journey sums 268 and 401 s, then 278 and 408 s), and shard 2 is still the longer shard: its step outside the journeys is what makes it so, and the plan cannot move that.
 - The runners differ from run to run by more than any change tried here. A further change to this path needs several runs each side before it is judged.
-- For the owner: the `x86_64` Simulator slice of the two iOS app builds, and larger runners. Still open: the docs-only path, the holdout.
+- E5 needs its two hosted runs. For the owner: larger runners, which need a paid plan. Still open: the docs-only path, the holdout.
 
 To undo: revert this branch's commits. Nothing outside the repository changed.

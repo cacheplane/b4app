@@ -206,6 +206,13 @@
         "E3 kept: journey sums 278 and 408 s",
         "the workflow, the layout script and its tests are main's (9bb7c97); the branch keeps E3, Scripts/ci_timings.py and the combining checks' shell tests"
       ]
+    },
+    {
+      "at": "2026-11-15T19:30:00Z",
+      "why": "the owner's change to the contract: nobody builds the iOS app on an Intel Mac, so the two iOS app builds need not compile the x86_64 Simulator slice. 'unchanged: the four schemes and their destinations' now excepts that slice. Written before any arm64-only build was run.",
+      "decision_rules": {
+        "E5": "keep ARCHS=arm64 on the two iOS app builds if, locally, the build succeeds, compiles nothing for x86_64 and runs at most 60% of the generic build's SwiftCompile tasks; hosted, the two steps' summed time is at least 25% below the baseline's median (271 s over 4 package jobs in observations.json where both built, range 232 to 314 s), in each of at least two runs before any saving is stated. Judged on those two steps, not on job or run time, which the runners move by more."
+      }
     }
   ]
 }
