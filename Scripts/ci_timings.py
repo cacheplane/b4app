@@ -15,8 +15,10 @@ null, never a guess. The clocks, all from GitHub's own timestamps:
   tail       the last macOS job's completed_at to the attempt's last job's (the Linux check jobs)
   seconds    summed `ran` by runner class: what the attempt used, not how long it took
 
-A re-run attempt lists the jobs it did not re-run with their first attempt's times; those rows are
-marked `reused` and are in no clock of the later attempt.
+A re-run attempt lists the jobs it did not re-run with an earlier attempt's times; those rows are
+marked `reused` and are in no clock of the later attempt. A job cancelled before a runner took it
+has no runner, and GitHub gives it a started_at all the same: here it never started (started_at is
+null), it is in no `ran` or `seconds`, and the time it waited is `gave_up`, a wait that did not end.
 """
 import argparse
 from datetime import datetime
@@ -48,19 +50,22 @@ def rows(run, jobs):
     """One observation per job of one attempt. `run` and `jobs` are GitHub's API objects."""
     out = []
     for job in jobs:
-        reused = bool(job.get("started_at")) and parse(job["started_at"]) < parse(run["run_started_at"])
+        # Either stamp before this attempt began means an earlier attempt ran the job.
+        reused = any(job.get(key) and parse(job[key]) < parse(run["run_started_at"])
+                     for key in ("started_at", "completed_at"))
+        runner = job.get("runner_name") or None
         out.append({
             "run": run["id"], "attempt": run["run_attempt"], "event": run["event"],
             "branch": run["head_branch"], "sha": run["head_sha"],
             "run_created_at": run["created_at"], "run_started_at": run["run_started_at"],
             "run_conclusion": run.get("conclusion"),
             "job_id": job["id"], "job": job["name"], "conclusion": job.get("conclusion"),
-            "runner_class": runner_class(job.get("labels", [])), "runner": job.get("runner_name") or None,
-            "created_at": job.get("created_at"), "started_at": job.get("started_at"),
+            "runner_class": runner_class(job.get("labels", [])), "runner": runner,
+            "created_at": job.get("created_at"), "started_at": job.get("started_at") if runner else None,
             "completed_at": job.get("completed_at"), "reused": reused,
             "steps": [{"name": step["name"], "conclusion": step.get("conclusion"),
                        "seconds": seconds(step.get("started_at"), step.get("completed_at"))}
-                      for step in job.get("steps", [])],
+                      for step in job.get("steps", []) if runner],
         })
     return out
 
@@ -78,6 +83,9 @@ def attempts(observations):
         first = jobs[0]
         end = max((job["completed_at"] for job in ran), key=parse, default=None)
         last_mac = max(mac, key=lambda job: parse(job["completed_at"]), default=None)
+        gave_up = [seconds(job["created_at"], job["completed_at"]) for job in jobs
+                   if not job["reused"] and job["runner_class"] == "macos" and not job["started_at"]
+                   and job["completed_at"] and job["conclusion"] != "skipped"]
         used = {}
         for job in ran:
             used[job["runner_class"]] = used.get(job["runner_class"], 0) + seconds(job["started_at"], job["completed_at"])
@@ -87,6 +95,7 @@ def attempts(observations):
             "span": seconds(first["run_started_at"], end),
             "head": seconds(first["run_started_at"], min((job["created_at"] for job in mac), key=parse, default=None)),
             "queue": max((seconds(job["created_at"], job["started_at"]) for job in mac), default=None),
+            "gave_up": max(gave_up, default=None),
             "last_macos_job": last_mac["job"] if last_mac else None,
             "last_macos_ran": seconds(last_mac["started_at"], last_mac["completed_at"]) if last_mac else None,
             "tail": seconds(last_mac["completed_at"], end) if last_mac else None,
@@ -113,6 +122,14 @@ def minutes(value):
     return "    -" if value is None else f"{value / 60:5.1f}"
 
 
+def queues(observations):
+    """Every wait for a macOS runner that ended in a start, sorted; and how many never did."""
+    mac = [row for row in observations if row["runner_class"] == "macos" and not row["reused"]
+           and row["conclusion"] != "skipped"]
+    waits = sorted(seconds(row["created_at"], row["started_at"]) for row in mac if row["started_at"])
+    return waits, sum(1 for row in mac if not row["started_at"] and row["completed_at"])
+
+
 def summarize(observations, out=sys.stdout):
     table = attempts(observations)
     print("run attempt sha event conclusion | span head queue tail (min) | last macOS job, ran | macOS, Linux runner-min",
@@ -128,6 +145,12 @@ def summarize(observations, out=sys.stdout):
         print(f"first attempts that passed: {len(green)} of {sum(1 for row in table if row['attempt'] == 1)};"
               f" span median {minutes(statistics.median(spans)).strip()} min,"
               f" range {minutes(spans[0]).strip()} to {minutes(spans[-1]).strip()}", file=out)
+    waits, never = queues(observations)
+    if waits:
+        at = lambda share: waits[int(share * (len(waits) - 1))]  # noqa: E731
+        print(f"waits for a macOS runner: {len(waits)} jobs in {len({row['run'] for row in observations})} runs;"
+              f" median {at(.5)} s, 75th percentile {at(.75)} s, 90th {at(.9)} s, longest {waits[-1]} s;"
+              f" {never} more were cancelled while waiting", file=out)
 
 
 def steps(observations, run, attempt, floor, out=sys.stdout):
@@ -154,7 +177,7 @@ def main(argv=None):
     commands.choices["steps"].add_argument("--floor", type=int, default=8, help="hide steps shorter than this")
     args = parser.parse_args(argv)
     if args.command == "collect":
-        json.dump(collect(args.workflow, args.limit), sys.stdout, indent=1)
+        json.dump(collect(args.workflow, args.limit), sys.stdout, separators=(",", ":"))
         return 0
     with open(args.observations) as file:
         observations = json.load(file)

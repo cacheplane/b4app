@@ -9,7 +9,8 @@
         "testSecondaryNoticeJourneys",
         "testDarkRefusalJourney",
         "testMaximumTextJourneys",
-        "testConnectionNoticeJourney"
+        "testConnectionNoticeJourney",
+        "testSyncCopyJourneys"
       ]
     },
     {
@@ -17,7 +18,6 @@
       "ui": [
         "testWorkspaceNavigationJourney",
         "testHealthyComposerJourney",
-        "testSyncCopyJourneys",
         "testStartupAndEmptyJourneys",
         "testLandscapeJourney",
         "testRecoveryJourneys",

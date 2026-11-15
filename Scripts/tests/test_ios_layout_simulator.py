@@ -143,8 +143,9 @@ sys.exit(99)
 
 
 class SimulatorWorkflowTests(unittest.TestCase):
-    def run_wrapper(self, statuses):
-        """The real wrapper with fake tools; `statuses` maps a tool call's first words to its exit."""
+    def run_wrapper(self, statuses, **extra):
+        """The real wrapper with fake tools; `statuses` maps a tool call's kind to its exit status.
+        Returns the result, the kinds of call in order, and each call's own arguments."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             calls = root / 'calls'
@@ -153,7 +154,7 @@ class SimulatorWorkflowTests(unittest.TestCase):
                 fake.write_text('#!/bin/sh\n'
                                 'case "$*" in *test-without-building*) key=test;; *build-for-testing*) key=build;;\n'
                                 '  *bootstatus*) key=bootstatus;; *) key=other;; esac\n'
-                                f'printf "%s %s\\n" {tool} "$key" >> "$SIM_CALLS"\n'
+                                f'printf "%s %s\\t%s\\n" {tool} "$key" "$*" >> "$SIM_CALLS"\n'
                                 'eval "exit \\${STATUS_$key:-0}"\n')
                 fake.chmod(0o755)
             env = {k: v for k, v in os.environ.items() if k not in ('CI', 'B4APP_LAYOUT_SHARD')}
@@ -161,23 +162,47 @@ class SimulatorWorkflowTests(unittest.TestCase):
                        B4APP_LAYOUT_SIMULATOR_UDID=FIRST, B4APP_LAYOUT_RESULTS=str(root / 'none.xcresult'),
                        B4APP_LAYOUT_DESTINATION=f'platform=iOS Simulator,id={FIRST}',
                        **{f'STATUS_{key}': str(value) for key, value in statuses.items()})
-            result = subprocess.run(['/bin/sh', str(ROOT / 'Scripts/test-ios-layout.sh')], env=env,
+            env.update(extra)
+            result = subprocess.run(['/bin/sh', str(ROOT / 'Scripts/test-ios-layout.sh'),
+                                     '-clonedSourcePackagesDirPath', '.spm'], env=env,
                                     capture_output=True, text=True, timeout=30)
-            return result, calls.read_text().split('\n')[:-1]
+            lines = [line.split('\t') for line in calls.read_text().split('\n')[:-1]] if calls.exists() else []
+            return result, [line[0] for line in lines], [line[1] for line in lines]
 
     def test_the_wrapper_builds_then_waits_for_the_boot_then_tests(self):
         # The fake test run fails with 7, so the wrapper stops before it reads a result bundle.
-        result, calls = self.run_wrapper({'test': 7})
+        result, calls, _ = self.run_wrapper({'test': 7})
         self.assertEqual(result.returncode, 7, result.stderr)
         self.assertEqual(calls, ['xcodegen other', 'xcodebuild build', 'xcrun bootstatus', 'xcodebuild test'])
 
+    def test_the_build_and_the_test_run_get_the_same_shard_and_caller_arguments(self):
+        plan = json.loads((ROOT / 'Tests/iOSLayout/UITests/shards.json').read_text())
+        for number, flag in ((1, '-only-testing'), (len(plan['shards']), '-skip-testing')):
+            result, calls, arguments = self.run_wrapper({'test': 7}, B4APP_LAYOUT_SHARD=str(number))
+            self.assertEqual(result.returncode, 7, result.stderr)
+            build, test = arguments[calls.index('xcodebuild build')], arguments[calls.index('xcodebuild test')]
+            named = [word for word in build.split() if word.startswith(flag + ':')]
+            self.assertTrue(named, build)
+            for word in named + ['-clonedSourcePackagesDirPath .spm', f'id={FIRST}']:
+                self.assertIn(word, build)
+                self.assertIn(word, test)
+            self.assertEqual(sorted(named), sorted(word for word in test.split() if word.startswith(flag + ':')))
+            self.assertIn('-parallel-testing-enabled NO', test)
+            self.assertIn('-resultBundlePath', test)
+
     def test_no_test_runs_when_the_boot_does_not_finish_or_the_build_fails(self):
-        result, calls = self.run_wrapper({'bootstatus': 29})
+        result, calls, _ = self.run_wrapper({'bootstatus': 29})
         self.assertEqual(result.returncode, 29, result.stderr)
         self.assertEqual(calls, ['xcodegen other', 'xcodebuild build', 'xcrun bootstatus'])
-        result, calls = self.run_wrapper({'build': 65})
+        result, calls, _ = self.run_wrapper({'build': 65})
         self.assertEqual(result.returncode, 65, result.stderr)
         self.assertEqual(calls, ['xcodegen other', 'xcodebuild build'])
+
+    def test_ci_refuses_to_run_without_a_simulator_to_wait_for(self):
+        result, calls, _ = self.run_wrapper({}, CI='true', B4APP_LAYOUT_SIMULATOR_UDID='')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('CI must name the Simulator to wait for', result.stderr)
+        self.assertNotIn('xcodebuild build', calls)
 
     def test_boot_begins_before_the_wrapper_which_is_told_which_simulator_to_wait_for(self):
         # The boot begins in its own step and the wrapper builds while it runs (D-232); the wrapper
@@ -192,7 +217,7 @@ class SimulatorWorkflowTests(unittest.TestCase):
         self.assertNotIn('simctl bootstatus', workflow)
         self.assertIn('B4APP_LAYOUT_SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}', workflow)
         self.assertIn('B4APP_LAYOUT_DESTINATION: ${{ steps.simulator.outputs.destination }}', workflow)
-        self.assertIn('timeout-minutes: 30', workflow[job:])
+        self.assertIn('timeout-minutes: 35', workflow[job:workflow.index('\n  ios-layout-result:')])
 
     def test_both_shards_run_and_the_required_check_needs_them(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()

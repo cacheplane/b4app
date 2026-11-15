@@ -164,8 +164,8 @@ jobs:
           swift test --skip-build --skip '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           exit "$status"
       # One of the four app builds, which had a macOS job of their own. The beta iOS build is a step
-      # of layout shard 1 and the two macOS builds are steps of the smoke job, so no job carries more
-      # than this one did when it held both iOS builds and was the longest (D-232). The build runs
+      # of layout shard 1 and the two macOS builds are steps of the smoke job: with both iOS builds
+      # this job ran 817 to 960 s and was the longest in one run of four (D-232). The build runs
       # whatever the tests did, and the "apps" job below reports all four under the required name
       # from the steps' outcomes, not from the jobs' results.
       - name: Install XcodeGen
@@ -214,6 +214,8 @@ jobs:
             echo "This change touches nothing the apps are built from."
             exit 0
           fi
+          # A build that failed is a failed step in "Package build and tests", layout shard 1 (the
+          # beta iOS build; that job stays green) or "macOS recovery smoke tests".
           test "$IOS" = success/success
           test "$MACOS" = success/success
 
@@ -223,7 +225,8 @@ jobs:
   ios-layout:
     name: iOS layout tests (shard ${{ matrix.shard }} of 2)
     runs-on: macos-26
-    timeout-minutes: 30
+    # 30 for the tests as before, and shard 1's app build.
+    timeout-minutes: 35
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.apple != 'false' }}
     strategy:
@@ -269,17 +272,22 @@ jobs:
           name: ios-layout-results-shard-${{ matrix.shard }}
           path: .build/iOSLayout/Results-*.xcresult
           retention-days: 7
-      # The beta iOS app build (see "apps" above), in the shard whose tests are the shorter. It runs
-      # whatever the tests did, in a DerivedData of its own.
+      # The beta iOS app build (see "apps" above). It runs whatever the tests did, in the DerivedData
+      # the fixture was built in: Xcode shares none of the fixture's package build with it (D-232),
+      # but the SDK's module cache is there, as the first iOS build's was when the two shared one.
+      # A failed build does not fail this job, whose result is the layout tests' required check: the
+      # builds' check reads this step's own outcome and fails on it.
       - name: Generate project
         if: ${{ !cancelled() && matrix.shard == 1 }}
+        continue-on-error: true
         run: ./Scripts/generate-project.sh
       - name: Build iOS app (beta, simulator)
         id: ios-beta
         if: ${{ !cancelled() && matrix.shard == 1 }}
+        continue-on-error: true
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
 
   # The required check. It always runs, so a cancelled or skipped shard fails it instead of leaving
   # it skipped, which the branch protection would take for a pass. The one skip it accepts is the

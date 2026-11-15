@@ -13,9 +13,9 @@ def run(attempt=1, started="2026-11-15T03:21:06Z", conclusion="success"):
             "created_at": "2026-11-15T03:21:06Z", "run_started_at": started, "conclusion": conclusion}
 
 
-def job(name, labels, created, started, completed, conclusion="success", steps=()):
+def job(name, labels, created, started, completed, conclusion="success", steps=(), runner="r"):
     return {"id": hash(name) % 1000, "name": name, "labels": labels, "conclusion": conclusion,
-            "created_at": created, "started_at": started, "completed_at": completed, "runner_name": "r",
+            "created_at": created, "started_at": started, "completed_at": completed, "runner_name": runner,
             "steps": list(steps)}
 
 
@@ -61,6 +61,28 @@ class TimingTests(unittest.TestCase):
         self.assertEqual([row["reused"] for row in observed], [True, False])
         [row] = ci_timings.attempts(observed)
         self.assertEqual((row["span"], row["queue"], row["seconds"]), (631, 30, {"macos": 600}))
+
+    def test_a_job_cancelled_while_waiting_never_started(self):
+        # GitHub's row for it: no runner, started_at equal to created_at, completed at the cancel.
+        waiting = job("Package build and tests", ["macos-26"], "2026-11-15T03:21:50Z", "2026-11-15T03:21:50Z",
+                      "2026-11-15T03:36:51Z", conclusion="cancelled", runner="")
+        observed = ci_timings.rows(run(conclusion="cancelled"), [JOBS[2], waiting])
+        self.assertIsNone(observed[1]["started_at"])
+        [row] = ci_timings.attempts(observed)
+        self.assertEqual((row["queue"], row["gave_up"], row["seconds"]), (60, 901, {"macos": 760}))
+        self.assertEqual(ci_timings.queues(observed), ([60], 1))
+
+    def test_a_rerun_does_not_count_a_job_another_attempt_finished(self):
+        # A later attempt lists a job it did not run with a new started_at and the old completed_at.
+        second = run(attempt=2, started="2026-11-15T04:00:00Z")
+        carried = job("macOS and iOS app builds", ["macos-26"], "2026-11-15T04:00:01Z", "2026-11-15T04:00:02Z",
+                      "2026-11-15T03:29:27Z")
+        observed = ci_timings.rows(second, [carried, job("Package build and tests", ["macos-26"],
+                                                         "2026-11-15T04:00:01Z", "2026-11-15T04:00:31Z",
+                                                         "2026-11-15T04:10:31Z")])
+        self.assertEqual([row["reused"] for row in observed], [True, False])
+        [row] = ci_timings.attempts(observed)
+        self.assertEqual((row["last_macos_job"], row["seconds"]), ("Package build and tests", {"macos": 600}))
 
     def test_the_summary_counts_first_attempts_that_passed(self):
         out = io.StringIO()

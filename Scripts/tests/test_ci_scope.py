@@ -77,7 +77,8 @@ class WorkflowTests(unittest.TestCase):
         # The builds run whatever the tests before them did.
         always = "${{ !cancelled() }}"
         for job, step, condition in (("package", "ios-app", always),
-                                     ("ios-layout", "ios-beta", "${{ !cancelled() && matrix.shard == 1 }}"),
+                                     ("ios-layout", "ios-beta",
+                                      "${{ !cancelled() && matrix.shard == 1 }}\n        continue-on-error: true"),
                                      ("macos-smoke", "macos-app", always), ("macos-smoke", "macos-beta", always)):
             self.assertIn(f"        id: {step}\n        if: {condition}\n", self.jobs[job])
         # Each scheme is built once, for the destination it always was.
@@ -96,7 +97,8 @@ class CombiningCheckTests(unittest.TestCase):
 
     def script(self, job):
         text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
-        body = text[text.index(f"\n  {job}:\n"):].split("        run: |\n", 1)[1]
+        step = {"apps": "Every app build passed", "ios-layout-result": "Every shard passed"}[job]
+        body = text[text.index(f"\n  {job}:\n"):].split(f"      - name: {step}\n", 1)[1].split("        run: |\n", 1)[1]
         lines = []
         for line in body.split("\n"):
             if line.strip() and not line.startswith("          "):

@@ -46,6 +46,12 @@ mkdir -p .build/iOSLayout
 xcodegen generate --spec Tests/iOSLayout/project.yml --project .build/iOSLayout >/dev/null
 if [ -n "${B4APP_LAYOUT_DESTINATION:-}" ]; then
   destination=$B4APP_LAYOUT_DESTINATION
+  # B4APP_LAYOUT_SIMULATOR_UDID names the Simulator whose boot the tests wait for. CI always
+  # names one: without it nothing here would wait.
+  if [ -n "${CI:-}" ] && [ -z "${B4APP_LAYOUT_SIMULATOR_UDID:-}" ]; then
+    echo "CI must name the Simulator to wait for (B4APP_LAYOUT_SIMULATOR_UDID)" >&2
+    exit 2
+  fi
 else
   device=$(own_device)
   if [ -z "$device" ]; then
