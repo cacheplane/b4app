@@ -36,7 +36,7 @@ final class PaletteSmokeTests: XCTestCase {
     XCTAssertTrue(rows.firstMatch.isSelected)
     snap(app, "find-typed")
     app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
-    XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(palette.disappears(within: 5))
     try requireElement(composer, in: app)
     try await wait("the draft to load") { composer.value as? String == draft }
     // The cursor came back to the composer, at the end of the draft, which was not replaced.
@@ -59,7 +59,7 @@ final class PaletteSmokeTests: XCTestCase {
     app.typeText("pin")
     try await wait("Pin to lead") { rows.firstMatch.label.hasPrefix("Pin") }
     app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
-    XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(palette.disappears(within: 5))
     try await wait("the thread to be pinned") {
       try await fixture.client.request(ThreadRead.self, .init(threadId: fixture.threadId)).thread.pinned
     }
@@ -83,7 +83,7 @@ final class PaletteSmokeTests: XCTestCase {
     app.typeKey(XCUIKeyboardKey.delete.rawValue, modifierFlags: [])
     try await wait("Find to return") { rows.count == startCount }
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
-    XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(palette.disappears(within: 5))
 
     // Tab shows a thread's actions; Rename turns the field into the title, selected, and Return saves it.
     app.typeKey("k", modifierFlags: .command)
@@ -100,7 +100,7 @@ final class PaletteSmokeTests: XCTestCase {
     snap(app, "rename")
     app.typeText("Renamed by keys")
     app.typeKey(XCUIKeyboardKey.return.rawValue, modifierFlags: [])
-    XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(palette.disappears(within: 5))
     try await wait("the new title to be stored") {
       try await fixture.client.request(ThreadRead.self, .init(threadId: fixture.threadId)).thread.title
         == "Renamed by keys"
@@ -127,7 +127,7 @@ final class PaletteSmokeTests: XCTestCase {
     snap(app, "slash-picked")
     XCTAssertEqual(
       composer.value as? String, "/review ", "rows: \(slashRows.allElementsBoundByIndex.map(\.label))")
-    XCTAssertTrue(completions.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(completions.disappears(within: 5))
     app.typeText("the auth change")
     XCTAssertEqual(composer.value as? String, "/review the auth change")
 
@@ -149,7 +149,7 @@ final class PaletteSmokeTests: XCTestCase {
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
     try await wait("the commands again") { composer.value as? String == "/" && slashRows.count == 8 }
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
-    XCTAssertTrue(completions.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(completions.disappears(within: 5))
     XCTAssertEqual(composer.value as? String, "/")
     // A path is a message, not a command.
     app.typeText("usr/local")
@@ -167,7 +167,7 @@ final class PaletteSmokeTests: XCTestCase {
         == false
     }
     try await wait("the token to leave the draft") { composer.value as? String ?? "" == "" }
-    XCTAssertTrue(completions.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(completions.disappears(within: 5))
 
     // Nothing above reached the runtime as a turn (`resumeCount` rejects any `turn/start`).
     _ = try fixture.resumeCount()
@@ -353,7 +353,7 @@ final class PaletteSmokeTests: XCTestCase {
     }
     let left = palette.frame
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
-    XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(palette.disappears(within: 5))
     // Closed, nothing of it is left on the screen.
     try await Task.sleep(for: .milliseconds(400))
     let after = XCUIScreen.main.screenshot()
@@ -373,7 +373,7 @@ final class PaletteSmokeTests: XCTestCase {
       abs(palette.frame.minX - home.minX) < 1.5 && abs(palette.frame.minY - home.minY) < 1.5
     }
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
-    XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(palette.disappears(within: 5))
     app.typeKey("k", modifierFlags: .command)
     try requireElement(field, in: app)
     try await wait("the palette at home") {
@@ -478,7 +478,7 @@ final class PaletteSmokeTests: XCTestCase {
 
     // The window is resized with the palette up: it stays over the button.
     app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
-    XCTAssertTrue(palette.waitForNonExistence(timeout: 5))
+    XCTAssertTrue(palette.disappears(within: 5))
     // The cursor is back in the composer.
     app.typeText(" ok")
     try await wait("typing to land in the composer") {
