@@ -1061,6 +1061,61 @@ jobs:
   # a macOS runner (iOS in "package", macOS in "macos-smoke"), so a run asks for four macOS runners
   # where it asked for five. This job always runs and reads the build steps' own outcomes: a failed
   # test in either job does not fail it, and a build that failed, was cancelled or never ran does.
+  # Temporary complete-aggregate comparison; required default and focused lanes stay unchanged.
+  account-session-aggregate-serial-diagnostic:
+    name: Account session aggregate serial diagnostic
+    runs-on: macos-26
+    timeout-minutes: 45
+    needs: [scope, package]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.number == 180 && needs.scope.outputs.apple != 'false' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Record diagnostic source and toolchain
+        run: |
+          git log -1 --format='commit=%H%ntree=%T%nparents=%P'
+          xcodebuild -version
+          swift --version
+          shasum -a 256 Package.swift Package.resolved .github/workflows/ci.yml Tests/CoordinatorTests/AccountSessionComparisonOwnerTests.swift Tests/WorkspaceStorageTests/AccountSessionComparisonTests.swift Scripts/check-owner-carrier-compiler-controls.py
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+      - name: Cache the pinned PostgreSQL archive
+        uses: actions/cache@v4
+        with:
+          path: .build/postgres-dl
+          key: postgres-dl-${{ hashFiles('Scripts/fetch-postgres.sh') }}
+      - name: Fetch PostgreSQL (the tests boot a private cluster from it)
+        run: ./Scripts/fetch-postgres.sh
+      - name: Build
+        run: swift build
+      - name: Start the tests' PostgreSQL
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
+        run: swift test --filter 'AccountRegistryTests/aLedgerIsCreatedOnlyWhenMissing'
+      - name: Complete storage and coordinator aggregate without cross-test parallelism
+        timeout-minutes: 35
+        shell: bash
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
+        run: swift test --skip-build --no-parallel --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' 2>&1 | tee "$RUNNER_TEMP/account-session-aggregate-serial-diagnostic.log"
+      - name: Save diagnostic aggregate output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: account-session-aggregate-serial-diagnostic
+          path: ${{ runner.temp }}/account-session-aggregate-serial-diagnostic.log
+          if-no-files-found: warn
+          retention-days: 7
+
   apps:
     name: macOS and iOS app builds
     runs-on: ubuntu-latest
