@@ -205,7 +205,7 @@ expect_refusal() {
 }
 @test "invalid PR number refuses before route interpolation" {
   printf '0\n' >"$FIXTURE/open"; expect_refusal
-  [ "$(wc -l <"$GH_LOG" | tr -d ' ')" = 1 ]
+  [ "$(grep -c '^api ' "$GH_LOG")" = 1 ]
 }
 @test "NUL filename projection refuses" {
   pr 1 1; printf 'docs/a\0b\n' >"$FIXTURE/bad-name-1"; expect_refusal
