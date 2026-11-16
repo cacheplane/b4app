@@ -403,6 +403,15 @@ private struct P2BOwnerObservation: Sendable {
     case beforeStartEntered, beforeStartReturned
     case managerStartEntered, managerStartReturned
     case refreshJoinEntered, refreshJoinReturned
+    case refreshTaskJoinEntered, refreshTaskJoinReturned
+    case liveLinkSaveEntered, liveLinkSaveReturned
+    case liveStartEntered, liveStartReturned
+    case liveStopEntered, liveStopReturned
+    case livePushEntered, livePushReturned
+    case liveEventsEntered, liveEventsReturned
+    case candidateStopEntered, candidateStopReturned
+    case candidatePushEntered, candidatePushReturned
+    case candidateEventsEntered, candidateEventsReturned
     case liveHubEntered, liveHubReturned
     case secondEndpointEntered, secondEndpointReturned
     case candidateDatabaseEntered, candidateDatabaseReturned
@@ -1054,7 +1063,11 @@ private struct P2BOwnerFixture: Sendable {
       guard exact else { throw P2BOwnerFixtureFailure.incomplete }
       // The original unjoined /me throws WorkspaceError before reaching our fake API.
       observation?.record(.refreshJoinEntered)
-      if let refresh = await actualManager.refresh { await refresh.value }
+      if let refresh = await actualManager.refresh {
+        observation?.record(.refreshTaskJoinEntered)
+        await refresh.value
+        observation?.record(.refreshTaskJoinReturned)
+      }
       observation?.record(.refreshJoinReturned)
       let unjoinedFactoryAndSecret = probe.counts.factory == 0 && probe.counts.secretReads == 0
       let unjoinedAPIAndAdapter = probe.counts.calls.allSatisfy { $0 == 0 } && probe.counts.adapter == 0
@@ -1062,18 +1075,28 @@ private struct P2BOwnerFixture: Sendable {
       #expect(unjoinedFactoryAndSecret && unjoinedAPIAndAdapter && unjoinedLink)
       observation?.record(.liveHubEntered)
       if linked {
+        observation?.record(.liveLinkSaveEntered)
         try scope.database.saveHubLink(
           WorkspaceDatabase.HubLink(
             url: account.hubURL, deviceId: account.deviceId, deviceName: "Fixture Mac",
             tokenRef: reference.rawValue, orgSlug: "fixture-org", username: "fixture-user",
             joinedAt: joinedAt))
+        observation?.record(.liveLinkSaveReturned)
         // Do not stop first: real start installs the origin, then its nonnil nudge guard returns.
+        observation?.record(.liveStartEntered)
         await scope.hub.start()
+        observation?.record(.liveStartReturned)
       }
+      observation?.record(.liveStopEntered)
       await scope.hub.stop()
+      observation?.record(.liveStopReturned)
+      observation?.record(.livePushEntered)
       let emptyPush = try await scope.hub.pushNow()
+      observation?.record(.livePushReturned)
       #expect(emptyPush == 0)
+      observation?.record(.liveEventsEntered)
       await events.finish()
+      observation?.record(.liveEventsReturned)
       observation?.record(.liveHubReturned)
       observation?.record(.secondEndpointEntered)
       let candidateEndpoint = try AgentProtocolResourceFixture.endpoint()
@@ -1091,10 +1114,16 @@ private struct P2BOwnerFixture: Sendable {
       observation?.record(.candidateOpenReturned)
       cleanup.scope(candidate)
       observation?.record(.candidateHubEntered)
+      observation?.record(.candidateStopEntered)
       await candidate.hub.stop()
+      observation?.record(.candidateStopReturned)
+      observation?.record(.candidatePushEntered)
       let candidatePush = try await candidate.hub.pushNow()
+      observation?.record(.candidatePushReturned)
       #expect(candidatePush == 0)
+      observation?.record(.candidateEventsEntered)
       await events.finish()
+      observation?.record(.candidateEventsReturned)
       observation?.record(.candidateHubReturned)
       let f = Self(
         root: root, registry: actualRegistry, manager: actualManager, slot: actualSlot, scope: scope,
