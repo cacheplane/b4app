@@ -82,17 +82,6 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn(f"-scheme {scheme}", self.jobs[job])
 
 
-class SimulatorSliceTests(unittest.TestCase):
-    def test_the_ios_app_builds_compile_arm64_only(self):
-        # D-232: the Intel Simulator slice is not built. The macOS builds keep their architectures.
-        text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
-        builds = [line + following for line, following in zip(text.split("\n"), text.split("\n")[1:])
-                  if "xcodebuild build -project B4App.xcodeproj" in line]
-        self.assertEqual(len(builds), 4)
-        for build in builds:
-            self.assertEqual(" ARCHS=arm64 " in build, "-scheme B4App-iOS" in build, build)
-
-
 class CombiningCheckTests(unittest.TestCase):
     """The two required checks' own shell, run as the workflow runs it, on outcomes that must fail."""
 

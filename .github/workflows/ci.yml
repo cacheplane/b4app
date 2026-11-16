@@ -179,21 +179,19 @@ jobs:
           path: .spm
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: spm-xcode-${{ runner.os }}-
-      # DerivedData stays out of .build, which the SwiftPM cache above saves. The two iOS builds
-      # compile the arm64 Simulator slice only: the generic destination also builds x86_64, the
-      # Simulator on an Intel Mac, which nobody builds this app on (D-232).
+      # DerivedData stays out of .build, which the SwiftPM cache above saves.
       - name: Build iOS app (simulator)
         id: ios-app
         if: ${{ !cancelled() }}
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO ARCHS=arm64 -showBuildTimingSummary
+          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
       - name: Build iOS app (beta, simulator)
         id: ios-beta
         if: ${{ !cancelled() }}
         run: >
           xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO ARCHS=arm64 -showBuildTimingSummary
+          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
 
   # The required check for the four app builds. The builds are steps of two jobs that already hold
   # a macOS runner (iOS in "package", macOS in "macos-smoke"), so a run asks for four macOS runners

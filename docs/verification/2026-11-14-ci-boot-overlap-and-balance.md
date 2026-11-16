@@ -1,8 +1,8 @@
 ## 2026-11-14: CI's layout build during the boot, rebalanced shards, and where a run's time goes
 
-The checks for D-232, and the record of a review of the delivery paths against a fixed rubric. Branch `blove/ci-cd-optimization-f1bf66`, from `main` 9bb7c97. Verdict at the end: **incomplete**. The first candidate (E2 to E4) had one hosted run, 43678912064, in "The first hosted run" below; E2 failed its rule there and was reverted. The second candidate (E3 and E4) had one too, 43684652276; E4 cost runner time on both and was reverted at the owner's word. What remains is E3, the timing tool and the checks' shell tests, and E5 (the iOS app builds compile `arm64` only, the owner's decision), which has one hosted run of the two its rule asks for. No improvement is claimed.
+The checks for D-232, and the record of a review of the delivery paths against a fixed rubric. Branch `blove/ci-cd-optimization-f1bf66`, from `main` 9bb7c97. Verdict at the end: **incomplete**. The first candidate (E2 to E4) had one hosted run, 43678912064, in "The first hosted run" below; E2 failed its rule there and was reverted. The second candidate (E3 and E4) had one too, 43684652276; E4 cost runner time on both and was reverted at the owner's word. E5 (the iOS app builds compile `arm64` only) had two, 43762471549 and 43771721159, failed its rule on the second and was reverted at the owner's word. What remains is E3, the timing tool and the checks' shell tests. No improvement is claimed.
 
-The comparison was fixed before any candidate result was read: `docs/research/2026-11-14-ci-delivery/manifest.json` (scope, obligations, gates, thresholds, decision rules, exclusions, and six dated amendments). The raw rows are `observations.json` beside it, written by `Scripts/ci_timings.py collect`; every hosted figure below can be recomputed from it with `summarize` and `steps`, except the three marked "from logs", which come from job logs and result bundles that GitHub keeps for the runs named.
+The comparison was fixed before any candidate result was read: `docs/research/2026-11-14-ci-delivery/manifest.json` (scope, obligations, gates, thresholds, decision rules, exclusions, and seven dated amendments). The raw rows are `observations.json` beside it, written by `Scripts/ci_timings.py collect`; every hosted figure below can be recomputed from it with `summarize` and `steps`, except the three marked "from logs", which come from job logs and result bundles that GitHub keeps for the runs named.
 
 ### Scope
 
@@ -196,14 +196,14 @@ The package job's log again has 344 `SwiftCompile normal arm64` lines and none f
 
 ### Verdict: incomplete
 
-E2 and E4 are reverted: `.github/workflows/ci.yml`, `Scripts/test-ios-layout.sh` and its tests are `main`'s (9bb7c97). The branch changes the shard plan (E3), adds `Scripts/ci_timings.py` and its tests, and adds the combining checks' shell tests, now against `main`'s two-job form of the builds' check. Findings F1, F4, F5, F6, F8 and F10 were about E2 or E4 and no longer arise. Local after the reverts and E5: 56 script tests pass, `actionlint` is clean, `Scripts/docs-index.sh --check` passes.
+E2, E4 and E5 are reverted: `.github/workflows/ci.yml`, `Scripts/test-ios-layout.sh` and its tests are `main`'s (9bb7c97). The branch changes the shard plan (E3), adds `Scripts/ci_timings.py` and its tests, and adds the combining checks' shell tests, now against `main`'s two-job form of the builds' check. Findings F1, F4, F5, F6, F8 and F10 were about E2 or E4 and no longer arise. Local after the reverts: 55 script tests pass, `actionlint` is clean, `Scripts/docs-index.sh --check` passes.
 
-No required check fails and no S3 or S4 finding is open. One required check is untested, C15.3: there is no holdout, and the plan with `main`'s workflow has not run hosted as such (the second run had the same plan with E4). No improvement is claimed, and on the two hosted runs none is shown: neither threshold was met in either.
+No required check fails and no S3 or S4 finding is open. One required check is untested, C15.3: there is no holdout, and the plan with `main`'s workflow has not run hosted as such (the second run had the same plan with E4). No improvement is claimed, and on the five hosted runs none is shown: neither threshold was met in any.
 
 What is left:
 
 - E3 held on both runs (journey sums 268 and 401 s, then 278 and 408 s), and shard 2 is still the longer shard: its step outside the journeys is what makes it so, and the plan cannot move that.
 - The runners differ from run to run by more than any change tried here. A further change to this path needs several runs each side before it is judged.
-- E5 failed its rule on its second hosted run (25.5% and 18.1% under the median, where each had to be 25%). By the rule it is reverted; it is still in the workflow at this commit, and the revert waits on the owner, whose decision the arm64-only build was. For the owner: larger runners, which need a paid plan. Still open: the docs-only path, the holdout.
+- E5 failed its rule on its second hosted run (25.5% and 18.1% under the median, where each had to be 25%) and is reverted at the owner's word: `.github/workflows/ci.yml` is `main`'s again, and the test that pinned the setting is removed (55 script tests). For the owner: larger runners, which need a paid plan. Still open: the docs-only path, the holdout.
 
 To undo: revert this branch's commits. Nothing outside the repository changed.

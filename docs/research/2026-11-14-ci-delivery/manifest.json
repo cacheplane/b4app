@@ -213,6 +213,13 @@
       "decision_rules": {
         "E5": "keep ARCHS=arm64 on the two iOS app builds if, locally, the build succeeds, compiles nothing for x86_64 and runs at most 60% of the generic build's SwiftCompile tasks; hosted, the two steps' summed time is at least 25% below the baseline's median (271 s over 4 package jobs in observations.json where both built, range 232 to 314 s), in each of at least two runs before any saving is stated. Judged on those two steps, not on job or run time, which the runners move by more."
       }
+    },
+    {
+      "at": "2026-11-16T05:28:00Z",
+      "why": "E5's two hosted runs, 43762471549 and 43771721159 (both green on the first attempt); no threshold or rule changes",
+      "changes": [
+        "the two iOS build steps took 202 s (run 43762471549) and 222 s (run 43771721159), 25.5% and 18.1% under the baseline's median of 271 s. The rule asked for 25% in each. E5 is rejected and reverted at the owner's word; the workflow is main's (9bb7c97). The rule itself is not changed."
+      ]
     }
   ]
 }
