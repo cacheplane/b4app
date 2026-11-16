@@ -394,6 +394,21 @@ private struct P2BOwnerObservation: Sendable {
     case effectsCheckEntered, effectsCheckReturned, nativeCleanupEntered, nativeCleanupReturned
     case nativeCleanupUnsettled, eventCleanupEntered, eventCleanupReturned
     case lifecycleCleanupEntered, lifecycleCleanupReturned, cleanupReturned, fixtureReturned
+    case firstEndpointEntered, firstEndpointReturned
+    case temporaryStateEntered, temporaryStateReturned
+    case seedDatabaseEntered, seedDatabaseReturned
+    case registryEntered, registryReturned
+    case secretStoreEntered, secretStoreReturned
+    case managerSlotEntered, managerSlotReturned
+    case beforeStartEntered, beforeStartReturned
+    case managerStartEntered, managerStartReturned
+    case refreshJoinEntered, refreshJoinReturned
+    case liveHubEntered, liveHubReturned
+    case secondEndpointEntered, secondEndpointReturned
+    case candidateDatabaseEntered, candidateDatabaseReturned
+    case candidateOpenEntered, candidateOpenReturned
+    case candidateHubEntered, candidateHubReturned
+    case quietEffectsEntered, quietEffectsReturned
   }
   let testCase: TestCase
   let fixtureIndex: Int
@@ -902,7 +917,7 @@ private struct P2BOwnerFixture: Sendable {
     observation?.record(.setupEntered)
     let f = try await make(
       ownerRevision: ownerRevision, lifecycleSerial: lifecycleSerial,
-      beforeStart: beforeStart, linked: linked)
+      beforeStart: beforeStart, linked: linked, observation: observation)
     observation?.record(.setupReturned)
     do {
       observation?.record(.baselineEffectsEntered)
@@ -947,10 +962,13 @@ private struct P2BOwnerFixture: Sendable {
   static func make(
     ownerRevision: UInt64? = nil, lifecycleSerial: UInt64? = nil,
     beforeStart: @Sendable (AccountManager, AccountManager.Slot) async throws -> Void = { _, _ in },
-    linked: Bool
+    linked: Bool, observation: P2BOwnerObservation? = nil
   ) async throws -> Self {
+    observation?.record(.firstEndpointEntered)
     let endpoint = try AgentProtocolResourceFixture.endpoint()
+    observation?.record(.firstEndpointReturned)
     let binDir = try p2bOwnerRequire(endpoint.binDir)
+    observation?.record(.temporaryStateEntered)
     let root =
       try AgentProtocolResourceFixture.physicalTemporaryDirectory()
       + "scope-owner-" + UUID().uuidString.lowercased()
@@ -970,14 +988,18 @@ private struct P2BOwnerFixture: Sendable {
         "B4APP_RUNTIME_DIR": paths.runtimeDir, "B4APP_DATA_DIR": paths.dataDir,
         "B4APP_NODE_PATH": "/nonexistent/node", ExecutableLocator.fallbackOverrideVariable: "",
       ]
+      observation?.record(.temporaryStateReturned)
+      observation?.record(.seedDatabaseEntered)
       let seed = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir)
       cleanup.database(seed)
       try empty(seed)
       try seed.close()
+      observation?.record(.seedDatabaseReturned)
       let probe = P2BOwnerProbe()
       let secrets = P2BOwnerSecretStore(probe)
       let links = FakeHubLinkConnection()
       let power = FakePowerAssertions()
+      observation?.record(.registryEntered)
       let actualRegistry = try AccountRegistry(
         endpoint: endpoint, binDir: binDir,
         databaseName: AccountManager.registryDatabaseName(for: endpoint))
@@ -986,7 +1008,10 @@ private struct P2BOwnerFixture: Sendable {
       let account = row(endpoint: endpoint, reference: reference)
       try actualRegistry.insert(account)
       try actualRegistry.activate(id: account.id, tokenRef: reference.rawValue)
+      observation?.record(.registryReturned)
+      observation?.record(.secretStoreEntered)
       await secrets.put(reference, value: "fixture-scope-owner-value")
+      observation?.record(.secretStoreReturned)
       let diagnostics = DiagnosticsService(
         context: DiagnosticsService.Context(
           paths: paths, startedAt: joinedAt, environment: environment,
@@ -1004,15 +1029,21 @@ private struct P2BOwnerFixture: Sendable {
           cluster: StoreCluster(endpoint: endpoint, binDir: binDir, ownedServer: nil),
           registry: actualRegistry, scope: context, flavor: .local))
       manager = actualManager
+      observation?.record(.managerSlotEntered)
       let actualSlot = await actualManager.slot
+      observation?.record(.managerSlotReturned)
       slot = actualSlot
       probe.slot.bind(actualSlot)
       if ownerRevision != nil || lifecycleSerial != nil {
         try actualSlot.seedScopeOwnerCountersForTesting(
           ownerRevision: ownerRevision ?? 0, lifecycleSerial: lifecycleSerial ?? 0)
       }
+      observation?.record(.beforeStartEntered)
       try await beforeStart(actualManager, actualSlot)
+      observation?.record(.beforeStartReturned)
+      observation?.record(.managerStartEntered)
       await actualManager.start()
+      observation?.record(.managerStartReturned)
       let scope = try p2bOwnerRequire(actualManager.current)
       cleanup.scope(scope)
       cleanup.database(scope.database)
@@ -1022,11 +1053,14 @@ private struct P2BOwnerFixture: Sendable {
       #expect(exact)
       guard exact else { throw P2BOwnerFixtureFailure.incomplete }
       // The original unjoined /me throws WorkspaceError before reaching our fake API.
+      observation?.record(.refreshJoinEntered)
       if let refresh = await actualManager.refresh { await refresh.value }
+      observation?.record(.refreshJoinReturned)
       let unjoinedFactoryAndSecret = probe.counts.factory == 0 && probe.counts.secretReads == 0
       let unjoinedAPIAndAdapter = probe.counts.calls.allSatisfy { $0 == 0 } && probe.counts.adapter == 0
       let unjoinedLink = links.openCount == 0
       #expect(unjoinedFactoryAndSecret && unjoinedAPIAndAdapter && unjoinedLink)
+      observation?.record(.liveHubEntered)
       if linked {
         try scope.database.saveHubLink(
           WorkspaceDatabase.HubLink(
@@ -1040,24 +1074,35 @@ private struct P2BOwnerFixture: Sendable {
       let emptyPush = try await scope.hub.pushNow()
       #expect(emptyPush == 0)
       await events.finish()
+      observation?.record(.liveHubReturned)
+      observation?.record(.secondEndpointEntered)
       let candidateEndpoint = try AgentProtocolResourceFixture.endpoint()
+      observation?.record(.secondEndpointReturned)
       let candidateBin = try p2bOwnerRequire(candidateEndpoint.binDir)
+      observation?.record(.candidateDatabaseEntered)
       let candidateDatabase = try WorkspaceDatabase(endpoint: candidateEndpoint, binDir: candidateBin)
       cleanup.database(candidateDatabase)
       try empty(candidateDatabase)
+      observation?.record(.candidateDatabaseReturned)
+      observation?.record(.candidateOpenEntered)
       let candidate = await AccountScope.open(
         row: row(endpoint: candidateEndpoint, reference: SecretRef.make()), database: candidateDatabase,
         context: context, instance: UUID(), onUnauthorized: {})
+      observation?.record(.candidateOpenReturned)
       cleanup.scope(candidate)
+      observation?.record(.candidateHubEntered)
       await candidate.hub.stop()
       let candidatePush = try await candidate.hub.pushNow()
       #expect(candidatePush == 0)
       await events.finish()
+      observation?.record(.candidateHubReturned)
       let f = Self(
         root: root, registry: actualRegistry, manager: actualManager, slot: actualSlot, scope: scope,
         candidate: candidate, context: context, events: events, probe: probe, secrets: secrets,
         links: links, power: power, cleanup: cleanup)
+      observation?.record(.quietEffectsEntered)
       let initial = await f.effects()
+      observation?.record(.quietEffectsReturned)
       let quiet =
         initial.factory == (linked ? 1 : 0) && initial.secretReads == 0
         && initial.requests.allSatisfy { $0 == 0 } && initial.adapter == 0
