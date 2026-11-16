@@ -432,9 +432,15 @@ public struct ClaudeTurnTracker: Sendable {
   // MARK: - Transcript snapshots
 
   /// Items from the native transcript JSONL Claude Code writes (`user` and `assistant` lines).
+  ///
+  /// An assistant block is named as the stream names it, `<message id>#<index>`, so a reconcile finds
+  /// the row the live turn wrote (D-238). The transcript writes one line per block, each carrying the
+  /// message's id, so the index is the block's position among all of that message's blocks, counted
+  /// across lines. A line with no message id falls back to the line's `uuid`.
   public static func snapshotItems(transcriptLines: [String]) -> [SnapshotItem] {
     var items: [SnapshotItem] = []
     var toolNames: [String: (name: String, input: JSONValue)] = [:]
+    var blocksSeen: [String: Int] = [:]
     for line in transcriptLines {
       guard let value = try? JSONCoding.decoder.decode(JSONValue.self, from: Data(line.utf8)),
         let type = value["type"]?.stringValue, type == "user" || type == "assistant",
@@ -448,9 +454,22 @@ public struct ClaudeTurnTracker: Sendable {
             nativeItemId: uuid, role: "user", type: "userMessage", payload: ["text": .string(text)]))
         continue
       }
+      let messageId = type == "assistant" ? value["message"]?["id"]?.stringValue : nil
       for (index, block) in (content?.arrayValue ?? []).enumerated() {
-        let id = "\(uuid)#\(index)"
+        let id: String
+        if let messageId {
+          id = "\(messageId)#\(blocksSeen[messageId, default: 0])"
+          blocksSeen[messageId, default: 0] += 1
+        } else {
+          id = "\(uuid)#\(index)"
+        }
         switch block["type"]?.stringValue {
+        case "thinking":
+          guard type == "assistant" else { continue }
+          items.append(
+            SnapshotItem(
+              nativeItemId: id, role: "assistant", type: "thinking",
+              payload: ["text": block["thinking"] ?? ""]))
         case "text":
           if type == "user" {
             items.append(

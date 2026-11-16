@@ -79,7 +79,8 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
   /// the Mac is signed out or an inherited API key would switch billing mode.
   @discardableResult
   private func ensureAccount() async throws -> String {
-    if let scope { return scope }
+    // An inspection sets the scope and not the projects folder; history needs both.
+    if let scope, projectsDirectory != nil { return scope }
     let path = try locate()
     let read = await ClaudeAuth.readStatus(executable: path, environment: environment)
     guard let status = read.status else {
