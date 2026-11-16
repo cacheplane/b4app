@@ -23,6 +23,40 @@ private let turnStream = """
   """
 
 @Suite struct CodexEventTranslatorTests {
+  @Test func aPlanUpdateIsTheTurnsList() throws {
+    let translated = events(
+      """
+      {"method":"turn/plan/updated","params":{"threadId":"thr_1","turnId":"t1","explanation":"Why","plan":[{"step":"Read","status":"completed"},{"step":"Write","status":"inProgress"},{"step":"Ship","status":"pending"}]}}
+      """)
+    #expect(translated.map(\.kind) == [.toolCompleted])
+    let event = try #require(translated.first)
+    #expect(event.nativeIds == ["threadId": "thr_1", "turnId": "t1", "itemId": "tasks:t1"])
+    #expect(event.payload["role"]?.stringValue == "tool" && event.payload["type"]?.stringValue == "taskList")
+    #expect(
+      TaskList(payload: event.payload["item"] ?? .null)
+        == TaskList(
+          steps: [
+            .init(text: "Read", status: .completed), .init(text: "Write", status: .inProgress),
+            .init(text: "Ship", status: .pending),
+          ], explanation: "Why"))
+  }
+
+  /// The translator keeps no state, so an emptied plan is written as it is: the same item, no steps.
+  @Test func anEmptyPlanIsTheSameItemWithNoSteps() throws {
+    let translated = events(
+      """
+      {"method":"turn/plan/updated","params":{"threadId":"thr_1","turnId":"t1","explanation":null,"plan":[]}}
+      """)
+    let event = try #require(translated.first)
+    #expect(event.nativeIds["itemId"] == "tasks:t1")
+    #expect(TaskList(payload: event.payload["item"] ?? .null) == TaskList(steps: []))
+    #expect(event.payload["item"]?["explanation"] == nil)
+  }
+
+  @Test func aPlanUpdateWithNoTurnIsDropped() {
+    #expect(events(#"{"method":"turn/plan/updated","params":{"threadId":"thr_1","plan":[]}}"#).isEmpty)
+  }
+
   @Test func translatesAStreamedTurnInOrder() {
     let translated = events(turnStream)
     #expect(

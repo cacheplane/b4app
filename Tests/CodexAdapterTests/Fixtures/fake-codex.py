@@ -306,6 +306,14 @@ while True:
         if "fail" in text:
             finish_turn(thread_id, turn_id, "failed", {"message": "usage limit reached", "codexErrorInfo": "usageLimitExceeded"})
             continue
+        if "checklist" in text:
+            # The whole plan each time, as 0.166.0's schema says (TurnPlanUpdatedNotification).
+            notify("turn/plan/updated", {"threadId": thread_id, "turnId": turn_id, "explanation": None,
+                                         "plan": [{"step": "Read", "status": "pending"},
+                                                  {"step": "Write", "status": "pending"}]})
+            notify("turn/plan/updated", {"threadId": thread_id, "turnId": turn_id, "explanation": "Reading is done.",
+                                         "plan": [{"step": "Read", "status": "completed"},
+                                                  {"step": "Write", "status": "inProgress"}]})
         stream_message(thread_id, turn_id, reply)
         finish_turn(thread_id, turn_id, "completed")
     elif method == "review/start":
