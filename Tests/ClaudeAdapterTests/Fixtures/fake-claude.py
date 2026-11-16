@@ -281,7 +281,8 @@ while True:
         record({"type": "user", "uuid": next_id("uuid"), "message": {"role": "user", "content": [tool_result]}})
     def task_tool(name, tool_input, output):
         # A task tool as 2.1.x sends it: the use in an assistant frame, the result in a user frame.
-        tool_use_id = next_id("toolu")
+        # Unique across launches, as real ids are: a restarted fake counts from one again.
+        tool_use_id = "%s_%d" % (next_id("toolu"), os.getpid())
         message = {"id": next_id("msg"), "role": "assistant", "model": "claude-fake",
                    "content": [{"type": "tool_use", "id": tool_use_id, "name": name, "input": tool_input}], "stop_reason": "tool_use"}
         send({"type": "assistant", "message": message, "parent_tool_use_id": None, "uuid": next_id("uuid"), "user_message_uuid": user_uuid})
