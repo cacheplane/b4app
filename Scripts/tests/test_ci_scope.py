@@ -82,5 +82,52 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn(f"-scheme {scheme}", self.jobs[job])
 
 
+class CombiningCheckTests(unittest.TestCase):
+    """The two required checks' own shell, run as the workflow runs it, on outcomes that must fail."""
+
+    def script(self, job):
+        text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        step = {"apps": "Every app build passed", "ios-layout-result": "Every shard passed"}[job]
+        body = text[text.index(f"\n  {job}:\n"):].split(f"      - name: {step}\n", 1)[1].split("        run: |\n", 1)[1]
+        lines = []
+        for line in body.split("\n"):
+            if line.strip() and not line.startswith("          "):
+                break
+            lines.append(line[10:])
+        return "\n".join(lines)
+
+    def passes(self, job, **env):
+        result = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", self.script(job)],
+                                env={"PATH": "/usr/bin:/bin", **env}, capture_output=True, text=True)
+        return result.returncode == 0
+
+    def test_the_app_builds_check(self):
+        good = dict(APPLE="true", JOBS="success/success", IOS="success/success", MACOS="success/success")
+        self.assertTrue(self.passes("apps", **good))
+        # A failed test in a job that holds a build does not fail the builds' check.
+        self.assertTrue(self.passes("apps", **{**good, "JOBS": "failure/failure"}))
+        self.assertTrue(self.passes("apps", APPLE="false", JOBS="skipped/skipped", IOS="/", MACOS=""))
+        bad = [
+            {"IOS": "failure/success"}, {"IOS": "success/failure"}, {"MACOS": "failure/success"},
+            {"MACOS": "success/failure"}, {"IOS": "success/cancelled"}, {"IOS": "success/skipped"},
+            # A build that never reported: empty, not a pass.
+            {"IOS": "success/"}, {"IOS": "/success"}, {"MACOS": "/"}, {"MACOS": ""},
+            # Jobs skipped without the scope's explicit false, and a false with a job that ran.
+            {"APPLE": "true", "JOBS": "skipped/skipped", "IOS": "/", "MACOS": ""},
+            {"APPLE": "", "JOBS": "skipped/skipped", "IOS": "/", "MACOS": ""},
+            {"APPLE": "false", "JOBS": "skipped/success", "IOS": "/", "MACOS": ""},
+            {"APPLE": "false", "JOBS": "cancelled/cancelled", "IOS": "/", "MACOS": ""},
+        ]
+        for change in bad:
+            self.assertFalse(self.passes("apps", **{**good, **change}), change)
+
+    def test_the_layout_check(self):
+        self.assertTrue(self.passes("ios-layout-result", APPLE="true", SHARDS="success"))
+        self.assertTrue(self.passes("ios-layout-result", APPLE="false", SHARDS="skipped"))
+        for apple, shards in (("true", "failure"), ("true", "cancelled"), ("true", "skipped"), ("", "skipped"),
+                              ("false", "failure"), ("true", "")):
+            self.assertFalse(self.passes("ios-layout-result", APPLE=apple, SHARDS=shards), (apple, shards))
+
+
 if __name__ == "__main__":
     unittest.main()
