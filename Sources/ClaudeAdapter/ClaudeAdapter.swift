@@ -187,7 +187,15 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
           kind: .commandsChanged, connectionId: connectionId, adapterGeneration: generation,
           payload: ["commands": (try? JSONValue(encoding: commands)) ?? []]))
     }
-    trackers[id] = ClaudeTurnTracker(connectionId: connectionId, sessionId: id, generation: generation)
+    var tracker = ClaudeTurnTracker(connectionId: connectionId, sessionId: id, generation: generation)
+    // The task list lives for the session and the tracker does not: a session started again reads the
+    // list back from its transcript, so a later update finds the tasks an earlier process made.
+    if resume, let root = projectsDirectory, let file = Self.transcript(sessionId: id, under: root),
+      let text = try? String(contentsOfFile: file, encoding: .utf8)
+    {
+      tracker.seedTasks(transcriptLines: text.split(separator: "\n").map(String.init))
+    }
+    trackers[id] = tracker
     pumps[id] = Task { [weak self] in
       for await inbound in session.inbound {
         guard let self else { return }

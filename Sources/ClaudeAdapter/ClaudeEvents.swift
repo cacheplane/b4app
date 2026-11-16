@@ -28,6 +28,8 @@ public struct ClaudeTurnTracker: Sendable {
   private var failedToolUses: [String: (use: (name: String, input: JSONValue)?, extra: [String: JSONValue])] =
     [:]
   private var lastErrorCode: ErrorCode?
+  /// The session's task list (`TodoWrite` and the task tools): the turn's `taskList` item, not tool rows.
+  private var tasks = ClaudeTaskFold()
 
   public init(connectionId: String, sessionId: String, generation: Int) {
     self.connectionId = connectionId
@@ -37,6 +39,7 @@ public struct ClaudeTurnTracker: Sendable {
 
   public mutating func beginTurn(uuid: String) {
     activeTurnUuid = uuid
+    tasks.beginTurn()
     interruptRequested = false
     lastErrorCode = nil
   }
@@ -178,6 +181,8 @@ public struct ClaudeTurnTracker: Sendable {
         return [event(.messageStarted, item("agentMessage", role: .assistant, ["text": ""]), itemId: itemId)]
       case "tool_use":
         guard let id = block["id"]?.stringValue else { return [] }
+        // A task tool is never a row: its `assistant` frame brings the input the list is made from.
+        if let name = block["name"]?.stringValue, ClaudeTaskFold.toolNames.contains(name) { return [] }
         toolUses[id] = (block["name"]?.stringValue ?? "tool", .null)
         blocks[index] = ("tool_use", id)
         return [event(.toolStarted, toolItem(id: id, status: "inProgress"), itemId: id)]
@@ -226,6 +231,12 @@ public struct ClaudeTurnTracker: Sendable {
             itemId: itemId))
       case "tool_use":
         guard let id = block["id"]?.stringValue else { continue }
+        if let name = block["name"]?.stringValue, ClaudeTaskFold.toolNames.contains(name) {
+          if let list = tasks.use(id: id, name: name, input: block["input"] ?? .null) {
+            events.append(taskListEvent(list))
+          }
+          continue
+        }
         toolUses[id] = (block["name"]?.stringValue ?? "tool", block["input"] ?? .null)
         events.append(event(.toolStarted, toolItem(id: id, status: "inProgress"), itemId: id))
       case "thinking":
@@ -258,6 +269,13 @@ public struct ClaudeTurnTracker: Sendable {
     where block["type"]?.stringValue == "tool_result" {
       guard let id = block["tool_use_id"]?.stringValue else { continue }
       let failed = block["is_error"]?.boolValue == true
+      if tasks.owns(toolUseId: id) {
+        let text = Self.text(of: block["content"]) ?? ""
+        if let list = tasks.result(toolUseId: id, text: text, isError: failed) {
+          events.append(taskListEvent(list))
+        }
+        continue
+      }
       let declined = declinedToolUses.remove(id) != nil
       let extra: [String: JSONValue] = [
         "output": .string(Self.text(of: block["content"]) ?? ""), "isError": .bool(failed),
@@ -271,6 +289,20 @@ public struct ClaudeTurnTracker: Sendable {
       toolUses[id] = nil
     }
     return events
+  }
+
+  private func taskListEvent(_ list: SnapshotItem) -> AdapterEvent {
+    event(
+      .toolCompleted, ["item": list.payload, "role": .string(list.role), "type": .string(list.type)],
+      itemId: list.nativeItemId)
+  }
+
+  /// Rebuild the session's task list from its transcript, for a session whose process was started
+  /// again: the list lives for the session, and this tracker was made empty. Emits nothing.
+  public mutating func seedTasks(transcriptLines: [String]) {
+    var fold = ClaudeTaskFold()
+    _ = Self.snapshotItems(transcriptLines: transcriptLines, tasks: &fold)
+    tasks = fold
   }
 
   /// Close a tool use again as declined, if this turn closed it as failed: Claude Code refused it.
@@ -437,8 +469,24 @@ public struct ClaudeTurnTracker: Sendable {
   /// the row the live turn wrote (D-238). The transcript writes one line per block, each carrying the
   /// message's id, so the index is the block's position among all of that message's blocks, counted
   /// across lines. A line with no message id falls back to the line's `uuid`.
+  ///
+  /// The task tools are folded as the live tracker folds them: one `taskList` item for each turn that
+  /// changed the list, under the same id, and no tool rows. A turn begins at a user line with text.
   public static func snapshotItems(transcriptLines: [String]) -> [SnapshotItem] {
+    var tasks = ClaudeTaskFold()
+    return snapshotItems(transcriptLines: transcriptLines, tasks: &tasks)
+  }
+
+  static func snapshotItems(transcriptLines: [String], tasks: inout ClaudeTaskFold) -> [SnapshotItem] {
     var items: [SnapshotItem] = []
+    func place(_ list: SnapshotItem?, in items: inout [SnapshotItem]) {
+      guard let list else { return }
+      if let index = items.firstIndex(where: { $0.nativeItemId == list.nativeItemId }) {
+        items[index] = list
+      } else {
+        items.append(list)
+      }
+    }
     var toolNames: [String: (name: String, input: JSONValue)] = [:]
     var blocksSeen: [String: Int] = [:]
     for line in transcriptLines {
@@ -449,6 +497,7 @@ public struct ClaudeTurnTracker: Sendable {
       let uuid = value["uuid"]?.stringValue ?? UUID().uuidString
       let content = value["message"]?["content"]
       if type == "user", let text = content?.stringValue {
+        tasks.beginTurn()
         items.append(
           SnapshotItem(
             nativeItemId: uuid, role: "user", type: "userMessage", payload: ["text": .string(text)]))
@@ -472,6 +521,7 @@ public struct ClaudeTurnTracker: Sendable {
               payload: ["text": block["thinking"] ?? ""]))
         case "text":
           if type == "user" {
+            tasks.beginTurn()
             items.append(
               SnapshotItem(
                 nativeItemId: id, role: "user", type: "userMessage", payload: ["text": block["text"] ?? ""]))
@@ -484,6 +534,10 @@ public struct ClaudeTurnTracker: Sendable {
         case "tool_use":
           guard let toolId = block["id"]?.stringValue else { continue }
           let name = block["name"]?.stringValue ?? "tool"
+          if ClaudeTaskFold.toolNames.contains(name) {
+            place(tasks.use(id: toolId, name: name, input: block["input"] ?? .null), in: &items)
+            continue
+          }
           toolNames[toolId] = (name, block["input"] ?? .null)
           var body: [String: JSONValue] = [
             "id": .string(toolId), "name": .string(name), "input": block["input"] ?? .null,
@@ -493,9 +547,15 @@ public struct ClaudeTurnTracker: Sendable {
           items.append(
             SnapshotItem(nativeItemId: toolId, role: "tool", type: "toolUse", payload: .object(body)))
         case "tool_result":
-          guard let toolId = block["tool_use_id"]?.stringValue,
-            let index = items.lastIndex(where: { $0.nativeItemId == toolId })
-          else { continue }
+          guard let toolId = block["tool_use_id"]?.stringValue else { continue }
+          if tasks.owns(toolUseId: toolId) {
+            place(
+              tasks.result(
+                toolUseId: toolId, text: text(of: block["content"]) ?? "",
+                isError: block["is_error"]?.boolValue == true), in: &items)
+            continue
+          }
+          guard let index = items.lastIndex(where: { $0.nativeItemId == toolId }) else { continue }
           var body = items[index].payload.objectValue ?? [:]
           body["status"] = block["is_error"]?.boolValue == true ? "failed" : "completed"
           body["output"] = .string(text(of: block["content"]) ?? "")
