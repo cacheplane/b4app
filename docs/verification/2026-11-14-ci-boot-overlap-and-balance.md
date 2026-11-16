@@ -188,6 +188,12 @@ Run 43762471549, commit 2b6392e (`main`'s workflow with E3 and E5), first attemp
 
 E5 is judged on its two steps. The package job's log has 344 `SwiftCompile normal arm64` lines and none for `x86_64`, and both builds succeeded. The steps took 120 and 82 s, 202 s together: 25.5% under the baseline's median of 271 s, where the rule asks for 25%, and 60 s under the run before without E5 (153 and 109 s). The rule is met on this run by one second of margin, and it asks for two runs. Half the compile tasks did not make half the step: the rest of a build (resolving packages, the other task kinds, linking, the project's own overhead) does not shrink with the architectures. What can be said so far is about a minute a run on the package job, not yet a saving that is stated.
 
+### The fifth hosted run: E5's second, and its rule fails
+
+Run 43771721159, commit 598a70a (the same workflow as the fourth run; the commit only added to this record), first attempt, green: all ten checks passed. Package 999 s, smoke 866 s, shard 1 889 s, shard 2 929 s: the longest job 999 s and the macOS runner time 3,683 s, against baseline medians of 967 and 3,235 s. Neither threshold is met. The three other macOS jobs each waited about 14 minutes for a runner.
+
+The package job's log again has 344 `SwiftCompile normal arm64` lines and none for `x86_64`, and both builds succeeded. The two steps took 130 and 92 s, 222 s together: 18.1% under the baseline's median of 271 s. The rule asks for 25% in each of two runs, and the two runs gave 25.5% and 18.1%, so E5 fails its rule. The two E5 runs (202 and 222 s) are both below every baseline run (232 to 314 s) and below the one run of this branch without it (262 s), so the steps are probably shorter, by something like 40 to 60 s; that is less than the rule required, it rests on two runs, and it is not stated as a saving.
+
 ### Verdict: incomplete
 
 E2 and E4 are reverted: `.github/workflows/ci.yml`, `Scripts/test-ios-layout.sh` and its tests are `main`'s (9bb7c97). The branch changes the shard plan (E3), adds `Scripts/ci_timings.py` and its tests, and adds the combining checks' shell tests, now against `main`'s two-job form of the builds' check. Findings F1, F4, F5, F6, F8 and F10 were about E2 or E4 and no longer arise. Local after the reverts and E5: 56 script tests pass, `actionlint` is clean, `Scripts/docs-index.sh --check` passes.
@@ -198,6 +204,6 @@ What is left:
 
 - E3 held on both runs (journey sums 268 and 401 s, then 278 and 408 s), and shard 2 is still the longer shard: its step outside the journeys is what makes it so, and the plan cannot move that.
 - The runners differ from run to run by more than any change tried here. A further change to this path needs several runs each side before it is judged.
-- E5 has one of its two hosted runs, at the edge of its rule. For the owner: larger runners, which need a paid plan. Still open: the docs-only path, the holdout.
+- E5 failed its rule on its second hosted run (25.5% and 18.1% under the median, where each had to be 25%). By the rule it is reverted; it is still in the workflow at this commit, and the revert waits on the owner, whose decision the arm64-only build was. For the owner: larger runners, which need a paid plan. Still open: the docs-only path, the holdout.
 
 To undo: revert this branch's commits. Nothing outside the repository changed.
