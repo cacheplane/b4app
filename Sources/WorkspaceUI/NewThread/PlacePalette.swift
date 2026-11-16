@@ -66,6 +66,17 @@ enum PlacePalette {
             indented: true, checked: current == .some(folder.path)))
       }
     }
+    // A folder from "Choose folder…" that no environment has yet is where the draft starts: a row of
+    // its own after the environments, checked, with no environment.
+    if case .chosenFolder(let path) = place {
+      let name = ComposerPickerRow.folderName(path)
+      if matches(name) || matchesPath(path) {
+        rows.append(
+          Row(
+            id: "chosen:\(path)", environmentId: "", environmentName: "", title: name, folder: path,
+            path: path, indented: false, checked: true))
+      }
+    }
     return rows
   }
 
@@ -112,9 +123,12 @@ extension NewThreadDraft {
     return .noFolder
   }
 
-  /// Start where a palette row says: its folder in its environment, or the environment when it has none.
+  /// Start where a palette row says: its folder in its environment, or the environment when it has none;
+  /// the chosen folder's row (no environment) keeps that folder.
   func choose(_ row: PlacePalette.Row) {
-    if let folder = row.folder {
+    if row.environmentId.isEmpty {
+      if let folder = row.folder { chooseFolder(folder) }
+    } else if let folder = row.folder {
       selectFolder(folder, in: row.environmentId)
     } else {
       selectEnvironment(row.environmentId)

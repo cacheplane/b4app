@@ -104,6 +104,21 @@ private func connected(
     #expect(secondary == FuzzyMatch.Score.prefix / 2)
   }
 
+  /// "choose folder" is the name of one command; another that starts with "Choose" and has "folder"
+  /// as an alias must not rank above it. Terms found together, in order, in the title count again.
+  @Test func aTitleThatHoldsTheQueryAsAPhraseBeatsAnAliasForOneOfItsWords() throws {
+    let named = try #require(score("choose folder", "Choose folder\u{2026}"))
+    let aliased = try #require(
+      score("choose folder", "Choose where it starts\u{2026}", also: ["environment", "folder", "place"]))
+    #expect(named > aliased)
+    // One word alone keeps the alias's whole weight.
+    let one = try #require(score("folder", "Choose folder\u{2026}"))
+    let oneAliased = try #require(score("folder", "Choose where it starts\u{2026}", also: ["folder"]))
+    #expect(oneAliased > one)
+    // Terms out of order, or apart, are no phrase.
+    #expect(score("folder choose", "Choose folder\u{2026}") == score("choose folder", "Choose a folder"))
+  }
+
   @Test func matchedRunsFollowTheOriginalText() {
     let hit = FuzzyMatch.match(FuzzyMatch.terms("pri res"), title: FuzzyMatch.Text("Pricing page research"))
     let runs = FuzzyMatch.runs(of: "Pricing page research", matched: hit?.positions ?? [])
@@ -285,6 +300,19 @@ struct SelectionMotionTests {
     #expect(palette.selected?.id == "thread:dup1")
     await model.disconnect()
   }
+
+  #if os(macOS)
+    /// Seen on screen (2026-11-15): "choose folder" put "Choose where it starts…" first, by its alias.
+    @Test func aCommandsNameTypedInFullListsItFirst() async throws {
+      let (model, _) = try await connected()
+      let palette = PaletteModel(workspace: model, purpose: .commands)
+      palette.setQuery("choose folder")
+      #expect(palette.items.first?.kind == .command(.draftChooseFolder, .draft))
+      palette.setQuery("folder")
+      #expect(palette.items.first?.kind == .command(.draftEnvironment, .draft))
+      await model.disconnect()
+    }
+  #endif
 
   @Test func aLeadingAngleOrSlashEntersCommandsAndBackspaceLeaves() async throws {
     let (model, _) = try await connected()
@@ -628,6 +656,29 @@ struct SelectionMotionTests {
   }
 
   #if os(macOS)
+    @Test func aChosenFolderIsListedWhereTheDraftStarts() async throws {
+      let (model, _) = try await connected()
+      let draft = model.newThreadDraft
+      draft.chooseFolder("/elsewhere/tool")
+      let choices = model.choices(for: .draftEnvironment, target: .draft)
+      let chosen = try #require(choices.first { $0.detail == "/elsewhere/tool" })
+      #expect(chosen.title == "tool")
+      #expect(chosen.isCurrent)
+      #expect(choices.filter(\.isCurrent).count == 1)
+      #expect(choices.last?.title == "No folder")
+
+      // Choosing it again keeps it; choosing "No folder" drops it from the list.
+      #expect(
+        await model.run(.draftEnvironment, target: .draft, argument: chosen.value)
+          == .completed("Starts in tool"))
+      #expect(draft.chosenFolder == "/elsewhere/tool")
+      _ = await model.run(.draftEnvironment, target: .draft, argument: "")
+      #expect(draft.chosenFolder == nil)
+      #expect(
+        !model.choices(for: .draftEnvironment, target: .draft).contains { $0.detail == "/elsewhere/tool" })
+      await model.disconnect()
+    }
+
     /// The request is answered by `NewThreadView`; where another screen shows, the command says so and
     /// leaves the request alone.
     private func expectChooseFolderOff(_ model: WorkspaceModel) async {

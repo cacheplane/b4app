@@ -43,8 +43,26 @@ import WorkspaceProtocol
       Self.all, filter: "", place: .environment("infra", folder: "/Users/me/repos/infra-modules"))
     #expect(second.map(\.checked) == [false, false, false, true])
     #expect(PlacePalette.rows(Self.all, filter: "", place: .noFolder).allSatisfy { !$0.checked })
+  }
+
+  /// A folder from "Choose folder…" that no environment has is where the draft starts: it is a row of
+  /// its own after the environments, the only one checked, and the filter finds it by name or path.
+  @Test func aChosenFolderIsARowOfItsOwn() {
+    let rows = PlacePalette.rows(Self.all, filter: "", place: .chosenFolder("/Users/me/scratch/tool"))
+    #expect(rows.map(\.title) == ["b4app", "infra", "infra", "infra-modules", "tool"])
+    let chosen = rows[4]
+    #expect(chosen.checked && rows.filter(\.checked).count == 1)
+    #expect(chosen.environmentId.isEmpty && !chosen.indented)
+    #expect(chosen.folder == "/Users/me/scratch/tool" && chosen.path == "/Users/me/scratch/tool")
+    #expect(PlacePalette.initialHighlight(rows) == 4)
     #expect(
-      PlacePalette.rows(Self.all, filter: "", place: .chosenFolder("/tmp/x")).allSatisfy { !$0.checked })
+      PlacePalette.rows(Self.all, filter: "scratch", place: .chosenFolder("/Users/me/scratch/tool"))
+        .map(\.title) == ["tool"])
+    #expect(
+      PlacePalette.rows(Self.all, filter: "b4", place: .chosenFolder("/Users/me/scratch/tool"))
+        .map(\.title) == ["b4app"])
+    // With no environments it is the only row, so the list is not empty.
+    #expect(PlacePalette.rows([], filter: "", place: .chosenFolder("/tmp/x")).map(\.title) == ["x"])
   }
 
   @Test func theFilterMatchesNamesAndPathsIgnoringCase() {

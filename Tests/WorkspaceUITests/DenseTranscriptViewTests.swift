@@ -101,7 +101,7 @@
     @Test func normalDensityIsTodaysTranscript() {
       let items = fiveItems()
       let content = TranscriptContent(
-        detail: detail(items), dense: false, folds: TranscriptFolds(), lazy: false)
+        detail: detail(items), dense: false, folds: TranscriptFolds())
       let reference = column { ForEach(items) { row($0) } }
       #expect(height(content) == height(reference))
     }
@@ -109,9 +109,9 @@
     @Test func denseIsShorterByTheFoldedSteps() {
       let items = fiveItems()
       let normal = height(
-        TranscriptContent(detail: detail(items), dense: false, folds: TranscriptFolds(), lazy: false))
+        TranscriptContent(detail: detail(items), dense: false, folds: TranscriptFolds()))
       let dense = height(
-        TranscriptContent(detail: detail(items), dense: true, folds: TranscriptFolds(), lazy: false))
+        TranscriptContent(detail: detail(items), dense: true, folds: TranscriptFolds()))
       #expect(dense < normal)
       let reference = column {
         row(items[0])
@@ -124,19 +124,19 @@
     @Test func anOpenTurnIsAsTallAsNormalPlusTheLine() {
       let items = fiveItems()
       let normal = height(
-        TranscriptContent(detail: detail(items), dense: false, folds: TranscriptFolds(), lazy: false))
+        TranscriptContent(detail: detail(items), dense: false, folds: TranscriptFolds()))
       let open = height(
         TranscriptContent(
-          detail: detail(items), dense: true, folds: TranscriptFolds(open: ["t1"]), lazy: false))
+          detail: detail(items), dense: true, folds: TranscriptFolds(open: ["t1"])))
       #expect(open == normal + height(lineRow(line(), open: true)) + LLA.Space.l)
     }
 
     @Test func aThreadFromHistoryIsDenseToo() {
       let withTurn = height(
-        TranscriptContent(detail: detail(fiveItems()), dense: true, folds: TranscriptFolds(), lazy: false))
+        TranscriptContent(detail: detail(fiveItems()), dense: true, folds: TranscriptFolds()))
       let history = height(
         TranscriptContent(
-          detail: detail(fiveItems(turn: nil), turns: []), dense: true, folds: TranscriptFolds(), lazy: false)
+          detail: detail(fiveItems(turn: nil), turns: []), dense: true, folds: TranscriptFolds())
       )
       #expect(history == withTurn)
     }
@@ -147,7 +147,7 @@
       for dense in [false, true] {
         func content(_ turn: Turn) -> some View {
           TranscriptContent(
-            detail: detail(items, turns: [turn]), dense: dense, folds: TranscriptFolds(), lazy: false)
+            detail: detail(items, turns: [turn]), dense: dense, folds: TranscriptFolds())
         }
         let withNote = height(content(turn(.terminal, .failed)))
         let without = height(content(turn()))
@@ -276,7 +276,7 @@
   }
 
   /// Where the transcript's scroll view stands when a turn is opened and the stream goes on, read from
-  /// the real `TranscriptView` (its lazy stack inside its `ScrollView`) hosted in a 720 by 480 window.
+  /// the real `TranscriptView` (its stack inside its `ScrollView`) hosted in a 720 by 480 window.
   @Suite(.serialized) @MainActor struct TranscriptScrollTests {
     // MARK: fixtures
 
@@ -442,7 +442,7 @@
       }
 
       /// Returns once the origin and the document's height have not moved for ten passes in a row: the
-      /// lazy stack has laid out what it shows and nothing is left to scroll.
+      /// transcript has laid out what it shows and nothing is left to scroll.
       func settle() async throws {
         var last = (origin, documentHeight)
         var still = 0
@@ -469,7 +469,7 @@
         try await settle()
       }
 
-      /// The lazy stack sizes rows it has not drawn by estimate, so the end moves as it is reached.
+      /// Written when the transcript was a lazy stack, whose end moved as it was reached; kept as it is.
       func scrollToEnd() async throws {
         try await settle()
         try await until("the end") {
@@ -716,6 +716,106 @@
       try await view.until("the interim messages fold") { view.documentHeight < height - 1 }
       try await view.settle()
       #expect(abs(view.below - below) <= 0.5, "the answer moved by \(below - view.below)")
+    }
+
+    // MARK: a tall reply, and a long thread
+
+    /// A thread whose first reply is several windows tall opens at its end, with the messages after
+    /// the reply laid out. Run by itself too: a lazy stack passed this only after other tests had run.
+    @Test(arguments: [true, false]) func aThreadWithAVeryTallReplyOpensAtItsEnd(dense: Bool) async throws {
+      let detail = ThreadDetail(
+        thread: conversation(), turns: [turn(1, .running)],
+        items: [
+          user("u1", turn: "t1", sequence: 1),
+          message("m1", turn: "t1", sequence: 2, text: lines(120)),
+          message("m2", turn: "t1", sequence: 3, text: "Run them like this."),
+          message("m3", turn: "t1", sequence: 4, text: "End of the reading fixture."),
+        ], requests: [])
+      let view = try Hosted(detail, dense: dense)
+      defer { view.close() }
+      try await view.settle()
+      #expect(view.documentHeight > 2_000, "the document is \(view.documentHeight) pt tall")
+      #expect(view.atEnd || view.atDocumentEnd, "below the viewport: \(view.below)")
+      #expect(!view.folds.holds)
+    }
+
+    /// A thread longer than a page draws its latest page and opens at its end; "Show earlier" draws
+    /// a page more above and leaves the row that stood first where it was.
+    @Test func aLongThreadDrawsItsLatestPageAndShowsEarlierInPlace() async throws {
+      let turns = 60
+      let detail = ThreadDetail(
+        thread: conversation(), turns: (1...turns).map { turn($0) },
+        items: (1...turns).flatMap { endedTurn($0, from: $0 * 10) }, requests: [])
+      let all = DenseTranscript.plain(items: detail.items, turns: detail.turns)
+      #expect(all.count == 360)
+      let view = try Hosted(detail, dense: false)
+      defer { view.close() }
+      try await view.settle()
+      #expect(view.atEnd || view.atDocumentEnd, "below the viewport: \(view.below)")
+      #expect(view.folds.shown == DenseTranscript.page)
+      let page = view.documentHeight
+
+      // Up to the top of what is drawn, as a reader looking for earlier messages.
+      try await view.scroll(to: 0)
+      #expect(view.folds.holds)
+      let first = DenseTranscript.window(all, shown: DenseTranscript.page).entries.first?.id
+      let fromEnd = view.documentHeight - view.origin
+      view.folds.showEarlier(keeping: first)
+      try await view.until("the earlier rows are drawn") { view.documentHeight > page * 1.5 }
+      try await view.settle()
+      #expect(view.folds.shown == 2 * DenseTranscript.page)
+      #expect(view.folds.holds)
+      // The row that stood first is still at the top of the view, under the button's row.
+      let moved = (view.documentHeight - view.origin) - fromEnd
+      #expect(abs(moved) <= LLA.Metrics.row + LLA.Space.l + LLA.Metrics.margin + 44, "it moved by \(moved)")
+      #expect(view.origin > 1_000, "the view is at \(view.origin), not among the earlier rows' end")
+    }
+
+    // MARK: reading back (F14)
+
+    /// A reader who scrolled back, with nothing opened, is left where they are while the reply streams
+    /// and a step arrives; going back to the end follows the stream again. Both densities.
+    @Test(arguments: [true, false]) func readingBackIsNotPulledToTheEndByTheStream(dense: Bool) async throws {
+      let view = try Hosted(twelveAndARunningTurn(), dense: dense)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      let origin = view.origin
+
+      let height = view.documentHeight
+      view.host.detail.liveText["n13"] = lines(20)
+      view.host.detail.items.append(step("s13-1", turn: "t13", sequence: 132, status: "inProgress"))
+      try await view.until("the reply grows") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5, "the stream moved the reader by \(view.origin - origin)")
+
+      try await view.scrollToEnd()
+      let later = view.documentHeight
+      view.host.detail.liveText["n13"] = lines(40)
+      try await view.until("the reply grows again") { view.documentHeight > later + 1 }
+      try await view.settle()
+      #expect(view.atEnd, "below the viewport: \(view.below)")
+    }
+
+    /// The turn the reader was not following ends: the view stays where they are reading.
+    @Test func readingBackIsNotPulledToTheEndWhenTheTurnEnds() async throws {
+      let view = try Hosted(twelveAndARunningTurn(), dense: false)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      let origin = view.origin
+
+      var ended = view.host.detail
+      if let index = ended.items.firstIndex(where: { $0.id == "a13" }) {
+        ended.items[index].payload = .object(["text": .string(lines(12))])
+      }
+      ended.liveText = [:]
+      ended.turns[ended.turns.count - 1] = turn(13)
+      let height = view.documentHeight
+      view.host.detail = ended
+      try await view.until("the answer is drawn") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5, "the turn's end moved the reader by \(view.origin - origin)")
     }
 
     @Test func withNothingToggledNormalDensityScrollsAsToday() async throws {

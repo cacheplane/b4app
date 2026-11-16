@@ -293,7 +293,8 @@ import WorkspaceProtocol
     let steps = try #require(line(result))
     #expect(!steps.running)
     #expect(steps.text == "1 step")
-    #expect(steps.folded.first?.payload["status"] == .string("inProgress"))
+    // Its open step is neither in progress nor stopped: nothing says which.
+    #expect(steps.folded.first?.payload["status"] == .string("unknown"))
     #expect(!ids(result).contains("note-t1"))
   }
 
@@ -314,9 +315,11 @@ import WorkspaceProtocol
     #expect(try #require(line(result)).folded.map(\.id) == ["m1", "k1", "m2", "k2"])
   }
 
-  @Test func aRunningTurnWithNothingYetHasNoLine() {
+  /// No steps line: there is nothing to show or hide. Before the first item the running line stands
+  /// in its place (D-239).
+  @Test func aRunningTurnWithNothingYetHasNoStepsLine() {
     let running = turn("t1", .running, nil)
-    #expect(ids(entries([user("u1")], turns: [running])) == ["u1"])
+    #expect(ids(entries([user("u1")], turns: [running])) == ["u1", "running-t1"])
     #expect(ids(entries([user("u1"), message("m1")], turns: [running])) == ["u1", "m1"])
   }
 
@@ -424,5 +427,40 @@ import WorkspaceProtocol
       payload: ["name": .string("search"), "input": .string("swift")])
     #expect(DenseTranscript.title(of: call) == "search: swift")
     #expect(DenseTranscript.title(of: item("z", role: .tool, type: "somethingNew")) == "somethingNew")
+  }
+
+  // MARK: the running line with nothing to fold (D-239)
+
+  /// Between a send and the first item a dense turn has nothing to fold, so no steps line: it draws
+  /// the running line. Once there is something to fold or a reply to read, the steps line and the
+  /// reply say what is happening, as before.
+  @Test func aRunningTurnWithNothingYetSaysWorking() {
+    let waiting = DenseTranscript.entries(items: [user("u1")], turns: [turn("t1", .running, nil)], open: [])
+    #expect(ids(waiting) == ["u1", "running-t1"])
+    guard case .running(let line)? = waiting.last else {
+      Issue.record("no running line")
+      return
+    }
+    #expect(line.text == "Working")
+
+    let stepping = DenseTranscript.entries(
+      items: numbered([user("u1"), command("c1", status: "inProgress", command: "swift test")]),
+      turns: [turn("t1", .running, nil)], open: [])
+    #expect(ids(stepping) == ["u1", "steps-t1"])
+    let replying = DenseTranscript.entries(
+      items: numbered([user("u1"), message("m1")]), turns: [turn("t1", .running, nil)], open: [])
+    #expect(ids(replying) == ["u1", "m1"])
+    let ended = DenseTranscript.entries(items: [user("u1")], turns: [turn("t1")], open: [])
+    #expect(ids(ended) == ["u1"])
+  }
+
+  @Test func aDenseTurnWaitingWithNothingFoldedSaysSo() {
+    let entries = DenseTranscript.entries(
+      items: [user("u1")], turns: [turn("t1", .waitingForUser, nil)], open: [])
+    guard case .running(let line)? = entries.last else {
+      Issue.record("no running line")
+      return
+    }
+    #expect(line.text == "Waiting for you")
   }
 }

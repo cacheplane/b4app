@@ -646,6 +646,17 @@ enum Phone {
     draft.selectNoFolder()
     #expect(draft.palettePlace == .noFolder)
     #expect(rows().allSatisfy { !$0.checked })
+
+    // A chosen folder is listed and checked; choosing its row keeps it, and another place drops it.
+    draft.chooseFolder("/elsewhere/tool")
+    let tool = try #require(rows().first { $0.folder == "/elsewhere/tool" })
+    #expect(rows().filter(\.checked).map(\.id) == [tool.id])
+    draft.choose(tool)
+    #expect(draft.chosenFolder == "/elsewhere/tool")
+    #expect(draft.environmentId == nil)
+    draft.choose(borealis)
+    #expect(draft.chosenFolder == nil)
+    #expect(!rows().contains { $0.folder == "/elsewhere/tool" })
   }
 
   @Test func defaultsComeFromTheLastChoiceInThatEnvironment() async throws {

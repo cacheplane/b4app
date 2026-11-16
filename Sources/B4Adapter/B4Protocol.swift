@@ -166,6 +166,8 @@ public enum B4Protocol {
     var id: String?
     /// A tool message's `b4_step` status.
     var stepStatus: String?
+    /// A tool message that says it failed (`toolMessageFailed`).
+    var failed = false
   }
 
   static func message(_ value: JSONValue) -> Message? {
@@ -188,7 +190,8 @@ public enum B4Protocol {
     return Message(
       role: role, text: text(of: body["content"]), toolCalls: body["tool_calls"]?.arrayValue ?? [],
       toolCallId: body["tool_call_id"]?.stringValue, id: body["id"]?.stringValue,
-      stepStatus: role == "tool" ? stepStatus(ofToolMessage: body) : nil)
+      stepStatus: role == "tool" ? stepStatus(ofToolMessage: body) : nil,
+      failed: role == "tool" && toolMessageFailed(body))
   }
 
   static func text(of content: JSONValue?) -> String {
@@ -216,16 +219,22 @@ public enum B4Protocol {
     kwargs["additional_kwargs"]?["b4_step"]?["status"]?.stringValue
   }
 
+  /// A `ToolMessage` that failed: LangChain's `status: "error"`, or B4's step `failed`. `kwargs` is the
+  /// message's body. The result's text is not read.
+  static func toolMessageFailed(_ kwargs: JSONValue) -> Bool {
+    kwargs["status"]?.stringValue == "error" || stepStatus(ofToolMessage: kwargs) == "failed"
+  }
+
   /// History from `GET /threads/:id/state` `values.messages`. Tool results are folded into their
   /// tool call items; unknown message classes are skipped rather than guessed.
   public static func snapshotItems(stateValues: JSONValue) -> [SnapshotItem] {
     let messages = (stateValues["messages"]?.arrayValue ?? []).compactMap(message)
     var results: [String: String] = [:]
-    var steps: [String: String] = [:]
+    var statuses: [String: String] = [:]
     for entry in messages where entry.role == "tool" {
       guard let id = entry.toolCallId else { continue }
       results[id] = entry.text
-      steps[id] = entry.stepStatus
+      statuses[id] = entry.stepStatus == "denied" ? "declined" : entry.failed ? "failed" : "completed"
     }
     var items: [SnapshotItem] = []
     // B4 rebuilds its turn list at each HumanMessage boundary, the same ordinal used by sendTurn.
@@ -250,12 +259,13 @@ public enum B4Protocol {
         }
         for call in entry.toolCalls {
           let id = call["id"]?.stringValue
+          // The status is the one the call's `ToolMessage` gives, as live. A call with no
+          // `ToolMessage` has no recorded result: it stays open, and is never given a completion.
           var payload: [String: JSONValue] = [
             "name": .string(call["name"]?.stringValue ?? "tool"), "input": call["args"] ?? .null,
-            "status": "completed",
+            "status": .string(id.flatMap { statuses[$0] } ?? "inProgress"),
           ]
           if let id, let output = results[id] { payload["output"] = .string(output) }
-          if let id, steps[id] == "denied" { payload["status"] = "declined" }
           items.append(
             SnapshotItem(nativeItemId: id, role: "tool", type: "toolCall", payload: .object(payload)))
         }

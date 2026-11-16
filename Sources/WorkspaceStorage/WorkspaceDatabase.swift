@@ -748,6 +748,16 @@ public final class WorkspaceDatabase: Sendable {
             $0.role == role && !usedRows.contains($0.id) && Self.matchText($0.payload) == text
           }
         }
+        // The app's own message, sent with no native id, under the id the runtime's history gives it
+        // (Claude Code's transcript `uuid`): the same role and text, on a live row that has no id yet.
+        if match == nil, item.nativeTurnId == nil, item.nativeItemId != nil, role == .user,
+          let text = Self.matchText(item.payload), !text.isEmpty
+        {
+          match = cached.first {
+            $0.role == .user && $0.provenance == .live && $0.nativeItemId == nil
+              && !usedRows.contains($0.id) && Self.matchText($0.payload) == text
+          }
+        }
         if var row = match {
           usedRows.insert(row.id)
           if row.provenance == .live {

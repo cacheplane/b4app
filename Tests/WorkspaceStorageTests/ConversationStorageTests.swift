@@ -212,6 +212,32 @@ private func seeded() throws -> WorkspaceDatabase {
     try db.close()
   }
 
+  /// D-238: Claude Code's history names the app's own message by a `uuid` the live row never had. The
+  /// row is found by its text, takes the id, and a second merge finds it by that id; an assistant row
+  /// is never matched by text alone.
+  @Test func theAppsOwnMessageIsFoundUnderTheIdHistoryGivesIt() throws {
+    let db = try seeded()
+    let question = try db.upsertDisplayItem(
+      threadId: "t1", turnId: nil, nativeItemId: nil, role: .user, type: "userMessage",
+      payload: ["text": "question"], provenance: .live)
+    let answer = try db.upsertDisplayItem(
+      threadId: "t1", turnId: nil, nativeItemId: "msg_1#0", role: .assistant, type: "agentMessage",
+      payload: ["text": "answer"], provenance: .live)
+    let history = [snapshot("u1", "user", "question"), snapshot("msg_1#0", "assistant", "answer")]
+    let first = try db.mergeSnapshotItems(threadId: "t1", items: history)
+    #expect(first.inserted == 0)
+    let rows = try db.displayItems(threadId: "t1")
+    #expect(rows.map(\.id) == [question.id, answer.id])
+    #expect(rows.map(\.nativeItemId) == ["u1", "msg_1#0"])
+    #expect(try db.mergeSnapshotItems(threadId: "t1", items: history).inserted == 0)
+    #expect(try db.displayItems(threadId: "t1").map(\.id) == [question.id, answer.id])
+
+    let other = try db.mergeSnapshotItems(
+      threadId: "t1", items: history + [snapshot("other", "assistant", "answer")])
+    #expect(other.inserted == 1)
+    try db.close()
+  }
+
   @Test func liveItemsAreKeptMatchedByIdOrTextAndNeverDuplicated() throws {
     let db = try seeded()
     let liveUser = try db.upsertDisplayItem(
