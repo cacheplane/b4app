@@ -1594,6 +1594,29 @@ actor EventCollector {
     await restarted.stop()
   }
 
+  /// Claude Code's transcript names a row by the line's `uuid`, the stream by the message id: a
+  /// reconcile of a finished turn must find each live row again and add nothing.
+  @Test func reconcilingAClaudeThreadAddsNoSecondCopyOfItsRows() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addClaude()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "hello there")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let cached = try await h.read(thread).items
+    #expect(cached.map(\.role) == [.user, .assistant])
+
+    let merged = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    #expect(merged.thread.continuity == .available)
+    #expect(merged.items.map(\.id) == cached.map(\.id))
+    #expect(
+      merged.items.map { $0.payload["text"]?.stringValue } == cached.map { $0.payload["text"]?.stringValue })
+    let again = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    #expect(again.items.map(\.id) == cached.map(\.id))
+    await h.stop()
+  }
+
   @Test func archivedSessionDoesNotBecomeMissingAndKeepsItsCachedMessage() async throws {
     let h = try await Harness.start()
     let connection = try await h.addCodex()
