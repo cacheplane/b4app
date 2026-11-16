@@ -82,6 +82,62 @@ import WorkspaceProtocol
   }
 
   /// The note stands after its own turn, not after the thread.
+  // MARK: the running line (D-239)
+
+  private func running(_ entries: [DenseTranscript.Entry]) -> [DenseTranscript.RunningLine] {
+    entries.compactMap { if case .running(let line) = $0 { line } else { nil } }
+  }
+  private func named(_ id: String, status: String, command: String) -> DisplayItem {
+    var item = step(id, status: status)
+    item.payload = .object(["status": .string(status), "command": .string(command)])
+    return item
+  }
+
+  /// Between a send and the first item, and after it: a running turn ends in a line.
+  @Test(arguments: [TurnStatus.submitting, .running, .stopping])
+  func aRunningTurnEndsInALineThatSaysWorking(_ status: TurnStatus) {
+    let waiting = DenseTranscript.plain(items: [user("u1")], turns: [turn("t1", status, nil)])
+    #expect(ids(waiting) == ["u1", "running-t1"])
+    #expect(running(waiting).map(\.text) == ["Working"])
+    let streaming = DenseTranscript.plain(
+      items: [user("u1"), message("m1")], turns: [turn("t1", status, nil)])
+    #expect(ids(streaming) == ["u1", "m1", "running-t1"])
+  }
+
+  @Test func theLineNamesTheNewestOpenStep() {
+    let entries = DenseTranscript.plain(
+      items: [
+        user("u1"), named("s1", status: "completed", command: "ls"),
+        named("s2", status: "inProgress", command: "swift build"),
+        named("s3", status: "inProgress", command: "swift test\n--filter x"),
+      ], turns: [turn("t1", .running, nil)])
+    #expect(running(entries).map(\.text) == ["swift test"])
+  }
+
+  @Test func aTurnWaitingForAnAnswerSaysSo() {
+    let entries = DenseTranscript.plain(
+      items: [user("u1"), named("s1", status: "inProgress", command: "rm -rf build")],
+      turns: [turn("t1", .waitingForUser, nil)])
+    #expect(running(entries).map(\.text) == ["Waiting for you"])
+  }
+
+  /// An ended turn, one whose outcome is unknown, and history have no line.
+  @Test func onlyARunningTurnHasALine() {
+    for ended in [turn("t1"), turn("t1", .terminal, .failed), turn("t1", .reconciling, nil)] {
+      #expect(running(DenseTranscript.plain(items: [user("u1"), step("s1")], turns: [ended])).isEmpty)
+    }
+    #expect(running(DenseTranscript.plain(items: [user("u1", turn: nil)], turns: [])).isEmpty)
+  }
+
+  /// The line stands after its own turn's last item, and a running turn with no items yet (begun on
+  /// another device) has it at the end.
+  @Test func theLineStandsWithItsTurn() {
+    let entries = DenseTranscript.plain(
+      items: [user("u1"), message("m1"), user("u2", turn: "t2")],
+      turns: [turn("t1"), turn("t2", .running, nil), turn("t3", .running, nil)])
+    #expect(ids(entries) == ["u1", "m1", "u2", "running-t2", "running-t3"])
+  }
+
   @Test func aTurnsNoteFollowsItsLastItem() {
     let items = [
       user("u1"), step("k1", status: "inProgress"),

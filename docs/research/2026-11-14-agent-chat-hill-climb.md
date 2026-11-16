@@ -61,7 +61,7 @@ Severity is S4 (integrity or control), S3 (misleads or blocks a core task), S2 (
 | 4 | A bare B4 result with `error: null` is failed | Reproduced: assertion on `B4TurnTranslator.toolFailed` | S2 | D-235 |
 | 5 | An opened B4 or Claude Code tool card draws a dump of the payload beside its output, and a running command with no output draws only the dump; exit codes are not drawn | Read from `ToolCard` | S2 | D-235 |
 | 6 | A closed code fence collapses into inline code with its language joined to the first line ("bash swift test ..."); an open fence shows its backticks; there is no Copy | Reproduced: capture `docs/screenshots/transcript-code-reply-before.png` | S3 | D-236 |
-| 7 | Normal density has no line saying what is running; neither density shows anything between a send and the first item | Read from the views | S2 | Open |
+| 7 | Normal density has no line saying what is running; neither density shows anything between a send and the first item | Read from the views | S2 | D-239 |
 | 8 | "Allow for session" is offered where the runtime treats it as once (Claude Code always, B4 when the prompt says so) | Read from the adapters; D-018 chose it | S2 | Open; D-018 would change |
 | 9 | Nothing is announced to VoiceOver: no request, failure or completion announcement exists | Read: no announcement call in `WorkspaceUI` | S2 | Open |
 | 10 | Plans and task lists have no presentation of their own; Codex plan updates and command output deltas are dropped | Read from the adapters | S2 | Open |

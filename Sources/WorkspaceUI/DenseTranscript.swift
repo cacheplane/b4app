@@ -10,14 +10,30 @@ enum DenseTranscript {
     case line(StepsLine)
     /// "Turn failed." / "Turn stopped."
     case note(Turn)
+    /// What a running turn is doing, where no steps line says it.
+    case running(RunningLine)
 
     var id: String {
       switch self {
       case .item(let item): return item.id
       case .line(let line): return "steps-\(line.group)"
       case .note(let turn): return "note-\(turn.id)"
+      case .running(let line): return "running-\(line.turn)"
       }
     }
+  }
+
+  /// A running turn's line (D-239): at normal density after the turn's last item, and at dense where
+  /// the turn has nothing to fold and no reply yet. It is not a control.
+  struct RunningLine: Equatable, Sendable {
+    var turn: String
+    /// The turn's status is waiting_for_user.
+    var waiting: Bool
+    /// The newest in-progress counted step's name.
+    var name: String?
+
+    /// "Waiting for you", else the name, else "Working": the words a dense steps line draws.
+    var text: String { waiting ? "Waiting for you" : name ?? "Working" }
   }
 
   struct StepsLine: Equatable, Sendable {
@@ -153,7 +169,8 @@ enum DenseTranscript {
   }
 
   /// Normal density: every item in the order given, a step of an ended turn settled as at dense, and
-  /// each turn's note after that turn's last item (a turn with no items: after everything).
+  /// each turn's note, or a running turn's line, after that turn's last item (a turn with no items:
+  /// after everything).
   static func plain(items: [DisplayItem], turns: [Turn]) -> [Entry] {
     let known = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     let keys = groupKeys(items)
@@ -168,10 +185,15 @@ enum DenseTranscript {
         continue
       }
       result.append(.item(settled(item, in: known[key])))
-      if last[key] == index, let turn = known[key], hasNote(turn) { result.append(.note(turn)) }
+      guard last[key] == index, let turn = known[key] else { continue }
+      if hasNote(turn) { result.append(.note(turn)) }
+      if let line = runningLine(of: turn, items: zip(items, keys).filter { $0.1 == key }.map(\.0)) {
+        result.append(.running(line))
+      }
     }
-    for turn in turns where last[turn.id] == nil && hasNote(turn) {
-      result.append(.note(turn))
+    for turn in turns where last[turn.id] == nil {
+      if hasNote(turn) { result.append(.note(turn)) }
+      if let line = runningLine(of: turn, items: []) { result.append(.running(line)) }
     }
     return result
   }
@@ -230,6 +252,14 @@ enum DenseTranscript {
 
   private static let runningStatuses: Set<TurnStatus> = [.submitting, .running, .waitingForUser, .stopping]
 
+  /// The line of a turn that is running, named from its items; nil for any other turn.
+  private static func runningLine(of turn: Turn, items: [DisplayItem]) -> RunningLine? {
+    guard runningStatuses.contains(turn.status) else { return nil }
+    return RunningLine(
+      turn: turn.id, waiting: turn.status == .waitingForUser,
+      name: runningName(of: items.filter(isCountedStep)))
+  }
+
   private static func hasNote(_ turn: Turn) -> Bool {
     turn.status == .terminal && turn.outcome != .completed
   }
@@ -273,6 +303,10 @@ enum DenseTranscript {
             declined: steps.filter { $0.payload["status"]?.stringValue == "declined" }.count,
             running: running, waiting: running && turn?.status == .waitingForUser,
             runningName: running ? runningName(of: steps) : nil)))
+    }
+    // Nothing to fold and no reply yet: between the send and the turn's first item.
+    if folded.isEmpty, visible.isEmpty, let turn, let line = runningLine(of: turn, items: []) {
+      entries.append(.running(line))
     }
     entries += (isOpen && !folded.isEmpty ? rest : visible).map(Entry.item)
     entries += systems.map(Entry.item)

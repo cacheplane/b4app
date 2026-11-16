@@ -53,6 +53,7 @@ import WorkspaceProtocol
         }
       case .line(let line): return "line: \(line.spoken(open: open.contains(line.group)))"
       case .note(let turn): return "note: \(TurnNoteRow(turn: turn).text)"
+      case .running(let line): return "running: \(line.text)"
       }
     }
   }
@@ -146,7 +147,7 @@ import WorkspaceProtocol
         ],
         normal: [
           "user: Run the tests on both targets.", "swift test [Completed]", "swift test [In progress]",
-          "swift test --filter Sync [In progress]",
+          "swift test --filter Sync [In progress]", "running: swift test --filter Sync",
         ],
         // The running line names the newest open step; it gives no count while the turn runs.
         dense: ["user: Run the tests on both targets.", "line: swift test --filter Sync, Show"]))
@@ -328,7 +329,7 @@ import WorkspaceProtocol
         "user: Clean and rebuild.", "rm -rf .build [Declined]", "swift build [Unfinished]",
         "note: Turn stopped.",
         "user: Just build.", "swift build [In progress]", "swift build [In progress]",
-        "reply: Building:\n\n\(fence)bash\nswift build",
+        "reply: Building:\n\n\(fence)bash\nswift build", "running: swift build",
       ],
       dense: [
         "user: Clean and rebuild.", "line: 2 steps, 1 declined, Show", "note: Turn stopped.",
