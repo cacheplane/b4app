@@ -278,4 +278,40 @@ private let streamedTurn = """
     #expect(items[2].payload["status"]?.stringValue == "completed")
     #expect(items[2].payload["output"]?.stringValue == "total 0")
   }
+
+  /// D-238: the transcript writes a message one block a line, and each block gets the id the stream
+  /// gave it, so a reconcile finds the live rows. Thinking blocks are items here as they are live.
+  @Test func transcriptBlocksAreNamedAsTheStreamNamesThem() {
+    var t = tracker()
+    let live = run(
+      &t,
+      """
+      {"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_2","role":"assistant","content":[]}},"session_id":"s1","user_message_uuid":"turn-1"}
+      {"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}},"session_id":"s1"}
+      {"type":"assistant","message":{"id":"msg_2","role":"assistant","model":"claude-x","content":[{"type":"thinking","thinking":"Plan."}]},"session_id":"s1","uuid":"a1","user_message_uuid":"turn-1"}
+      {"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}},"session_id":"s1"}
+      {"type":"assistant","message":{"id":"msg_2","role":"assistant","model":"claude-x","content":[{"type":"text","text":"Looking."}]},"session_id":"s1","uuid":"a2","user_message_uuid":"turn-1"}
+      {"type":"stream_event","event":{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}},"session_id":"s1"}
+      {"type":"assistant","message":{"id":"msg_2","role":"assistant","model":"claude-x","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]},"session_id":"s1","uuid":"a3","user_message_uuid":"turn-1"}
+      {"type":"stream_event","event":{"type":"message_stop"},"session_id":"s1"}
+      """)
+    let liveIds = live.filter { $0.kind == .messageCompleted || $0.kind == .toolCompleted }
+      .compactMap { $0.nativeIds["itemId"] }
+    #expect(liveIds == ["msg_2#0", "msg_2#1"])
+
+    let items = ClaudeTurnTracker.snapshotItems(transcriptLines: [
+      #"{"type":"user","uuid":"u1","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#,
+      #"{"type":"assistant","uuid":"a1","message":{"id":"msg_2","role":"assistant","content":[{"type":"thinking","thinking":"Plan."}]}}"#,
+      #"{"type":"assistant","uuid":"a2","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"Looking."}]}}"#,
+      #"{"type":"assistant","uuid":"a3","message":{"id":"msg_2","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}"#,
+      #"{"type":"assistant","uuid":"a4","message":{"id":"msg_3","role":"assistant","content":[{"type":"text","text":"Done."}]}}"#,
+      #"{"type":"assistant","uuid":"a5","message":{"role":"assistant","content":[{"type":"text","text":"No id."}]}}"#,
+    ])
+    #expect(items.map(\.nativeItemId) == ["u1#0", "msg_2#0", "msg_2#1", "toolu_1", "msg_3#0", "a5#0"])
+    #expect(
+      items.map(\.type) == [
+        "userMessage", "thinking", "agentMessage", "toolUse", "agentMessage", "agentMessage",
+      ])
+    #expect(items[1].payload["text"]?.stringValue == "Plan.")
+  }
 }
