@@ -242,6 +242,8 @@ struct TranscriptContent: View {
         .id(entry.id)
       case .note(let turn):
         TurnNoteRow(turn: turn).id(entry.id)
+      case .running(let line):
+        RunningLineRow(line: line).id(entry.id)
       }
     }
     if let pending {
@@ -642,6 +644,28 @@ struct CollapsibleCard<Content: View>: View {
     case "inProgress": return .accent
     default: return .muted
     }
+  }
+}
+
+/// What a running turn is doing (D-239): the working mark and one muted line, cut at its tail, the
+/// height of a steps line. A turn waiting for an answer has the words alone: the request below it is
+/// what asks. It is read as its text and is not a control.
+struct RunningLineRow: View {
+  let line: DenseTranscript.RunningLine
+
+  var body: some View {
+    HStack(spacing: LLA.Space.s) {
+      if !line.waiting { ThreadMark(state: .working).accessibilityHidden(true) }
+      Text(line.text)
+        .font(LLAFont.small)
+        .foregroundStyle(LLA.Color.muted)
+        .lineLimit(1)
+        .truncationMode(.tail)
+    }
+    .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row, alignment: .leading)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(line.text)
+    .accessibilityIdentifier("running-line")
   }
 }
 

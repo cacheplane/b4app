@@ -855,6 +855,11 @@ private final class BackgroundWindow: NSWindow {
       ], .running, nil,
       live: ["n2": "Two tests dominate the time, both waiting on the same lock."])
     try await render("dense-thread-running", size: size) { transcript(running) }
+    // D-239: the running line at normal density, and at both densities before the first item.
+    try await render("thread-normal-running", size: size) { transcript(running, dense: false) }
+    let sent = detail([ask("u1", "Run the tests on both targets.")], .running, nil)
+    try await render("thread-normal-sent", size: size) { transcript(sent, dense: false) }
+    try await render("dense-thread-sent", size: size) { transcript(sent) }
 
     let waiting = detail(
       [
