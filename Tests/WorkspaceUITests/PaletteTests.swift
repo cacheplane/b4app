@@ -656,6 +656,29 @@ struct SelectionMotionTests {
   }
 
   #if os(macOS)
+    @Test func aChosenFolderIsListedWhereTheDraftStarts() async throws {
+      let (model, _) = try await connected()
+      let draft = model.newThreadDraft
+      draft.chooseFolder("/elsewhere/tool")
+      let choices = model.choices(for: .draftEnvironment, target: .draft)
+      let chosen = try #require(choices.first { $0.detail == "/elsewhere/tool" })
+      #expect(chosen.title == "tool")
+      #expect(chosen.isCurrent)
+      #expect(choices.filter(\.isCurrent).count == 1)
+      #expect(choices.last?.title == "No folder")
+
+      // Choosing it again keeps it; choosing "No folder" drops it from the list.
+      #expect(
+        await model.run(.draftEnvironment, target: .draft, argument: chosen.value)
+          == .completed("Starts in tool"))
+      #expect(draft.chosenFolder == "/elsewhere/tool")
+      _ = await model.run(.draftEnvironment, target: .draft, argument: "")
+      #expect(draft.chosenFolder == nil)
+      #expect(
+        !model.choices(for: .draftEnvironment, target: .draft).contains { $0.detail == "/elsewhere/tool" })
+      await model.disconnect()
+    }
+
     /// The request is answered by `NewThreadView`; where another screen shows, the command says so and
     /// leaves the request alone.
     private func expectChooseFolderOff(_ model: WorkspaceModel) async {

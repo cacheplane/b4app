@@ -509,6 +509,15 @@ extension WorkspaceModel {
               detail: folder.map { PlacePalette.shownPath($0) }))
         }
       }
+      // A folder from "Choose folder…" that no environment has yet is where the draft starts, so it is
+      // listed (and checked) until another place is chosen. Its value has no environment.
+      if let chosen = draft.chosenFolder {
+        let value = ["", chosen].joined(separator: Self.choiceSeparator)
+        list.append(
+          CommandChoice(
+            id: value, title: ComposerPickerRow.folderName(chosen), value: value, isCurrent: true,
+            detail: PlacePalette.shownPath(chosen)))
+      }
       list.append(CommandChoice(id: "", title: "No folder", value: "", isCurrent: draft.isNoFolder))
       return list
     default: return []
@@ -594,7 +603,9 @@ extension WorkspaceModel {
       return .completed("Moved to the draft. Nothing was sent.")
     case (.draftEnvironment, _):
       let parts = (argument ?? "").components(separatedBy: Self.choiceSeparator)
-      if parts.count == 2, !parts[0].isEmpty {
+      if parts.count == 2, parts[0].isEmpty, !parts[1].isEmpty {
+        newThreadDraft.chooseFolder(parts[1])
+      } else if parts.count == 2, !parts[0].isEmpty {
         if parts[1].isEmpty {
           newThreadDraft.selectEnvironment(parts[0])
         } else {
