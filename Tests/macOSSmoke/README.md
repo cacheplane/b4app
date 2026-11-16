@@ -21,6 +21,8 @@ Results and attachments are in `.build/macOSSmoke/Results-*.xcresult`. CI retain
 
 This is fixture UI/coordinator integration coverage. Signed installation, embedded helper discovery, LaunchAgent registration and real-provider compatibility remain separate opt-in gates.
 
+The harness never opens a window smaller than the app's minimum (900×600, `LLA.Metrics.minimumWindow`): a smaller `SMOKE_WIDTH` or `SMOKE_HEIGHT` is raised to it, with a line on standard error, since holding the window below the minimum made AppKit throw.
+
 Both default widths use the supported minimum 600-point content height to exercise compression. CI sets `B4APP_SMOKE_DESKTOP_WIDTH=1000`; the local default remains 1200. The suite never changes display settings. On a larger desktop, also run the 800-point variant with:
 
 ```sh
