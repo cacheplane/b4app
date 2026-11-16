@@ -30,6 +30,9 @@ public struct ClaudeTurnTracker: Sendable {
   private var lastErrorCode: ErrorCode?
   /// The session's task list (`TodoWrite` and the task tools): the turn's `taskList` item, not tool rows.
   private var tasks = ClaudeTaskFold()
+  /// Task tools a sub-agent used, still waiting for their results. A sub-agent keeps its own list, and
+  /// its lines are not in the session's transcript, so neither the list nor a row is made of them.
+  private var subAgentTaskUses: Set<String> = []
 
   public init(connectionId: String, sessionId: String, generation: Int) {
     self.connectionId = connectionId
@@ -232,6 +235,10 @@ public struct ClaudeTurnTracker: Sendable {
       case "tool_use":
         guard let id = block["id"]?.stringValue else { continue }
         if let name = block["name"]?.stringValue, ClaudeTaskFold.toolNames.contains(name) {
+          if value["parent_tool_use_id"]?.stringValue != nil {
+            subAgentTaskUses.insert(id)
+            continue
+          }
           if let list = tasks.use(id: id, name: name, input: block["input"] ?? .null) {
             events.append(taskListEvent(list))
           }
@@ -269,6 +276,7 @@ public struct ClaudeTurnTracker: Sendable {
     where block["type"]?.stringValue == "tool_result" {
       guard let id = block["tool_use_id"]?.stringValue else { continue }
       let failed = block["is_error"]?.boolValue == true
+      if subAgentTaskUses.remove(id) != nil { continue }
       if tasks.owns(toolUseId: id) {
         let text = Self.text(of: block["content"]) ?? ""
         if let list = tasks.result(toolUseId: id, text: text, isError: failed) {
@@ -314,6 +322,9 @@ public struct ClaudeTurnTracker: Sendable {
   }
 
   private mutating func finish(_ result: ClaudeStream.ResultFrame) -> [AdapterEvent] {
+    // The turn's list item ends with the turn: a turn Claude Code starts itself is never begun by the
+    // app, and history starts a new item at its user line.
+    tasks.beginTurn()
     let reason = (result.terminalReason ?? "").lowercased()
     let outcome: TurnOutcome
     // A stop we asked for is a cancellation even though the real CLI reports it as an error result
@@ -496,8 +507,10 @@ public struct ClaudeTurnTracker: Sendable {
       else { continue }
       let uuid = value["uuid"]?.stringValue ?? UUID().uuidString
       let content = value["message"]?["content"]
+      // A compaction summary is a user line with text in the middle of a turn, not a turn.
+      let beginsTurn = value["isCompactSummary"]?.boolValue != true
       if type == "user", let text = content?.stringValue {
-        tasks.beginTurn()
+        if beginsTurn { tasks.beginTurn() }
         items.append(
           SnapshotItem(
             nativeItemId: uuid, role: "user", type: "userMessage", payload: ["text": .string(text)]))
@@ -521,7 +534,7 @@ public struct ClaudeTurnTracker: Sendable {
               payload: ["text": block["thinking"] ?? ""]))
         case "text":
           if type == "user" {
-            tasks.beginTurn()
+            if beginsTurn { tasks.beginTurn() }
             items.append(
               SnapshotItem(
                 nativeItemId: id, role: "user", type: "userMessage", payload: ["text": block["text"] ?? ""]))

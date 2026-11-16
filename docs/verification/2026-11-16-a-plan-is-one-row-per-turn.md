@@ -23,16 +23,25 @@ D-243, for the plans half of defect 10 of `docs/research/2026-11-14-agent-chat-h
 - The fake Claude Code counted tool use ids from one in every process, so after a restart the second turn's list landed on the first turn's row. The fixture now makes its task tool ids unique across launches, as real ids are taken to be.
 - The plan for this work would have kept an unmatched live row first when nothing stood before it. That would put a turn history has not caught up with ahead of older history a merge brings, so the row is anchored only to a row of its own turn.
 
+### The branch's review
+
+A fresh reviewer read the whole branch against the design. It found no fault in the merge, the settling or the row, and two in the Claude Code path, both fixed with a test that failed first:
+
+- Live and history disagreed on where a turn's item ends. A turn Claude Code starts itself is never begun by the app, so its list landed on the turn before it; and a compaction summary, a user line with text in the middle of a turn, made history start a second item. The reviewer counted both kinds of line in real transcripts on this Mac. The live fold now ends an item when the turn's result arrives, and history does not treat a summary as a turn (`aTurnClaudeCodeStartsItselfGetsItsOwnItem`, `aCompactionSummaryDoesNotStartANewItem`).
+- A sub-agent's `TodoWrite` would have replaced the session's list. Task tools in a frame with `parent_tool_use_id` are now ignored (`aSubAgentsTaskToolsAreNotTheSessionsList`). Whether 2.1.282 sends such frames on its stream is not known.
+
+Left as they are, by choice: a failed `TodoWrite` still replaces the list, since it is applied when the call is seen; the fold's set of seen tool use ids grows for the life of a session; a resume reads the whole transcript before the first turn; a dense running turn with only a list whose steps are all pending or all done shows nothing working.
+
 ### Gates
 
 - `swift format lint --strict --recursive Sources Tests Apps Package.swift`: clean.
-- `swift test`, as CI runs it: `WorkspaceStorageTests` and `CoordinatorTests`, 524 tests in 68 suites passed. Everything else: the first run reported one issue in 1506 tests and its name was not captured; three further runs each passed 1506 tests in 166 suites. The failure is unexplained. Other commands were running on the machine during the first run.
+- `swift test`, as CI runs it: `WorkspaceStorageTests` and `CoordinatorTests`, 524 tests in 68 suites passed. Everything else: 1509 tests in 166 suites passed on the final code. Before the review's fixes, the first run of that group reported one issue in 1506 tests and its name was not captured; three further runs each passed. That failure is unexplained. Other commands were running on the machine during it.
 - `xcodebuild build` of `B4App-macOS` and of `B4App-iOS` for the Simulator: both succeeded.
 - `Scripts/docs-index.sh --check`: passes with this record and D-243.
 
 ### Untested
 
-- Every live runtime. Codex's shape is from the 0.166.0 schema, Claude Code's from a transcript recorded on 2.1.227 (the installed version is 2.1.282), B4's from the fake server. In particular: that Claude Code's stream carries the task tools' results as `tool_result` blocks with the text the transcript shows, that tool use ids are unique across a resumed session, and that a transcript has no user text line in the middle of a turn (the history import starts a new list item at each).
+- Every live runtime. Codex's shape is from the 0.166.0 schema, Claude Code's from a transcript recorded on 2.1.227 (the installed version is 2.1.282), B4's from the fake server. In particular: that Claude Code's stream carries the task tools' results as `tool_result` blocks with the text the transcript shows, that tool use ids are unique across a resumed session, and that a transcript's only user text lines in the middle of a turn are compaction summaries (the history import starts a new list item at every other one; a message queued while a turn runs has not been looked at).
 - B4 history: whether `GET /state` returns the list. A B4 row is live-only until that is known.
 - The running app on the Mac or the phone, VoiceOver on the row, the working mark's motion, and accessibility text sizes. The app journeys were not run.
 - Old Claude Code threads: a reconcile adds the list row beside the raw tool rows an earlier build stored. Read from the code, not run.

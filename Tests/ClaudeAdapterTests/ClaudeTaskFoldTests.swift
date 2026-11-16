@@ -250,6 +250,48 @@ private func lists(_ events: [AdapterEvent]) -> [(id: String?, list: TaskList)] 
     #expect(items.last.flatMap { TaskList(payload: $0.payload) } == live.last?.list)
   }
 
+  /// A turn Claude Code starts itself (a task notification) is never begun by the app: the turn before
+  /// it ended, and that is where its list item ends too, as history starts one at the user line.
+  @Test func aTurnClaudeCodeStartsItselfGetsItsOwnItem() {
+    var t = tracker()
+    let done =
+      #"{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"total_cost_usd":0.01,"result":"ok","session_id":"s1"}"#
+    let first = run(
+      &t,
+      [use("toolu_1", "TodoWrite", #"{"todos":[{"content":"Read","status":"pending"}]}"#), done].joined(
+        separator: "\n"))
+    let second = run(&t, use("toolu_2", "TodoWrite", #"{"todos":[{"content":"Read","status":"completed"}]}"#))
+    #expect(lists(first).map(\.id) == ["tasks:toolu_1"])
+    #expect(lists(second).map(\.id) == ["tasks:toolu_2"])
+  }
+
+  /// A sub-agent keeps its own list. Its task tools are not the session's, and its lines are not in
+  /// the session's transcript, so history never folds them either.
+  @Test func aSubAgentsTaskToolsAreNotTheSessionsList() {
+    var t = tracker()
+    _ = run(&t, twoTasks.joined(separator: "\n"))
+    let inner = [
+      #"{"type":"assistant","uuid":"s1","parent_tool_use_id":"toolu_agent","message":{"id":"msg_s","role":"assistant","content":[{"type":"tool_use","id":"toolu_s","name":"TodoWrite","input":{"todos":[{"content":"Inner","status":"pending"}]}}]},"session_id":"s1"}"#,
+      #"{"type":"user","uuid":"s2","parent_tool_use_id":"toolu_agent","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s","content":"ok","is_error":false}]},"session_id":"s1"}"#,
+    ]
+    #expect(lists(run(&t, inner.joined(separator: "\n"))).isEmpty)
+    let after = lists(run(&t, updateOne.joined(separator: "\n")))
+    #expect(
+      after.last?.list.steps
+        == [.init(text: "Read", status: .inProgress), .init(text: "Write", status: .pending)])
+  }
+
+  /// A summary Claude Code writes when it compacts mid-turn is a user line with text, and not a turn.
+  @Test func aCompactionSummaryDoesNotStartANewItem() {
+    let items = ClaudeTurnTracker.snapshotItems(
+      transcriptLines: [#"{"type":"user","uuid":"u1","message":{"role":"user","content":"go"}}"#]
+        + twoTasks
+        + [
+          #"{"type":"user","uuid":"c1","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued."}}"#
+        ] + updateOne)
+    #expect(items.filter { $0.type == "taskList" }.map(\.nativeItemId) == ["tasks:toolu_1"])
+  }
+
   @Test func historyStartsANewItemAtEachTurn() {
     let items = ClaudeTurnTracker.snapshotItems(
       transcriptLines: [
