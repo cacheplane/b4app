@@ -731,9 +731,22 @@ public final class WorkspaceDatabase: Sendable {
           summary.inserted += 1
         }
       }
-      for row in cached where !usedRows.contains(row.id) {
-        if row.provenance == .live {
-          ordered.append(row)
+      // A live row history does not name (a task list, a row of a turn history has not caught up
+      // with) stays directly after the row of its own turn that stood before it. With no such row it
+      // goes after everything history brought, as a turn history does not hold yet must.
+      var lastOfTurn: [String: String] = [:]
+      for row in cached {
+        if usedRows.contains(row.id) {
+          if let turnId = row.turnId { lastOfTurn[turnId] = row.id }
+        } else if row.provenance == .live {
+          if let turnId = row.turnId, let anchor = lastOfTurn[turnId],
+            let index = ordered.firstIndex(where: { $0.id == anchor })
+          {
+            ordered.insert(row, at: index + 1)
+          } else {
+            ordered.append(row)
+          }
+          if let turnId = row.turnId { lastOfTurn[turnId] = row.id }
         } else {
           try c.execute("DELETE FROM \"displayItems\" WHERE \"id\" = $1", [row.id])
           summary.removed += 1
