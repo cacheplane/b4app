@@ -331,16 +331,55 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(streamed.filter { $0.kind == .messageCompleted }.count == 1)
   }
 
+  @Test func aPlanUpdateIsTheTurnsList() throws {
+    let (events, _) = run([
+      .unknown(
+        event: "plan_update",
+        data: [
+          "todos": [
+            ["content": "step one", "status": "completed"], ["content": "step two", "status": "in_progress"],
+            ["content": "step three", "status": "pending"],
+          ]
+        ])
+    ])
+    let event = try #require(events.first)
+    #expect(events.count == 1 && event.kind == .toolCompleted)
+    #expect(event.nativeIds["itemId"] == "tasks:turn-1")
+    #expect(event.payload["role"]?.stringValue == "tool" && event.payload["type"]?.stringValue == "taskList")
+    #expect(
+      TaskList(payload: event.payload["item"] ?? .null)
+        == TaskList(steps: [
+          .init(text: "step one", status: .completed), .init(text: "step two", status: .inProgress),
+          .init(text: "step three", status: .pending),
+        ]))
+  }
+
+  @Test func twoPlanUpdatesNameTheSameItemAndTakeNoCapabilityId() {
+    let (events, _) = run([
+      .unknown(event: "plan_update", data: ["todos": [["content": "a", "status": "pending"]]]),
+      .unknown(event: "plan_update", data: ["todos": []]),
+      .unknown(event: "sandbox_ready", data: [:]),
+    ])
+    #expect(events.map { $0.nativeIds["itemId"] } == ["tasks:turn-1", "tasks:turn-1", "turn-1:c1"])
+    #expect(TaskList(payload: events[1].payload["item"] ?? .null) == TaskList(steps: []))
+  }
+
+  @Test func aPlanUpdateWithoutTodosIsStillAGenericRow() {
+    let (events, _) = run([.unknown(event: "plan_update", data: ["steps": []])])
+    #expect(events.first?.payload["type"]?.stringValue == "plan_update")
+    #expect(events.first?.nativeIds["itemId"] == "turn-1:c1")
+  }
+
   @Test func capabilityEventsAndReasoningAreVisible() {
     let (events, _) = run([
-      .reasoning("Think "), .reasoning("hard."), .unknown(event: "plan_update", data: ["todos": []]),
+      .reasoning("Think "), .reasoning("hard."), .unknown(event: "sandbox_ready", data: ["id": "s1"]),
       .chunk("Done"), .messageEnd(messageId: nil), .done(.completed, output: completedOutput, error: nil),
     ])
     #expect(events[0].kind == .toolStarted)
     #expect(events[0].payload["type"]?.stringValue == "reasoning")
     #expect(events[1].kind == .toolCompleted)
-    #expect(events[1].payload["type"]?.stringValue == "plan_update")
-    #expect(events[1].payload["item"]?["data"] == ["todos": []])
+    #expect(events[1].payload["type"]?.stringValue == "sandbox_ready")
+    #expect(events[1].payload["item"]?["data"] == ["id": "s1"])
     let reasoning = events.first {
       $0.kind == .toolCompleted && $0.payload["type"]?.stringValue == "reasoning"
     }

@@ -78,6 +78,22 @@ public enum CodexEventTranslator {
           kind, ["item": item, "role": .string(role(forItemType: type).rawValue), "type": .string(type)],
           extra: ["itemId": itemId])
       ]
+    case "turn/plan/updated":
+      // The whole plan each time: one task list per turn, replaced in place (its id names the turn).
+      guard let turnId = ids["turnId"] else { return [] }
+      let steps = (params["plan"]?.arrayValue ?? []).map {
+        TaskList.Step(text: $0["step"]?.stringValue ?? "", status: TaskList.status($0["status"]?.stringValue))
+      }
+      let explanation = params["explanation"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+      return [
+        event(
+          .toolCompleted,
+          [
+            "item": TaskList(steps: steps, explanation: explanation).payload,
+            "role": .string(DisplayItemRole.tool.rawValue), "type": .string(TaskList.itemType),
+          ],
+          extra: ["itemId": TaskList.nativeItemId(turn: turnId)])
+      ]
     case "item/agentMessage/delta":
       guard let itemId = params["itemId"]?.stringValue, let delta = params["delta"]?.stringValue else {
         return []

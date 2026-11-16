@@ -861,6 +861,31 @@ private final class BackgroundWindow: NSWindow {
     try await render("thread-normal-sent", size: size) { transcript(sent, dense: false) }
     try await render("dense-thread-sent", size: size) { transcript(sent) }
 
+    // A turn's plan: one row, its marks changing in place; an ended turn settles the open step.
+    func plan(_ statuses: [TaskList.Status], explanation: String? = nil) -> DisplayItem {
+      let texts = [
+        "Read the adapter", "Add the mapping", "Write the tests for the mapping and the history import",
+        "Update the docs",
+      ]
+      let steps = zip(texts, statuses).map { TaskList.Step(text: $0, status: $1) }
+      return scripted(
+        "p1", .tool, TaskList.itemType,
+        TaskList(steps: steps, explanation: explanation).payload.objectValue ?? [:])
+    }
+    let planning = [
+      ask("u1", "Map the plan updates."),
+      message("a1", "Here is how I will go about it.", native: "n1"),
+      plan([.completed, .completed, .inProgress, .pending], explanation: "The mapping is in; tests next."),
+      step("c1", "swift test --filter CodexEventsTests", status: "inProgress"),
+    ]
+    try await render("thread-normal-plan", size: size) {
+      transcript(detail(planning, .running, nil), dense: false)
+    }
+    try await render("dense-thread-plan-running", size: size) { transcript(detail(planning, .running, nil)) }
+    try await render("thread-normal-plan-stopped", size: size) {
+      transcript(detail(planning, .terminal, .cancelled), dense: false)
+    }
+
     let waiting = detail(
       [
         ask("u1", "Clean up the old build products."),
