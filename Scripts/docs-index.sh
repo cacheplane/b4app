@@ -181,14 +181,71 @@ highest_number() {
   echo "$((10#${n:-0}))"
 }
 
+# Collect only after every open PR has a complete, stable files response.
+# This is an advisory observation, not an atomic snapshot or a reservation.
+open_pr_decision_files() {
+  local numbers number before after head count files file returned records
+  local detail_query files_query
+  records=
+  detail_query='if (.changed_files | type == "number") and
+    (.changed_files >= 0 and .changed_files <= 3000 and .changed_files == (.changed_files | floor)) and
+    (.head.sha | type == "string") then
+      if (.head.sha | test("^[0-9a-f]{40}$")) then
+        "detail:" + .head.sha + ":" + (.changed_files | tostring)
+      else error("invalid PR head") end
+    else error("invalid PR detail") end'
+  files_query='.[] | .filename |
+    if type == "string" then
+      if length > 0 and index("\u0000") == null and index("\r") == null and index("\n") == null then
+        "file:" + .
+      else error("invalid filename") end
+    else error("invalid filename type") end'
+  numbers=$(gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=100' --paginate \
+    --jq '.[] | .number | if type == "number" then
+      if . > 0 and . == floor then tostring else error("invalid PR number") end
+      else error("invalid PR number type") end') || return 1
+  if [ -n "$numbers" ]; then
+    while IFS= read -r number; do
+      [[ "$number" =~ ^[1-9][0-9]*$ ]] || return 1
+      before=$(gh api "repos/{owner}/{repo}/pulls/$number" --jq "$detail_query") || return 1
+      [[ "$before" =~ ^detail:([0-9a-f]{40}):([0-9]+)$ ]] || return 1
+      head=${BASH_REMATCH[1]}
+      count=${BASH_REMATCH[2]}
+      # The projection emits canonical integers in 0..3000; also check framing
+      # without arithmetic on untrusted or excessively long numeric strings.
+      [[ "$count" =~ ^(0|[1-9][0-9]{0,3})$ ]] || return 1
+      [ "$count" -le 3000 ] || return 1
+      files=$(gh api "repos/{owner}/{repo}/pulls/$number/files?per_page=100" --paginate \
+        --jq "$files_query") || return 1
+      returned=0
+      if [ -n "$files" ]; then
+        while IFS= read -r file; do
+          case "$file" in
+            file:?*) ;;
+            *) return 1 ;;
+          esac
+          returned=$((returned + 1))
+          case "$file" in
+            file:docs/decisions/D-*) records="$records${file#file:}"$'\n' ;;
+          esac
+        done <<<"$files"
+      fi
+      [ "$returned" -eq "$count" ] || return 1
+      after=$(gh api "repos/{owner}/{repo}/pulls/$number" --jq "$detail_query") || return 1
+      [[ "$after" =~ ^detail:([0-9a-f]{40}):([0-9]+)$ ]] || return 1
+      [ "${BASH_REMATCH[1]}" = "$head" ] && [ "${BASH_REMATCH[2]}" = "$count" ] || return 1
+    done <<<"$numbers"
+  fi
+  printf '%s' "$records" || return 1
+}
+
 next_number() {
   local on_main in_tree in_prs highest
   on_main=$(git ls-tree --name-only origin/main "$decisions/" 2>/dev/null | highest_number)
   in_tree=$(decision_files | highest_number)
   in_prs=0
   if command -v gh >/dev/null 2>&1; then
-    in_prs=$(gh pr list --state open --limit 100 --json files \
-      --jq '.[].files[].path | select(startswith("docs/decisions/D-"))' 2>/dev/null | highest_number)
+    in_prs=$(open_pr_decision_files | highest_number) || return 1
   fi
   highest=$on_main
   [ "$in_tree" -gt "$highest" ] && highest=$in_tree
