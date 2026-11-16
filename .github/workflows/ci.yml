@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue (D-242) tests each pull request on top of main and the ones queued before it.
+  merge_group:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -14,7 +16,8 @@ jobs:
   # a root Markdown file does not: nothing those jobs build or test reads them (Scripts/ci_scope.py).
   # GitHub runs five macOS jobs at once for the whole organisation, so a run that needs none leaves
   # the runners to the runs that do. A push to main always runs everything, and so does any change
-  # this job is not sure about: the jobs below skip only on an explicit "false".
+  # this job is not sure about: the jobs below skip only on an explicit "false". A merge group is
+  # judged on its whole change from main (every pull request queued so far), from git's own diff.
   scope:
     name: Change scope
     runs-on: ubuntu-latest
@@ -32,8 +35,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = merge_group ]; then
+            git fetch --no-tags --depth=1 origin "$GROUP_BASE"
+            git diff --no-renames --name-only "$GROUP_BASE" "$GROUP_HEAD" > "$RUNNER_TEMP/changed.txt"
+            python3 Scripts/ci_scope.py --expected "$(wc -l < "$RUNNER_TEMP/changed.txt")" \
+              < "$RUNNER_TEMP/changed.txt" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
             echo "apple=true" | tee -a "$GITHUB_OUTPUT"
             exit 0

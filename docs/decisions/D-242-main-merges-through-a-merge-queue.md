@@ -1,0 +1,7 @@
+## 2026-11-16 (main merges through a merge queue)
+
+- **D-242 Pull requests reach main through GitHub's merge queue, which runs CI on each one on top of main and the pull requests queued before it.** The branch protection's required checks were not strict, so a pull request merged on checks run against whatever main was when it was last pushed; with several sessions merging at once, two pull requests that each passed could break main together.
+  - **The workflow.** `ci.yml` also runs on `merge_group`. Every job runs there as on a pull request, so the four required checks report on the group. The scope job judges a group on `git diff --no-renames --name-only` from the group's base (main) to its head, which covers every pull request queued so far, and runs the macOS jobs unless all of it is in the trees the scope job already skips for a pull request (`Scripts/ci_scope.py`).
+  - **The ruleset.** A repository ruleset on `main` requires the merge queue (squash, groups of up to five, merged as soon as a group's checks pass). The branch protection's four required checks are unchanged and are what the queue waits for on each group.
+  - **Cost.** A pull request's macOS jobs run once on its branch and once in the queue. Auto-merge on a pull request now adds it to the queue once its own checks pass.
+  - **Verification.** `actionlint`; the queue's first merge is the check that the group's checks report under the required names.
