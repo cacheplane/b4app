@@ -511,4 +511,272 @@ nonisolated struct HistoricalActionCase: Sendable {
       #expect(model.detail?.activeTurn?.outcome == nil)
     }
   }
+
+  // Added lifecycle controls: the nine original methods and their 110 cases above stay intact.
+  @Test(arguments: [false, true])
+  func unknownRequestIdsFailClosedWithoutChangingSelectedState(phone: Bool) async throws {
+    try await HistoricalActionFixture.withModel(phone: phone, selected: "codex") { model, transport, _ in
+      let before = model.detail
+      let draft = model.composerText
+      await model.respond(requestId: "never-observed", decision: .allowOnce)
+      await model.answer(requestId: "never-observed", answers: ["question": ["answer"]])
+      #expect(transport.recorded(.requestRespond).isEmpty)
+      #expect(model.detail == before && model.composerText == draft)
+      #expect(model.answerStates.isEmpty && model.lastError == nil)
+    }
+  }
+
+  @Test(arguments: [false, true])
+  func authoritativeReadReplacesPendingTargetsForItsThread(phone: Bool) async throws {
+    try await HistoricalActionFixture.withModel(phone: phone, selected: "codex") { model, transport, reads in
+      var read = try #require(reads.first { $0.thread.id == "thread-codex" })
+      let request = try #require(read.requests.first)
+      await model.openThread(id: "thread-historical-managed")
+      read.requests = []
+      read.thread.activity?.pendingRequests = 0
+      read.thread.activity?.pendingApprovals = 0
+      transport.setRead(read)
+      transport.script(.threadReconcile, [.result(try JSONValue(encoding: read))])
+      await model.reconcileThread(id: read.thread.id)
+      #expect(!model.canAnswer(request))
+      await model.respond(requestId: request.id, decision: .allowOnce)
+      #expect(transport.recorded(.requestRespond).isEmpty)
+      #expect(model.answerStates.isEmpty)
+    }
+  }
+
+  @Test(arguments: [false, true], [false, true])
+  func backgroundRequestEventsMatchNativeIdentityAndGeneration(phone: Bool, expired: Bool) async throws {
+    try await HistoricalActionFixture.withModel(phone: phone, selected: "codex") { model, transport, reads in
+      var read = try #require(reads.first { $0.thread.id == "thread-codex" })
+      var request = try #require(read.requests.first)
+      await model.openThread(id: "thread-historical-managed")
+      // A new app identity arrives while another thread is selected.
+      request.id = "new-background-request"
+      request.nativeRequestId = "new-native-request"
+      read.requests.append(request)
+      read.thread.activity?.pendingRequests = read.requests.count
+      read.thread.activity?.pendingApprovals = read.requests.filter { $0.kind.isApproval }.count
+      transport.setRead(read)
+      model.apply(
+        AdapterEvent(
+          kind: .runtimeRequestOpened, connectionId: "codex", threadId: read.thread.id,
+          adapterGeneration: request.adapterGeneration,
+          payload: ["runtimeRequest": try JSONValue(encoding: request)]))
+      #expect(model.canAnswer(request))
+      let end: EventKind = expired ? .runtimeRequestExpired : .runtimeRequestResolved
+      // An older adapter generation cannot settle the newly opened native request.
+      model.apply(
+        AdapterEvent(
+          kind: end, connectionId: "codex", threadId: read.thread.id,
+          nativeIds: ["requestId": request.nativeRequestId], adapterGeneration: request.adapterGeneration - 1)
+      )
+      #expect(model.canAnswer(request))
+      transport.script(.requestRespond, [.failure(HistoricalActionFixture.cutover)])
+      await model.respond(requestId: request.id, decision: .allowOnce)
+      #expect(transport.recorded(.requestRespond).count == 1)
+      // The matching native-only event and the authoritative table agree, even if refetch runs.
+      read.requests.removeAll { $0.id == request.id }
+      read.thread.activity?.pendingRequests = read.requests.count
+      read.thread.activity?.pendingApprovals = read.requests.filter { $0.kind.isApproval }.count
+      transport.setRead(read)
+      model.apply(
+        AdapterEvent(
+          kind: end, connectionId: "codex", threadId: read.thread.id,
+          nativeIds: ["requestId": request.nativeRequestId], adapterGeneration: request.adapterGeneration))
+      #expect(!model.canAnswer(request))
+      await model.respond(requestId: request.id, decision: .allowOnce)
+      #expect(transport.recorded(.requestRespond).count == 1)
+    }
+  }
+
+  @Test(arguments: [false, true])
+  func appIdentityResolutionDoesNotSettleAnotherGeneration(phone: Bool) async throws {
+    try await HistoricalActionFixture.withModel(phone: phone, selected: "codex") { model, transport, reads in
+      var read = try #require(reads.first { $0.thread.id == "thread-codex" })
+      var request = try #require(read.requests.first)
+      let capturedPending = request
+      await model.openThread(id: "thread-historical-managed")
+      request.state = .resolved
+      request.adapterGeneration -= 1
+      model.apply(
+        AdapterEvent(
+          kind: .runtimeRequestResolved, connectionId: "codex", threadId: read.thread.id,
+          payload: ["runtimeRequest": try JSONValue(encoding: request)]))
+      transport.script(.requestRespond, [.failure(HistoricalActionFixture.cutover)])
+      await model.respond(requestId: request.id, decision: .allowOnce)
+      #expect(transport.recorded(.requestRespond).count == 1)
+      #expect(model.canAnswer(capturedPending))
+      request.adapterGeneration += 1
+      read.requests.removeAll { $0.id == request.id }
+      read.thread.activity?.pendingRequests = read.requests.count
+      read.thread.activity?.pendingApprovals = read.requests.filter { $0.kind.isApproval }.count
+      transport.setRead(read)
+      model.apply(
+        AdapterEvent(
+          kind: .runtimeRequestResolved, connectionId: "codex", threadId: read.thread.id,
+          payload: ["runtimeRequest": try JSONValue(encoding: request)]))
+      #expect(!model.canAnswer(capturedPending))
+      await model.respond(requestId: request.id, decision: .allowOnce)
+      #expect(transport.recorded(.requestRespond).count == 1)
+    }
+  }
+
+  @Test(arguments: [false, true], [false, true])
+  func deletionAndSnapshotRemovalForgetCapturedTargets(phone: Bool, snapshot: Bool) async throws {
+    try await HistoricalActionFixture.withModel(phone: phone, selected: "codex") { model, transport, reads in
+      let read = try #require(reads.first { $0.thread.id == "thread-codex" })
+      let request = try #require(read.requests.first)
+      await model.openThread(id: "thread-historical-managed")
+      if snapshot {
+        transport.set(threads: reads.map(\.thread).filter { $0.id != read.thread.id })
+        try await model.refreshSnapshot()
+      } else {
+        model.forget(threadId: read.thread.id)
+      }
+      #expect(!model.canAnswer(request))
+      await model.respond(requestId: request.id, decision: .allowOnce)
+      #expect(transport.recorded(.requestRespond).isEmpty)
+      #expect(model.answerStates.isEmpty)
+    }
+  }
+
+  @Test(arguments: [false, true])
+  func oldAccountReconcileCannotRestoreCapturedTargets(phone: Bool) async throws {
+    try await HistoricalActionFixture.withModel(phone: phone, selected: "codex") { model, transport, reads in
+      let read = try #require(reads.first { $0.thread.id == "thread-codex" })
+      let request = try #require(read.requests.first)
+      let reply = try JSONValue(encoding: read)
+      transport.script(.threadReconcile, [.hold])
+      let reconcile = Task { await model.reconcileThread(id: read.thread.id) }
+      do {
+        try await waitUntil("held account reconcile") { transport.heldCount(.threadReconcile) == 1 }
+      } catch {
+        transport.release(.threadReconcile, with: .failure(HistoricalActionFixture.cutover))
+        await model.disconnect()
+        await reconcile.value
+        throw error
+      }
+      model.forgetWorkspace()
+      #expect(!model.canAnswer(request))
+      // Release the old account's authoritative reply after its generation has ended.
+      let released = transport.release(.threadReconcile, with: .result(reply))
+      await reconcile.value
+      #expect(released)
+      #expect(model.threads.isEmpty && model.detail == nil)
+      #expect(!model.canAnswer(request))
+      await model.respond(requestId: request.id, decision: .allowOnce)
+      await model.answer(requestId: request.id, answers: [:])
+      #expect(transport.recorded(.requestRespond).isEmpty)
+      #expect(model.answerStates.isEmpty)
+    }
+  }
+
+  @Test(arguments: [false, true])
+  func newerAuthoritativeRemovalWinsOverAnOlderPendingReply(phone: Bool) async throws {
+    try await HistoricalActionFixture.withModel(phone: phone, selected: "codex") { model, transport, reads in
+      let read = try #require(reads.first { $0.thread.id == "thread-codex" })
+      let request = try #require(read.requests.first)
+      var empty = read
+      empty.requests = []
+      empty.thread.activity?.pendingRequests = 0
+      empty.thread.activity?.pendingApprovals = 0
+      let oldReply = try JSONValue(encoding: read)
+      let newReply = try JSONValue(encoding: empty)
+      await model.openThread(id: "thread-historical-managed")
+      #expect(model.canAnswer(request))
+      transport.script(.threadReconcile, [.hold, .result(newReply)])
+      let older = Task { await model.reconcileThread(id: read.thread.id) }
+      do {
+        try await waitUntil("held older pending read") { transport.heldCount(.threadReconcile) == 1 }
+      } catch {
+        transport.release(.threadReconcile, with: .failure(HistoricalActionFixture.cutover))
+        await model.disconnect()
+        await older.value
+        throw error
+      }
+      // A read issued later authoritatively removes the pending identity before the old read returns.
+      transport.setRead(empty)
+      await model.reconcileThread(id: read.thread.id)
+      #expect(!model.canAnswer(request))
+      let released = transport.release(.threadReconcile, with: .result(oldReply))
+      await older.value
+      #expect(released)
+      #expect(!model.canAnswer(request))
+      await model.respond(requestId: request.id, decision: .allowOnce)
+      await model.answer(requestId: request.id, answers: [:])
+      #expect(transport.recorded(.requestRespond).isEmpty)
+      #expect(model.answerStates.isEmpty)
+    }
+  }
+
+  @Test(arguments: InvalidRequestEventCase.all)
+  func invalidRequestEventsPreserveCardsAndAuthoritativeEligibility(
+    fixture: InvalidRequestEventCase
+  ) async throws {
+    let (phone, wrongConnection, expired) = (fixture.phone, fixture.wrongConnection, fixture.expired)
+    try await HistoricalActionFixture.withModel(
+      phone: phone, selected: "codex", currentStatus: .waitingForUser
+    ) { model, transport, reads in
+      var read = try #require(reads.first { $0.thread.id == "thread-codex" })
+      read.thread.activity?.pendingRequests = read.requests.count
+      read.thread.activity?.pendingApprovals = read.requests.filter { $0.kind.isApproval }.count
+      transport.setRead(read)
+      transport.script(.threadReconcile, [.result(try JSONValue(encoding: read))])
+      await model.reconcileThread(id: read.thread.id)
+      let before = try #require(model.detail)
+      let legitimate = try #require(before.requests.first)
+      #expect(model.canAnswer(legitimate))
+      let connectionId = wrongConnection ? "claude" : "codex"
+      var opened = legitimate
+      opened.id = "unrelated-opened-id"
+      opened.nativeRequestId = "unrelated-native-id"
+      if !wrongConnection { opened.threadId = "thread-claude" }
+      // Neither rejected context changes the authoritative pending table.
+      model.apply(
+        AdapterEvent(
+          kind: .runtimeRequestOpened, connectionId: connectionId, threadId: read.thread.id,
+          payload: ["runtimeRequest": try JSONValue(encoding: opened)]))
+      #expect(model.detail == before)
+      #expect(!model.canAnswer(opened))
+      #expect(model.canAnswer(legitimate))
+      var terminal = legitimate
+      terminal.state = expired ? .expired : .resolved
+      if !wrongConnection { terminal.threadId = "thread-claude" }
+      model.apply(
+        AdapterEvent(
+          kind: expired ? .runtimeRequestExpired : .runtimeRequestResolved,
+          connectionId: connectionId, threadId: read.thread.id,
+          payload: ["runtimeRequest": try JSONValue(encoding: terminal)]))
+      #expect(model.detail == before)
+      #expect(model.canAnswer(legitimate))
+      await model.respond(requestId: opened.id, decision: .allowOnce)
+      #expect(transport.recorded(.requestRespond).isEmpty)
+      // A legitimate pending reply keeps the card and routing identity until a real terminal event.
+      transport.script(
+        .requestRespond,
+        [
+          .result(try JSONValue(encoding: RequestRespond.Result(request: legitimate)))
+        ])
+      await model.respond(requestId: legitimate.id, decision: .allowOnce)
+      #expect(transport.recorded(.requestRespond).count == 1)
+      #expect(transport.recorded(.requestRespond).first?.params["requestId"] == .string(legitimate.id))
+      #expect(model.detail == before)
+      #expect(model.canAnswer(legitimate))
+      #expect(model.answerStates.isEmpty && model.lastError == nil)
+    }
+  }
+
+}
+
+nonisolated struct InvalidRequestEventCase: Sendable {
+  let phone: Bool
+  let wrongConnection: Bool
+  let expired: Bool
+
+  static let all = [false, true].flatMap { phone in
+    [false, true].flatMap { wrongConnection in
+      [false, true].map { Self(phone: phone, wrongConnection: wrongConnection, expired: $0) }
+    }
+  }
 }

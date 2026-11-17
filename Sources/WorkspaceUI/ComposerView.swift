@@ -42,6 +42,15 @@ struct ComposerView: View {
         }
       }
       relayLines
+      if let reason = model.runtimeUnavailableReason(for: detail.thread) {
+        Text(reason)
+          .llaCaption()
+          .lineLimit(2)
+          .padding(.horizontal, Self.textLeading)
+          .accessibilityIdentifier(
+            model.connection(id: detail.thread.connectionId)?.kind == .b4
+              ? "historical-read-only-reason" : "runtime-unavailable-reason")
+      }
       if let turn = activeTurn { turnRow(turn) }
       ComposerField(
         text: $model.composerText, placeholder: placeholder, focused: $focused,
@@ -204,7 +213,7 @@ struct ComposerView: View {
       Task { await model.abandonTurn(threadId: detail.thread.id) }
     }
     .buttonStyle(.llaDanger)
-    .disabled(model.busy)
+    .disabled(model.busy || !model.canAbandon(detail.thread))
     .help("Give up on this turn's unknown outcome so the thread can take a new message. Nothing is re-sent.")
     .accessibilityIdentifier("abandon")
   }
