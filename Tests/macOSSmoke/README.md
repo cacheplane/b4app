@@ -16,6 +16,8 @@ Five tests (D-244):
 
 The desktop size is 1200×600 locally and 1000×600 in CI (`B4APP_SMOKE_DESKTOP_WIDTH=1000`), to fit CI's 1024-point virtual display. Smaller panes are covered by the package's `RecoveryCompressionTests` and `DetailMinimumSizeTests`.
 
+The harness never opens a window smaller than the app's minimum (900×600, `LLA.Metrics.minimumWindow`): a smaller `SMOKE_WIDTH` or `SMOKE_HEIGHT` is raised to it, with a line on standard error, since holding the window below the minimum made AppKit throw.
+
 Results and attachments are in `.build/macOSSmoke/Results-*.xcresult`, with screenshots, accessibility trees and fixture logs. `B4APP_SMOKE_RESULTS` and `B4APP_SMOKE_DERIVED_DATA` move them. Extra arguments pass to `xcodebuild`:
 
 ```sh
