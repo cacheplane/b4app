@@ -48,189 +48,287 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2bB17OwnerRetirementAfterRealAndControlledWaitsRefuses() async throws {
-    var observationIndex = 0
-    // Each stale case has an independent same-owner positive control on the same real path.
-    for retired in [false, true] {
-      observationIndex += 1
-      try await P2BOwnerFixture.withFixture(
-        linked: true, observation: P2BOwnerObservation(testCase: .b17, fixtureIndex: observationIndex)
-      ) { f in
-        let installed = try await f.install(f.scope)
-        let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
-        let database = f.scope.database
-        let holds = (0..<4).map { _ in f.native.hold() }
-        for hold in holds {
-          _ = f.native.worker { [database, hold] in
-            try database.read { c in
-              try p2bOwnerOne(c); return hold.wait()
-            }
+  @Test func p2bB17PoolSlotWaitSameOwnerAllows() async throws {
+    try await p2bOwnerB17PoolSlotWait(retired: false, observationIndex: 1)
+  }
+
+  @Test func p2bB17PoolSlotWaitRetiredOwnerRefuses() async throws {
+    try await p2bOwnerB17PoolSlotWait(retired: true, observationIndex: 2)
+  }
+
+  @Test func p2bB17AfterConnectBeforeG3SameOwnerAllows() async throws {
+    try await p2bOwnerB17ControlledWait(
+      phase: .afterConnectBeforeG3, refused: 4, normal: 0,
+      retired: false, observationIndex: 3)
+  }
+
+  @Test func p2bB17AfterConnectBeforeG3RetiredOwnerRefuses() async throws {
+    try await p2bOwnerB17ControlledWait(
+      phase: .afterConnectBeforeG3, refused: 4, normal: 0,
+      retired: true, observationIndex: 4)
+  }
+
+  @Test func p2bB17AfterStatementBudgetBeforeG6SameOwnerAllows() async throws {
+    try await p2bOwnerB17ControlledWait(
+      phase: .afterStatementBudgetBeforeG6, refused: 32, normal: 3,
+      retired: false, observationIndex: 5)
+  }
+
+  @Test func p2bB17AfterStatementBudgetBeforeG6RetiredOwnerRefuses() async throws {
+    try await p2bOwnerB17ControlledWait(
+      phase: .afterStatementBudgetBeforeG6, refused: 32, normal: 3,
+      retired: true, observationIndex: 6)
+  }
+
+  @Test func p2bB17AfterFactsBeforeG7SameOwnerAllows() async throws {
+    try await p2bOwnerB17ControlledWait(
+      phase: .afterFactsBeforeG7, refused: 64, normal: 4,
+      retired: false, observationIndex: 7)
+  }
+
+  @Test func p2bB17AfterFactsBeforeG7RetiredOwnerRefuses() async throws {
+    try await p2bOwnerB17ControlledWait(
+      phase: .afterFactsBeforeG7, refused: 64, normal: 4,
+      retired: true, observationIndex: 8)
+  }
+
+  @Test func p2bB17AfterRollbackBeforeG8SameOwnerAllows() async throws {
+    try await p2bOwnerB17ControlledWait(
+      phase: .afterRollbackBeforeG8, refused: 128, normal: 4,
+      retired: false, observationIndex: 9)
+  }
+
+  @Test func p2bB17AfterRollbackBeforeG8RetiredOwnerRefuses() async throws {
+    try await p2bOwnerB17ControlledWait(
+      phase: .afterRollbackBeforeG8, refused: 128, normal: 4,
+      retired: true, observationIndex: 10)
+  }
+
+  @Test func p2bB17RealRelationLockWaitSameOwnerAllows() async throws {
+    try await p2bOwnerB17RelationLockWait(retired: false, observationIndex: 11)
+  }
+
+  @Test func p2bB17RealRelationLockWaitRetiredOwnerRefuses() async throws {
+    try await p2bOwnerB17RelationLockWait(retired: true, observationIndex: 12)
+  }
+
+  @Test func p2bB18AccountIDChangedRefuses() async throws {
+    try await p2bOwnerB18ContextMutation(mutation: 0, observationIndex: 1)
+  }
+
+  @Test func p2bB18DatabaseChangedRefuses() async throws {
+    try await p2bOwnerB18ContextMutation(mutation: 1, observationIndex: 2)
+  }
+
+  @Test func p2bB18HubURLSpellingChangedRefuses() async throws {
+    try await p2bOwnerB18ContextMutation(mutation: 2, observationIndex: 3)
+  }
+
+  @Test func p2bB18DeviceIDChangedRefuses() async throws {
+    try await p2bOwnerB18ContextMutation(mutation: 3, observationIndex: 4)
+  }
+
+  @Test func p2bB18TokenRefChangedRefuses() async throws {
+    try await p2bOwnerB18ContextMutation(mutation: 4, observationIndex: 5)
+  }
+
+  @Test func p2bB18TokenRefRemovedRefuses() async throws {
+    try await p2bOwnerB18ContextMutation(mutation: 5, observationIndex: 6)
+  }
+
+  @Test func p2bB18UnicodeDeviceIDBytesChangedRefuses() async throws {
+    try await p2bOwnerB18ContextMutation(mutation: 6, observationIndex: 7)
+  }
+
+  @Test func p2bB18UnicodeTokenRefBytesChangedRefuses() async throws {
+    try await p2bOwnerB18ContextMutation(mutation: 7, observationIndex: 8)
+  }
+
+  @Test func p2bB18NativeAbsentTokenNonNilToNilRefuses() async throws {
+    try await p2bOwnerB18NativeAbsentContext(
+      initiallyNil: false, observationIndex: 9)
+  }
+
+  @Test func p2bB18NativeAbsentTokenNilToNewRefuses() async throws {
+    try await p2bOwnerB18NativeAbsentContext(
+      initiallyNil: true, observationIndex: 10)
+  }
+
+  @Test func p2bB18MetadataAllowedThenGateAndOwnerReplacementNeverRetargets() async throws {
+    try await p2bOwnerB18MetadataGateAndReplacement(observationIndex: 11)
+  }
+
+  private func p2bOwnerB17PoolSlotWait(retired: Bool, observationIndex: Int) async throws {
+    try await P2BOwnerFixture.withFixture(
+      linked: true, observation: P2BOwnerObservation(testCase: .b17, fixtureIndex: observationIndex)
+    ) { f in
+      let installed = try await f.install(f.scope)
+      let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
+      let database = f.scope.database
+      let holds = (0..<4).map { _ in f.native.hold() }
+      for hold in holds {
+        _ = f.native.worker { [database, hold] in
+          try database.read { c in
+            try p2bOwnerOne(c); return hold.wait()
           }
-        }
-        try p2bOwnerRequire(p2bOwnerPoll { holds.allSatisfy { $0.entered } })
-        let probe = try f.native.probe(database)
-        let worker = f.native.worker { [comparison] in
-          if retired { return p2bOwnerRejected { try comparison.requireOriginalNativeSession() } }
-          try comparison.requireOriginalNativeSession(); return true
-        }
-        let actuallyQueued = p2bOwnerPoll { probe.snapshot().waitStart != nil }
-        #expect(actuallyQueued)
-        if retired { try await f.retire() }
-        for hold in holds { hold.release() }
-        let terminal = worker.join()
-        #expect(terminal)
-        let sample = probe.snapshot()
-        if retired {
-          let stoppedAtG1 =
-            sample.refusedGuards == 1 && sample.commandStarts.allSatisfy { $0 == 0 }
-            && sample.leaseLeft && sample.slotSignalled
-          #expect(stoppedAtG1)
-        } else {
-          p2bOwnerSuccessful(sample)
         }
       }
-    }
-    for (phase, refused, normal) in [
-      (AccountSessionComparisonPhase.afterConnectBeforeG3, UInt(4), UInt(0)),
-      (.afterStatementBudgetBeforeG6, UInt(32), UInt(3)),
-      (.afterFactsBeforeG7, UInt(64), UInt(4)),
-      (.afterRollbackBeforeG8, UInt(128), UInt(4)),
-    ] {
-      for retired in [false, true] {
-        observationIndex += 1
-        try await P2BOwnerFixture.withFixture(
-          linked: true, observation: P2BOwnerObservation(testCase: .b17, fixtureIndex: observationIndex)
-        ) { f in
-          let installed = try await f.install(f.scope)
-          let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
-          let probe = try f.native.probe(f.scope.database, phase: phase)
-          let worker = f.native.worker { [comparison] in
-            if retired { return p2bOwnerRejected { try comparison.requireOriginalNativeSession() } }
-            try comparison.requireOriginalNativeSession(); return true
-          }
-          try p2bOwnerRequire(p2bOwnerPoll { probe.snapshot().holdEntered })
-          if retired { try await f.retire() }
-          probe.releaseHold()
-          let terminal = worker.join()
-          #expect(terminal)
-          let sample = probe.snapshot()
-          if retired {
-            let stopped =
-              sample.refusedGuards == refused
-              && sample.commandStarts[0...3].reduce(0, +) == normal
-              && sample.rollbackAttempts == (phase == .afterConnectBeforeG3 ? 0 : 1)
-            #expect(stopped)
-            p2bOwnerCleanup(sample)
-          } else {
-            p2bOwnerSuccessful(sample)
-          }
-        }
+      try p2bOwnerRequire(p2bOwnerPoll { holds.allSatisfy { $0.entered } })
+      let probe = try f.native.probe(database)
+      let worker = f.native.worker { [comparison] in
+        if retired { return p2bOwnerRejected { try comparison.requireOriginalNativeSession() } }
+        try comparison.requireOriginalNativeSession(); return true
       }
-    }
-    for retired in [false, true] {
-      observationIndex += 1
-      try await P2BOwnerFixture.withFixture(
-        linked: true, observation: P2BOwnerObservation(testCase: .b17, fixtureIndex: observationIndex)
-      ) { f in
-        let installed = try await f.install(f.scope)
-        let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
-        let inspector = try f.native.inspector(f.scope.database)
-        try inspector.execute("BEGIN; LOCK TABLE public.\"hubLink\" IN ACCESS EXCLUSIVE MODE")
-        defer { _ = try? inspector.execute("ROLLBACK") }
-        let probe = try f.native.probe(f.scope.database)
-        let worker = f.native.worker { [comparison] in
-          if retired { return p2bOwnerRejected { try comparison.requireOriginalNativeSession() } }
-          try comparison.requireOriginalNativeSession(); return true
-        }
-        let realWait = p2bOwnerPoll { (try? f.native.relationWait(f.scope.database)) == true }
-        #expect(realWait)
-        if retired { try await f.retire() }
-        try inspector.execute("ROLLBACK")
-        let terminal = worker.join()
-        #expect(terminal)
-        let sample = probe.snapshot()
-        if retired {
-          let decodedThenRefused =
-            sample.factsDecoded == 1 && sample.refusedGuards == 64
-            && sample.rollbackAttempts == 1 && sample.rollbackAcknowledgements == 1
-          #expect(decodedThenRefused)
-          p2bOwnerCleanup(sample)
-        } else {
-          p2bOwnerSuccessful(sample)
-        }
+      let actuallyQueued = p2bOwnerPoll { probe.snapshot().waitStart != nil }
+      #expect(actuallyQueued)
+      if retired { try await f.retire() }
+      for hold in holds { hold.release() }
+      let terminal = worker.join()
+      #expect(terminal)
+      let sample = probe.snapshot()
+      if retired {
+        let stoppedAtG1 =
+          sample.refusedGuards == 1 && sample.commandStarts.allSatisfy { $0 == 0 }
+          && sample.leaseLeft && sample.slotSignalled
+        #expect(stoppedAtG1)
+      } else {
+        p2bOwnerSuccessful(sample)
       }
     }
   }
 
-  @Test func p2bB18ContextTentativeGateAndReplacementNeverRetarget() async throws {
-    var observationIndex = 0
-    for mutation in 0..<8 {
-      observationIndex += 1
-      try await P2BOwnerFixture.withFixture(
-        linked: true, observation: P2BOwnerObservation(testCase: .b18, fixtureIndex: observationIndex)
-      ) { f in
-        if mutation >= 6 {
-          var unicode = f.scope.account
-          if mutation == 6 { unicode.deviceId = "d\u{00e9}" } else { unicode.tokenRef = "secret:r\u{00e9}" }
-          f.scope.update(account: unicode)
-          let inspector = try f.native.inspector(f.scope.database)
-          try inspector.execute(
-            "UPDATE public.\"hubLink\" SET \"deviceId\"=$1, \"tokenRef\"=$2",
-            [unicode.deviceId, unicode.tokenRef])
-        }
-        let installed = try await f.install(f.scope)
-        let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
-        let original = f.scope.account
-        let probe = try f.native.probe(f.scope.database, phase: .afterFactsBeforeG7)
-        let worker = f.native.worker { [comparison] in
-          p2bOwnerRejected { try comparison.requireOriginalNativeSession() }
-        }
-        try p2bOwnerRequire(p2bOwnerPoll { probe.snapshot().holdEntered })
-        var changed = original
-        switch mutation {
-        case 0: changed.id += "other"
-        case 1: changed.database += "other"
-        case 2: changed.hubURL = "HTTPS://SCOPE-OWNER.INVALID/Deployment/"
-        case 3: changed.deviceId += "other"
-        case 4: changed.tokenRef = "secret:other"
-        case 5: changed.tokenRef = nil
-        case 6: changed.deviceId = "de\u{0301}"
-        default: changed.tokenRef = "secret:re\u{0301}"
-        }
-        f.scope.update(account: changed)
-        probe.releaseHold()
-        let refused = worker.join()
-        #expect(refused)
-        p2bOwnerCleanup(probe.snapshot())
-        f.scope.update(account: original)
-        try comparison.requireOriginalNativeSession()
+  private func p2bOwnerB17ControlledWait(
+    phase: AccountSessionComparisonPhase, refused: UInt, normal: UInt, retired: Bool,
+    observationIndex: Int
+  ) async throws {
+    try await P2BOwnerFixture.withFixture(
+      linked: true, observation: P2BOwnerObservation(testCase: .b17, fixtureIndex: observationIndex)
+    ) { f in
+      let installed = try await f.install(f.scope)
+      let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
+      let probe = try f.native.probe(f.scope.database, phase: phase)
+      let worker = f.native.worker { [comparison] in
+        if retired { return p2bOwnerRejected { try comparison.requireOriginalNativeSession() } }
+        try comparison.requireOriginalNativeSession(); return true
+      }
+      try p2bOwnerRequire(p2bOwnerPoll { probe.snapshot().holdEntered })
+      if retired { try await f.retire() }
+      probe.releaseHold()
+      let terminal = worker.join()
+      #expect(terminal)
+      let sample = probe.snapshot()
+      if retired {
+        let stopped =
+          sample.refusedGuards == refused
+          && sample.commandStarts[0...3].reduce(0, +) == normal
+          && sample.rollbackAttempts == (phase == .afterConnectBeforeG3 ? 0 : 1)
+        #expect(stopped)
+        p2bOwnerCleanup(sample)
+      } else {
+        p2bOwnerSuccessful(sample)
       }
     }
-    // A native-absent context preserves nil independently of the native absence branch.
-    for initiallyNil in [false, true] {
-      observationIndex += 1
-      try await P2BOwnerFixture.withFixture(
-        linked: false, observation: P2BOwnerObservation(testCase: .b18, fixtureIndex: observationIndex)
-      ) { f in
-        var original = f.scope.account
-        if initiallyNil { original.tokenRef = nil; f.scope.update(account: original) }
-        let installed = try await f.install(f.scope)
-        let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
-        let probe = try f.native.probe(f.scope.database, phase: .afterConnectBeforeG3)
-        let worker = f.native.worker { [comparison] in
-          p2bOwnerRejected { try comparison.requireOriginalNativeSession() }
-        }
-        try p2bOwnerRequire(p2bOwnerPoll { probe.snapshot().holdEntered })
-        var changed = original
-        changed.tokenRef = initiallyNil ? "secret:new" : nil
-        f.scope.update(account: changed)
-        probe.releaseHold()
-        let refused = worker.join()
-        #expect(refused)
-        p2bOwnerCleanup(probe.snapshot())
+  }
+
+  private func p2bOwnerB17RelationLockWait(retired: Bool, observationIndex: Int) async throws {
+    try await P2BOwnerFixture.withFixture(
+      linked: true, observation: P2BOwnerObservation(testCase: .b17, fixtureIndex: observationIndex)
+    ) { f in
+      let installed = try await f.install(f.scope)
+      let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
+      let inspector = try f.native.inspector(f.scope.database)
+      try inspector.execute("BEGIN; LOCK TABLE public.\"hubLink\" IN ACCESS EXCLUSIVE MODE")
+      defer { _ = try? inspector.execute("ROLLBACK") }
+      let probe = try f.native.probe(f.scope.database)
+      let worker = f.native.worker { [comparison] in
+        if retired { return p2bOwnerRejected { try comparison.requireOriginalNativeSession() } }
+        try comparison.requireOriginalNativeSession(); return true
+      }
+      let realWait = p2bOwnerPoll { (try? f.native.relationWait(f.scope.database)) == true }
+      #expect(realWait)
+      if retired { try await f.retire() }
+      try inspector.execute("ROLLBACK")
+      let terminal = worker.join()
+      #expect(terminal)
+      let sample = probe.snapshot()
+      if retired {
+        let decodedThenRefused =
+          sample.factsDecoded == 1 && sample.refusedGuards == 64
+          && sample.rollbackAttempts == 1 && sample.rollbackAcknowledgements == 1
+        #expect(decodedThenRefused)
+        p2bOwnerCleanup(sample)
+      } else {
+        p2bOwnerSuccessful(sample)
       }
     }
-    observationIndex += 1
+  }
+
+  private func p2bOwnerB18ContextMutation(mutation: Int, observationIndex: Int) async throws {
+    try await P2BOwnerFixture.withFixture(
+      linked: true, observation: P2BOwnerObservation(testCase: .b18, fixtureIndex: observationIndex)
+    ) { f in
+      if mutation >= 6 {
+        var unicode = f.scope.account
+        if mutation == 6 { unicode.deviceId = "d\u{00e9}" } else { unicode.tokenRef = "secret:r\u{00e9}" }
+        f.scope.update(account: unicode)
+        let inspector = try f.native.inspector(f.scope.database)
+        try inspector.execute(
+          "UPDATE public.\"hubLink\" SET \"deviceId\"=$1, \"tokenRef\"=$2",
+          [unicode.deviceId, unicode.tokenRef])
+      }
+      let installed = try await f.install(f.scope)
+      let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
+      let original = f.scope.account
+      let probe = try f.native.probe(f.scope.database, phase: .afterFactsBeforeG7)
+      let worker = f.native.worker { [comparison] in
+        p2bOwnerRejected { try comparison.requireOriginalNativeSession() }
+      }
+      try p2bOwnerRequire(p2bOwnerPoll { probe.snapshot().holdEntered })
+      var changed = original
+      switch mutation {
+      case 0: changed.id += "other"
+      case 1: changed.database += "other"
+      case 2: changed.hubURL = "HTTPS://SCOPE-OWNER.INVALID/Deployment/"
+      case 3: changed.deviceId += "other"
+      case 4: changed.tokenRef = "secret:other"
+      case 5: changed.tokenRef = nil
+      case 6: changed.deviceId = "de\u{0301}"
+      default: changed.tokenRef = "secret:re\u{0301}"
+      }
+      f.scope.update(account: changed)
+      probe.releaseHold()
+      let refused = worker.join()
+      #expect(refused)
+      p2bOwnerCleanup(probe.snapshot())
+      f.scope.update(account: original)
+      try comparison.requireOriginalNativeSession()
+    }
+  }
+
+  private func p2bOwnerB18NativeAbsentContext(initiallyNil: Bool, observationIndex: Int) async throws {
+    try await P2BOwnerFixture.withFixture(
+      linked: false, observation: P2BOwnerObservation(testCase: .b18, fixtureIndex: observationIndex)
+    ) { f in
+      var original = f.scope.account
+      if initiallyNil { original.tokenRef = nil; f.scope.update(account: original) }
+      let installed = try await f.install(f.scope)
+      let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
+      let probe = try f.native.probe(f.scope.database, phase: .afterConnectBeforeG3)
+      let worker = f.native.worker { [comparison] in
+        p2bOwnerRejected { try comparison.requireOriginalNativeSession() }
+      }
+      try p2bOwnerRequire(p2bOwnerPoll { probe.snapshot().holdEntered })
+      var changed = original
+      changed.tokenRef = initiallyNil ? "secret:new" : nil
+      f.scope.update(account: changed)
+      probe.releaseHold()
+      let refused = worker.join()
+      #expect(refused)
+      p2bOwnerCleanup(probe.snapshot())
+    }
+  }
+
+  private func p2bOwnerB18MetadataGateAndReplacement(observationIndex: Int) async throws {
     try await P2BOwnerFixture.withFixture(
       linked: true, observation: P2BOwnerObservation(testCase: .b18, fixtureIndex: observationIndex)
     ) { f in
