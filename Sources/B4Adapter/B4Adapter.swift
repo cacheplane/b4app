@@ -287,7 +287,7 @@ public actor B4Adapter: AgentAdapter {
     }
     let decision: B4Protocol.ResumeDecision
     switch response {
-    case .decision(let choice): decision = B4Protocol.resumeDecision(choice, allowAlways: prompt.allowAlways)
+    case .decision(let choice): decision = try B4Protocol.resumeDecision(choice, allowAlways: prompt.allowAlways)
     case .decline: decision = .cancelled
     case .answers:
       throw WorkspaceError(.protocolInvalid, "A B4 permission prompt takes a decision, not answers.")
