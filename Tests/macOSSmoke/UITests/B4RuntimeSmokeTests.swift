@@ -107,6 +107,10 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     try assertJournal(fixture, nativeId: nativeId, prompts: ["partial", "approve"], interrupted: true)
     try type(Self.continuation, into: composer, app: app)
     try await assertDraft(Self.continuation, fixture: fixture, id: currentId)
+    let currentComposerIsEnabled = composer.isEnabled
+    print(
+      "Composer diagnostic current-post-edit enabled=\(currentComposerIsEnabled) hittable=\(composer.isHittable)"
+    )
 
     // Reading the old cache never resumes, retries, cancels or abandons its unknown turn.
     try select("Historical B4 cache fixture", draft: Self.historicalDraft, app: app)
@@ -116,9 +120,24 @@ final class HistoricalCacheSmokeTests: XCTestCase {
       app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "cached lookup")).firstMatch,
       in: app)
     XCTAssertEqual(composer.value as? String, Self.historicalDraft)
-    XCTAssertTrue(composer.isEnabled, "Historical drafts remain editable")
+    let historicalComposerWasEnabled = composer.isEnabled
+    print(
+      "Composer diagnostic historical-pre-edit enabled=\(historicalComposerWasEnabled) hittable=\(composer.isHittable)"
+    )
     try type(Self.editedDraft, into: composer, app: app)
     try await assertDraft(Self.editedDraft, fixture: fixture, id: fixture.threadId)
+    let historicalComposerIsEnabled = composer.isEnabled
+    print(
+      "Composer diagnostic historical-post-edit enabled=\(historicalComposerIsEnabled) hittable=\(composer.isHittable)"
+    )
+    XCTAssertTrue(
+      historicalComposerWasEnabled,
+      "Historical drafts remain editable; current-enabled=\(currentComposerIsEnabled) historical-pre-enabled=\(historicalComposerWasEnabled) historical-post-enabled=\(historicalComposerIsEnabled)"
+    )
+    XCTAssertTrue(
+      historicalComposerIsEnabled,
+      "Historical drafts remain editable after saving; current-enabled=\(currentComposerIsEnabled) historical-pre-enabled=\(historicalComposerWasEnabled) historical-post-enabled=\(historicalComposerIsEnabled)"
+    )
     try assertHistorical(try await read(fixture, id: fixture.threadId), seed: seed)
     try assertJournal(fixture, nativeId: nativeId, prompts: ["partial", "approve"], interrupted: true)
     capture(app, name: "historical-cache-before-relaunch")
