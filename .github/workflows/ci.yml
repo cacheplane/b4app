@@ -7,9 +7,11 @@ on:
   # The merge queue (D-242) tests each pull request on top of main and the ones queued before it.
   merge_group:
 
+# A newer push to a pull request cancels its older run; a push to main never cancels the one before
+# it, which saves the build caches at its end (D-244).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   # Whether this change needs the macOS jobs. A pull request that touches only Hub/, Infra/, docs/ or

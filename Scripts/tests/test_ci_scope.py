@@ -82,6 +82,11 @@ class WorkflowTests(unittest.TestCase):
         for name, job in self.jobs.items():
             self.assertNotIn("-Beta", job, name)
 
+    def test_a_push_to_main_is_never_cancelled_by_the_next(self):
+        # Main's runs save the build caches at their end; a later merge must not cancel them first.
+        text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        self.assertIn("  cancel-in-progress: ${{ github.event_name != 'push' }}\n", text)
+
     def test_build_caches_are_saved_from_main_only(self):
         for name in ["package", "app-builds", "ios-layout", "macos-smoke"]:
             job = self.jobs[name]
