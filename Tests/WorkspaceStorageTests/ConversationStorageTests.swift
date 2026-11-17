@@ -186,6 +186,74 @@ private func seeded() throws -> WorkspaceDatabase {
     #expect(rows.first?.turnId == nil)
   }
 
+  /// Live rows of one finished turn, in order; `nil` text makes a task list, which history never names.
+  private func liveTurn(
+    _ db: WorkspaceDatabase, _ turn: String, _ rows: [(id: String, role: DisplayItemRole)]
+  )
+    throws
+  {
+    _ = try db.insertTurn(
+      Turn(
+        id: turn, threadId: "t1", operationId: "op-\(turn)", nativeTurnId: "native-\(turn)",
+        status: .terminal, submission: .acknowledged, outcome: .completed))
+    for row in rows {
+      _ = try db.upsertDisplayItem(
+        threadId: "t1", turnId: turn, nativeItemId: row.id, role: row.role,
+        type: row.role == .tool ? "taskList" : row.role == .user ? "userMessage" : "agentMessage",
+        payload: ["text": .string(row.id)], provenance: .live)
+    }
+  }
+
+  private func order(_ db: WorkspaceDatabase) throws -> [String] {
+    try db.displayItems(threadId: "t1").map { $0.nativeItemId ?? "-" }
+  }
+
+  @Test func anUnmatchedLiveRowStaysAfterTheRowOfItsTurnBeforeIt() throws {
+    let db = try seeded()
+    defer { try? db.close() }
+    try liveTurn(db, "one", [("u1", .user), ("tasks:t1", .tool), ("a1", .assistant)])
+    try liveTurn(db, "two", [("u2", .user), ("a2", .assistant)])
+    let history = [("u1", "user"), ("a1", "assistant"), ("u2", "user"), ("a2", "assistant")].map {
+      snapshot($0.0, $0.1, $0.0)
+    }
+    for _ in 0..<2 {
+      _ = try db.mergeSnapshotItems(threadId: "t1", items: history)
+      #expect(try order(db) == ["u1", "tasks:t1", "a1", "u2", "a2"])
+    }
+  }
+
+  @Test func twoUnmatchedLiveRowsInARowKeepTheirOrder() throws {
+    let db = try seeded()
+    defer { try? db.close() }
+    try liveTurn(db, "one", [("u1", .user), ("x", .tool), ("y", .tool), ("a1", .assistant)])
+    _ = try db.mergeSnapshotItems(
+      threadId: "t1", items: [snapshot("u1", "user", "u1"), snapshot("a1", "assistant", "a1")])
+    #expect(try order(db) == ["u1", "x", "y", "a1"])
+  }
+
+  @Test func aRowHistoryAddsDoesNotMoveALiveRowOfTheTurn() throws {
+    let db = try seeded()
+    defer { try? db.close() }
+    try liveTurn(db, "one", [("u1", .user), ("x", .tool)])
+    _ = try db.mergeSnapshotItems(
+      threadId: "t1", items: [snapshot("u1", "user", "u1"), snapshot("a1", "assistant", "new")])
+    #expect(try order(db) == ["u1", "x", "a1"])
+  }
+
+  /// A turn history does not hold yet stays after everything history brings, as before.
+  @Test func anUnmatchedLiveRowWithNothingOfItsTurnBeforeItGoesLast() throws {
+    let db = try seeded()
+    defer { try? db.close() }
+    try liveTurn(db, "one", [("u1", .user), ("a1", .assistant)])
+    try liveTurn(db, "two", [("u2", .user), ("x", .tool)])
+    _ = try db.mergeSnapshotItems(
+      threadId: "t1",
+      items: [
+        snapshot("u1", "user", "u1"), snapshot("a1", "assistant", "a1"), snapshot("h1", "user", "elsewhere"),
+      ])
+    #expect(try order(db) == ["u1", "a1", "h1", "u2", "x"])
+  }
+
   private func snapshot(_ id: String?, _ role: String, _ text: String) -> SnapshotItem {
     SnapshotItem(
       nativeItemId: id, role: role, type: role == "user" ? "userMessage" : "agentMessage",

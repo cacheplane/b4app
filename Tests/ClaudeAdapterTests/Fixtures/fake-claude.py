@@ -279,6 +279,27 @@ while True:
             reply = "I could not run the command."
         send({"type": "user", "message": {"role": "user", "content": [tool_result]}, "parent_tool_use_id": None, "uuid": next_id("uuid")})
         record({"type": "user", "uuid": next_id("uuid"), "message": {"role": "user", "content": [tool_result]}})
+    def task_tool(name, tool_input, output):
+        # A task tool as 2.1.x sends it: the use in an assistant frame, the result in a user frame.
+        # Unique across launches, as real ids are: a restarted fake counts from one again.
+        tool_use_id = "%s_%d" % (next_id("toolu"), os.getpid())
+        message = {"id": next_id("msg"), "role": "assistant", "model": "claude-fake",
+                   "content": [{"type": "tool_use", "id": tool_use_id, "name": name, "input": tool_input}], "stop_reason": "tool_use"}
+        send({"type": "assistant", "message": message, "parent_tool_use_id": None, "uuid": next_id("uuid"), "user_message_uuid": user_uuid})
+        record({"type": "assistant", "uuid": next_id("uuid"), "message": message})
+        tool_result = {"type": "tool_result", "tool_use_id": tool_use_id, "content": output, "is_error": False}
+        send({"type": "user", "message": {"role": "user", "content": [tool_result]}, "parent_tool_use_id": None, "uuid": next_id("uuid")})
+        record({"type": "user", "uuid": next_id("uuid"), "message": {"role": "user", "content": [tool_result]}})
+    if "todo" in text:
+        task_tool("TodoWrite", {"todos": [{"content": "Read", "status": "completed", "activeForm": "Reading"},
+                                          {"content": "Write", "status": "in_progress", "activeForm": "Writing"}]},
+                  "Todos have been modified successfully")
+    if "tasklist" in text:
+        task_tool("TaskCreate", {"subject": "Read", "description": "Read it", "activeForm": "Reading"}, "Task #1 created successfully: Read")
+        task_tool("TaskCreate", {"subject": "Write", "description": "Write it", "activeForm": "Writing"}, "Task #2 created successfully: Write")
+        task_tool("TaskUpdate", {"taskId": "1", "status": "in_progress"}, "Updated task #1 status")
+    if "advance" in text:
+        task_tool("TaskUpdate", {"taskId": "1", "status": "completed"}, "Updated task #1 status")
     if "question" in text:
         request_id = next_id("req")
         questions = [{"question": "Which color?", "header": "Color", "options": [{"label": "red", "description": "warm"},

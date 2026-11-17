@@ -421,7 +421,11 @@ struct TranscriptRow: View {
         }
       }
     case .tool:
-      ToolCard(item: item)
+      if item.type == TaskList.itemType {
+        if let display = TaskListDisplay(item: item) { TaskListRow(display: display) }
+      } else {
+        ToolCard(item: item)
+      }
     case .system:
       Text(item.type).llaCaption()
     }

@@ -189,15 +189,13 @@ class SimulatorWorkflowTests(unittest.TestCase):
         self.assertIn('set -euo pipefail\n          xcrun simctl bootstatus', workflow)
         self.assertIn('timeout-minutes: 30', workflow[job:])
 
-    def test_both_shards_run_and_the_required_check_needs_them(self):
+    def test_one_layout_job_and_the_required_check_needs_it(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
-        shards = workflow[workflow.index('\n  ios-layout:'):workflow.index('\n  ios-layout-result:')]
-        plan = json.loads((ROOT / 'Tests/iOSLayout/UITests/shards.json').read_text())
-        numbers = ', '.join(str(n) for n in range(1, len(plan['shards']) + 1))
-        self.assertIn(f'shard: [{numbers}]', shards)
-        self.assertIn('fail-fast: false', shards)
-        self.assertIn('B4APP_LAYOUT_SHARD: ${{ matrix.shard }}', shards)
-        self.assertNotIn('B4APP_LAYOUT_EXPECTED', shards)
+        job = workflow[workflow.index('\n  ios-layout:'):workflow.index('\n  ios-layout-result:')]
+        self.assertIn('name: iOS layout tests\n', job)
+        self.assertNotIn('matrix', job)
+        self.assertNotIn('B4APP_LAYOUT_SHARD', job)
+        self.assertNotIn('B4APP_LAYOUT_EXPECTED', job)
         result = workflow[workflow.index('\n  ios-layout-result:'):workflow.index('\n  macos-smoke:')]
         # The name the branch protection requires, on a job that cannot be skipped.
         self.assertIn('name: iOS navigation and banner regression tests\n', result)
