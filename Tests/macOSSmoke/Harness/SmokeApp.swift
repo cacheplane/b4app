@@ -13,9 +13,20 @@ import WorkspaceUI
   init() {
     let env = ProcessInfo.processInfo.environment
     let socket = env["SMOKE_SOCKET"] ?? ""
-    size = CGSize(
+    let asked = CGSize(
       width: Double(env["SMOKE_WIDTH"] ?? "") ?? 900,
       height: Double(env["SMOKE_HEIGHT"] ?? "") ?? 600)
+    // Never smaller than the shipped app's window can be: SwiftUI holds the window at the minimum,
+    // and `WindowSetup` setting it back to a smaller size on every layout loops until AppKit throws
+    // ("needing another Update Constraints in Window pass").
+    let minimum = LLA.Metrics.minimumWindow
+    size = CGSize(width: max(asked.width, minimum.width), height: max(asked.height, minimum.height))
+    if size != asked {
+      FileHandle.standardError.write(
+        Data(
+          "SMOKE_WIDTH/SMOKE_HEIGHT \(Int(asked.width))×\(Int(asked.height)) is below the app's minimum window; using \(Int(size.width))×\(Int(size.height)).\n"
+            .utf8))
+    }
     dark = env["SMOKE_DARK"] == "1"
     let model = WorkspaceModel(transportProvider: {
       guard socket.hasPrefix("/tmp/b4smk-"), socket.hasSuffix("/rt/coordinator.sock") else {
