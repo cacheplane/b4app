@@ -1,5 +1,6 @@
 """CI skips its macOS jobs only for a change it is sure they cannot read."""
 from pathlib import Path
+import re
 import subprocess
 import sys
 import unittest
@@ -8,6 +9,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ci_scope import needs_apple  # noqa: E402
 
 SCRIPT = Path(__file__).resolve().parents[1] / "ci_scope.py"
+
+
+def workflow_job_sections(text):
+    """Read the workflow's canonical root jobs mapping, preserving its source slices."""
+    in_jobs = False
+    headers = {}
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if not in_jobs:
+            if re.fullmatch(r"jobs:[ \t]*(?:#.*)?(?:\r?\n)?", line):
+                in_jobs = True
+        elif line.strip() and not line.lstrip().startswith("#"):
+            if not line[0].isspace():
+                break
+            if line.startswith("  ") and not line[2].isspace():
+                header = re.fullmatch(r"  ([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(?:#.*)?(?:\r?\n)?", line)
+                if header is None:
+                    raise ValueError(f"Unsupported two-space job entry: {line.strip()}")
+                name = header.group(1)
+                if name in headers:
+                    raise ValueError(f"Duplicate job ID: {name}")
+                headers[name] = offset
+        offset += len(line)
+    if not in_jobs:
+        raise ValueError("Missing root jobs mapping")
+    if not headers:
+        raise ValueError("No job headers in root jobs mapping")
+    starts = list(headers.values())
+    return {name: text[start:end] for name, start, end in zip(headers, starts, starts[1:] + [offset])}
 
 
 class ScopeTests(unittest.TestCase):
@@ -46,9 +76,9 @@ class WorkflowTests(unittest.TestCase):
         text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         names = ["scope", "b4-runtime", "lint", "package", "app-builds", "apps", "ios-layout",
                  "ios-layout-result", "macos-smoke", "hub"]
-        starts = [text.index(f"\n  {name}:\n") for name in names]
-        self.assertEqual(starts, sorted(starts))
-        self.jobs = {name: text[start:end] for name, start, end in zip(names, starts, starts[1:] + [len(text)])}
+        jobs = workflow_job_sections(text)
+        self.assertEqual([name for name in jobs if name in names], names)
+        self.jobs = {name: jobs[name] for name in names}
 
     def test_every_macos_job_runs_unless_the_scope_said_false(self):
         macos = [name for name, job in self.jobs.items() if "runs-on: macos-26" in job]
@@ -103,6 +133,81 @@ class WorkflowTests(unittest.TestCase):
             # The always-saving cache step is used only for downloads (.spm, the PostgreSQL archive).
             self.assertNotRegex(job, r"uses: actions/cache@v4\n        with:\n          path: \|?\n?\s*\.build(\n|/\w*DerivedData)",
                                 name)
+
+
+class WorkflowJobSectionsTests(unittest.TestCase):
+    def test_adjacent_jobs_have_exact_sections_without_nested_or_root_keys(self):
+        before = (
+            "name: example\non:\n  pull_request:\nenv:\n  package: ROOT_BEFORE\n"
+            "concurrency:\n  group: example\njobs: # root jobs\n"
+        )
+        package = (
+            "  package: \t# ordinary package\n"
+            "    runs-on: macos-26\n"
+            "    env:\n      package: PACKAGE_ENV\n"
+            "    strategy:\n      matrix:\n        app-builds: [PACKAGE_MATRIX]\n"
+            "    steps:\n"
+            "      - name: PACKAGE_SENTINEL\n"
+            "        uses: actions/cache/restore@v4\n"
+            "        with:\n"
+            "          account-session-aggregate-serial-diagnostic: PACKAGE_WITH\n"
+            "          path: .build/package\n"
+            "      - run: |\n"
+            "          app-builds:\n"
+            "          package:\n"
+            "\n  # A comment between jobs stays with the preceding section.\n"
+        )
+        diagnostic = (
+            "  account-session-aggregate-serial-diagnostic:\n"
+            "    runs-on: macos-26\n"
+            "    steps:\n"
+            "      - name: DIAGNOSTIC_SENTINEL\n"
+            "        uses: actions/cache@v4\n"
+            "        with:\n          path: .build/diagnostic\n"
+        )
+        app_builds = (
+            "  app-builds: \t\n"
+            "    runs-on: macos-26\n"
+            "    steps:\n"
+            "      - name: APP_SENTINEL\n"
+            "        uses: actions/cache/save@v4\n"
+            "        with:\n          path: .build/app\n"
+        )
+        after = "env:\n  app-builds: ROOT_AFTER\n"
+        jobs = workflow_job_sections(before + package + diagnostic + app_builds + after)
+        self.assertEqual(list(jobs), ["package", "account-session-aggregate-serial-diagnostic", "app-builds"])
+        self.assertEqual(jobs, {"package": package, "account-session-aggregate-serial-diagnostic": diagnostic,
+                                "app-builds": app_builds})
+        for name in ["package", "app-builds"]:
+            self.assertNotIn("DIAGNOSTIC_SENTINEL", jobs[name])
+            self.assertNotIn(".build/diagnostic", jobs[name])
+
+    def test_unsupported_or_ambiguous_job_mappings_fail_clearly(self):
+        cases = [
+            ("env:\n  package: value\n", "Missing root jobs mapping"),
+            ("jobs:\n  # no jobs\nenv:\n  package: value\n", "No job headers"),
+            ("jobs:\n  package:\n  package:\n", "Duplicate job ID: package"),
+            ("jobs:\n  package: {runs-on: macos-26}\n", "Unsupported two-space job entry"),
+            ("jobs:\n  'package':\n", "Unsupported two-space job entry"),
+            ("jobs:\n  1package:\n", "Unsupported two-space job entry"),
+        ]
+        for text, error in cases:
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, error):
+                    workflow_job_sections(text)
+
+    def test_cache_policy_rejects_a_prohibited_package_cache(self):
+        case = WorkflowTests("test_build_caches_are_saved_from_main_only")
+        case.setUp()
+        jobs = case.jobs.copy()
+        jobs["package"] += (
+            "      - uses: actions/cache@v4\n"
+            "        with:\n"
+            "          path: .build\n"
+        )
+        case.jobs = jobs
+        with self.assertRaisesRegex(AssertionError, "package"):
+            case.test_build_caches_are_saved_from_main_only()
 
 
 class CombiningCheckTests(unittest.TestCase):
