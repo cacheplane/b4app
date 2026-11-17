@@ -267,6 +267,11 @@ enum DenseTranscript {
       name: runningName(of: items.filter(isCountedStep)))
   }
 
+  private static func hasStepInProgress(_ item: DisplayItem) -> Bool {
+    item.type == TaskList.itemType
+      && TaskList(payload: item.payload)?.steps.contains { $0.status == .inProgress } == true
+  }
+
   private static func hasNote(_ turn: Turn) -> Bool {
     turn.status == .terminal && turn.outcome != .completed
   }
@@ -312,8 +317,10 @@ enum DenseTranscript {
             running: running, waiting: running && turn?.status == .waitingForUser,
             runningName: running ? runningName(of: steps) : nil)))
     }
-    // Nothing to fold and no reply yet: between the send and the turn's first item.
-    if folded.isEmpty, visible.isEmpty, let turn, let line = runningLine(of: turn, items: []) {
+    // Nothing to fold and nothing drawn that says the turn is working: between the send and the turn's
+    // first item, or a plan alone with no step in progress (D-245). A plan with one says it itself.
+    let saysWorking = visible.contains { isMessage($0) || hasStepInProgress($0) }
+    if folded.isEmpty, !saysWorking, let turn, let line = runningLine(of: turn, items: []) {
       entries.append(.running(line))
     }
     entries += (isOpen && !folded.isEmpty ? rest : visible).map(Entry.item)

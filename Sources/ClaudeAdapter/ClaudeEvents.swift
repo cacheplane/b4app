@@ -239,9 +239,7 @@ public struct ClaudeTurnTracker: Sendable {
             subAgentTaskUses.insert(id)
             continue
           }
-          if let list = tasks.use(id: id, name: name, input: block["input"] ?? .null) {
-            events.append(taskListEvent(list))
-          }
+          tasks.use(id: id, name: name, input: block["input"] ?? .null)
           continue
         }
         toolUses[id] = (block["name"]?.stringValue ?? "tool", block["input"] ?? .null)
@@ -276,8 +274,13 @@ public struct ClaudeTurnTracker: Sendable {
     where block["type"]?.stringValue == "tool_result" {
       guard let id = block["tool_use_id"]?.stringValue else { continue }
       let failed = block["is_error"]?.boolValue == true
-      if subAgentTaskUses.remove(id) != nil { continue }
+      if subAgentTaskUses.remove(id) != nil {
+        declinedToolUses.remove(id)
+        continue
+      }
       if tasks.owns(toolUseId: id) {
+        // A refused task tool is the fold's failed result, not a declined row: nothing waits on the id.
+        declinedToolUses.remove(id)
         let text = Self.text(of: block["content"]) ?? ""
         if let list = tasks.result(toolUseId: id, text: text, isError: failed) {
           events.append(taskListEvent(list))
@@ -308,10 +311,18 @@ public struct ClaudeTurnTracker: Sendable {
   /// Rebuild the session's task list from its transcript, for a session whose process was started
   /// again: the list lives for the session, and this tracker was made empty. Emits nothing.
   public mutating func seedTasks(transcriptLines: [String]) {
-    var fold = ClaudeTaskFold()
-    _ = Self.snapshotItems(transcriptLines: transcriptLines, tasks: &fold)
-    tasks = fold
+    seedTasks(Self.tasks(transcriptLines: transcriptLines))
   }
+
+  /// The list a transcript holds, folded as the history import folds it.
+  static func tasks(transcriptLines: [String]) -> ClaudeTaskFold {
+    var fold = ClaudeTaskFold()
+    _ = snapshotItems(transcriptLines: transcriptLines, tasks: &fold)
+    fold.beginTurn()
+    return fold
+  }
+
+  mutating func seedTasks(_ fold: ClaudeTaskFold) { tasks = fold }
 
   /// Close a tool use again as declined, if this turn closed it as failed: Claude Code refused it.
   private mutating func redecline(_ id: String) -> [AdapterEvent] {
@@ -548,7 +559,7 @@ public struct ClaudeTurnTracker: Sendable {
           guard let toolId = block["id"]?.stringValue else { continue }
           let name = block["name"]?.stringValue ?? "tool"
           if ClaudeTaskFold.toolNames.contains(name) {
-            place(tasks.use(id: toolId, name: name, input: block["input"] ?? .null), in: &items)
+            tasks.use(id: toolId, name: name, input: block["input"] ?? .null)
             continue
           }
           toolNames[toolId] = (name, block["input"] ?? .null)

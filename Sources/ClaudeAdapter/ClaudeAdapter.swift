@@ -172,6 +172,10 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
       }
       throw failure
     }
+    // The task list lives for the session and the tracker does not: a session started again reads the
+    // list back from its transcript, so a later update finds the tasks an earlier process made. The
+    // read and the fold run off this actor, so its other sessions are not held meanwhile (D-245).
+    let seeded = resume ? await Self.seededTasks(sessionId: id, under: projectsDirectory) : nil
     // A dispose while this session was starting owns the adapter now: the process does not outlive it.
     if disposed {
       await session.close()
@@ -188,13 +192,7 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
           payload: ["commands": (try? JSONValue(encoding: commands)) ?? []]))
     }
     var tracker = ClaudeTurnTracker(connectionId: connectionId, sessionId: id, generation: generation)
-    // The task list lives for the session and the tracker does not: a session started again reads the
-    // list back from its transcript, so a later update finds the tasks an earlier process made.
-    if resume, let root = projectsDirectory, let file = Self.transcript(sessionId: id, under: root),
-      let text = try? String(contentsOfFile: file, encoding: .utf8)
-    {
-      tracker.seedTasks(transcriptLines: text.split(separator: "\n").map(String.init))
-    }
+    if let seeded { tracker.seedTasks(seeded) }
     trackers[id] = tracker
     pumps[id] = Task { [weak self] in
       for await inbound in session.inbound {
@@ -473,6 +471,18 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
     let items = ClaudeTurnTracker.snapshotItems(transcriptLines: text.split(separator: "\n").map(String.init))
     return SessionSnapshot(
       ref: ref, title: nil, items: items, activeTurn: nil, pendingRequests: [], truncated: false)
+  }
+
+  /// The task list a session's transcript holds, read and folded off the adapter's actor; nil when
+  /// there is no transcript to read.
+  nonisolated static func seededTasks(sessionId: String, under root: String?) async -> ClaudeTaskFold? {
+    guard let root else { return nil }
+    return await Task.detached(priority: .userInitiated) { () -> ClaudeTaskFold? in
+      guard let file = transcript(sessionId: sessionId, under: root),
+        let text = try? String(contentsOfFile: file, encoding: .utf8)
+      else { return nil }
+      return ClaudeTurnTracker.tasks(transcriptLines: text.split(separator: "\n").map(String.init))
+    }.value
   }
 
   static func transcript(sessionId: String, under root: String) -> String? {

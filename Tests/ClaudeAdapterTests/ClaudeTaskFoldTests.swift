@@ -13,20 +13,27 @@ private func create(
 )
   -> SnapshotItem?
 {
-  _ = fold.use(id: use, name: "TaskCreate", input: ["subject": .string(subject), "description": "d"])
+  fold.use(id: use, name: "TaskCreate", input: ["subject": .string(subject), "description": "d"])
   return fold.result(
     toolUseId: use, text: "Task #\(number) created successfully: \(subject)", isError: false)
 }
 
 private func update(_ fold: inout ClaudeTaskFold, _ use: String, _ input: JSONValue) -> SnapshotItem? {
-  _ = fold.use(id: use, name: "TaskUpdate", input: input)
+  fold.use(id: use, name: "TaskUpdate", input: input)
   return fold.result(toolUseId: use, text: "Updated task", isError: false)
 }
 
+private func todos(
+  _ fold: inout ClaudeTaskFold, _ use: String, _ todos: JSONValue, isError: Bool = false
+) -> SnapshotItem? {
+  fold.use(id: use, name: "TodoWrite", input: ["todos": todos])
+  return fold.result(toolUseId: use, text: "Todos have been modified successfully", isError: isError)
+}
+
 @Suite struct ClaudeTaskFoldTests {
-  @Test func aTodoWriteIsTheList() {
+  @Test func aTodoWriteIsTheListOnceItsResultArrives() {
     var fold = ClaudeTaskFold()
-    let item = fold.use(
+    fold.use(
       id: "toolu_1", name: "TodoWrite",
       input: [
         "todos": [
@@ -35,6 +42,8 @@ private func update(_ fold: inout ClaudeTaskFold, _ use: String, _ input: JSONVa
           ["content": "Ship", "status": "pending", "activeForm": "Shipping"],
         ]
       ])
+    #expect(fold.owns(toolUseId: "toolu_1"))
+    let item = fold.result(toolUseId: "toolu_1", text: "Todos have been modified", isError: false)
     #expect(item?.nativeItemId == "tasks:toolu_1")
     #expect(item?.role == "tool" && item?.type == "taskList")
     #expect(
@@ -42,16 +51,39 @@ private func update(_ fold: inout ClaudeTaskFold, _ use: String, _ input: JSONVa
         .init(text: "Read", status: .completed), .init(text: "Write", status: .inProgress),
         .init(text: "Ship", status: .pending),
       ])
-    #expect(fold.owns(toolUseId: "toolu_1"))
-    // Its result changes nothing.
-    #expect(fold.result(toolUseId: "toolu_1", text: "Todos have been modified", isError: false) == nil)
+  }
+
+  /// A `TodoWrite` Claude Code reports as failed (a refused permission, a bad input) wrote nothing.
+  @Test func aFailedTodoWriteKeepsTheList() {
+    var fold = ClaudeTaskFold()
+    _ = todos(&fold, "toolu_1", [["content": "Read", "status": "in_progress"]])
+    fold.beginTurn()
+    #expect(todos(&fold, "toolu_2", [["content": "Other", "status": "pending"]], isError: true) == nil)
+    // The next change still holds the list as it was, and is the turn's first.
+    let next = todos(&fold, "toolu_3", [["content": "Read", "status": "completed"]])
+    #expect(next?.nativeItemId == "tasks:toolu_3")
+    _ = create(&fold, "toolu_4", "Write", number: 1)
+    #expect(todos(&fold, "toolu_5", [["content": "x", "status": "pending"]], isError: true) == nil)
+    #expect(
+      steps(update(&fold, "toolu_6", ["taskId": "1", "status": "completed"]))
+        == [.init(text: "Read", status: .completed), .init(text: "Write", status: .completed)])
+  }
+
+  /// The fold holds a tool use only until its result: a long session does not keep every id.
+  @Test func aResultEndsTheFoldsHoldOnItsToolUse() {
+    var fold = ClaudeTaskFold()
+    _ = todos(&fold, "toolu_1", [["content": "Read", "status": "pending"]])
+    _ = create(&fold, "toolu_2", "Write", number: 1)
+    fold.use(id: "toolu_3", name: "TaskCreate", input: ["subject": "x"])
+    _ = fold.result(toolUseId: "toolu_3", text: "no", isError: true)
+    #expect(!fold.owns(toolUseId: "toolu_1") && !fold.owns(toolUseId: "toolu_2"))
+    #expect(!fold.owns(toolUseId: "toolu_3"))
   }
 
   @Test func aSecondTodoWriteInTheTurnNamesTheSameItem() {
     var fold = ClaudeTaskFold()
-    _ = fold.use(id: "toolu_1", name: "TodoWrite", input: ["todos": [["content": "a", "status": "pending"]]])
-    let second = fold.use(
-      id: "toolu_2", name: "TodoWrite", input: ["todos": [["content": "a", "status": "completed"]]])
+    _ = todos(&fold, "toolu_1", [["content": "a", "status": "pending"]])
+    let second = todos(&fold, "toolu_2", [["content": "a", "status": "completed"]])
     #expect(second?.nativeItemId == "tasks:toolu_1")
     #expect(steps(second) == [.init(text: "a", status: .completed)])
   }
@@ -69,7 +101,7 @@ private func update(_ fold: inout ClaudeTaskFold, _ use: String, _ input: JSONVa
 
   @Test func createdTasksAppearWhenTheirResultsArrive() {
     var fold = ClaudeTaskFold()
-    #expect(fold.use(id: "toolu_1", name: "TaskCreate", input: ["subject": "Read"]) == nil)
+    fold.use(id: "toolu_1", name: "TaskCreate", input: ["subject": "Read"])
     let item = fold.result(toolUseId: "toolu_1", text: "Task #1 created successfully: Read", isError: false)
     #expect(item?.nativeItemId == "tasks:toolu_1")
     #expect(steps(item) == [.init(text: "Read", status: .pending)])
@@ -97,14 +129,14 @@ private func update(_ fold: inout ClaudeTaskFold, _ use: String, _ input: JSONVa
 
   @Test func aFailedCreateAddsNothing() {
     var fold = ClaudeTaskFold()
-    _ = fold.use(id: "toolu_1", name: "TaskCreate", input: ["subject": "Read"])
+    fold.use(id: "toolu_1", name: "TaskCreate", input: ["subject": "Read"])
     #expect(fold.result(toolUseId: "toolu_1", text: "Task #1 created successfully", isError: true) == nil)
     #expect(steps(create(&fold, "toolu_2", "Write", number: 1)) == [.init(text: "Write", status: .pending)])
   }
 
   @Test func aCreateResultWithNoNumberAddsNothing() {
     var fold = ClaudeTaskFold()
-    _ = fold.use(id: "toolu_1", name: "TaskCreate", input: ["subject": "Read"])
+    fold.use(id: "toolu_1", name: "TaskCreate", input: ["subject": "Read"])
     #expect(fold.result(toolUseId: "toolu_1", text: "Created.", isError: false) == nil)
     #expect(steps(create(&fold, "toolu_2", "Write", number: 2)) == [.init(text: "Write", status: .pending)])
   }
@@ -114,17 +146,17 @@ private func update(_ fold: inout ClaudeTaskFold, _ use: String, _ input: JSONVa
     _ = create(&fold, "toolu_1", "Read", number: 1)
     #expect(update(&fold, "toolu_2", ["taskId": "9", "status": "completed"]) == nil)
     #expect(update(&fold, "toolu_3", ["taskId": "1", "status": "pending"]) == nil)
-    _ = fold.use(id: "toolu_4", name: "TaskUpdate", input: ["taskId": "1", "status": "completed"])
+    fold.use(id: "toolu_4", name: "TaskUpdate", input: ["taskId": "1", "status": "completed"])
     #expect(fold.result(toolUseId: "toolu_4", text: "Task not found", isError: true) == nil)
   }
 
   @Test func listingTasksChangesNothing() {
     var fold = ClaudeTaskFold()
     _ = create(&fold, "toolu_1", "Read", number: 1)
-    #expect(fold.use(id: "toolu_2", name: "TaskList", input: [:]) == nil)
+    fold.use(id: "toolu_2", name: "TaskList", input: [:])
     #expect(fold.result(toolUseId: "toolu_2", text: "#1 [pending] Read", isError: false) == nil)
-    #expect(fold.use(id: "toolu_3", name: "TaskGet", input: ["taskId": "1"]) == nil)
-    #expect(fold.owns(toolUseId: "toolu_2") && fold.owns(toolUseId: "toolu_3"))
+    fold.use(id: "toolu_3", name: "TaskGet", input: ["taskId": "1"])
+    #expect(!fold.owns(toolUseId: "toolu_2") && fold.owns(toolUseId: "toolu_3"))
   }
 
   @Test func aResultTheFoldWasNotGivenIsNotItsOwn() {
@@ -136,8 +168,7 @@ private func update(_ fold: inout ClaudeTaskFold, _ use: String, _ input: JSONVa
   @Test func aTodoWriteReplacesCreatedTasks() {
     var fold = ClaudeTaskFold()
     _ = create(&fold, "toolu_1", "Read", number: 1)
-    let item = fold.use(
-      id: "toolu_2", name: "TodoWrite", input: ["todos": [["content": "Other", "status": "pending"]]])
+    let item = todos(&fold, "toolu_2", [["content": "Other", "status": "pending"]])
     #expect(steps(item) == [.init(text: "Other", status: .pending)])
     #expect(update(&fold, "toolu_3", ["taskId": "1", "status": "completed"]) == nil)
   }
@@ -204,6 +235,17 @@ private func lists(_ events: [AdapterEvent]) -> [(id: String?, list: TaskList)] 
     #expect(lists(events).first?.list.steps == [.init(text: "Read", status: .inProgress)])
   }
 
+  @Test func aFailedTodoWriteEmitsNothing() {
+    var t = tracker()
+    let events = run(
+      &t,
+      [
+        use("toolu_1", "TodoWrite", #"{"todos":[{"content":"Read","status":"pending"}]}"#),
+        result("toolu_1", "Permission denied", error: true),
+      ].joined(separator: "\n"))
+    #expect(events.isEmpty)
+  }
+
   @Test func taskToolsEmitTheListAsItGrows() {
     var t = tracker()
     let events = run(&t, (twoTasks + updateOne).joined(separator: "\n"))
@@ -258,9 +300,16 @@ private func lists(_ events: [AdapterEvent]) -> [(id: String?, list: TaskList)] 
       #"{"type":"result","subtype":"success","is_error":false,"duration_ms":5,"num_turns":1,"total_cost_usd":0.01,"result":"ok","session_id":"s1"}"#
     let first = run(
       &t,
-      [use("toolu_1", "TodoWrite", #"{"todos":[{"content":"Read","status":"pending"}]}"#), done].joined(
-        separator: "\n"))
-    let second = run(&t, use("toolu_2", "TodoWrite", #"{"todos":[{"content":"Read","status":"completed"}]}"#))
+      [
+        use("toolu_1", "TodoWrite", #"{"todos":[{"content":"Read","status":"pending"}]}"#),
+        result("toolu_1", "ok"), done,
+      ].joined(separator: "\n"))
+    let second = run(
+      &t,
+      [
+        use("toolu_2", "TodoWrite", #"{"todos":[{"content":"Read","status":"completed"}]}"#),
+        result("toolu_2", "ok"),
+      ].joined(separator: "\n"))
     #expect(lists(first).map(\.id) == ["tasks:toolu_1"])
     #expect(lists(second).map(\.id) == ["tasks:toolu_2"])
   }
@@ -305,5 +354,28 @@ private func lists(_ events: [AdapterEvent]) -> [(id: String?, list: TaskList)] 
     #expect(items.map(\.nativeItemId) == ["u1", "tasks:toolu_1", "u2#0", "tasks:toolu_2"])
     #expect(TaskList(payload: items[1].payload)?.steps == [.init(text: "Read", status: .pending)])
     #expect(TaskList(payload: items[3].payload)?.steps == [.init(text: "Read", status: .completed)])
+  }
+}
+
+@Suite struct ClaudeSeededTasksTests {
+  /// What a session started again reads back: its transcript's list, or nothing to seed.
+  @Test func aSessionsTranscriptGivesItsList() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("seed-\(UUID().uuidString)")
+    let project = root.appendingPathComponent("-tmp-project")
+    try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try twoTasks.joined(separator: "\n").write(
+      to: project.appendingPathComponent("s1.jsonl"), atomically: true, encoding: .utf8)
+
+    let seeded = try #require(await ClaudeAdapter.seededTasks(sessionId: "s1", under: root.path))
+    var t = ClaudeTurnTracker(connectionId: "c1", sessionId: "s1", generation: 2)
+    t.seedTasks(seeded)
+    t.beginTurn(uuid: "turn-2")
+    #expect(
+      lists(run(&t, updateOne.joined(separator: "\n"))).first?.list.steps
+        == [.init(text: "Read", status: .inProgress), .init(text: "Write", status: .pending)])
+
+    #expect(await ClaudeAdapter.seededTasks(sessionId: "s2", under: root.path) == nil)
+    #expect(await ClaudeAdapter.seededTasks(sessionId: "s1", under: nil) == nil)
   }
 }
