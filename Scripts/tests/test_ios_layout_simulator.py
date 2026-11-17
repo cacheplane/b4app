@@ -225,6 +225,16 @@ class SimulatorWorkflowTests(unittest.TestCase):
                     self.assertIn('-clonedSourcePackagesDirPath .spm', calls[0])
                     self.assertEqual('-resultBundlePath' in calls[0], verifies)
                     self.assertEqual('totalTestCount' in result.stdout, verifies)
+                    if verifies:
+                        self.assertIn(f'-destination platform=iOS Simulator,id={FIRST}', calls[0])
+                    else:
+                        # The build names no device, so it never waits on a booting Simulator, and it
+                        # builds arm64 alone, as a build for one Apple silicon Simulator would. It is
+                        # verbose, so the log shows where its time goes.
+                        self.assertIn('-destination generic/platform=iOS Simulator', calls[0])
+                        self.assertIn('ARCHS=arm64', calls[0])
+                        self.assertNotIn('-quiet', calls[0])
+                        self.assertNotIn('simctl', calls)
 
     def test_one_layout_job_and_the_required_check_needs_it(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()

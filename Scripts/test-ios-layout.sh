@@ -48,6 +48,15 @@ esac
 
 mkdir -p .build/iOSLayout
 xcodegen generate --spec Tests/iOSLayout/project.yml --project .build/iOSLayout >/dev/null
+derived=${B4APP_LAYOUT_DERIVED_DATA:-.build/iOSLayout/DerivedData}
+if [ "$action" = build-for-testing ]; then
+  # No device: a destination naming one made xcodebuild wait almost five minutes on a Simulator
+  # still booting (run 44152599350). ARCHS=arm64 builds what a build for one Apple silicon
+  # Simulator builds. Verbose, so the log shows where the time goes.
+  exec xcodebuild build-for-testing -project .build/iOSLayout/WorkspaceLayout.xcodeproj \
+    -scheme WorkspaceLayout -destination 'generic/platform=iOS Simulator' ARCHS=arm64 \
+    -derivedDataPath "$derived" "$@"
+fi
 if [ -n "${B4APP_LAYOUT_DESTINATION:-}" ]; then
   destination=$B4APP_LAYOUT_DESTINATION
 else
@@ -76,11 +85,6 @@ print((pro or phones)[0]["identifier"], runtime["identifier"])
   # first two then failed to set the orientation and to launch the app (run 42770467156).
   xcrun simctl bootstatus "$device" -b >/dev/null
   destination="platform=iOS Simulator,id=$device"
-fi
-derived=${B4APP_LAYOUT_DERIVED_DATA:-.build/iOSLayout/DerivedData}
-if [ "$action" = build-for-testing ]; then
-  exec xcodebuild build-for-testing -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj \
-    -scheme WorkspaceLayout -destination "$destination" -derivedDataPath "$derived" "$@"
 fi
 results=${B4APP_LAYOUT_RESULTS:-"$PWD/.build/iOSLayout/Results-$(date -u +%Y%m%dT%H%M%S).xcresult"}
 if xcodebuild "$action" -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -scheme WorkspaceLayout \
