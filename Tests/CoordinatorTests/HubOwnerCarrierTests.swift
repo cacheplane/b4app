@@ -714,7 +714,35 @@ private enum OwnerDiagnosticBounds {
 }
 
 private final class OwnerStartupDiagnostics: Sendable {
-  enum Stage: String, Hashable, Sendable { case collectorArmed, managerStartReturned, refreshJoined, failed }
+  enum Stage: String, CaseIterable, Hashable, Sendable {
+    case collectorArmed, managerStartReturned, refreshJoined, failed
+    case pullEntryEntered, pullEntryReturned, secretReadEntered, secretReadReturned
+    case displayNameEntered, displayNameReturned, collectorReadyEntered, collectorReadyReturned
+    case firstCollectorJoinEntered, firstCollectorJoinReturned, hubStopEntered, hubStopReturned
+    case pullSettledReturned, secondCollectorJoinEntered, secondCollectorJoinReturned,
+      socketClosedReturned
+    case observationGuardEntered, baselineDrainEntered, baselineDrainReturned, originCaptureEntered
+    case originCaptureReturned, baselineAssertReturned
+  }
+  enum Role: String, Sendable { case unjoined, linked, heldSecret, sharedAPI, heldSecretSharedAPI }
+  static let maximumRecords = Stage.allCases.count
+  private static let ordinals = Mutex(0)
+  private let role: Role
+  private let ordinal: Int
+
+  init(linked: Bool, heldSecret: Bool, sameAPI: Bool) {
+    role =
+      !linked
+      ? .unjoined
+      : heldSecret
+        ? (sameAPI ? .heldSecretSharedAPI : .heldSecret)
+        : (sameAPI ? .sharedAPI : .linked)
+    ordinal = Self.ordinals.withLock { count in
+      guard count < 10_000 else { return 0 }
+      count += 1
+      return count
+    }
+  }
   private struct State {
     var deadline: ContinuousClock.Instant?
     var observationDeadline: ContinuousClock.Instant?
@@ -729,10 +757,12 @@ private final class OwnerStartupDiagnostics: Sendable {
   func emit(
     _ stage: Stage, secrets: OwnerSecrets, links: FakeHubLinkConnection, access: OwnerAccessLedger
   ) {
-    let observation = state.withLock { state -> (Bool, ContinuousClock.Instant?, ContinuousClock.Instant?) in
+    let observation = state.withLock {
+      state -> (Bool, ContinuousClock.Instant?, ContinuousClock.Instant?) in
       (state.emitted.insert(stage).inserted, state.deadline, state.observationDeadline)
     }
-    guard observation.0 else { return }  // At most four fixed records per fixture, never per poll.
+    // At most 26 closed stages per fixture; exhausted bounded ordinals suppress diagnostics.
+    guard ordinal > 0 && observation.0 else { return }
     let now = ContinuousClock.now
     let armed = observation.1 != nil
     let elapsed =
@@ -766,7 +796,7 @@ private final class OwnerStartupDiagnostics: Sendable {
     let parentCancelled = Task.isCancelled
     let collectorCancelled = access.collectorCancelled
     print(
-      "A5_STARTUP stage=\(stage.rawValue) armed=\(armed) elapsedMillis=\(elapsed) remainingMillis=\(remaining) expired=\(expired) observationArmed=\(observationArmed) observationElapsedMillis=\(observationElapsedMillis) observationRemainingMillis=\(observationRemainingMillis) observationExpired=\(observationExpired) parentCancelled=\(parentCancelled) collectorCancelled=\(collectorCancelled) readEntered=\(readEntered) readSettled=\(readSettled) activeRead=\(activeRead) opens=\(opens) collectorStarted=\(collectorStarted) collectorReturned=\(collectorReturned) collectorSucceeded=\(collectorSucceeded)"
+      "A5_STARTUP role=\(role.rawValue) fixture=\(ordinal) stage=\(stage.rawValue) armed=\(armed) elapsedMillis=\(elapsed) remainingMillis=\(remaining) expired=\(expired) observationArmed=\(observationArmed) observationElapsedMillis=\(observationElapsedMillis) observationRemainingMillis=\(observationRemainingMillis) observationExpired=\(observationExpired) parentCancelled=\(parentCancelled) collectorCancelled=\(collectorCancelled) readEntered=\(readEntered) readSettled=\(readSettled) activeRead=\(activeRead) opens=\(opens) collectorStarted=\(collectorStarted) collectorReturned=\(collectorReturned) collectorSucceeded=\(collectorSucceeded)"
     )
   }
 }
@@ -1399,14 +1429,19 @@ private struct OwnerFixture: Sendable {
     if failed { throw OwnerFixtureFailure.failed }
   }
 
-  private static func start(linked: Bool, heldSecret: Bool, sameAPI: Bool) async throws -> OwnerFixture {
+  private static func start(
+    linked: Bool, heldSecret: Bool, sameAPI: Bool
+  ) async throws
+    -> OwnerFixture
+  {
     let cleanup = OwnerCleanup()
     let access = OwnerAccessLedger()
     let api = OwnerAPIController(sameAPI: sameAPI)
     let reference = SecretRef.make()
     let secrets = OwnerSecrets(reference: reference, held: heldSecret, seeded: linked)
     let links = FakeHubLinkConnection()
-    let startupDiagnostics = OwnerStartupDiagnostics()
+    let startupDiagnostics = OwnerStartupDiagnostics(
+      linked: linked, heldSecret: heldSecret, sameAPI: sameAPI)
     var actualManager: AccountManager?
     do {
       let endpoint = try AgentProtocolResourceFixture.endpoint()
@@ -1419,7 +1454,8 @@ private struct OwnerFixture: Sendable {
       let safeRoot = OwnerSafetyReceipt()
       cleanup.resource {
         guard safeRoot.canRemove else {
-          Issue.record("The private fixture root was retained after incomplete lease/backend cleanup.")
+          Issue.record(
+            "The private fixture root was retained after incomplete lease/backend cleanup.")
           return
         }
         do {
@@ -1433,7 +1469,9 @@ private struct OwnerFixture: Sendable {
         do {
           try await OwnerMetadata.requireNoAppBackends(endpoint)
           safeRoot.markBackendsClosed()
-        } catch { Issue.record("The exact fixture database still had an app backend or metadata failed.") }
+        } catch {
+          Issue.record("The exact fixture database still had an app backend or metadata failed.")
+        }
       }
       var paths = PlatformPaths(runtimeDir: root + "/rt", dataDir: root + "/data")
       paths.postgres = endpoint
@@ -1474,7 +1512,8 @@ private struct OwnerFixture: Sendable {
       try registry.activate(id: row.id, tokenRef: reference.rawValue)
       let diagnostics = DiagnosticsService(
         context: DiagnosticsService.Context(
-          paths: paths, startedAt: stamp, environment: environment, secretStore: secrets, eventLog: events))
+          paths: paths, startedAt: stamp, environment: environment, secretStore: secrets,
+          eventLog: events))
       let context = AccountScope.Context(
         paths: paths, environment: environment, secretStore: secrets, eventLog: events,
         diagnostics: diagnostics,
@@ -1535,62 +1574,110 @@ private struct OwnerFixture: Sendable {
       let f = OwnerFixture(
         manager: manager, scope: scope, slot: slot, database: scope.database, registry: registry,
         events: events, endpoint: endpoint, root: root, reference: reference, link: link,
-        api: api, secrets: secrets, links: links, cleanup: cleanup, access: access, heldSecret: heldSecret)
+        api: api, secrets: secrets, links: links, cleanup: cleanup, access: access,
+        heldSecret: heldSecret)
       let actualCurrent =
         scope.account.id == row.id && scope.account.database == endpoint.database
         && manager.current?.instance == scope.instance
       guard actualCurrent else { throw OwnerFixtureFailure.failed }
       if linked {
-        try await ownerWait("startup pull entry", until: observationDeadline) { api.counts.pull == 1 }
+        startupDiagnostics.emit(.pullEntryEntered, secrets: secrets, links: links, access: access)
+        try await ownerWait("startup pull entry", until: observationDeadline) {
+          api.counts.pull == 1
+        }
+        startupDiagnostics.emit(.pullEntryReturned, secrets: secrets, links: links, access: access)
+        startupDiagnostics.emit(.secretReadEntered, secrets: secrets, links: links, access: access)
         try await ownerWait("startup source secret read", until: observationDeadline) {
           secrets.counts.readEntered == 1
         }
+        startupDiagnostics.emit(.secretReadReturned, secrets: secrets, links: links, access: access)
         if heldSecret { access.expectLateOpen() }
+        startupDiagnostics.emit(.displayNameEntered, secrets: secrets, links: links, access: access)
         try await ownerWait("startup display name", until: observationDeadline) {
           try await scope.hub.status().displayName == "Fixture User"
         }
+        startupDiagnostics.emit(
+          .displayNameReturned, secrets: secrets, links: links, access: access)
         if !heldSecret {
+          startupDiagnostics.emit(
+            .collectorReadyEntered, secrets: secrets, links: links, access: access)
           try await ownerWait("startup collector returned", until: observationDeadline) {
             receipts.counts.collectorReturned == 1
           }
+          startupDiagnostics.emit(
+            .collectorReadyReturned, secrets: secrets, links: links, access: access)
+          startupDiagnostics.emit(
+            .firstCollectorJoinEntered, secrets: secrets, links: links, access: access)
           let socket = try await collector.value
+          startupDiagnostics.emit(
+            .firstCollectorJoinReturned, secrets: secrets, links: links, access: access)
           access.remember(socket)
         }
+        startupDiagnostics.emit(.hubStopEntered, secrets: secrets, links: links, access: access)
         await scope.hub.stop()
+        startupDiagnostics.emit(.hubStopReturned, secrets: secrets, links: links, access: access)
         try await ownerWait("startup pull settled", until: observationDeadline) {
           api.counts.pullSettled == 1 && api.counts.active == 0
         }
+        startupDiagnostics.emit(
+          .pullSettledReturned, secrets: secrets, links: links, access: access)
         if heldSecret {
           let exact =
             secrets.counts.readEntered == 1 && secrets.counts.readSettled == 0
             && links.openCount == 0 && receipts.counts.collectorReturned == 0
           guard exact else { throw OwnerFixtureFailure.failed }
         } else {
+          startupDiagnostics.emit(
+            .secondCollectorJoinEntered, secrets: secrets, links: links, access: access)
           let socket = try await collector.value
+          startupDiagnostics.emit(
+            .secondCollectorJoinReturned, secrets: secrets, links: links, access: access)
           try await ownerWait("startup source socket closed", until: observationDeadline) {
             socket.deviceClosedCode == 1000
           }
+          startupDiagnostics.emit(
+            .socketClosedReturned, secrets: secrets, links: links, access: access)
         }
+        startupDiagnostics.emit(
+          .observationGuardEntered, secrets: secrets, links: links, access: access)
         guard ContinuousClock.now < observationDeadline else {
           Issue.record("The owner-carrier observation phase completed after its deadline.")
           throw OwnerFixtureFailure.failed
         }
+        startupDiagnostics.emit(
+          .baselineDrainEntered, secrets: secrets, links: links, access: access)
         let emptyDrain = try await scope.hub.pushNow()
+        startupDiagnostics.emit(
+          .baselineDrainReturned, secrets: secrets, links: links, access: access)
         #expect(emptyDrain == 0 && api.counts.push == 0)
+        startupDiagnostics.emit(
+          .originCaptureEntered, secrets: secrets, links: links, access: access)
         let origin = try await scope.hub.captureConfiguredClientOrigin()
+        startupDiagnostics.emit(
+          .originCaptureReturned, secrets: secrets, links: links, access: access)
         api.observeOrigin(origin)
         try f.expectBaseline()
+        startupDiagnostics.emit(
+          .baselineAssertReturned, secrets: secrets, links: links, access: access)
       } else {
+        startupDiagnostics.emit(.hubStopEntered, secrets: secrets, links: links, access: access)
         await scope.hub.stop()
+        startupDiagnostics.emit(.hubStopReturned, secrets: secrets, links: links, access: access)
+        startupDiagnostics.emit(
+          .baselineDrainEntered, secrets: secrets, links: links, access: access)
         let emptyDrain = try await scope.hub.pushNow()
+        startupDiagnostics.emit(
+          .baselineDrainReturned, secrets: secrets, links: links, access: access)
         #expect(emptyDrain == 0 && api.counts.factory == 0 && api.counts.active == 0)
       }
       return f
     } catch {
       startupDiagnostics.emit(.failed, secrets: secrets, links: links, access: access)
-      Issue.record("The direct owner-carrier fixture setup failed; private details were suppressed.")
+      Issue.record(
+        "The direct owner-carrier fixture setup failed; private details were suppressed.")
       await access.finish(
-        hub: actualManager?.current?.hub, api: api, secrets: secrets, links: links, heldSecret: heldSecret)
+        hub: actualManager?.current?.hub, api: api, secrets: secrets, links: links,
+        heldSecret: heldSecret)
       cleanup.releaseHolds()
       await cleanup.joinAll()
       await cleanup.closeResources()

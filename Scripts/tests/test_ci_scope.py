@@ -1,5 +1,6 @@
 """CI skips its macOS jobs only for a change it is sure they cannot read."""
 from pathlib import Path
+import ast
 import re
 import subprocess
 import sys
@@ -133,6 +134,181 @@ class WorkflowTests(unittest.TestCase):
             # The always-saving cache step is used only for downloads (.spm, the PostgreSQL archive).
             self.assertNotRegex(job, r"uses: actions/cache@v4\n        with:\n          path: \|?\n?\s*\.build(\n|/\w*DerivedData)",
                                 name)
+
+
+    def assert_native_scheduling(self, package):
+        # Canonical six-space step headers, including unnamed uses/run steps, delimit source slices.
+        starts = [match.start() for match in re.finditer(r"^      - (?:name|uses|run):", package, re.M)]
+        steps = [package[start:end] for start, end in zip(starts, starts[1:] + [len(package)])]
+        named = {}
+        preceding_ids = set()
+        for step in steps:
+            for dependency in re.findall(r"steps\.([A-Za-z0-9_-]+)\.outcome", step):
+                self.assertIn(dependency, preceding_ids, dependency)
+            identifier = re.search(r"^        id: ([A-Za-z0-9_-]+)$", step, re.M)
+            if identifier:
+                self.assertNotIn(identifier.group(1), preceding_ids)
+                preceding_ids.add(identifier.group(1))
+            name = re.match(r"      - name: (.+)\n", step)
+            if name:
+                self.assertNotIn(name.group(1), named)
+                named[name.group(1)] = step
+        compiler_ids = ["owner-carrier-origin-controls", "owner-carrier-receipt-controls",
+                        "account-session-package-controls", "account-session-storage-fields-controls",
+                        "account-session-coordinator-controls", "account-session-check-boundary-controls",
+                        "account-session-probe-boundary-controls", "account-session-reference-receipt-controls",
+                        "account-session-presence-authority-controls", "account-session-decoder-boundary-controls",
+                        "account-session-fileprivate-contexts-controls"]
+        by_id = {re.search(r"^        id: (.+)$", step, re.M).group(1): step
+                 for step in steps if re.search(r"^        id: (.+)$", step, re.M)}
+        order = ["Start the tests' PostgreSQL", "Focused socket ownership and shutdown regressions",
+                 "Focused Agent Protocol transport regressions",
+                 "Sample owner-carrier build metadata (compiler controls held)", "Save owner-carrier metadata sample"]
+        ordered_steps = [named[name] for name in order] + [by_id[key] for key in compiler_ids]
+        ordered_steps += [named[name] for name in ["Focused account session comparison regressions",
+                          "Historical action admission regressions", "Focused Agent Protocol foundation regressions",
+                          "Focused Node probe observation controls", "Test",
+                          "Focused owned protocol proof writer regressions", "Focused scope owner publication regressions"]]
+        positions = [package.index(step) for step in ordered_steps]
+        self.assertEqual(positions, sorted(positions))
+        # No gap can move a slow aggregate between the compiler block and its native invocation.
+        for before, after in zip(ordered_steps[3:17], ordered_steps[4:18]):
+            self.assertEqual(package.index(after), package.index(before) + len(before))
+        native = by_id["account-session-comparison-controls"]
+        selector = "swift test --filter 'AccountSessionComparisonTests|AccountSessionComparisonOwnerTests'"
+        self.assertEqual(package.count(selector), 1)
+        self.assertIn("        run: " + selector + "\n", native)
+        dependencies = ["package-build", "test-postgres-prewarm", "socket-ownership-controls",
+                        "owner-carrier-metadata", *compiler_ids]
+        condition = "        if: ${{ !cancelled() && " + " && ".join(
+            f"steps.{key}.outcome == 'success'" for key in dependencies) + " }}\n"
+        self.assertIn(condition, native)
+        self.assertIn("        env:\n          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg\n", native)
+        availability = ("        if: ${{ !cancelled() && steps.package-build.outcome == 'success' "
+                        "&& steps.test-postgres-prewarm.outcome == 'success' }}\n")
+        foundation = named["Focused Agent Protocol foundation regressions"]
+        self.assertIn(availability, foundation)
+        self.assertIn("        run: swift test --filter 'AgentProtocol|ProtocolProjectionStoreTests|ProtocolActivation'\n",
+                      foundation)
+        historical = by_id["historical-action-controls"]
+        self.assertEqual(historical, "      - name: Historical action admission regressions\n"
+                         "        id: historical-action-controls\n" + availability +
+                         "        run: swift test --skip-build --filter AgentProtocolHistoricalActionTests\n")
+        self.assertEqual(package.count("swift test --skip-build --filter AgentProtocolHistoricalActionTests"), 1)
+        for key in compiler_ids:
+            self.assertIn("        timeout-minutes: 1\n", by_id[key])
+        self.assertNotIn("continue-on-error", package)
+        self.assertIn("    timeout-minutes: 45\n", package)
+
+    def test_focused_native_precedes_slow_checks_with_all_prerequisites(self):
+        self.assert_native_scheduling(self.jobs["package"])
+
+    def test_native_scheduling_rejects_tail_duplicate_and_missing_dependency(self):
+        package = self.jobs["package"]
+        match = re.search(r"      - name: Focused account session comparison regressions\n.*?(?=^      - )",
+                          package, re.M | re.S)
+        self.assertIsNotNone(match)
+        native = match.group(0)
+        mutations = [package.replace(native, "") + native, package + native,
+                     package.replace("steps.owner-carrier-receipt-controls.outcome == 'success' && ", "")]
+        for mutated in mutations:
+            with self.subTest(mutation=mutations.index(mutated)):
+                with self.assertRaises(AssertionError):
+                    self.assert_native_scheduling(mutated)
+
+    def test_compiler_profile_closed_inventory_and_derived_counts_without_import(self):
+        root = Path(__file__).resolve().parents[2]
+        tree = ast.parse((root / "Scripts/check-owner-carrier-compiler-controls.py").read_text())
+        assignments = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "SOURCE_NAMES" for target in node.targets)]
+        self.assertEqual(len(assignments), 1)
+        names = ast.literal_eval(assignments[0].value)
+        self.assertIsInstance(assignments[0].value, ast.List)
+        actual = sorted(path.name for path in (root / "Tests/CoordinatorTests").glob("*.swift"))
+        self.assertEqual(names, actual)
+        self.assertEqual(names, sorted(set(names)))
+        preparations = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                        and node.name == "prepare"]
+        self.assertEqual(len(preparations), 1)
+        prepare = preparations[0]
+        profiles = [node for node in ast.walk(prepare) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name) and node.func.id == "emit" and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and node.args[0].value == "owner_carrier_compiler_profile"]
+        self.assertEqual(len(profiles), 1)
+        fields = {keyword.arg: keyword.value for keyword in profiles[0].keywords}
+        for name, expression in {"sources": "len(SOURCE_NAMES)", "inputs": 'len(expected["inputs"])',
+                                 "outputs": 'len(expected["outputs"])'}.items():
+            self.assertEqual(ast.dump(fields[name]), ast.dump(ast.parse(expression, mode="eval").body))
+        # The counted expected graph must remain the same graph compared strictly to the compiler command.
+        strict = ast.parse("command == expected", mode="eval").body
+        self.assertTrue(any(ast.dump(node) == ast.dump(strict) for node in ast.walk(prepare)))
+        for variable, expression in {
+            "source_paths": '[str(checkout / "Tests/CoordinatorTests" / name) for name in SOURCE_NAMES]',
+            "object_paths": '[debug + "/CoordinatorTests.build/" + name + ".o" for name in SOURCE_NAMES]',
+        }.items():
+            values = [node.value for node in ast.walk(prepare) if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == variable for target in node.targets)]
+            self.assertEqual(len(values), 1)
+            self.assertEqual(ast.dump(values[0]), ast.dump(ast.parse(expression, mode="eval").body))
+        expected_nodes = [node.value for node in ast.walk(prepare) if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "expected" for target in node.targets)]
+        self.assertEqual(len(expected_nodes), 1)
+        self.assertIsInstance(expected_nodes[0], ast.Dict)
+        self.assertEqual(len(expected_nodes[0].keys), 15)
+        expected = dict(zip([ast.literal_eval(key) for key in expected_nodes[0].keys], expected_nodes[0].values))
+        for key, expression in {
+            "sources": "source_paths",
+            "inputs": '[{"kind": "file", "name": name} for name in source_paths + ['
+                      'debug + "/swift-version-7974D3F7F03D5E95.txt", debug + "/Modules/Coordinator.swiftmodule", '
+                      'debug + "/Modules/NIOTransport.swiftmodule", debug + "/CoordinatorTests.build/sources"]]',
+            "outputs": '[{"kind": "file", "name": name} for name in object_paths + '
+                       '[debug + "/Modules/CoordinatorTests.swiftmodule"]]',
+        }.items():
+            self.assertEqual(ast.dump(expected[key]), ast.dump(ast.parse(expression, mode="eval").body))
+
+    def test_startup_diagnostics_have_closed_private_safe_fields_and_finite_cap(self):
+        # Source-only privacy/cap oracle; managed Swift execution remains required.
+        text = (Path(__file__).resolve().parents[2] / "Tests/CoordinatorTests/HubOwnerCarrierTests.swift").read_text()
+        diagnostic = text.split("private final class OwnerStartupDiagnostics: Sendable {", 1)[1].split(
+            "private enum OwnerNativeDiagnostics", 1)[0]
+        stages = re.search(r"enum Stage: String, CaseIterable, Hashable, Sendable \{(.*?)\n  \}",
+                           diagnostic, re.S).group(1)
+        stage_names = re.findall(r"\b[a-z][A-Za-z]+\b", stages.replace("case", ""))
+        expected = {
+            "collectorArmed", "managerStartReturned", "refreshJoined", "failed", "pullEntryEntered", "pullEntryReturned",
+            "secretReadEntered", "secretReadReturned", "displayNameEntered", "displayNameReturned", "collectorReadyEntered",
+            "collectorReadyReturned", "firstCollectorJoinEntered", "firstCollectorJoinReturned", "hubStopEntered",
+            "hubStopReturned", "pullSettledReturned", "secondCollectorJoinEntered", "secondCollectorJoinReturned",
+            "socketClosedReturned", "observationGuardEntered", "baselineDrainEntered", "baselineDrainReturned",
+            "originCaptureEntered", "originCaptureReturned", "baselineAssertReturned"}
+        self.assertEqual(set(stage_names), expected)
+        self.assertEqual(len(stage_names), 26)
+        self.assertEqual(set(re.findall(r"startupDiagnostics\.emit\(\s*\.([A-Za-z]+)", text)), expected)
+        self.assertIn("static let maximumRecords = Stage.allCases.count", diagnostic)
+        self.assertIn("var emitted: Set<Stage> = []", diagnostic)
+        self.assertIn("state.emitted.insert(stage).inserted", diagnostic)
+        self.assertIn("guard ordinal > 0 && observation.0 else { return }", diagnostic)
+        self.assertIn("guard count < 10_000 else { return 0 }", diagnostic)
+        self.assertIn("enum Role: String, Sendable { case unjoined, linked, heldSecret, sharedAPI, heldSecretSharedAPI }",
+                      diagnostic)
+        record = re.search(r'"A5_STARTUP ([^"\n]+)"', diagnostic).group(1)
+        fields = re.findall(r"([A-Za-z]+)=\\\(([^)]+)\)", record)
+        self.assertEqual(fields, [(name, value) for name, value in [
+            ("role", "role.rawValue"), ("fixture", "ordinal"), ("stage", "stage.rawValue"), ("armed", "armed"),
+            ("elapsedMillis", "elapsed"), ("remainingMillis", "remaining"), ("expired", "expired"),
+            ("observationArmed", "observationArmed"), ("observationElapsedMillis", "observationElapsedMillis"),
+            ("observationRemainingMillis", "observationRemainingMillis"), ("observationExpired", "observationExpired"),
+            ("parentCancelled", "parentCancelled"), ("collectorCancelled", "collectorCancelled"),
+            ("readEntered", "readEntered"), ("readSettled", "readSettled"), ("activeRead", "activeRead"),
+            ("opens", "opens"), ("collectorStarted", "collectorStarted"), ("collectorReturned", "collectorReturned"),
+            ("collectorSucceeded", "collectorSucceeded")]])
+        self.assertEqual(record, " ".join(f"{name}=\\({value})" for name, value in fields))
+        self.assertIn("let parts = duration.components", text)
+        self.assertIn("return Int(min(max(whole + fraction, 0), 60_000))", text)
+        self.assertIn("static func count(_ value: Int) -> Int { min(max(value, 0), 10_000) }", text)
+        self.assertRegex(text, r'Issue\.record\(\s*"The direct owner-carrier fixture setup failed; private details were suppressed\."\)')
+        self.assertNotIn("print(error", diagnostic)
 
 
 class WorkflowJobSectionsTests(unittest.TestCase):
