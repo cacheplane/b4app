@@ -620,17 +620,30 @@ struct SelectionMotionTests {
       #expect(!list.contains(.draftChooseFolder))
     #endif
     await model.disconnect()
-    let b4 = try await Phone.macModel(ScriptedTransport())
-    b4.newThreadDraft.selectRuntime(connectionId: "b4-remote", model: nil)
-    #expect(b4.newThreadDraft.connection?.kind == .b4)
+    let transport = ScriptedTransport()
+    let current = try await Phone.macModel(
+      transport, connections: Phone.macConnections + [HistoricalActionFixture.staged(owner: nil)])
+    let draft = current.newThreadDraft
+    draft.selectRuntime(connectionId: "claude-1", model: "opus")
+    draft.selectPermission("plan")
+    draft.text = "Keep the current draft"
+    let before = HistoricalActionFixture.draft(draft)
+    let commands = current.commands(for: .draft)
+    for id in ["b4-p1", "b4-remote", "staged-protocol"] {
+      draft.selectRuntime(connectionId: id, model: nil)
+      let draftRetained = HistoricalActionFixture.draft(draft) == before
+      #expect(draftRetained)
+      #expect(current.commands(for: .draft) == commands)
+    }
+    #expect(transport.recorded(.threadStart).isEmpty)
+    #expect(current.pendingSends.isEmpty)
     #if os(macOS)
-      let b4List = b4.commands(for: .draft)
-      let b4At = try #require(b4List.firstIndex(of: .draftEnvironment))
-      #expect(b4List[b4At + 1] == .draftChooseFolder)
+      let at = try #require(commands.firstIndex(of: .draftEnvironment))
+      #expect(commands[at + 1] == .draftChooseFolder)
     #else
-      #expect(!b4.commands(for: .draft).contains(.draftChooseFolder))
+      #expect(!commands.contains(.draftChooseFolder))
     #endif
-    await b4.disconnect()
+    await current.disconnect()
   }
 
   @Test func chooseFolderAsksTheNewThreadViewForThePanel() async throws {

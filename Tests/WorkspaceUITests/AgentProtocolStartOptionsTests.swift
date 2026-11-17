@@ -28,7 +28,9 @@ import WorkspaceProtocol
         ownerDeviceId: "mac-1", status: .ready),
       Connection(
         id: "staged-protocol", kind: .agentProtocol, label: "Staged", target: "https://example.invalid",
-        peerProfile: .agentProtocol, agentId: "fixture", authMode: ConnectionAuthMode.none,
+        nativeScope: #"["agent-protocol-v1","agentProtocol","https://example.invalid"]"#,
+        peerProfile: .agentProtocol, agentId: "fixture",
+        authMode: ConnectionAuthMode.none,
         ownerDeviceId: "mac-1", status: .ready),
     ]
     let transport = ScriptedTransport()
@@ -39,6 +41,7 @@ import WorkspaceProtocol
     var failure: (any Error)?
     do {
       try #require(await model.settledLink() == .ready)
+      try HistoricalActionFixture.checkCanonicalStaged(try #require(model.connection(id: "staged-protocol")))
       try body(model, environment)
     } catch { failure = error }
     await model.disconnect()

@@ -9,9 +9,17 @@ import WorkspaceProtocol
 actor CountingSecretStore: SecretStore {
   private var values: [SecretRef: String] = [:]
   var count: Int { values.count }
-  func put(_ ref: SecretRef, value: String) async throws { values[ref] = value }
+  private(set) var putCount = 0
+  private(set) var removeCount = 0
+  func put(_ ref: SecretRef, value: String) async throws {
+    putCount += 1
+    values[ref] = value
+  }
   func read(_ ref: SecretRef) async throws -> String? { values[ref] }
-  func remove(_ ref: SecretRef) async throws -> Bool { values.removeValue(forKey: ref) != nil }
+  func remove(_ ref: SecretRef) async throws -> Bool {
+    removeCount += 1
+    return values.removeValue(forKey: ref) != nil
+  }
 }
 
 @Suite(.serialized) @MainActor struct ConnectionsModelTests {
@@ -26,17 +34,82 @@ actor CountingSecretStore: SecretStore {
     #expect(model.checks[codex.id] == nil)
   }
 
-  @Test func addingB4WithAKeyStoresOnlyAReference() async throws {
-    let h = try await ModelHarness.start()
-    defer { Task { await h.stop() } }
-    let model = h.model
-    // Nothing listens on port 9: the connection is stored offline, which is enough to see what it keeps.
-    let added = try #require(
-      await model.addB4Connection(
-        label: "Remote", url: "http://127.0.0.1:9", route: "/chat#agent", apiKey: "s3cret-value"))
-    #expect(added.authReference?.hasPrefix("secret:") == true)
-    #expect(!String(describing: model.connections).contains("s3cret-value"))
-    #expect(model.connections.contains { $0.id == added.id })
+  @Test func addingHistoricalB4RefusesAndRemovesTheTemporaryKey() async throws {
+    let secrets = CountingSecretStore()
+    let h = try await ModelHarness.start(secretStore: secrets)
+    var failure: (any Error)?
+    do {
+      let model = h.model
+      let before = model.connections
+      let added = await model.addB4Connection(
+        label: "Remote", url: "https://example.invalid", route: "/chat#agent", apiKey: "fixture-only-key")
+      let refused = added == nil
+      #expect(refused)
+      let connectionsRetained = model.connections == before
+      #expect(connectionsRetained)
+      #expect(model.lastFailure?.code == .unsupportedCapability)
+      #expect(model.lastFailure?.details?["reason"] == "agent_protocol_cutover")
+      #expect(model.lastError?.isEmpty == false)
+      let retainsRawKey =
+        String(describing: model.connections).contains("fixture-only-key")
+        || (model.lastError?.contains("fixture-only-key") == true)
+        || String(describing: model.lastFailure).contains("fixture-only-key")
+      #expect(!retainsRawKey)
+      #expect(await secrets.count == 0)
+      #expect(await secrets.putCount == 1)
+      #expect(await secrets.removeCount == 1)
+      try await model.refreshSnapshot()
+      let refreshedConnectionsRetained = model.connections == before
+      #expect(refreshedConnectionsRetained)
+    } catch { failure = error }
+    await h.stop()
+    if let failure { throw failure }
+  }
+
+  /// This witnesses only the model's credential/reference boundary. The stub refuses legacy admission.
+  @Test func historicalAddSendsOnlyTheOpaqueReferenceAndKeepsTheCutoverFailure() async throws {
+    let transport = ScriptedTransport()
+    let model = try await Phone.macModel(transport)
+    var failure: (any Error)?
+    do {
+      let reference = "secret:fixture-opaque-reference"
+      transport.script(
+        .credentialAdd,
+        [
+          .result(
+            try JSONValue(
+              encoding: CredentialAdd.Result(reference: reference, label: "Remote")))
+        ])
+      transport.script(.connectionAdd, [.failure(HistoricalActionFixture.cutover)])
+      transport.script(
+        .credentialRemove,
+        [
+          .result(
+            try JSONValue(
+              encoding: CredentialRemove.Result(removed: true)))
+        ])
+      let before = model.connections
+      let added = await model.addB4Connection(
+        label: "Remote", url: "https://example.invalid", route: "/chat#agent", apiKey: "fixture-only-key")
+      let refused = added == nil
+      #expect(refused)
+      let connectionsRetained = model.connections == before
+      #expect(connectionsRetained)
+      #expect(transport.recorded(.credentialAdd).count == 1)
+      let call = try #require(transport.recorded(.connectionAdd).first)
+      let usesOpaqueReference = call.params["authReference"] == .string(reference)
+      #expect(usesOpaqueReference)
+      let referenceOnly = !String(describing: call.params).contains("fixture-only-key")
+      #expect(referenceOnly)
+      #expect(transport.recorded(.credentialRemove).count == 1)
+      let removesTemporaryReference =
+        transport.recorded(.credentialRemove).first?.params["reference"] == .string(reference)
+      #expect(removesTemporaryReference)
+      #expect(model.lastFailure?.code == .unsupportedCapability)
+      #expect(model.lastFailure?.details?["reason"] == "agent_protocol_cutover")
+    } catch { failure = error }
+    await model.disconnect()
+    if let failure { throw failure }
   }
 
   @Test func renameUpdatesTheList() async throws {
@@ -93,7 +166,7 @@ actor CountingSecretStore: SecretStore {
     let h = try await ModelHarness.start(secretStore: secrets)
     defer { Task { await h.stop() } }
     let model = h.model
-    // "chat" is not a route key, so the add is refused after the key was stored.
+    // Cutover refusal precedes legacy route validation; the temporary key is still removed.
     let added = await model.addB4Connection(
       label: "Bad", url: "http://127.0.0.1:9", route: "chat", apiKey: "k")
     #expect(added == nil)
