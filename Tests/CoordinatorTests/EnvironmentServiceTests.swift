@@ -679,7 +679,7 @@ private struct EnvironmentHarness {
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)
-    let connection = try await connect(h, server)
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
 
     let environmentId = try #require(try stored(h, connection).environmentId)
     #expect(connection.environmentId == environmentId)
@@ -693,6 +693,9 @@ private struct EnvironmentHarness {
       })
     #expect(insert.value?["environmentId"] == .string(environmentId))
     // A second connection on the same server finds the same environment rather than making another.
+    let second = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(
+      h, server: server, id: "historical-second")
+    #expect(second.environmentId == environmentId)
     #expect(try h.coordinator.database.listEnvironments().count == 1)
   }
 
@@ -701,7 +704,9 @@ private struct EnvironmentHarness {
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)
-    let connection = try await connect(h, server)
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: connection)
     let automatic = try #require(try stored(h, connection).environmentId)
 
     // A manual environment takes the folder: the connection follows.
@@ -744,6 +749,10 @@ private struct EnvironmentHarness {
         && $0.rowId == connection.id
     }
     #expect(moves.count >= 3)
+    let retainedFacts1 = try h.coordinator.database.turns(threadId: history.thread.id) == history.turns
+    #expect(retainedFacts1)
+    let retainedFacts2 = try h.coordinator.database.displayItems(threadId: history.thread.id) == history.items
+    #expect(retainedFacts2)
   }
 
   @Test func codexAndRemoteB4ConnectionsHaveNoEnvironment() async throws {
