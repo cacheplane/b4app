@@ -201,9 +201,9 @@ class SimulatorWorkflowTests(unittest.TestCase):
         self.assertIn('name: iOS navigation and banner regression tests\n', result)
         self.assertIn('needs: [scope, ios-layout]\n', result)
         # The one skip it accepts is the scope job's explicit "false" (test_ci_scope.py).
-        self.assertIn('if [ "$APPLE" = false ] && [ "$SHARDS" = skipped ]; then', result)
+        self.assertIn('if [ "$APPLE" = false ] && [ "$LAYOUT" = skipped ]; then', result)
         self.assertIn('if: always()\n', result)
-        self.assertIn('test "$SHARDS" = success', result)
+        self.assertIn('test "$LAYOUT" = success', result)
 
 if __name__ == '__main__':
     unittest.main()
