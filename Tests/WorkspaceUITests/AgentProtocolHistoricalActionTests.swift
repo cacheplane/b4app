@@ -193,7 +193,7 @@ import WorkspaceProtocol
   }
 }
 
-enum HistoricalAction: String, CaseIterable, Sendable {
+nonisolated enum HistoricalAction: String, CaseIterable, Sendable {
   case send, stop, respond, answer, abandon
 
   var method: WorkspaceProtocol.Method {
@@ -221,7 +221,7 @@ enum HistoricalAction: String, CaseIterable, Sendable {
   }
 }
 
-struct HistoricalActionCase: Sendable {
+nonisolated struct HistoricalActionCase: Sendable {
   let phone: Bool
   let id: String
   let action: HistoricalAction

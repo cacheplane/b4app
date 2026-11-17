@@ -638,8 +638,8 @@ struct SelectionMotionTests {
     #expect(transport.recorded(.threadStart).isEmpty)
     #expect(current.pendingSends.isEmpty)
     #if os(macOS)
-      let at = try #require(commands.firstIndex(of: .draftEnvironment))
-      #expect(commands[at + 1] == .draftChooseFolder)
+      let currentAt = try #require(commands.firstIndex(of: .draftEnvironment))
+      #expect(commands[currentAt + 1] == .draftChooseFolder)
     #else
       #expect(!commands.contains(.draftChooseFolder))
     #endif
