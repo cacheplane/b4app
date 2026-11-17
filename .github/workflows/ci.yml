@@ -127,26 +127,32 @@ jobs:
       - name: Launch Services script tests
         run: bats Scripts/tests
 
+  # Build caches (D-244). A push to main builds from clean, runs everything, and only then saves its
+  # build output under its commit; pull requests and merge groups restore the newest of main's and
+  # never save, so a stale cache can touch only those runs and main is proven from clean every merge.
+  # Scripts/restore_mtimes.py sets each file's time from its content first: a checkout gives every
+  # file the checkout's time, which would make a restored build rebuild everything.
   package:
     name: Package build and tests
     runs-on: macos-26
     timeout-minutes: 45
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.apple != 'false' }}
-    outputs:
-      ios-apps: ${{ steps.ios-app.outcome }}/${{ steps.ios-beta.outcome }}
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
         run: sudo xcode-select -s /Applications/Xcode_26.6.app
-      - name: Cache SwiftPM
-        uses: actions/cache@v4
+      - name: File times from content
+        run: python3 Scripts/restore_mtimes.py
+      - name: Restore the SwiftPM build
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@v4
         with:
           path: |
             .build
             ~/Library/Caches/org.swift.swiftpm
-          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-
+          key: spm-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: spm-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-
       - name: Format lint
         run: swift format lint --strict --recursive Sources Tests Apps Package.swift
       - name: Cache the pinned PostgreSQL archive
@@ -175,77 +181,26 @@ jobs:
           swift test --skip-build --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           swift test --skip-build --skip '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           exit "$status"
-      # The two iOS app builds, which had a macOS job of their own with the two macOS builds (those
-      # are in the smoke job). They run whatever the tests did, and the "apps" job below reports all
-      # four under the required name from these steps' outcomes, not from this job's result.
-      - name: Install XcodeGen
-        if: ${{ !cancelled() }}
-        run: brew install xcodegen
-      - name: Generate project
-        if: ${{ !cancelled() }}
-        run: ./Scripts/generate-project.sh
-      - name: Cache SwiftPM (xcodebuild)
-        if: ${{ !cancelled() }}
-        uses: actions/cache@v4
+      - name: Save the SwiftPM build
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
         with:
-          path: .spm
-          key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: spm-xcode-${{ runner.os }}-
-      # DerivedData stays out of .build, which the SwiftPM cache above saves.
-      - name: Build iOS app (simulator)
-        id: ios-app
-        if: ${{ !cancelled() }}
-        run: >
-          xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
-      - name: Build iOS app (beta, simulator)
-        id: ios-beta
-        if: ${{ !cancelled() }}
-        run: >
-          xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS-Beta -destination 'generic/platform=iOS Simulator'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath "$RUNNER_TEMP/DerivedData" CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
+          path: |
+            .build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
 
-  # The required check for the four app builds. The builds are steps of two jobs that already hold
-  # a macOS runner (iOS in "package", macOS in "macos-smoke"), so a run asks for four macOS runners
-  # where it asked for five. This job always runs and reads the build steps' own outcomes: a failed
-  # test in either job does not fail it, and a build that failed, was cancelled or never ran does.
-  apps:
-    name: macOS and iOS app builds
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [scope, package, macos-smoke]
-    if: always()
-    permissions: {}
-    steps:
-      - name: Every app build passed
-        env:
-          APPLE: ${{ needs.scope.outputs.apple }}
-          JOBS: ${{ needs.package.result }}/${{ needs.macos-smoke.result }}
-          IOS: ${{ needs.package.outputs.ios-apps }}
-          MACOS: ${{ needs.macos-smoke.outputs.macos-apps }}
-        run: |
-          echo "scope: apple=$APPLE; jobs: $JOBS; iOS builds: $IOS; macOS builds: $MACOS"
-          if [ "$APPLE" = false ] && [ "$JOBS" = skipped/skipped ]; then
-            echo "This change touches nothing the apps are built from."
-            exit 0
-          fi
-          test "$IOS" = success/success
-          test "$MACOS" = success/success
-
-  # The fixture app builds from the package, not from the app builds, so it runs beside them.
-  # Two shards of the reviewed plan (Tests/iOSLayout/UITests/shards.json), each checked against the
-  # whole plan; "ios-layout-result" below reports them under the name the branch protection requires.
-  ios-layout:
-    name: iOS layout tests (shard ${{ matrix.shard }} of 2)
+  # The debug iOS and macOS app builds, in one DerivedData, beside the test jobs. The beta builds
+  # differ only in Config/Flavor-beta.xcconfig and are built at release, not here (D-244).
+  app-builds:
+    name: App builds
     runs-on: macos-26
     timeout-minutes: 30
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.apple != 'false' }}
-    strategy:
-      # A failure in one shard says nothing about the other's tests: let both report.
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
+    outputs:
+      ios-app: ${{ steps.ios-app.outcome }}
+      macos-app: ${{ steps.macos-app.outcome }}
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
@@ -258,6 +213,96 @@ jobs:
           path: .spm
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: spm-xcode-${{ runner.os }}-
+      - name: File times from content
+        run: python3 Scripts/restore_mtimes.py
+      - name: Restore DerivedData
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .build/AppDerivedData/Build
+            .build/AppDerivedData/ModuleCache.noindex
+          key: dd-apps-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: dd-apps-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-
+      - name: Generate project
+        run: ./Scripts/generate-project.sh
+      - name: Build iOS app (simulator)
+        id: ios-app
+        run: >
+          xcodebuild build -project B4App.xcodeproj -scheme B4App-iOS -destination 'generic/platform=iOS Simulator'
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/AppDerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
+      - name: Build macOS app
+        id: macos-app
+        if: ${{ !cancelled() }}
+        run: >
+          xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'
+          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/AppDerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
+      - name: Save DerivedData
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .build/AppDerivedData/Build
+            .build/AppDerivedData/ModuleCache.noindex
+          key: dd-apps-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+
+  # The required check for the two app builds. It always runs and reads the build steps' own
+  # outcomes: a build that failed, was cancelled or never ran fails it, and the one skip it accepts is
+  # the scope job's explicit "false".
+  apps:
+    name: macOS and iOS app builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [scope, app-builds]
+    if: always()
+    permissions: {}
+    steps:
+      - name: Every app build passed
+        env:
+          APPLE: ${{ needs.scope.outputs.apple }}
+          JOBS: ${{ needs.app-builds.result }}
+          IOS: ${{ needs.app-builds.outputs.ios-app }}
+          MACOS: ${{ needs.app-builds.outputs.macos-app }}
+        run: |
+          echo "scope: apple=$APPLE; job: $JOBS; iOS build: $IOS; macOS build: $MACOS"
+          if [ "$APPLE" = false ] && [ "$JOBS" = skipped ]; then
+            echo "This change touches nothing the apps are built from."
+            exit 0
+          fi
+          test "$IOS" = success
+          test "$MACOS" = success
+
+  # The fixture app builds from the package, not from the app builds, so it runs beside them.
+  # "ios-layout-result" below reports it under the name the branch protection requires.
+  ios-layout:
+    name: iOS layout tests
+    runs-on: macos-26
+    timeout-minutes: 30
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.apple != 'false' }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Cache SwiftPM (xcodebuild)
+        uses: actions/cache@v4
+        with:
+          path: .spm
+          key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-xcode-${{ runner.os }}-
+      - name: File times from content
+        run: python3 Scripts/restore_mtimes.py
+      - name: Restore DerivedData
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .build/DerivedData/Build
+            .build/DerivedData/ModuleCache.noindex
+          key: dd-ios-layout-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: dd-ios-layout-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-
       - name: Begin iOS Simulator boot
         id: simulator
         # The listing may take 5 minutes on a cold runner and the boot call 1.
@@ -268,8 +313,6 @@ jobs:
           B4APP_LAYOUT_SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
           B4APP_LAYOUT_DESTINATION: ${{ steps.simulator.outputs.destination }}
           B4APP_LAYOUT_DERIVED_DATA: .build/DerivedData
-          B4APP_LAYOUT_SHARD: ${{ matrix.shard }}
-          B4APP_LAYOUT_FOCUSED_COVERAGE: "0"
         run: |
           set -euo pipefail
           xcrun simctl bootstatus "$B4APP_LAYOUT_SIMULATOR_UDID" -b
@@ -278,13 +321,21 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ios-layout-results-shard-${{ matrix.shard }}
+          name: ios-layout-results
           path: .build/iOSLayout/Results-*.xcresult
           retention-days: 7
+      - name: Save DerivedData
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .build/DerivedData/Build
+            .build/DerivedData/ModuleCache.noindex
+          key: dd-ios-layout-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
 
-  # The required check. It always runs, so a cancelled or skipped shard fails it instead of leaving
-  # it skipped, which the branch protection would take for a pass. The one skip it accepts is the
-  # scope job's: a change that touches nothing these tests read.
+  # The required check. It always runs, so a cancelled or skipped layout job fails it instead of
+  # leaving it skipped, which the branch protection would take for a pass. The one skip it accepts is
+  # the scope job's: a change that touches nothing these tests read.
   ios-layout-result:
     name: iOS navigation and banner regression tests
     runs-on: ubuntu-latest
@@ -298,7 +349,7 @@ jobs:
           APPLE: ${{ needs.scope.outputs.apple }}
           SHARDS: ${{ needs.ios-layout.result }}
         run: |
-          echo "scope: apple=$APPLE; iOS layout shards: $SHARDS"
+          echo "scope: apple=$APPLE; iOS layout job: $SHARDS"
           if [ "$APPLE" = false ] && [ "$SHARDS" = skipped ]; then
             echo "This change touches nothing the layout tests read."
             exit 0
@@ -308,12 +359,9 @@ jobs:
   macos-smoke:
     name: macOS recovery smoke tests
     runs-on: macos-26
-    # 20 for the smoke tests as before, and the two app builds.
-    timeout-minutes: 30
+    timeout-minutes: 20
     needs: scope
     if: ${{ !cancelled() && needs.scope.outputs.apple != 'false' }}
-    outputs:
-      macos-apps: ${{ steps.macos-app.outcome }}/${{ steps.macos-beta.outcome }}
     steps:
       - uses: actions/checkout@v5
       - name: Select Xcode 26.6
@@ -337,6 +385,17 @@ jobs:
         with:
           path: .build/postgres-dl
           key: postgres-dl-${{ hashFiles('Scripts/fetch-postgres.sh') }}
+      - name: File times from content
+        run: python3 Scripts/restore_mtimes.py
+      - name: Restore DerivedData
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .build/macOSSmoke/DerivedData/Build
+            .build/macOSSmoke/DerivedData/ModuleCache.noindex
+          key: dd-macos-smoke-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: dd-macos-smoke-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-
       - name: macOS recovery smoke tests
         # The virtual desktop is 1024 points wide; keep both journeys fully on-screen.
         run: ./Scripts/test-macos-smoke.sh B4APP_SMOKE_DESKTOP_WIDTH=1000 -clonedSourcePackagesDirPath .spm
@@ -347,22 +406,14 @@ jobs:
           name: macos-smoke-results
           path: .build/macOSSmoke/Results-*.xcresult
           retention-days: 7
-      # The two macOS app builds (see "apps" above). They run whatever the smoke tests did.
-      - name: Generate project
-        if: ${{ !cancelled() }}
-        run: ./Scripts/generate-project.sh
-      - name: Build macOS app
-        id: macos-app
-        if: ${{ !cancelled() }}
-        run: >
-          xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS -destination 'platform=macOS'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
-      - name: Build macOS app (beta)
-        id: macos-beta
-        if: ${{ !cancelled() }}
-        run: >
-          xcodebuild build -project B4App.xcodeproj -scheme B4App-macOS-Beta -destination 'platform=macOS'
-          -clonedSourcePackagesDirPath .spm -derivedDataPath .build/DerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
+      - name: Save DerivedData
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .build/macOSSmoke/DerivedData/Build
+            .build/macOSSmoke/DerivedData/ModuleCache.noindex
+          key: dd-macos-smoke-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
 
   hub:
     name: Hub (Rust)
