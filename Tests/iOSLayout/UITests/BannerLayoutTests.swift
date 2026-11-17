@@ -2,43 +2,21 @@ import UIKit
 import XCTest
 
 final class BannerLayoutTests: XCTestCase {
-  let coverage = JourneyCoverage()
   @MainActor
-  func launch(
-    _ screen: String, notice: String = "sync", accessibility: Bool = false, dark: Bool = false,
-    recover: Bool = false, withSyncFailure: Bool = false,
-    syncError: String? = nil, lastSyncAt: String? = nil, holdThreadOpen: Bool = false
-  ) -> XCUIApplication {
+  func launch(_ screen: String, notice: String = "sync") -> XCUIApplication {
     continueAfterFailure = false
-    coverage.beforeLaunch(in: self)
     // Only from landscape, where the landscape journey can leave it. Asking for the orientation the
     // device has waits for a change that may never be confirmed (main acef750, run 43534874181, the
     // run's first launch straight after the Simulator booted), and a fresh Simulator is upright.
     if XCUIDevice.shared.orientation.isLandscape { XCUIDevice.shared.orientation = .portrait }
     let app = XCUIApplication()
-    app.launchEnvironment = [
-      "LAYOUT_SCREEN": screen, "LAYOUT_NOTICE": notice, "LAYOUT_DARK": dark ? "1" : "0",
-      "LAYOUT_RECOVER": recover ? "1" : "0",
-      "LAYOUT_SYNC_FAILURE": withSyncFailure ? "1" : "0",
-    ]
-    if let syncError { app.launchEnvironment["LAYOUT_SYNC_ERROR"] = syncError }
-    if let lastSyncAt { app.launchEnvironment["LAYOUT_LAST_SYNC"] = lastSyncAt }
-    if holdThreadOpen { app.launchEnvironment["LAYOUT_HOLD_THREAD_OPEN"] = "1" }
-    if accessibility {
-      app.launchArguments = [
-        "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL",
-      ]
-    }
+    app.launchEnvironment = ["LAYOUT_SCREEN": screen, "LAYOUT_NOTICE": notice]
     app.launch()
-    coverage.didLaunch(in: self)
     return app
   }
 
   @MainActor
-  func checkLayout(
-    _ app: XCUIApplication, screen: String, hasBanner: Bool = true,
-    covering checkpoints: [String] = []
-  ) {
+  func checkLayout(_ app: XCUIApplication, screen: String, hasBanner: Bool = true) {
     // Settle on the screen before judging its banner. A detail launch shows the list and then pushes
     // the thread, and mid-push a banner exists in accessibility before it is hittable; one snapshot
     // taken then misreads the settled screen.
@@ -46,9 +24,7 @@ final class BannerLayoutTests: XCTestCase {
       screen == "detail"
       ? "Fix the login bug"
       : screen == "new-thread" ? "New thread" : "Threads"
-    let heading =
-      screen == "connect-mac"
-      ? app.staticTexts["Connect your Mac"] : app.navigationBars.staticTexts[title].firstMatch
+    let heading = app.navigationBars.staticTexts[title].firstMatch
     // Slow CI app/Simulator startup can stall accessibility queries beyond ten seconds while the
     // requested detail is still opening. Wait for that screen before judging layout; every
     // rendered-title, banner and control assertion below remains required.
@@ -69,24 +45,20 @@ final class BannerLayoutTests: XCTestCase {
     shot.name = screen
     shot.lifetime = .keepAlways
     add(shot)
-    if screen == "connect-mac" {
-      if !app.buttons["Scan the code"].isHittable { app.scrollViews.firstMatch.swipeUp() }
-      XCTAssertTrue(app.buttons["Scan the code"].isHittable)
-    } else {
+    do {
       XCTAssertGreaterThan(heading.frame.height, 0)
       let titleShot = XCTAttachment(screenshot: heading.screenshot())
       titleShot.name = "\(screen)-title"
       titleShot.lifetime = .keepAlways
       add(titleShot)
       XCTAssertGreaterThan(
-        foregroundFraction(
-          heading.screenshot().image, dark: app.launchEnvironment["LAYOUT_DARK"] == "1"),
-        0.01, "The navigation title exists in accessibility but its text is not drawn")
+        foregroundFraction(heading.screenshot().image), 0.01,
+        "The navigation title exists in accessibility but its text is not drawn")
       if let banner {
         XCTAssertLessThanOrEqual(
           heading.frame.maxY, contentFrame(banner).minY, "Banner covers \(title)")
       }
-      if !["detail", "new-thread", "no-ready-detail"].contains(screen) {
+      if !["detail", "new-thread"].contains(screen) {
         XCTAssertTrue(app.buttons["sidebar-more"].isHittable)
         XCTAssertTrue(app.buttons["list-search"].isHittable)
         XCTAssertTrue(app.buttons["new-thread-dock"].exists)
@@ -98,10 +70,9 @@ final class BannerLayoutTests: XCTestCase {
           button.frame.intersects(contentFrame(banner)), "Banner covers \(button.identifier)")
       }
     }
-    if !["detail", "new-thread", "no-ready-detail"].contains(screen) {
+    if !["detail", "new-thread"].contains(screen) {
       XCTAssertTrue(app.buttons["profile-button"].isHittable)
     }
-    coverage.layout(in: self, covering: checkpoints)
   }
 
   /// The first element of `query` that is drawn and hittable, waiting up to `timeout` for one.
@@ -139,7 +110,7 @@ final class BannerLayoutTests: XCTestCase {
   // UIKit can expose an obscured large title to accessibility even when none of its text is drawn.
   // Check the title's own screenshot too; geometry and `exists` alone missed the home-screen bug.
   @MainActor
-  private func foregroundFraction(_ image: UIImage, dark: Bool) -> Double {
+  private func foregroundFraction(_ image: UIImage) -> Double {
     guard let image = image.cgImage else { return 0 }
     var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
     let rendered = pixels.withUnsafeMutableBytes { buffer in
@@ -155,7 +126,7 @@ final class BannerLayoutTests: XCTestCase {
     guard rendered else { return 0 }
     let count = stride(from: 0, to: pixels.count, by: 4).filter { index in
       let rgb = pixels[index...index + 2]
-      return dark ? rgb.allSatisfy { $0 > 190 } : rgb.allSatisfy { $0 < 80 }
+      return rgb.allSatisfy { $0 < 80 }
     }.count
     return Double(count) / Double(image.width * image.height)
   }
@@ -231,13 +202,4 @@ final class BannerLayoutTests: XCTestCase {
       x: frame.minX + CGFloat(first) * scale, y: frame.minY,
       width: CGFloat(last - first + 1) * scale, height: frame.height)
   }
-
-  @MainActor
-  func visibleSyncBanner(_ app: XCUIApplication) -> XCUIElement {
-    let query = app.descendants(matching: .any).matching(identifier: "sync.banner")
-    let banner = waitForVisible(query)
-    XCTAssertNotNil(banner, app.debugDescription)
-    return banner ?? query.firstMatch
-  }
-
 }

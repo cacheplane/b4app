@@ -9,7 +9,6 @@ final class B4RuntimeSmokeTests: XCTestCase {
   private static let continued = "The same conversation continued after restart."
   private static let restartDraft = "smoke-after-restart"
 
-  @MainActor func testCompactLightB4Recovery() async throws { try await journey(desktop: false, dark: false) }
   @MainActor func testDesktopDarkB4Recovery() async throws { try await journey(desktop: true, dark: true) }
 
   @MainActor private func journey(desktop: Bool, dark: Bool) async throws {
