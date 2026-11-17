@@ -1,6 +1,6 @@
 ## 2026-11-16: a task list changes on a result
 
-D-245, the four minors D-243's review left. Branch `blove/task-list-minors` from `main` da8b4cf4. It changes `ClaudeAdapter` (the fold, the tracker, the resume) and `WorkspaceUI` (the dense projection). No migration and no wire change.
+D-246, the four minors D-243's review left. Branch `blove/task-list-minors` from `main` da8b4cf4. It changes `ClaudeAdapter` (the fold, the tracker, the resume) and `WorkspaceUI` (the dense projection). No migration and no wire change.
 
 ### Before
 

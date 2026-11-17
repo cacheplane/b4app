@@ -318,7 +318,7 @@ enum DenseTranscript {
             runningName: running ? runningName(of: steps) : nil)))
     }
     // Nothing to fold and nothing drawn that says the turn is working: between the send and the turn's
-    // first item, or a plan alone with no step in progress (D-245). A plan with one says it itself.
+    // first item, or a plan alone with no step in progress (D-246). A plan with one says it itself.
     let saysWorking = visible.contains { isMessage($0) || hasStepInProgress($0) }
     if folded.isEmpty, !saysWorking, let turn, let line = runningLine(of: turn, items: []) {
       entries.append(.running(line))

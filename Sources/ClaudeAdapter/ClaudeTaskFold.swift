@@ -4,7 +4,7 @@ import WorkspaceProtocol
 /// Claude Code's task list, built from the tools that keep it. `TodoWrite` sends the whole list;
 /// `TaskCreate` and `TaskUpdate` send one change each, and a created task's number is only in its
 /// result ("Task #3 created successfully"). Every change is made when its result arrives, so a use
-/// Claude Code reports as failed changes nothing (D-245). The list lives for the session, so the fold
+/// Claude Code reports as failed changes nothing (D-246). The list lives for the session, so the fold
 /// does too: the live tracker and the history import both run their tool uses and results through one.
 ///
 /// A turn that changes the list gets one item holding the whole list as it then stands, named after

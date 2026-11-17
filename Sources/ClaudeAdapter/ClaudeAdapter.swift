@@ -174,7 +174,7 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
     }
     // The task list lives for the session and the tracker does not: a session started again reads the
     // list back from its transcript, so a later update finds the tasks an earlier process made. The
-    // read and the fold run off this actor, so its other sessions are not held meanwhile (D-245).
+    // read and the fold run off this actor, so its other sessions are not held meanwhile (D-246).
     let seeded = resume ? await Self.seededTasks(sessionId: id, under: projectsDirectory) : nil
     // A dispose while this session was starting owns the adapter now: the process does not outlive it.
     if disposed {
