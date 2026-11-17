@@ -23,9 +23,10 @@ import WorkspaceStorage
     }
     let root = URL(fileURLWithPath: CommandLine.arguments[1]).standardizedFileURL
     let fake = CommandLine.arguments[2]
-    let realB4 = fake == "--b4"
+    let historicalB4 = FileManager.default.fileExists(
+      atPath: root.appendingPathComponent("historical-b4").path)
     guard root.deletingLastPathComponent().path == "/tmp", root.lastPathComponent.hasPrefix("b4smk-"),
-      realB4 || FileManager.default.isExecutableFile(atPath: fake)
+      FileManager.default.isExecutableFile(atPath: fake)
     else { throw WorkspaceError(.protocolInvalid, "Refusing non-fixture paths.") }
     // SIGTERM closes the coordinator and reaches normal exit (including PostgreSQL's atexit).
     signal(SIGTERM, SIG_IGN)
@@ -68,13 +69,21 @@ import WorkspaceStorage
           checkRetryDelays: [.zero], threadDeleteSweep: .zero))
     else { throw WorkspaceError(.internalError, "Fixture coordinator did not start.") }
     do {
-      trace(realB4 ? "Adding real B4 thread" : "Adding fake runtime and cached thread")
+      trace(
+        historicalB4
+          ? "Seeding historical cache and current native thread" : "Adding fake runtime and cached thread")
       let client = WorkspaceClient(
         transport: try await UnixSocketTransport.connect(path: paths.socketPath))
       let threadId: String
+      var currentThreadId: String?
       do {
-        if realB4 {
-          threadId = try await B4SmokeSeed.create(root: root, client: client)
+        if historicalB4 {
+          guard let database = coordinator.accounts.current?.database else {
+            throw WorkspaceError(.internalError, "Fixture account did not open.")
+          }
+          currentThreadId = try await B4SmokeSeed.create(
+            root: root, client: client, database: database, fake: fake)
+          threadId = B4SmokeSeed.threadId
         } else {
           let connection = try await client.request(
             ConnectionAdd.self, .init(kind: .codex, label: "Fixture runtime", executablePath: fake),
@@ -110,11 +119,16 @@ import WorkspaceStorage
         throw error
       }
       await client.close()
-      let ready: [String: String] = ["socket": paths.socketPath, "threadId": threadId]
+      var ready: [String: String] = ["socket": paths.socketPath, "threadId": threadId]
+      if let currentThreadId { ready["currentThreadId"] = currentThreadId }
       try JSONEncoder().encode(ready).write(to: root.appendingPathComponent("ready.json"), options: .atomic)
       trace("Fixture ready")
       for await _ in stopped { break }
       trace("Closing coordinator")
+      // A failed snapshot still reaches the existing independent coordinator close below.
+      if historicalB4, let database = coordinator.accounts.current?.database {
+        try B4SmokeSeed.snapshot(database, root: root, name: "historical-database-final.json")
+      }
       await coordinator.close()
     } catch {
       await coordinator.close()
