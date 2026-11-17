@@ -2008,3 +2008,96 @@ actor EventCollector {
     await h.stop()
   }
 }
+
+/// An agent's plan or task list is one `taskList` row per turn, whichever runtime keeps it.
+@Suite(.serialized) struct TaskListSessionTests {
+  private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
+
+  private func lists(_ items: [DisplayItem]) -> [TaskList] {
+    items.compactMap { TaskList(payload: $0.payload) }
+  }
+
+  @Test func aCodexPlanIsOneRowUpdatedInPlace() async throws {
+    let h = try await Harness.start()
+    let thread = try await h.newThread(try await h.addCodex())
+    let turn = try await h.send(thread, "write a checklist")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let items = try await h.read(thread).items
+    #expect(items.map(\.type) == ["userMessage", "taskList", "agentMessage"])
+    #expect(items[1].turnId == turn.id && items[1].role == .tool)
+    #expect(
+      lists(items) == [
+        TaskList(
+          steps: [.init(text: "Read", status: .completed), .init(text: "Write", status: .inProgress)],
+          explanation: "Reading is done.")
+      ])
+
+    // History does not carry the plan: the row stays where the turn wrote it.
+    let merged = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    let kept = merged.items.filter { $0.turnId == turn.id }
+    #expect(kept.map(\.id) == items.map(\.id))
+    await h.stop()
+  }
+
+  @Test func aB4PlanIsOneRow() async throws {
+    let server = try await FakeB4.start()
+    let h = try await Harness.start()
+    let thread = try await h.newB4Thread(try await h.addB4(server).connection)
+    let turn = try await h.send(thread, "make a plan")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let items = try await h.read(thread).items
+    #expect(lists(items) == [TaskList(steps: [.init(text: "step one", status: .pending)])])
+    #expect(!items.contains { $0.type == "plan_update" })
+    await h.stop()
+  }
+
+  @Test func aClaudeTaskListIsOneRowPerTurnAndSurvivesARestartAndAReconcile() async throws {
+    let h = try await Harness.start()
+    let thread = try await h.newThread(try await h.addClaude())
+    let first = try await h.send(thread, "make a tasklist")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == first.id }
+    var items = try await h.read(thread).items
+    #expect(!items.contains { $0.type == "toolUse" })
+    #expect(
+      lists(items) == [
+        TaskList(steps: [.init(text: "Read", status: .inProgress), .init(text: "Write", status: .pending)])
+      ])
+
+    // A folder added to the environment starts the session's process again (`--add-dir` is a launch
+    // flag); the list is read back from the transcript, so the update finds the task.
+    let folder = NSTemporaryDirectory() + "b4t-\(UUID().uuidString.prefix(8))"
+    try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+    _ = try await h.client.request(
+      EnvironmentUpdate.self,
+      EnvironmentUpdate.Params(environmentId: try #require(thread.environmentId), addFolders: [folder]),
+      options: mutation())
+    let second = try await h.send(thread, "advance it")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == second.id }
+    items = try await h.read(thread).items
+    #expect(items.filter { $0.type == "taskList" }.map(\.turnId) == [first.id, second.id])
+    #expect(
+      lists(items).last
+        == TaskList(steps: [.init(text: "Read", status: .completed), .init(text: "Write", status: .pending)]))
+
+    let merged = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    #expect(merged.thread.continuity == .available)
+    #expect(merged.items.map(\.id) == items.map(\.id))
+    #expect(lists(merged.items) == lists(items))
+    await h.stop()
+  }
+
+  @Test func aClaudeTodoListIsOneRowAndAReconcileAddsNone() async throws {
+    let h = try await Harness.start()
+    let thread = try await h.newThread(try await h.addClaude())
+    let turn = try await h.send(thread, "write a todo")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let items = try await h.read(thread).items
+    #expect(items.map(\.type) == ["userMessage", "taskList", "agentMessage"])
+    let merged = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    #expect(merged.items.map(\.id) == items.map(\.id))
+    await h.stop()
+  }
+}

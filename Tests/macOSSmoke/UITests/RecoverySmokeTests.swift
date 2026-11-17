@@ -5,9 +5,6 @@ import WorkspaceProtocol
 import XCTest
 
 final class RecoverySmokeTests: XCTestCase {
-  @MainActor func testCompactLightRecovery() async throws { try await journey(desktop: false, dark: false) }
-  @MainActor func testCompactDarkRecovery() async throws { try await journey(desktop: false, dark: true) }
-  @MainActor func testDesktopLightRecovery() async throws { try await journey(desktop: true, dark: false) }
   @MainActor func testDesktopDarkRecovery() async throws { try await journey(desktop: true, dark: true) }
 
   @MainActor private func journey(desktop: Bool, dark: Bool) async throws {

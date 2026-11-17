@@ -46,6 +46,10 @@ import WorkspaceProtocol
         case .assistant where item.type == "agentMessage":
           return "reply: \(item.nativeItemId.flatMap { live[$0] } ?? item.payload["text"]?.stringValue ?? "")"
         case .assistant: return "working: \(item.type)"
+        case .tool where item.type == TaskList.itemType:
+          let display = TaskListDisplay(item: item)
+          let steps = display?.steps.map { "\($0.text) (\($0.mark.spoken))" }.joined(separator: "; ") ?? ""
+          return "plan: \(display?.header ?? "nothing"): \(steps)"
         case .tool:
           let status = item.payload["status"]?.stringValue.map(DenseTranscript.statusLabel) ?? "no status"
           return "\(DenseTranscript.title(of: item)) [\(status)]"
@@ -204,6 +208,38 @@ import WorkspaceProtocol
           "swift test [Unfinished]", "note: Turn stopped.",
         ],
         dense: ["user: Run everything.", "line: 2 steps, Show", "note: Turn stopped."]))
+  }
+
+  /// A plan with a step under way when Stop was pressed. The step is unfinished at both densities,
+  /// never running and never done, and the plan is not a step of the turn.
+  @Test func aStoppedTurnsPlanNeverShowsARunningStep() {
+    let plan = TaskList(steps: [
+      .init(text: "Build", status: .completed), .init(text: "Test", status: .inProgress),
+      .init(text: "Ship", status: .pending),
+    ])
+    let scenario = Scenario(
+      name: "plan, stopped",
+      items: numbered([
+        ask("u1", "t1", "Run everything."),
+        item("p1", "t1", .tool, TaskList.itemType, native: "tasks:t1", plan.payload.objectValue ?? [:]),
+        run("k1", "t1", "swift build", "completed"),
+        run("k2", "t1", "swift test", "inProgress"),
+      ]),
+      turns: [turn("t1", .terminal, .cancelled)],
+      invocations: [
+        Invocation(id: "k1", title: "swift build", outcome: "Completed"),
+        Invocation(id: "k2", title: "swift test", outcome: "Unfinished"),
+      ],
+      normal: [
+        "user: Run everything.",
+        "plan: Plan · 1 of 3: Build (done); Test (unfinished); Ship (not started)",
+        "swift build [Completed]", "swift test [Unfinished]", "note: Turn stopped.",
+      ],
+      dense: ["user: Run everything.", "line: 2 steps, Show", "note: Turn stopped."])
+    check(scenario)
+    #expect(
+      dense(scenario, open: ["t1"]).contains(
+        "plan: Plan · 1 of 3: Build (done); Test (unfinished); Ship (not started)"))
   }
 
   /// F12: the runtime went away mid-turn. The turn's outcome is unknown and so is its open step's.

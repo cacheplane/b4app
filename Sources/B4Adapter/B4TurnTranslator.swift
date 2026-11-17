@@ -264,6 +264,21 @@ public struct B4TurnTranslator: Sendable {
         return [event(.toolStarted, toolPayload(id: callId, status: "inProgress"), itemId: callId)]
       }
       return []
+    case .unknown("plan_update", let data) where data["todos"]?.arrayValue != nil:
+      // The whole list each time: one task list per turn, replaced in place (its id names the turn).
+      let steps = (data["todos"]?.arrayValue ?? []).map {
+        TaskList.Step(
+          text: $0["content"]?.stringValue ?? "", status: TaskList.status($0["status"]?.stringValue))
+      }
+      return [
+        event(
+          .toolCompleted,
+          [
+            "item": TaskList(steps: steps).payload, "role": .string(DisplayItemRole.tool.rawValue),
+            "type": .string(TaskList.itemType),
+          ],
+          itemId: TaskList.nativeItemId(turn: turnId))
+      ]
     case .unknown(let name, let data):
       guard let name, !name.isEmpty else { return [] }
       capabilityIndex += 1

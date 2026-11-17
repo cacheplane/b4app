@@ -93,6 +93,7 @@ enum DenseTranscript {
       return
         "\(item.payload["server"]?.stringValue ?? "mcp") / \(item.payload["tool"]?.stringValue ?? "tool")"
     case "webSearch": return "Web search"
+    case TaskList.itemType: return "Plan"
     case "toolUse":
       let name = item.payload["name"]?.stringValue ?? "Tool"
       if let command = item.payload["command"]?.stringValue { return "\(name): \(command)" }
@@ -128,10 +129,15 @@ enum DenseTranscript {
     return true
   }
 
+  /// The items a thread draws: a task list with no steps (a plan the agent emptied) is not one.
+  private static func drawn(_ items: [DisplayItem]) -> [DisplayItem] {
+    items.filter { $0.type != TaskList.itemType || !($0.payload["steps"]?.arrayValue ?? []).isEmpty }
+  }
+
   /// `open` holds the groups whose lines are open.
   static func entries(items: [DisplayItem], turns: [Turn], open: Set<String>) -> [Entry] {
     let known = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-    let ordered = items.enumerated().sorted {
+    let ordered = drawn(items).enumerated().sorted {
       ($0.element.sequence, $0.offset) < ($1.element.sequence, $1.offset)
     }.map(\.element)
 
@@ -171,7 +177,8 @@ enum DenseTranscript {
   /// Normal density: every item in the order given, a step of an ended turn settled as at dense, and
   /// each turn's note, or a running turn's line, after that turn's last item (a turn with no items:
   /// after everything).
-  static func plain(items: [DisplayItem], turns: [Turn]) -> [Entry] {
+  static func plain(items stored: [DisplayItem], turns: [Turn]) -> [Entry] {
+    let items = drawn(stored)
     let known = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     let keys = groupKeys(items)
     var last: [String: Int] = [:]
@@ -281,7 +288,8 @@ enum DenseTranscript {
     // The messages the closed group draws after its line.
     var visible: [DisplayItem]
     if running {
-      visible = rest.filter(isMessage)
+      // A running turn's plan is drawn as its messages are: it says what the agent is doing.
+      visible = rest.filter { isMessage($0) || $0.type == TaskList.itemType }
     } else if let last = rest.last(where: { isMessage($0) && hasText($0) }),
       !rest.drop(while: { $0.id != last.id }).contains(where: isCountedStep)
     {
@@ -344,10 +352,27 @@ enum DenseTranscript {
   /// "unknown" while the turn's outcome is unknown. The stored item is untouched.
   private static func settled(_ item: DisplayItem, in turn: Turn?) -> DisplayItem {
     if let turn, runningStatuses.contains(turn.status) { return item }
+    let word = turn?.status == .reconciling ? "unknown" : "stopped"
+    // A task list's own status is always completed; it is its steps that a turn can leave open.
+    if item.type == TaskList.itemType, case .object(var members) = item.payload,
+      let steps = members["steps"]?.arrayValue
+    {
+      members["steps"] = .array(
+        steps.map { step in
+          guard step["status"]?.stringValue == "inProgress", case .object(var fields) = step else {
+            return step
+          }
+          fields["status"] = .string(word)
+          return .object(fields)
+        })
+      var copy = item
+      copy.payload = .object(members)
+      return copy
+    }
     guard item.role == .tool, item.payload["status"]?.stringValue == "inProgress",
       case .object(var members) = item.payload
     else { return item }
-    members["status"] = .string(turn?.status == .reconciling ? "unknown" : "stopped")
+    members["status"] = .string(word)
     var copy = item
     copy.payload = .object(members)
     return copy
