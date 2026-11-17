@@ -7,7 +7,9 @@
 # iOS 26 or later runtime). Sessions in two checkouts used to pick the same booted iPhone, and each
 # run's install and launch of the harness (one bundle id) killed the other's tests. Run one layout
 # suite per checkout at a time. `--stop` shuts this checkout's Simulator down and deletes it.
-# B4APP_LAYOUT_DESTINATION overrides the destination.
+# B4APP_LAYOUT_DESTINATION overrides the destination. CI builds while its Simulator boots:
+# `--build-only` builds the harness and its tests without touching the device, and
+# `--without-building` then runs them; with neither, one run builds and tests.
 set -eu
 cd "$(dirname "$0")/.."
 SUM="$(printf '%s' "$PWD" | cksum | cut -d ' ' -f 1)"
@@ -37,6 +39,12 @@ if [ "${1:-}" = "--stop" ]; then
   fi
   exit 0
 fi
+
+action="test"
+case "${1:-}" in
+  --build-only) action=build-for-testing; shift ;;
+  --without-building) action=test-without-building; shift ;;
+esac
 
 mkdir -p .build/iOSLayout
 xcodegen generate --spec Tests/iOSLayout/project.yml --project .build/iOSLayout >/dev/null
@@ -69,10 +77,15 @@ print((pro or phones)[0]["identifier"], runtime["identifier"])
   xcrun simctl bootstatus "$device" -b >/dev/null
   destination="platform=iOS Simulator,id=$device"
 fi
+derived=${B4APP_LAYOUT_DERIVED_DATA:-.build/iOSLayout/DerivedData}
+if [ "$action" = build-for-testing ]; then
+  exec xcodebuild build-for-testing -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj \
+    -scheme WorkspaceLayout -destination "$destination" -derivedDataPath "$derived" "$@"
+fi
 results=${B4APP_LAYOUT_RESULTS:-"$PWD/.build/iOSLayout/Results-$(date -u +%Y%m%dT%H%M%S).xcresult"}
-if xcodebuild test -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -scheme WorkspaceLayout \
+if xcodebuild "$action" -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -scheme WorkspaceLayout \
   -destination "$destination" -parallel-testing-enabled NO \
-  -derivedDataPath "${B4APP_LAYOUT_DERIVED_DATA:-.build/iOSLayout/DerivedData}" \
+  -derivedDataPath "$derived" \
   -resultBundlePath "$results" "$@"; then
   xcrun xcresulttool get test-results summary --path "$results" --compact > "$results.summary.json"
   python3 -c '
