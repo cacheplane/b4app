@@ -43,6 +43,9 @@ public enum ClaudeStream {
   public static let inheritedCredentialVariables = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]
 
   /// Build the child environment: inherit, drop API credentials and NODE_OPTIONS, mark the entrypoint.
+  /// Claude Code 2.1.282 leaves the task tools (`TaskCreate`, `TaskUpdate`) out of a session run this
+  /// way unless `CLAUDE_CODE_ENABLE_TODO_TOOLS` is set, and the app draws their list (D-247); a value
+  /// the owner set stands.
   public static func childEnvironment(from base: [String: String], clientVersion: String) -> [String: String]
   {
     var env = base
@@ -50,6 +53,7 @@ public enum ClaudeStream {
     env["NODE_OPTIONS"] = nil
     env["CLAUDE_CODE_ENTRYPOINT"] = env["CLAUDE_CODE_ENTRYPOINT"] ?? "sdk-swift"
     env["CLAUDE_CODE_SDK_READS_SESSION_STATE"] = "1"
+    env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] = env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] ?? "1"
     env["CLAUDE_AGENT_SDK_CLIENT_APP"] = "b4app/\(clientVersion)"
     return env
   }

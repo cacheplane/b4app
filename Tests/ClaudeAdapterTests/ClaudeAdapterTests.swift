@@ -77,6 +77,16 @@ private let clean = ["PATH": "/usr/bin"]
     #expect(env["CLAUDE_CODE_SDK_READS_SESSION_STATE"] == "1")
   }
 
+  /// Claude Code 2.1.282 gives a session run this way no task tools unless this is set (D-247).
+  @Test func childEnvironmentAsksForTheTaskTools() {
+    let env = ClaudeStream.childEnvironment(from: ["PATH": "/usr/bin"], clientVersion: "0.0.0")
+    #expect(env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] == "1")
+    // The owner's own setting stands.
+    let off = ClaudeStream.childEnvironment(
+      from: ["CLAUDE_CODE_ENABLE_TODO_TOOLS": "0"], clientVersion: "0.0.0")
+    #expect(off["CLAUDE_CODE_ENABLE_TODO_TOOLS"] == "0")
+  }
+
   @Test func encodesInitializeAndUserFrames() throws {
     let initializeLine = String(decoding: try ClaudeStream.initializeRequest(requestId: "r1"), as: UTF8.self)
     #expect(
