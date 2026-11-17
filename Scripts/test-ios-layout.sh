@@ -48,6 +48,11 @@ esac
 
 mkdir -p .build/iOSLayout
 xcodegen generate --spec Tests/iOSLayout/project.yml --project .build/iOSLayout >/dev/null
+# The package's own pins, so xcodebuild never resolves the package graph afresh: unpinned, it took
+# three minutes beside a booting Simulator on a hosted runner (run 44198847451).
+pins=.build/iOSLayout/WorkspaceLayout.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+mkdir -p "$pins"
+cp Package.resolved "$pins/Package.resolved"
 derived=${B4APP_LAYOUT_DERIVED_DATA:-.build/iOSLayout/DerivedData}
 if [ "$action" = build-for-testing ]; then
   # No device: a destination naming one made xcodebuild wait almost five minutes on a Simulator
@@ -55,7 +60,7 @@ if [ "$action" = build-for-testing ]; then
   # Simulator builds. Verbose, so the log shows where the time goes.
   exec xcodebuild build-for-testing -project .build/iOSLayout/WorkspaceLayout.xcodeproj \
     -scheme WorkspaceLayout -destination 'generic/platform=iOS Simulator' ARCHS=arm64 \
-    -derivedDataPath "$derived" "$@"
+    -disableAutomaticPackageResolution -derivedDataPath "$derived" "$@"
 fi
 if [ -n "${B4APP_LAYOUT_DESTINATION:-}" ]; then
   destination=$B4APP_LAYOUT_DESTINATION
@@ -89,7 +94,7 @@ fi
 results=${B4APP_LAYOUT_RESULTS:-"$PWD/.build/iOSLayout/Results-$(date -u +%Y%m%dT%H%M%S).xcresult"}
 if xcodebuild "$action" -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -scheme WorkspaceLayout \
   -destination "$destination" -parallel-testing-enabled NO \
-  -derivedDataPath "$derived" \
+  -disableAutomaticPackageResolution -derivedDataPath "$derived" \
   -resultBundlePath "$results" "$@"; then
   xcrun xcresulttool get test-results summary --path "$results" --compact > "$results.summary.json"
   python3 -c '

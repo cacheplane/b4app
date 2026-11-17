@@ -200,6 +200,7 @@ class SimulatorWorkflowTests(unittest.TestCase):
             wrapper = root / 'Scripts/test-ios-layout.sh'
             wrapper.write_text((ROOT / 'Scripts/test-ios-layout.sh').read_text())
             wrapper.chmod(0o755)
+            (root / 'Package.resolved').write_text('{"pins": [], "version": 3}\n')
             bin_dir = root / 'bin'
             bin_dir.mkdir()
             for name, body in {
@@ -223,6 +224,12 @@ class SimulatorWorkflowTests(unittest.TestCase):
                     self.assertTrue(calls[0].startswith(action + ' '), calls[0])
                     self.assertNotIn(mode, calls[0])
                     self.assertIn('-clonedSourcePackagesDirPath .spm', calls[0])
+                    # The generated project carries the package's pins, so neither run resolves the
+                    # package graph afresh (three minutes beside a booting Simulator, run 44198847451).
+                    self.assertIn('-disableAutomaticPackageResolution', calls[0])
+                    pins = root / ('.build/iOSLayout/WorkspaceLayout.xcodeproj/project.xcworkspace'
+                                   '/xcshareddata/swiftpm/Package.resolved')
+                    self.assertEqual(pins.read_text(), (root / 'Package.resolved').read_text())
                     self.assertEqual('-resultBundlePath' in calls[0], verifies)
                     self.assertEqual('totalTestCount' in result.stdout, verifies)
                     if verifies:
