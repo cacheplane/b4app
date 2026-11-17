@@ -30,55 +30,6 @@ import WorkspaceProtocol
     let metadata: [String]
     let cursors: [String]
   }
-  private struct OwnedLog: Sendable {
-    let path: String
-    let device: dev_t
-    let inode: ino_t
-    init(_ path: String) throws {
-      let temporary = URL(fileURLWithPath: AgentProtocolResourceFixture.temporaryDirectory)
-        .resolvingSymlinksInPath().standardizedFileURL.path
-      let expected = temporary + "/b4pg-shared-\(ProcessInfo.processInfo.processIdentifier)/postgres.log"
-      var info = stat()
-      guard URL(fileURLWithPath: path).resolvingSymlinksInPath().path == expected,
-        lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid()
-      else { throw FixtureFailure.unsafeLog }
-      self.path = path; device = info.st_dev; inode = info.st_ino
-    }
-    func opened() throws -> FileHandle {
-      let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW)
-      guard fd >= 0 else { throw FixtureFailure.unsafeLog }
-      var info = stat()
-      guard fstat(fd, &info) == 0, info.st_dev == device, info.st_ino == inode,
-        info.st_mode & S_IFMT == S_IFREG, info.st_uid == getuid()
-      else { Darwin.close(fd); throw FixtureFailure.unsafeLog }
-      return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-    }
-    func offset() throws -> UInt64 {
-      let h = try opened(); defer { try? h.close() }; return try h.seekToEnd()
-    }
-    func tail(_ start: UInt64) throws -> String {
-      let h = try opened(); defer { try? h.close() }
-      let end = try h.seekToEnd()
-      guard end >= start, end - start <= 4 << 20 else { throw FixtureFailure.oversizedLog }
-      try h.seek(toOffset: start)
-      let length = Int(end - start)
-      var data = Data()
-      while data.count < length {
-        guard let chunk = try h.read(upToCount: length - data.count), !chunk.isEmpty
-        else { throw FixtureFailure.unsafeLog }
-        data.append(chunk)
-      }
-      return String(decoding: data, as: UTF8.self)
-    }
-    func observed(_ marker: String, after start: UInt64) async throws -> Bool {
-      let end = ContinuousClock.now + .seconds(2)
-      repeat {
-        if try tail(start).contains(marker) { return true }
-        try await Task.sleep(for: .milliseconds(10))
-      } while ContinuousClock.now < end
-      return false
-    }
-  }
   private struct Fixture: Sendable {
     let database: WorkspaceDatabase
     let raw: PostgresConnection
@@ -88,7 +39,7 @@ import WorkspaceProtocol
     let endpointReference: SecretRef
     let endpointValue: String
     let material: String
-    let log: OwnedLog
+    let log: AgentProtocolOwnedPostgresLog
   }
   private static func withFixture(_ body: @Sendable (Fixture) async throws -> Void) async throws {
     var endpoint = try AgentProtocolResourceFixture.endpoint()
@@ -112,7 +63,7 @@ import WorkspaceProtocol
         "SELECT current_setting('server_version_num')::int AS version,current_setting('is_superuser') AS privileged"
       ).rows.first
       try #require(supported?.int("version") == 170011 && supported?.text("privileged") == "on")
-      let log = try OwnedLog(endpoint.logPath)
+      let log = try AgentProtocolOwnedPostgresLog(endpoint)
       let database = try WorkspaceDatabase(
         endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
       ownedDatabase = database
@@ -173,6 +124,12 @@ import WorkspaceProtocol
   }
 
   private static func fixtureError(_ error: any Error) -> any Error {
+    if let failure = error as? AgentProtocolOwnedPostgresLog.Failure {
+      switch failure {
+      case .unsafeLog: return FixtureFailure.unsafeLog
+      case .oversizedLog: return FixtureFailure.oversizedLog
+      }
+    }
     let text = String(describing: error)
     if text.contains("A3_GRANT_PRIVATE_") || text.contains("A3_ENDPOINT_PRIVATE_") {
       Issue.record("A private sentinel reached an unhandled error; refused to print its value.")
