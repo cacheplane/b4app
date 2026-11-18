@@ -376,6 +376,30 @@ private func lists(_ events: [AdapterEvent]) -> [(id: String?, list: TaskList)] 
         == [.init(text: "Read", status: .inProgress), .init(text: "Write", status: .pending)])
 
     #expect(await ClaudeAdapter.seededTasks(sessionId: "s2", under: root.path) == nil)
-    #expect(await ClaudeAdapter.seededTasks(sessionId: "s1", under: nil) == nil)
+  }
+
+  /// A coordinator started again has read no history, so nothing has told its adapter where Claude
+  /// Code keeps transcripts: the session it starts again still finds its list (D-247).
+  @Test func anAdapterThatHasReadNoHistoryStillSeedsAResumedSession() async throws {
+    let rig = try Rig()
+    let ref = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
+    try await rig.completedTurn(ref, "make a tasklist")
+    await rig.adapter.dispose()
+
+    var env = ProcessInfo.processInfo.environment
+    env["CLAUDE_CONFIG_DIR"] = (rig.projects as NSString).deletingLastPathComponent
+    env["FAKE_CLAUDE_PROJECTS"] = rig.projects
+    env["ANTHROPIC_API_KEY"] = nil
+    let restarted = ClaudeAdapter(
+      connectionId: "c1", executablePath: fakeClaudePath(), environment: env, clientVersion: "test")
+    let collector = EventCollector(restarted.events())
+    let receipt = try await restarted.sendTurn(
+      ref, input: TurnInput(operationId: UUID().uuidString, text: "advance it", workingDirectory: rig.workDir)
+    )
+    try await collector.waitFor { $0.kind == .turnFinished && $0.nativeIds["turnId"] == receipt.nativeTurnId }
+    #expect(
+      lists(await collector.events).last?.list.steps
+        == [.init(text: "Read", status: .completed), .init(text: "Write", status: .pending)])
+    await restarted.dispose()
   }
 }
