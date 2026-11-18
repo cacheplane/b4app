@@ -309,6 +309,10 @@ public struct ClaudeTurnTracker: Sendable {
         }
         continue
       }
+      // A result whose use was never seen still names the sub-agent its own frame comes from.
+      if toolParents[id] == nil, let frameParent = value["parent_tool_use_id"]?.stringValue {
+        toolParents[id] = frameParent
+      }
       let declined = declinedToolUses.remove(id) != nil
       let extra: [String: JSONValue] = [
         "output": .string(Self.text(of: block["content"]) ?? ""), "isError": .bool(failed),

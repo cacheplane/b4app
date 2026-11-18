@@ -150,4 +150,32 @@ import WorkspaceProtocol
     #expect(events.last?.payload["item"]?["status"]?.stringValue == "declined")
     #expect(events.allSatisfy { parent($0) == "toolu_agent" })
   }
+
+  /// The child's started frame was missed: its result's own frame still names the call.
+  @Test func aParentedResultForAnUnseenUseNamesTheCall() {
+    var t = tracker()
+    let events = run(
+      &t,
+      [
+        #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_unseen","content":"x"}]},"parent_tool_use_id":"toolu_agent","session_id":"s1","uuid":"u1"}"#
+      ])
+    #expect(events.count == 1)
+    #expect(parent(events[0]) == "toolu_agent")
+  }
+
+  /// A child closed as failed and then refused by Claude Code (`permission_denied` after the error
+  /// result) is closed again as declined, still under the call.
+  @Test func aRedeclinedChildNamesTheCallToo() {
+    var t = tracker()
+    let events = run(
+      &t,
+      [
+        #"{"type":"assistant","message":{"id":"msg_c4","role":"assistant","content":[{"type":"tool_use","id":"toolu_c","name":"Bash","input":{"command":"ls"}}]},"parent_tool_use_id":"toolu_agent","session_id":"s1","uuid":"a1"}"#,
+        #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_c","content":"no","is_error":true}]},"parent_tool_use_id":"toolu_agent","session_id":"s1","uuid":"u2"}"#,
+        #"{"type":"system","subtype":"permission_denied","tool_use_id":"toolu_c","session_id":"s1"}"#,
+      ])
+    #expect(
+      events.map { $0.payload["item"]?["status"]?.stringValue } == ["inProgress", "failed", "declined"])
+    #expect(events.allSatisfy { parent($0) == "toolu_agent" })
+  }
 }
