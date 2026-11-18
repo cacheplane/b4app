@@ -1488,9 +1488,16 @@ public actor SessionService {
         return nil
       }
     }
+    // A tool step's end is stamped here, whatever its final status: the row's duration is this less
+    // the item's `createdAt`, which the upsert keeps from the started write.
+    var payload = item
+    if raw.kind == .toolCompleted, var fields = item.objectValue {
+      fields["endedAt"] = .string(Timestamp.now())
+      payload = .object(fields)
+    }
     return try db.upsertDisplayItem(
       threadId: thread.id, turnId: turn?.id, nativeItemId: nativeItemId, role: role, type: type,
-      payload: item,
+      payload: payload,
       provenance: .live)
   }
 

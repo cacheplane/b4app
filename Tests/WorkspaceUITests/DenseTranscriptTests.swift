@@ -672,4 +672,46 @@ import WorkspaceProtocol
       #expect(all.prefix(window.hidden).map(\.id) + window.entries.map(\.id) == all.map(\.id))
     }
   }
+
+  // MARK: a step's end time
+
+  private func ended(_ status: String = "completed", endedAt: JSONValue?) -> DenseTranscript.StepRow {
+    var payload: [String: JSONValue] = ["command": "ls"]
+    if let endedAt { payload["endedAt"] = endedAt }
+    let step = item("s1", role: .tool, type: "commandExecution", status: status, payload: payload)
+    return DenseTranscript.stepRow(step, in: .terminal)
+  }
+
+  @Test func aFinishedStepsDurationIsItsEndLessItsStart() {
+    #expect(ended(endedAt: "2026-11-18T10:00:18.000Z").duration == 18)
+    #expect(ended("failed", endedAt: "2026-11-18T10:00:18.000Z").duration == 18)
+    #expect(ended("declined", endedAt: "2026-11-18T10:00:18.000Z").duration == 18)
+  }
+
+  @Test func aStepWithoutAUsableEndHasNoDuration() {
+    #expect(ended(endedAt: nil).duration == nil)
+    #expect(ended(endedAt: "not a time").duration == nil)
+    #expect(ended(endedAt: 12).duration == nil)
+    // Settled as unfinished: it has no end, and none is invented.
+    #expect(ended("stopped", endedAt: nil).duration == nil)
+  }
+
+  @Test func aDurationIsNeverNegative() {
+    #expect(ended(endedAt: "2026-11-18T09:59:00.000Z").duration == 0)
+  }
+
+  @Test func onlyAStepOrAnAgentShowsATime() {
+    let stamp: JSONValue = "2026-11-18T10:00:18.000Z"
+    let other = item(
+      "o1", role: .tool, type: "toolUse", status: "completed",
+      payload: ["name": "TodoWrite", "endedAt": stamp])
+    let thought = item("r1", role: .assistant, type: "reasoning", payload: ["endedAt": stamp])
+    #expect(DenseTranscript.stepRow(thought, in: .terminal).duration == nil)
+    #expect(DenseTranscript.stepRow(other, in: .terminal).kind == .other)
+    #expect(DenseTranscript.stepRow(other, in: .terminal).duration == nil)
+    let running = item(
+      "s2", role: .tool, type: "commandExecution", status: "inProgress", payload: ["endedAt": stamp])
+    #expect(DenseTranscript.stepRow(running, in: .running).duration == nil)
+    #expect(DenseTranscript.stepRow(running, in: .waitingForUser).duration == nil)
+  }
 }

@@ -508,7 +508,22 @@ extension DenseTranscript {
     }
     return StepRow(
       item: item, depth: min(max(depth, 1), 4), kind: kind, mark: mark, title: title,
-      startedAt: mark == .running && kind != .other ? item.createdAt : nil, duration: nil, opens: opens)
+      startedAt: mark == .running && kind != .other ? item.createdAt : nil,
+      duration: duration(of: item, kind: kind, mark: mark), opens: opens)
+  }
+
+  /// Seconds from the item's creation to its `endedAt`: only a step or an agent that is not running or
+  /// waiting has one, and a step with no end (or one that does not parse) has none.
+  private static func duration(of item: DisplayItem, kind: StepRow.Kind, mark: StepRow.Mark) -> Int? {
+    switch kind {
+    case .step, .agent: break
+    case .other, .thought, .message, .plan: return nil
+    }
+    guard mark != .running, mark != .waiting,
+      let endedAt = item.payload["endedAt"]?.stringValue,
+      let seconds = ActivityTime.seconds(from: item.createdAt, to: endedAt)
+    else { return nil }
+    return max(seconds, 0)
   }
 
   /// A reasoning item's text: its text, else its summary, else its content, one part a line.

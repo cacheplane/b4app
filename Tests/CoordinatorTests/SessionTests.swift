@@ -368,6 +368,59 @@ actor EventCollector {
     await h.stop()
   }
 
+  /// A tool step records when it ended (the row's duration is that less the item's `createdAt`), a
+  /// started one has no end yet, and a reconcile of the thread leaves the live row's end alone.
+  @Test func aCompletedToolItemRecordsWhenItEnded() async throws {
+    let (injected, deliver) = AsyncStream<AdapterEvent>.makeStream()
+    let h = try await Harness.start(adapterFactory: { connection, environment, version, secrets in
+      InjectingAdapter(
+        inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
+        injected: injected)
+    })
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "hello there")
+    _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+
+    func tool(_ kind: EventKind, _ id: String, status: String) -> AdapterEvent {
+      AdapterEvent(
+        kind: kind, connectionId: connection.id,
+        nativeIds: ["threadId": thread.nativeThreadId, "itemId": id],
+        payload: [
+          "type": "commandExecution", "role": "tool",
+          "item": ["command": "ls", "status": .string(status)],
+        ])
+    }
+    func settled(_ kind: EventKind, after count: Int) async {
+      _ = await h.events.until { $0.filter { $0.kind == kind }.count > count }
+    }
+    func stored(_ id: String) async throws -> DisplayItem {
+      try #require(try await h.read(thread).items.first { $0.nativeItemId == id })
+    }
+
+    let started = await h.events.events.filter { $0.event.kind == .toolStarted }.count
+    deliver.yield(tool(.toolStarted, "call-1", status: "inProgress"))
+    await settled(.toolStarted, after: started)
+    let open = try await stored("call-1")
+    #expect(open.payload["endedAt"] == nil)
+
+    let completed = await h.events.events.filter { $0.event.kind == .toolCompleted }.count
+    deliver.yield(tool(.toolCompleted, "call-1", status: "failed"))
+    await settled(.toolCompleted, after: completed)
+    let done = try await stored("call-1")
+    #expect(done.createdAt == open.createdAt)
+    #expect(done.payload["status"]?.stringValue == "failed")
+    let endedAt = try #require(done.payload["endedAt"]?.stringValue)
+    let end = try #require(Timestamp.date(from: endedAt))
+    #expect(end >= (try #require(Timestamp.date(from: done.createdAt))))
+
+    _ = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    #expect(try await stored("call-1").payload["endedAt"]?.stringValue == endedAt)
+    await h.stop()
+  }
+
   @Test func refusesASecondTurnWhileOneIsActiveAndDeduplicatesRetries() async throws {
     let h = try await Harness.start()
     let connection = try await h.addCodex()
