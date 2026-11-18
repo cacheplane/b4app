@@ -148,7 +148,7 @@ jobs:
         run: python3 Scripts/restore_mtimes.py
       - name: Restore the SwiftPM build
         if: github.event_name != 'push'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build
@@ -158,7 +158,7 @@ jobs:
       - name: Format lint
         run: swift format lint --strict --recursive Sources Tests Apps Package.swift
       - name: Cache the pinned PostgreSQL archive
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build/postgres-dl
           key: postgres-dl-${{ hashFiles('Scripts/fetch-postgres.sh') }}
@@ -185,7 +185,7 @@ jobs:
           exit "$status"
       - name: Save the SwiftPM build
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build
@@ -210,7 +210,7 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Cache SwiftPM (xcodebuild)
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .spm
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
@@ -219,7 +219,7 @@ jobs:
         run: python3 Scripts/restore_mtimes.py
       - name: Restore DerivedData
         if: github.event_name != 'push'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/AppDerivedData/Build
@@ -241,7 +241,7 @@ jobs:
           -clonedSourcePackagesDirPath .spm -derivedDataPath .build/AppDerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
       - name: Save DerivedData
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/AppDerivedData/Build
@@ -289,7 +289,7 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Cache SwiftPM (xcodebuild)
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .spm
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
@@ -298,7 +298,7 @@ jobs:
         run: python3 Scripts/restore_mtimes.py
       - name: Restore DerivedData
         if: github.event_name != 'push'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/DerivedData/Build
@@ -334,7 +334,7 @@ jobs:
           retention-days: 7
       - name: Save DerivedData
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/DerivedData/Build
@@ -383,13 +383,13 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Cache SwiftPM (xcodebuild)
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .spm
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: spm-xcode-${{ runner.os }}-
       - name: Cache the pinned PostgreSQL archive
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build/postgres-dl
           key: postgres-dl-${{ hashFiles('Scripts/fetch-postgres.sh') }}
@@ -397,7 +397,7 @@ jobs:
         run: python3 Scripts/restore_mtimes.py
       - name: Restore DerivedData
         if: github.event_name != 'push'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/macOSSmoke/DerivedData/Build
@@ -416,7 +416,7 @@ jobs:
           retention-days: 7
       - name: Save DerivedData
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/macOSSmoke/DerivedData/Build
@@ -452,7 +452,7 @@ jobs:
           rustup toolchain install 1.93.1 --profile minimal --component rustfmt --component clippy
           rustup default 1.93.1
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
