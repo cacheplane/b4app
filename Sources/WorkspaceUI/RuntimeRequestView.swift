@@ -34,6 +34,8 @@ struct RuntimeRequestCard: View {
   @Bindable var model: WorkspaceModel
   let request: RuntimeRequest
   @State private var answers: [String: String] = [:]
+  /// The options ticked in each question that takes several, by question id.
+  @State private var chosen: [String: Set<String>] = [:]
 
   private var details: JSONValue? { request.payload["request"] }
   private var answerable: Bool { request.payload["answerable"]?.boolValue ?? false }
@@ -63,17 +65,9 @@ struct RuntimeRequestCard: View {
           questions
         } else if answerable {
           HStack(spacing: LLA.Space.s) {
-            Button("Allow once") { Task { await model.respond(requestId: request.id, decision: .allowOnce) } }
-              .buttonStyle(.llaPrimary).accessibilityIdentifier("allow-once")
-            Button("Allow for session") {
-              Task { await model.respond(requestId: request.id, decision: .allowAlways) }
+            ForEach(RequestChoices(payload: request.payload).choices) { choice in
+              choiceButton(choice)
             }
-            .buttonStyle(.llaSecondary)
-            Button("Deny", role: .destructive) {
-              Task { await model.respond(requestId: request.id, decision: .deny) }
-            }
-            .buttonStyle(.llaDanger)
-            .accessibilityIdentifier("deny")
           }
           .padding(.top, LLA.Space.xs)
           .disabled(!model.canAnswer(request))
@@ -82,6 +76,22 @@ struct RuntimeRequestCard: View {
           Text("This request type cannot be answered here and was declined automatically.").llaCaption()
         }
       }
+    }
+  }
+
+  /// One of the request's choices: only those its runtime applies are drawn (`RequestChoices`).
+  @ViewBuilder private func choiceButton(_ choice: RequestChoices.Choice) -> some View {
+    let send = { Task { await model.respond(requestId: request.id, decision: choice.decision) } }
+    switch choice.decision {
+    case .allowOnce:
+      Button(choice.label) { _ = send() }
+        .buttonStyle(.llaPrimary).accessibilityIdentifier(choice.identifier)
+    case .allowAlways:
+      Button(choice.label) { _ = send() }
+        .buttonStyle(.llaSecondary).accessibilityIdentifier(choice.identifier)
+    case .deny:
+      Button(choice.label, role: .destructive) { _ = send() }
+        .buttonStyle(.llaDanger).accessibilityIdentifier(choice.identifier)
     }
   }
 
@@ -104,7 +114,16 @@ struct RuntimeRequestCard: View {
         Text(question["header"]?.stringValue ?? id).font(LLAFont.smallStrong).foregroundStyle(LLA.Color.ink)
         Text(question["question"]?.stringValue ?? "").llaSmall().fixedSize(horizontal: false, vertical: true)
         let options = question["options"]?.arrayValue ?? []
-        if !options.isEmpty {
+        if RequestChoices.isMultiSelect(question) {
+          ForEach(Array(options.enumerated()), id: \.offset) { _, option in
+            let label = option["label"]?.stringValue ?? ""
+            Toggle(label, isOn: ticked(label, in: id))
+              .font(LLAFont.small)
+              #if os(macOS)
+                .toggleStyle(.checkbox)
+              #endif
+          }
+        } else if !options.isEmpty {
           Picker("Answer", selection: binding(for: id)) {
             Text("Choose…").tag("")
             ForEach(Array(options.enumerated()), id: \.offset) { _, option in
@@ -121,11 +140,11 @@ struct RuntimeRequestCard: View {
       }
     }
     Button("Submit answers") {
-      let payload = answers.filter { !$0.value.isEmpty }.mapValues { [$0] }
+      let payload = answerPayload(list)
       Task { await model.answer(requestId: request.id, answers: payload) }
     }
     .buttonStyle(.llaPrimary)
-    .disabled(!model.canAnswer(request) || answers.values.allSatisfy(\.isEmpty))
+    .disabled(!model.canAnswer(request) || answerPayload(list).isEmpty)
     answerState
   }
 
@@ -145,6 +164,27 @@ struct RuntimeRequestCard: View {
       .accessibilityElement(children: .combine)
       .accessibilityIdentifier("answer-state")
     }
+  }
+
+  /// Each answered question's answers: one for a question that takes one, the ticked options (and
+  /// anything typed) for a question that takes several.
+  private func answerPayload(_ questions: [JSONValue]) -> [String: [String]] {
+    var payload = answers.filter { !$0.value.isEmpty }.mapValues { [$0] }
+    for question in questions where RequestChoices.isMultiSelect(question) {
+      let id = question["id"]?.stringValue ?? ""
+      let options = (question["options"]?.arrayValue ?? []).compactMap { $0["label"]?.stringValue }
+      let answer = RequestChoices.answer(options: options, chosen: chosen[id] ?? [], other: answers[id] ?? "")
+      payload[id] = answer.isEmpty ? nil : answer
+    }
+    return payload
+  }
+
+  private func ticked(_ label: String, in id: String) -> Binding<Bool> {
+    Binding(
+      get: { chosen[id]?.contains(label) ?? false },
+      set: { on in
+        if on { chosen[id, default: []].insert(label) } else { chosen[id]?.remove(label) }
+      })
   }
 
   private func binding(for id: String) -> Binding<String> {

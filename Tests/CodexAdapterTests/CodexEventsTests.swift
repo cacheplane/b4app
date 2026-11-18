@@ -100,6 +100,23 @@ private let turnStream = """
     #expect(translated[0].nativeIds["itemId"] == "i9")
   }
 
+  /// Codex stops asking for the session on `acceptForSession`: its approvals say so, nothing else does.
+  @Test func approvalsOfferTheSessionAndOtherRequestsDoNot() {
+    for method in [
+      "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "execCommandApproval",
+      "applyPatchApproval",
+    ] {
+      let opened = events(
+        #"{"id":7,"method":"\#(method)","params":{"threadId":"t","turnId":"u","itemId":"i"}}"#)
+      #expect(AllowScope(requestPayload: opened[0].payload) == .session, "\(method)")
+    }
+    for method in ["item/tool/requestUserInput", "item/permissions/requestApproval"] {
+      let opened = events(
+        #"{"id":7,"method":"\#(method)","params":{"threadId":"t","turnId":"u","itemId":"i"}}"#)
+      #expect(AllowScope(requestPayload: opened[0].payload) == nil, "\(method)")
+    }
+  }
+
   @Test func commandApprovalRequestOpensARuntimeRequestWithSafePayload() {
     let translated = events(
       #"{"id":7,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr_1","turnId":"turn_1","itemId":"item_2","command":"ls -la","cwd":"/tmp","reason":null,"environmentId":"env_secret","startedAtMs":1}}"#
