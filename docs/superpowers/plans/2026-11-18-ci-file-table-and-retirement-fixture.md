@@ -1,0 +1,30 @@
+# CI File-Table and Retirement Fixture Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Give the existing managed database lanes explicit finite system-file-table headroom and isolate one Codex request-expiry fixture from independently covered startup discovery, while preserving every existing test and acceptance gate.
+
+**Architecture:** Integrate exact current main first. Add one bounded provisioning step to each existing package/serial job, leaving test scheduling and commands unchanged. Seed a known command list only in the expiry fixture. Product defaults, PostgreSQL settings and test resource traits remain unchanged.
+
+**Tech Stack:** GitHub Actions, macOS `sysctl`, bash, Swift 6.3 and Swift Testing; inert source/hash/ZIP review locally, managed CI for execution.
+
+## Evidence and scope
+
+Baseline `84bc65a64d67576d07cc5571e4b24fcf343fe86a`, tree `044029e070c2c296feb5d8675100c4a9ed4cfbdd`, remains RED. Two preserved rendered foundation rows report system-wide ENFILE while opening a SQL resource. They are partial rendered text, not the unavailable full package raw log, and establish neither an exact descriptor count, a leak nor the abrupt job's complete cause. The separate recovered A2 serial raw reports `calls.value` as one versus zero in `codexStartupStillExpiresItsProcessBoundRequests`. Other passing excerpts do not qualify this candidate.
+
+The system-file-table target **262144** is a finite engineering trial, not measured demand or proof of sufficient capacity. It can permit more kernel memory and I/O allocation. Keep the package/serial job caps at 45 minutes, App builds at 30 minutes, Mac smoke at 20 minutes, all four ordinary macOS jobs, required checks and existing cache/retention policy. No new decision, release or activation is introduced. Preserve D-240 historical/staged denies and current Codex/Claude behavior, D-242 merge-queue requirements and D-244/D-249 CI wiring.
+
+## Implementation
+
+- [ ] Integrate exact main `3ec6cba551876d51448704b705f36d25850c614a` from common base `f0ff88e31b0dcdbed09754e6ba48918e036ccd6e`. Three-way merge workflow, ThreadDelete and RelayLink tests, retaining branch resource traits, all six added RelayLink protocol tests and protocol-version expectation, and every main change. Copy the other six main paths exactly, including the iOS build/test split and its published records. Keep main's timing bounds; do not reinterpret them as this resource trial's deadline changes.
+- [ ] Immediately after Xcode selection and before PostgreSQL launch in `package` and `account-session-aggregate-serial-diagnostic`, add identical one-minute setup steps using `set -euo pipefail`. Record named `kern.maxfiles`, `kern.maxfilesperproc`, `kern.num_files` and inherited soft/hard nofile limits. Read/validate numeric current `kern.maxfiles`; only if lower, run `sudo -n sysctl -w kern.maxfiles=262144`. Preserve a higher observed value. Require numeric readback at least 262144, then emit final named readback. Denied or unmet provisioning fails setup.
+- [ ] Do not mutate process limits or `kern.maxfilesperproc`, launch tests/PostgreSQL as root, change PostgreSQL file/connection settings or pool sizes, introduce permits/retries/exclusions/serialization, alter test commands/filters/deadlines/job budgets, or change cancellation/cache/retention behavior. Provisioning is setup validation only.
+- [ ] In the single Codex expiry test, set only its existing connection's `commands` to `[]` and require that known-list precondition before `service.start`. Keep enabled state, unknown turn/request seeds, expired-request and nil-outcome assertions, zero factory-call assertion, bounded shutdown, database close and error propagation. Keep general fixture defaults and native missing-list discovery positive controls unchanged: enabled Codex/Claude with `commands == nil` must still discover; historical B4 and staged Agent Protocol must still refuse.
+
+## Source review and prospective acceptance
+
+- [ ] Bind the full source inventory, modes, canonical blobs/tree and exact main/own deltas. Invert the two own workflow steps and the fixture seed to recover the integrated checkpoint. Retain all 369 resource opt-ins, the 797/165 partition and every test identity/argument; census inherited main separately. Existing C6 helper/source literals and all 17 source pins remain unchanged and valid. The workflow's actual hash changes and must be captured by fresh managed metadata.
+- [ ] Preserve all available terminal evidence with the package raw gap explicit. Obtain RootSPEC and a fresh independent full-source quality review, then immediate branch/main/head/PR/run/index/clean guards before exact authorized adoption and normal nonforce push. No local compiler, formatter, native/runtime or host-limit probes qualify this work.
+- [ ] Require fresh managed ALL CI on the exact final source: actual provisioning readback; native 41 and selected 86 companions in their applicable invocations; foundation, full default and serial aggregates; physical writer (distinguish physical 55 from selected 53), publication 17, native command-discovery positives, historical/staged denies and all ordinary app/UI/Debug gates. C6 requires actual qualified 11 `compiler_profile` records, 33 `control_qualified` receipts and 11 `controls_qualified` summaries, bound to the tested source/helper/workflow/run/artifact, with strict 51 source / 55 input / 52 output and 116 argument-template expectations. Metadata alone does not qualify compilation. Preserve the model 17 source-method identities and their parameterized cases: source argument cases and aggregate records are distinct from independent terminal results. Do not transfer earlier-source passes or waive RED runs. Require ALL GREEN, the normal squash queue, and actual merge-group/main validation before completion.
+
+SDK/npm/release/production/activation/A4–A10/live HTTP holds remain HELD.

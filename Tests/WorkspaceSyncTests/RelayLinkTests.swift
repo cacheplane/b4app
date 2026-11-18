@@ -613,15 +613,24 @@ struct RelayLinkTests {
     #expect(await h.link.hubNow() == nil)
     await h.link.start()
     let socket = try await h.connection.nextSocket()
-    socket.deliver(helloMessage(hubTime: Date().addingTimeInterval(120)))
+    // The link measures the offset when the message arrives, somewhere between `sent` and the read,
+    // so the error lies in that span. Bounds from the test's own clock readings hold however slow
+    // the runner is.
+    var sent = Date()
+    socket.deliver(helloMessage(hubTime: sent.addingTimeInterval(120)))
     await waitUntil("hello") { await h.link.hubNow() != nil }
     let afterHello = try #require(await h.link.hubNow())
-    #expect(abs(afterHello.timeIntervalSinceNow - 120) < 2)
+    var lag = Date().timeIntervalSince(sent)
+    #expect(afterHello.timeIntervalSinceNow - 120 <= 1)
+    #expect(afterHello.timeIntervalSinceNow - 120 >= -lag - 1)
 
-    socket.deliver(.pong(hubTime: isoString(Date().addingTimeInterval(-300))))
+    sent = Date()
+    socket.deliver(.pong(hubTime: isoString(sent.addingTimeInterval(-300))))
     await waitUntil("pong") { (await h.link.hubNow().map { $0.timeIntervalSinceNow < -200 }) == true }
     let afterPong = try #require(await h.link.hubNow())
-    #expect(abs(afterPong.timeIntervalSinceNow + 300) < 2)
+    lag = Date().timeIntervalSince(sent)
+    #expect(afterPong.timeIntervalSinceNow + 300 <= 1)
+    #expect(afterPong.timeIntervalSinceNow + 300 >= -lag - 1)
   }
 
   @Test func reconnectNowSkipsTheBackoffWait() async throws {

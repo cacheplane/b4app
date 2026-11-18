@@ -552,7 +552,8 @@ private let link = MirrorLink(
     let started = ContinuousClock.now
     await sync.stop()
     await running.value
-    #expect(ContinuousClock.now - started < .seconds(5))
+    // Well under the 25 s poll it ends, with room for a loaded CI runner.
+    #expect(ContinuousClock.now - started < .seconds(10))
   }
 
   @Test func aNudgeDuringFailureReportingSkipsTheBackoff() async throws {
@@ -670,7 +671,8 @@ private let link = MirrorLink(
 
     let started = ContinuousClock.now
     await sync.suspend()
-    #expect(ContinuousClock.now - started < .seconds(2))
+    // Well under the 25 s poll it cancels; a loaded CI runner took 2.3 s.
+    #expect(ContinuousClock.now - started < .seconds(10))
     let callsAtSuspend = probed.calls
 
     // A local edit and a nudge while suspended reach neither the hub nor the outbox's upload.

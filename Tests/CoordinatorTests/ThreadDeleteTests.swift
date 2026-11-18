@@ -284,12 +284,13 @@ private func markDeletedAndCaptureCursor(
 
   @Test(NativeDBResources()) func deletingAnswersBeforeASlowRuntimeDelete() async throws {
     let calls = RuntimeCalls()
-    let h = try await Harness.start(adapterFactory: recording(calls, deleteDelay: .seconds(5)))
+    let h = try await Harness.start(adapterFactory: recording(calls, deleteDelay: .seconds(10)))
     let codex = try await h.addCodex()
     let thread = try await h.newThread(codex)
     let started = ContinuousClock.now
     _ = try await h.delete(thread)
-    #expect(ContinuousClock.now - started < .seconds(3))
+    // Before the slow runtime delete could have returned, with room for a loaded CI runner.
+    #expect(ContinuousClock.now - started < .seconds(8))
     #expect(try await h.listedIds().isEmpty)
     try await eventually("deleted in Codex") {
       let tried = await !calls.deletes.isEmpty

@@ -148,6 +148,9 @@ private final class RetirementFactoryCalls: Sendable {
 
   @Test func codexStartupStillExpiresItsProcessBoundRequests() async throws {
     try await withFixture(kind: .codex) { (db, service, calls) async throws in
+      // Keep this expiry oracle independent of permitted missing-command discovery.
+      let seeded = try db.updateConnection(id: "legacy") { $0.commands = [] }
+      try #require(seeded?.commands == [])
       await service.start()
       #expect(try db.runtimeRequest(id: "old-request")?.state == .expired)
       #expect(try db.turn(id: "unknown-turn")?.outcome == nil)
