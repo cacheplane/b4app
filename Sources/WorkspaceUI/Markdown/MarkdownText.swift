@@ -103,10 +103,17 @@ private struct MarkdownListView: View {
     VStack(alignment: .leading, spacing: LLA.Space.s) {
       ForEach(Array(list.items.enumerated()), id: \.element.id) { index, item in
         HStack(alignment: .firstTextBaseline, spacing: LLA.Space.s) {
-          marker(index: index, task: item.task)
-            .font(LLAFont.body)
-            .monospacedDigit()
-            .frame(minWidth: LLA.Space.xl, alignment: .trailing)
+          // The column is as wide as the list's widest marker, so every item's content starts at
+          // the same x: the last number is the widest, and its hidden text sizes the column.
+          ZStack(alignment: .trailing) {
+            if list.ordered {
+              Text(verbatim: "\(list.start + list.items.count - 1).").hidden().accessibilityHidden(true)
+            }
+            marker(index: index, task: item.task)
+          }
+          .font(LLAFont.body)
+          .monospacedDigit()
+          .frame(minWidth: LLA.Space.xl, alignment: .trailing)
           MarkdownBlocksView(blocks: item.blocks, streaming: streaming)
             .frame(maxWidth: .infinity, alignment: .leading)
         }

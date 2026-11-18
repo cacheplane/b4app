@@ -1587,8 +1587,11 @@ public final class WorkspaceModel {
       current.turns = read.turns
       current.items = read.items
       current.requests = read.requests
-      // No turn runs any more: a stream whose `turn.finished` never arrived does not stay live.
-      if current.activeTurn == nil { streams.turnFinished() }
+      // No turn runs any more: a stream whose `turn.finished` never arrived does not stay live. A
+      // read issued before the running turn was known lacks it, and says nothing about it.
+      if current.activeTurn == nil, !predatesRunningTurn(threadId, turns: read.turns) {
+        streams.turnFinished()
+      }
       detail = current
       activeTurns[threadId] = read.turns.last { $0.status != .terminal }
       prunePendingSends()
@@ -1893,7 +1896,11 @@ public final class WorkspaceModel {
     case .turnAcknowledged, .turnStateChanged, .turnFinished:
       if let turn = try? event.payload["turn"]?.decode(Turn.self) { current.upsert(turn) }
       // The turn's end, or a turn event that leaves no turn running (its `turn.finished` was lost).
-      if event.kind == .turnFinished || current.activeTurn == nil { streams.turnFinished() }
+      if event.kind == .turnFinished
+        || (current.activeTurn == nil && !predatesRunningTurn(current.thread.id, turns: current.turns))
+      {
+        streams.turnFinished()
+      }
     case .runtimeRequestOpened:
       if let request = try? event.payload["runtimeRequest"]?.decode(RuntimeRequest.self),
         request.state == .pending, !current.requests.contains(where: { $0.id == request.id })
@@ -1923,9 +1930,16 @@ public final class WorkspaceModel {
   private func keepStreams(from old: ThreadDetail?, to new: ThreadDetail) {
     if old?.thread.id != new.thread.id {
       streams.reset()
-    } else if new.activeTurn == nil {
+    } else if new.activeTurn == nil, !predatesRunningTurn(new.thread.id, turns: new.turns) {
       streams.turnFinished()
     }
+  }
+
+  /// Whether the model knows a running turn of the thread that `turns` does not hold: a read issued
+  /// before that turn began and landing after its first deltas, which must not end its streams.
+  private func predatesRunningTurn(_ threadId: String, turns: [Turn]) -> Bool {
+    guard let running = activeTurns[threadId] else { return false }
+    return !turns.contains { $0.id == running.id }
   }
 
   /// Everything of an account that is no longer the signed-in one: no row, filter, pending send (they

@@ -81,6 +81,28 @@
       #expect(measured.width <= 320.5, "the reply is \(measured.width) pt wide")
     }
 
+    /// Items numbered 9 to 100: markers of one, two and three digits, and every item's text starts
+    /// at the same x.
+    @Test func anOrderedListsItemsStartAtOneColumn() async throws {
+      let text = (9...100).map { "\($0). item \($0)" }.joined(separator: "\n")
+      let document = MarkdownParser.parse(text)
+      guard case .list(let list) = document.blocks.first?.kind else {
+        Issue.record("not a list: \(document.blocks)")
+        return
+      }
+      #expect(list.start == 9 && list.items.count == 92)
+      let screen = HostedScreen(MarkdownText(document: document), size: CGSize(width: 320, height: 3200))
+      defer { screen.close() }
+      func x(_ number: Int) -> CGFloat? {
+        screen.elements.first { $0.label == "item \(number)" }?.frame?.minX
+      }
+      try await screen.until("the items' text") { [9, 10, 100].allSatisfy { x($0) != nil } }
+      let nine = try #require(x(9))
+      for number in [10, 100] {
+        #expect(abs((x(number) ?? 0) - nine) < 0.5, "item \(number) at \(x(number) ?? -1), item 9 at \(nine)")
+      }
+    }
+
     @Test func anEmptyDocumentDrawsNothing() {
       #expect(size(MarkdownText(document: .empty), width: 420).height == 0)
       #expect(size(MarkdownText(text: " \n"), width: 420).height == 0)
