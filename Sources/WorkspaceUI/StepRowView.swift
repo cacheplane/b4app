@@ -128,8 +128,9 @@ struct StepRowView: View {
     }
   }
 
-  /// A check when done, the working mark while running, an open circle while waiting, a danger cross when failed, a dash when
-  /// declined or left unfinished; nothing otherwise, in the same box so the titles line up.
+  /// A check when done, the working mark while running, an open circle while waiting, a danger cross
+  /// when failed, a dash when declined or left unfinished; nothing otherwise, in the same box so the
+  /// titles line up.
   @ViewBuilder private var mark: some View {
     Group {
       switch row.mark {
@@ -163,12 +164,13 @@ struct StepRowView: View {
 }
 
 /// An opened agent's own result, after its children: drawn as a step's output is, under the agent's row
-/// and at its level.
+/// and at its level. With no result, what the call recorded instead: its whole detail.
 struct AgentOutputRow: View {
   let row: DenseTranscript.StepRow
 
   var body: some View {
-    StepOutput(detail: ToolEvidence.detail(of: row.item), resultOnly: true)
+    let detail = ToolEvidence.detail(of: row.item)
+    StepOutput(detail: detail, resultOnly: detail.output != .none)
       .padding(.leading, LLA.Metrics.mark + LLA.Space.s)
       .padding(.vertical, LLA.Space.s)
       .stepIndent(row.depth)
@@ -259,6 +261,7 @@ struct StepOutput: View {
 struct StepOutputBlock: View {
   let text: String
   @State private var showAll = false
+  @Environment(\.holdTranscript) private var holdTranscript
   @State private var memo = Memo()
 
   static let limit = 20
@@ -311,15 +314,25 @@ struct StepOutputBlock: View {
       .clipShape(RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous))
       if cut.control != nil {
         Button {
+          // As every toggle in the transcript does: the block grows under its row, which stays put.
+          holdTranscript()
           showAll.toggle()
         } label: {
           Text(showAll ? "Show fewer lines" : (cut.control ?? ""))
             .font(LLAFont.small)
             .foregroundStyle(LLA.Color.muted)
             .underline()
+            .frame(minHeight: LLA.Metrics.row)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
       }
     }
   }
+}
+
+extension EnvironmentValues {
+  /// Holds the transcript's view (`TranscriptFolds.hold()`) before a control inside a row changes the
+  /// row's height; nothing outside a transcript.
+  @Entry var holdTranscript: @MainActor () -> Void = {}
 }

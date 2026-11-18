@@ -221,10 +221,21 @@
       #expect(
         heard.contains("swift test, 1 minute 15 seconds, Show")
           || heard.contains("swift test, 1 minute 16 seconds, Show"), "\(heard)")
+      // A line that opens says whether it is open, as a step row does, and keeps its spoken word.
+      #expect(screen.value("activity-line") == "Collapsed")
       // An ended line has no clock to speak.
       let done = HostedScreen(lineRow(line(duration: 72)), size: CGSize(width: 400, height: 60))
       defer { done.close() }
       #expect(!done.elements.compactMap(\.label).contains { $0.hasSuffix("seconds") })
+      let opened = HostedScreen(lineRow(line(duration: 72), open: true), size: CGSize(width: 400, height: 60))
+      defer { opened.close() }
+      #expect(opened.value("activity-line") == "Expanded")
+      #expect(opened.label("activity-line") == "4 steps, 1m 12s, Hide")
+      // A line with nothing to open is no control and has no state.
+      let still = HostedScreen(
+        lineRow(line(state: .running, name: nil, folded: 0)), size: CGSize(width: 400, height: 60))
+      defer { still.close() }
+      #expect(still.value("activity-line") != "Collapsed" && still.value("activity-line") != "Expanded")
     }
 
     /// Only a line that has not ended draws a clock.
@@ -578,6 +589,24 @@
         return found
       }
 
+      /// Presses the first element under the transcript that `match` picks, with the tree read as
+      /// `frames` reads it. False when there is none.
+      func press(_ match: (HostedScreen.Element) -> Bool) -> Bool {
+        let enhanced = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        let old = NSApplication.shared.accessibilityAttributeValue(enhanced)
+        NSApplication.shared.accessibilitySetValue(true, forAttribute: enhanced)
+        defer { NSApplication.shared.accessibilitySetValue(old ?? false, forAttribute: enhanced) }
+        func find(_ element: HostedScreen.Element) -> HostedScreen.Element? {
+          if match(element) { return element }
+          for child in element.children {
+            if let found = find(child) { return found }
+          }
+          return nil
+        }
+        guard let found = find(HostedScreen.Element(object: root)) else { return false }
+        return found.object.accessibilityPerformPress?() ?? false
+      }
+
       /// Written when the transcript was a lazy stack, whose end moved as it was reached; kept as it is.
       func scrollToEnd() async throws {
         try await settle()
@@ -648,6 +677,41 @@
       #expect(
         output.maxY <= after.minY + 0.5,
         "the output's top \(output.maxY) is above the row's bottom \(after.minY)")
+    }
+
+    /// "Show all" on an output at the end of the thread holds the view, as every toggle does: the lines
+    /// are drawn under the step's row, which stays where it was, rather than pushing it up.
+    @Test func showingAllOfAnOutputHoldsTheView() async throws {
+      var detail = twelveTurns()
+      let index = try #require(detail.items.firstIndex { $0.id == "s12-4" })
+      detail.items[index] = item(
+        "s12-4", turn: "t12", role: .tool, type: "commandExecution", sequence: 124,
+        payload: [
+          "command": "swift test --filter s12-4", "status": "completed",
+          "aggregatedOutput": .string((1...25).map { "line \($0)" }.joined(separator: "\n")),
+        ])
+      let view = try Hosted(detail)
+      defer { view.close() }
+      view.folds.toggle("t12")
+      view.folds.toggle("s12-4")
+      try await view.settle()
+      try await view.scrollToEnd()
+      view.folds.release()
+      try await view.settle()
+      #expect(!view.folds.holds)
+      #expect(view.atEnd || view.atDocumentEnd)
+      func pressed() -> [CGRect] {
+        view.frames { $0.identifier == "step-row" && ($0.label ?? "").hasSuffix("--filter s12-4") }
+      }
+      let before = try #require(pressed().first, "the step's row is not in view")
+      let closed = view.documentHeight
+
+      #expect(view.press { $0.role == .button && $0.label == "Show all 25 lines" })
+      #expect(view.folds.holds)
+      try await view.until("all the lines are drawn") { view.documentHeight > closed + 1 }
+      try await view.settle()
+      let after = try #require(pressed().first, "the step's row is gone from view")
+      #expect(abs(after.maxY - before.maxY) <= 0.5, "the row moved by \(after.maxY - before.maxY)")
     }
 
     /// Twelve ended turns whose tenth turn's second step is a sub-agent's call with two children and

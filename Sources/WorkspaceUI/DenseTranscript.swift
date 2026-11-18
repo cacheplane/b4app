@@ -294,7 +294,12 @@ enum DenseTranscript {
     let users = shown.filter { $0.role == .user }
     let systems = shown.filter { $0.role == .system }
     let rest = shown.filter { $0.role != .user && $0.role != .system }
-    func isMessage(_ item: DisplayItem) -> Bool { item.role == .assistant && item.type == "agentMessage" }
+    // A sub-agent's item whose call is not here (`Tree` left it at the top level) is still folded work:
+    // never the answer and never drawn after the line.
+    func isSubAgents(_ item: DisplayItem) -> Bool { item.payload["parentNativeItemId"]?.stringValue != nil }
+    func isMessage(_ item: DisplayItem) -> Bool {
+      item.role == .assistant && item.type == "agentMessage" && !isSubAgents(item)
+    }
     // A message with no text is never the answer: it would stand after the line as an empty row.
     func hasText(_ item: DisplayItem) -> Bool {
       !(item.payload["text"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -304,7 +309,7 @@ enum DenseTranscript {
     var visible: [DisplayItem]
     if running {
       // A running turn's plan is drawn as its messages are: it says what the agent is doing.
-      visible = rest.filter { isMessage($0) || $0.type == TaskList.itemType }
+      visible = rest.filter { isMessage($0) || ($0.type == TaskList.itemType && !isSubAgents($0)) }
     } else if let last = rest.last(where: { isMessage($0) && hasText($0) }),
       !rest.drop(while: { $0.id != last.id }).contains(where: isCountedStep)
     {
@@ -503,17 +508,25 @@ extension DenseTranscript {
     !children.isEmpty || startsAgent(item)
   }
 
-  /// "Agent: <the call's input.description>", or "Agent" without one.
+  /// "Agent: <text>": the call's `input.description`, else the first line of its prompt (Codex's
+  /// `prompt`, or `input.prompt`), trimmed and cut at `nameLimit`; "Agent" without one.
   static func agentTitle(of item: DisplayItem) -> String {
-    let description =
-      item.payload["input"]?["description"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-      ?? ""
-    return description.isEmpty ? "Agent" : "Agent: \(description)"
+    func firstLine(_ value: JSONValue?) -> String {
+      let text = value?.stringValue ?? ""
+      let first = text.split(separator: "\n", omittingEmptySubsequences: false).first.map(String.init) ?? ""
+      return first.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let sources = [
+      item.payload["input"]?["description"], item.payload["prompt"], item.payload["input"]?["prompt"],
+    ]
+    guard let name = sources.lazy.map(firstLine).first(where: { !$0.isEmpty }) else { return "Agent" }
+    return "Agent: " + (name.count > nameLimit ? String(name.prefix(nameLimit - 1)) + "…" : name)
   }
 
-  /// The call recorded a result: an agent's report, drawn after its children.
-  private static func hasOutput(_ item: DisplayItem) -> Bool {
-    ToolEvidence.detail(of: item).output != .none
+  /// The detail has something to draw: an input, an output, an exit code, changes, or the payload.
+  private static func shows(_ detail: ToolEvidence.Detail) -> Bool {
+    detail.input != nil || detail.output != .none || detail.exitCode != nil || !detail.changes.isEmpty
+      || detail.raw != nil
   }
 
   /// Which items a sub-agent made, in a thread: an item whose `parentNativeItemId` names another item's
@@ -570,7 +583,8 @@ extension DenseTranscript {
       guard case .agent = row.kind, open.contains(row.id) else { return [.step(row)] }
       var result: [Entry] = [.step(row)]
       for child in children { result += entries(for: child, turn: turn, depth: depth + 1) }
-      if hasOutput(row.item) { result.append(.output(row)) }
+      // Its result, or, with none, whatever else the call recorded.
+      if shows(ToolEvidence.detail(of: row.item)) { result.append(.output(row)) }
       return result
     }
   }
@@ -615,13 +629,10 @@ extension DenseTranscript {
     case .agent(let steps):
       let count = steps == 0 ? "" : steps == 1 ? " · 1 step" : " · \(steps) steps"
       title = agentTitle(of: item) + count
-      opens = !children.isEmpty || hasOutput(item)
+      opens = !children.isEmpty || shows(ToolEvidence.detail(of: item))
     case .step, .other:
       title = DenseTranscript.title(of: item)
-      let detail = ToolEvidence.detail(of: item)
-      opens =
-        detail.input != nil || detail.output != .none || detail.exitCode != nil || !detail.changes.isEmpty
-        || detail.raw != nil
+      opens = shows(ToolEvidence.detail(of: item))
     }
     return StepRow(
       item: item, depth: min(max(depth, 1), 4), kind: kind, mark: mark, title: title,

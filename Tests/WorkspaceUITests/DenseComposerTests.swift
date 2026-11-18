@@ -302,11 +302,18 @@
       window.host.layoutSubtreeIfNeeded()
     }
 
-    /// A layout pass, after a press.
-    func layout() {
+    /// Layout passes, after a press, until `condition` holds. No clock decides the outcome: the timeout
+    /// only ends a test that would otherwise hang.
+    func layout(_ what: String, until condition: () -> Bool) throws {
+      let deadline = ContinuousClock.now + .seconds(30)
       window.host.layoutSubtreeIfNeeded()
-      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-      window.host.layoutSubtreeIfNeeded()
+      while !condition() {
+        guard ContinuousClock.now < deadline else {
+          throw WorkspaceError(.internalError, "timed out waiting for \(what)")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+        window.host.layoutSubtreeIfNeeded()
+      }
     }
 
     func close() {

@@ -469,6 +469,20 @@ import WorkspaceProtocol
       #expect(!heard.contains { $0.contains("Count them.") }, "\(heard)")
     }
 
+    /// An agent with no output, Codex's call among them, draws what it has: its whole detail.
+    @Test func anAgentWithNoOutputDrawsItsDetail() {
+      let agent = DenseTranscript.stepRow(
+        DisplayItem(
+          id: "x1", threadId: "th", turnId: "t1", role: .tool, type: "collabAgentToolCall",
+          payload: ["tool": "spawn", "prompt": "Find the slow query\nand report", "status": "completed"],
+          sequence: 1, provenance: .live), in: .terminal)
+      let screen = HostedScreen(AgentOutputRow(row: agent), size: CGSize(width: 400, height: 300))
+      defer { screen.close() }
+      let heard = screen.elements.compactMap(\.label)
+      #expect(heard.contains { $0.contains("Find the slow query") }, "\(heard)")
+      #expect(!heard.contains("No text output."), "\(heard)")
+    }
+
     @Test func anAgentWithNoTextSaysSo() {
       let agent = DenseTranscript.stepRow(
         DisplayItem(
@@ -493,8 +507,11 @@ import WorkspaceProtocol
       }
       func press(_ element: HostedScreen.Element?) throws {
         let element = try #require(element, "no control")
+        let before = screen.frame("step-output")?.height
         _ = element.object.accessibilityPerformPress?()
-        screen.layout()
+        try screen.layout("the block's height to change") {
+          (screen.frame("step-output")?.height).map { abs($0 - (before ?? $0)) > 0.5 } ?? false
+        }
       }
       let top = try #require(screen.frame("step-row")).maxY
       let short = try #require(screen.frame("step-output")).height

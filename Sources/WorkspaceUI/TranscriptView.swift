@@ -1,8 +1,8 @@
 import SwiftUI
 import WorkspaceProtocol
 
-/// Which turns' lines are open, by group key. Owned by the transcript as `@State`, so it is forgotten
-/// with the view and never stored.
+/// Which turns' lines and which step rows are open, by group key and by item id. Owned by the transcript
+/// as `@State`, so it is forgotten with the view and never stored.
 @Observable final class TranscriptFolds {
   var open: Set<String>
   /// From a toggle until the reader returns to the end, sends a message, or another thread is shown:
@@ -120,6 +120,7 @@ struct TranscriptView: View {
           folds: folds
         )
         .background { StreamFollower(streams: streams) { follow(proxy) } }
+        .environment(\.holdTranscript) { [folds] in folds.hold() }
       }
       .accessibilityIdentifier("transcript")
       #if os(iOS)
@@ -316,6 +317,8 @@ struct ActivityLineRow: View {
           content
         }
         .buttonStyle(.plain)
+        // The spoken word stays; the value says whether it is open, as a step row's does.
+        .accessibilityValue(open ? "Expanded" : "Collapsed")
       } else {
         content
       }

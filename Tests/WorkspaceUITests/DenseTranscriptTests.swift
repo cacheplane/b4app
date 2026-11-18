@@ -776,7 +776,7 @@ import WorkspaceProtocol
     #expect(call.mark == .done)
 
     let opened = entries(oneAgent(running: false), turns: [turn()], open: ["t1", "k1"])
-    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "c2", "m1", "c3"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "c2", "m1", "output-k1", "c3"])
     let children = rows(opened).filter { ["c1", "c2", "m1"].contains($0.id) }
     #expect(children.map(\.kind) == [.step, .step, .message])
     #expect(children.allSatisfy { $0.depth == 2 })
@@ -818,7 +818,7 @@ import WorkspaceProtocol
       native(command("a2"), parent: "k1"), native(command("b2"), parent: "k2"),
     ]
     let opened = entries(items, turns: [turn()], open: ["t1", "k1", "k2"])
-    #expect(ids(opened) == ["u1", "steps-t1", "k1", "a1", "a2", "k2", "b1", "b2"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "a1", "a2", "output-k1", "k2", "b1", "b2", "output-k2"])
   }
 
   @Test func aChildWhoseParentIsNotHereStandsWhereItIsUntilItArrives() throws {
@@ -830,7 +830,7 @@ import WorkspaceProtocol
 
     let arrived = [orphan[0], orphan[1], agent("k1"), orphan[2], orphan[3]]
     let under = entries(arrived, turns: [turn()], open: ["t1", "k1"])
-    #expect(ids(under) == ["u1", "steps-t1", "c0", "k1", "c1", "a1"])
+    #expect(ids(under) == ["u1", "steps-t1", "c0", "k1", "c1", "output-k1", "a1"])
     #expect(try #require(row("c1", in: under)).depth == 2)
     #expect(try #require(line(under)).counted == 2)
   }
@@ -842,7 +842,7 @@ import WorkspaceProtocol
     ]
     let turns = [turn("t1", .running, nil), turn("t2")]
     let opened = entries(items, turns: turns, open: ["t1", "k1"])
-    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "u2"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "output-k1", "u2"])
     let child = try #require(row("c1", in: opened))
     #expect(child.depth == 2)
     #expect(child.mark == .running)
@@ -854,7 +854,11 @@ import WorkspaceProtocol
       + (2...5).map { agent("k\($0)", parent: "k\($0 - 1)") }
       + [native(command("c5"), parent: "k5")]
     let opened = entries(items, turns: [turn()], open: ["t1", "k1", "k2", "k3", "k4", "k5"])
-    #expect(ids(opened) == ["u1", "steps-t1", "k1", "k2", "k3", "k4", "k5", "c5"])
+    #expect(
+      ids(opened) == [
+        "u1", "steps-t1", "k1", "k2", "k3", "k4", "k5", "c5", "output-k5", "output-k4", "output-k3",
+        "output-k2", "output-k1",
+      ])
     #expect(rows(opened).map(\.depth) == [1, 2, 3, 4, 4, 4])
     #expect(rows(opened).dropLast().allSatisfy { $0.kind == .agent(steps: 1) })
   }
@@ -864,16 +868,58 @@ import WorkspaceProtocol
     let collabRow = DenseTranscript.stepRow(collab, in: .terminal)
     #expect(collabRow.kind == .agent(steps: 0))
     #expect(collabRow.title == "Agent")
-    #expect(!collabRow.opens)
+    // No children and no output: it opens to what its payload holds.
+    #expect(collabRow.opens)
     for name in ["Task", "Agent"] {
       let childless = DenseTranscript.stepRow(agent("k1", name: name), in: .terminal)
       #expect(childless.kind == .agent(steps: 0))
       #expect(childless.title == "Agent: find the slow query")
-      #expect(!childless.opens)
+      #expect(childless.opens)
       let answered = DenseTranscript.stepRow(agent("k1", name: name, output: "Done."), in: .terminal)
       #expect(answered.opens)
     }
-    #expect(DenseTranscript.stepRow(agent("k1", description: nil), in: .terminal).title == "Agent")
+    // Without a description the prompt names it.
+    #expect(DenseTranscript.stepRow(agent("k1", description: nil), in: .terminal).title == "Agent: Look.")
+  }
+
+  /// Codex's call has no description: its title is the prompt's first line, and with no children and no
+  /// output it still opens, to its payload, drawn after it as the agent's output.
+  @Test func aCodexAgentCallIsNamedByItsPromptAndOpensToItsPayload() throws {
+    let collab = native(
+      item(
+        "x1", role: .tool, type: "collabAgentToolCall", status: "completed",
+        payload: ["tool": "spawn", "prompt": "Find the slow query\nand report"]))
+    let closed = DenseTranscript.stepRow(collab, in: .terminal)
+    #expect(closed.title == "Agent: Find the slow query")
+    #expect(closed.opens)
+    let opened = entries([user("u1"), collab, message("a1")], turns: [turn()], open: ["t1", "x1"])
+    #expect(ids(opened) == ["u1", "steps-t1", "x1", "output-x1", "a1"])
+    let output = opened.compactMap { entry -> DenseTranscript.StepRow? in
+      if case .output(let row) = entry { return row }
+      return nil
+    }
+    #expect(output.count == 1)
+    // `input.prompt` names it as well, and a long first line is cut as the running name is.
+    let long = String(repeating: "p", count: 200)
+    let prompted = DenseTranscript.stepRow(
+      item(
+        "x2", role: .tool, type: "toolUse", payload: ["name": "Agent", "input": ["prompt": .string(long)]]),
+      in: .terminal)
+    #expect(prompted.title.count == "Agent: ".count + DenseTranscript.nameLimit)
+    #expect(prompted.title.hasSuffix("…"))
+  }
+
+  /// A sub-agent's message whose call is not in the thread is still the sub-agent's: never the answer.
+  @Test func anOrphanSubAgentMessageIsNotTheAnswer() throws {
+    let items = [
+      user("u1"), command("c1"), message("a1"),
+      native(message("m1", text: "The sub-agent's report."), parent: "gone"),
+    ]
+    let closed = entries(items, turns: [turn()])
+    #expect(ids(closed) == ["u1", "steps-t1", "a1"])
+    #expect(try #require(line(closed)).folded.map(\.id) == ["c1", "m1"])
+    let running = entries(items, turns: [turn("t1", .running, nil)])
+    #expect(ids(running) == ["u1", "steps-t1", "a1"])
   }
 
   @Test func aFailedChildIsNotTheTurnsFailure() throws {
@@ -896,7 +942,7 @@ import WorkspaceProtocol
       native(command("c1"), parent: "k1"),
     ]
     let opened = entries(items, turns: [turn()], open: ["t1", "k1", "k2", "k3"])
-    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "k2", "k3"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "output-k1", "k2", "output-k2", "k3", "output-k3"])
     #expect(rows(opened).map(\.depth) == [1, 2, 1, 1])
   }
 

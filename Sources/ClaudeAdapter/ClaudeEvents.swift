@@ -309,8 +309,11 @@ public struct ClaudeTurnTracker: Sendable {
         }
         continue
       }
-      // A result whose use was never seen still names the sub-agent its own frame comes from.
-      if toolParents[id] == nil, let frameParent = value["parent_tool_use_id"]?.stringValue {
+      // A result whose use was never seen still names the sub-agent its own frame comes from. A use that
+      // was seen keeps what its own frame said, a parent or none; one already closed keeps its parent.
+      if toolUses[id] == nil, toolParents[id] == nil,
+        let frameParent = value["parent_tool_use_id"]?.stringValue
+      {
         toolParents[id] = frameParent
       }
       let declined = declinedToolUses.remove(id) != nil

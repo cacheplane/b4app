@@ -1031,7 +1031,8 @@ private final class BackgroundWindow: NSWindow {
     let sent = detail([ask("u1", "Run the tests on both targets.")], .running, nil, turns: running(3))
     try await capture("sent", height: 130, sent)
 
-    // An opened running turn: a finished step, an open sub-agent with a finished and a running step.
+    // An opened running turn: a finished step, an open sub-agent with a finished and a running step, then
+    // what the call recorded (its input: it has no result yet).
     let nested = detail(
       [
         ask("u1", "Find the slow query."),
@@ -1042,7 +1043,7 @@ private final class BackgroundWindow: NSWindow {
         timed(child("k2", "cargo test changes::pull_pages", of: "g1", status: "inProgress"), ago(24)),
         timed(step("c2", "swift build", status: "completed"), ago(20), ended: ago(8)),
       ], .running, nil, turns: running(42))
-    try await capture("open-agent", height: 330, nested, open: ["t1", "g1"])
+    try await capture("open-agent", height: 450, nested, open: ["t1", "g1"])
 
     // A step opened to its output, in a turn that ended.
     let output = detail(

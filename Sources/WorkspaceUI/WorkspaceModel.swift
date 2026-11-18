@@ -30,8 +30,8 @@ public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
 
   /// The pages this platform shows. "Account" comes first (sign-in plan, Task 12). "Display" is the
   /// Mac's: Dense changes its sidebar rows and composer, and the phone has neither. "Remote access" is
-  /// the Mac's: it mints the pairing code and holds itself awake, neither of which the phone does. The phone's Account page reads its host's
-  /// account (Task 14).
+  /// the Mac's: it mints the pairing code and holds itself awake, neither of which the phone does. The
+  /// phone's Account page reads its host's account (Task 14).
   nonisolated public static var allCases: [SettingsPage] {
     #if os(macOS)
       [.account, .display, .connections, .servers, .remoteAccess, .diagnostics]

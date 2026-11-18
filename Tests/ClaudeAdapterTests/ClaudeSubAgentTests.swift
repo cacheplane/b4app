@@ -163,6 +163,32 @@ import WorkspaceProtocol
     #expect(parent(events[0]) == "toolu_agent")
   }
 
+  /// A result for an unseen use whose own frame names no call names none.
+  @Test func anUnparentedResultForAnUnseenUseNamesNoCall() {
+    var t = tracker()
+    let events = run(
+      &t,
+      [
+        #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_unseen","content":"x"}]},"parent_tool_use_id":null,"session_id":"s1","uuid":"u1"}"#
+      ])
+    #expect(events.count == 1)
+    #expect(parent(events[0]) == nil)
+  }
+
+  /// A use seen at the turn's own level stays there, whatever call its result's frame names: only a use
+  /// never seen takes its parent from that frame.
+  @Test func aSeenTopLevelUseKeepsNoParentWhenItsResultNamesOne() {
+    var t = tracker()
+    let events = run(
+      &t,
+      [
+        #"{"type":"assistant","message":{"id":"msg_t1","role":"assistant","content":[{"type":"tool_use","id":"toolu_top","name":"Bash","input":{"command":"ls"}}]},"parent_tool_use_id":null,"session_id":"s1","uuid":"a1"}"#,
+        #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_top","content":"x"}]},"parent_tool_use_id":"toolu_agent","session_id":"s1","uuid":"u1"}"#,
+      ])
+    #expect(events.map { $0.payload["item"]?["status"]?.stringValue } == ["inProgress", "completed"])
+    #expect(events.allSatisfy { parent($0) == nil })
+  }
+
   /// A child closed as failed and then refused by Claude Code (`permission_denied` after the error
   /// result) is closed again as declined, still under the call.
   @Test func aRedeclinedChildNamesTheCallToo() {
