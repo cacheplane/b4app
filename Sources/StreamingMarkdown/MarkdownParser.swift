@@ -70,7 +70,8 @@ public struct MarkdownParser: Sendable {
 
   /// Brings the kept inline scan up to the open leaf's text, so the next read starts from it.
   private mutating func advanceInlineScan() {
-    inline = state.projection(of: openLine, inline: inline).inline
+    let line = openLine
+    state.advanceInlineScan(&inline, for: line)
   }
 
   private mutating func consume(_ line: Substring) {

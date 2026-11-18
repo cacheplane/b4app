@@ -15,19 +15,31 @@ extension BlockState {
     /// Top-level blocks the unfinished line finishes before the open one.
     var finished: [MarkdownBlock.Kind]
     var open: MarkdownBlock.Kind?
-    /// The inline scan advanced over the open leaf's text, for the parser to keep.
-    var inline: InlineProjection.Scan
   }
 
   /// The open top-level block with the unfinished line applied. Works on a copy: the state itself
-  /// never sees the line. `inline` is the scan of the open leaf's text from the last projection;
+  /// never sees the line. `inline` is the scan of the open leaf's text as `advanceInlineScan` left it;
   /// when the text has only grown since, only the new characters are scanned.
   func projection(of line: Substring, inline: InlineProjection.Scan) -> Projection {
     var copy = self
     copy.openLine = OpenLine(inline: inline)
     let finished = copy.accept(line)
     let leaf = copy.projectedLeaf()
-    return Projection(finished: finished, open: copy.wrapping(leaf), inline: copy.openLine?.inline ?? inline)
+    return Projection(finished: finished, open: copy.wrapping(leaf))
+  }
+
+  /// Advances `inline` over the open leaf's text with the unfinished line applied, as `projection`
+  /// would, without building the open block: no copy of a fence's code or of the open path's
+  /// children, so a push costs what its own text costs. The scan is moved into the copy and back,
+  /// so it is never shared while it grows.
+  func advanceInlineScan(_ inline: inout InlineProjection.Scan, for line: Substring) {
+    var copy = self
+    copy.openLine = OpenLine(inline: InlineProjection.Scan())
+    swap(&copy.openLine!.inline, &inline)
+    // A heading or a typed cell advances the scan as the line closes it.
+    _ = copy.accept(line)
+    if copy.leaf == .paragraph { copy.openLine!.inline.extend(to: copy.paragraphText()) }
+    swap(&copy.openLine!.inline, &inline)
   }
 
   // MARK: Hooks from `accept`
@@ -92,9 +104,8 @@ extension BlockState {
 
   /// The unfinished line for the innermost container's leaf, once it is not held.
   mutating func projectLeafLine(_ line: Substring) {
-    if LineScanner.isBlank(line) {
-      closeLeaf()
-    } else if LineScanner.thematicBreak(line) {
+    // A blank line is held before it gets here.
+    if LineScanner.thematicBreak(line) {
       closeLeaf()
       emit(.thematicBreak)
     } else if let heading = LineScanner.heading(line) {

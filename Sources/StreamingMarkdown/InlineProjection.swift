@@ -48,11 +48,14 @@ enum InlineProjection {
     }
 
     /// A backtick run followed by a space, read as text: if a run of the same length comes, the
-    /// scan returns to `decided` and the run opens a code span instead.
+    /// scan returns to `decided` and the run opens a code span instead. The snapshot keeps the
+    /// output's length, not the output: the output only grows until then, so going back cuts it.
     private struct Candidate: Equatable, Sendable {
       let length: Int
       let start: Int
+      /// `decided` as it was, with an empty `out`.
       let decided: Decided
+      let outCount: Int
     }
 
     private var input: [UInt8] = []
@@ -73,7 +76,7 @@ enum InlineProjection {
 
     /// Takes `text` as the scan's input: only the new bytes when it extends the old input, all of it
     /// otherwise. The prefix check is one memory compare.
-    private mutating func extend(to text: String) {
+    mutating func extend(to text: String) {
       var text = text
       text.withUTF8 { new in
         let old = input.count
@@ -123,7 +126,10 @@ enum InlineProjection {
         if end == input.count {
           position = end  // a trailing run with nothing after it is held
         } else if input[end].isSpace {
-          candidates.append(Candidate(length: end - index, start: index, decided: decided))
+          var snapshot = decided
+          snapshot.out = []
+          candidates.append(
+            Candidate(length: end - index, start: index, decided: snapshot, outCount: decided.out.count))
           decided.out += input[index..<end]
           position = end
         } else {
@@ -196,8 +202,12 @@ enum InlineProjection {
       guard let found = candidates.firstIndex(where: { $0.length == end - index }) else { return false }
       let candidate = candidates[found]
       candidates.removeSubrange(found...)
+      var out: [UInt8] = []
+      swap(&out, &decided.out)
+      out.removeSubrange(candidate.outCount...)
+      out += input[candidate.start..<end]
       decided = candidate.decided
-      decided.out += input[candidate.start..<end]
+      swap(&out, &decided.out)
       mode = .text
       position = end
       return true

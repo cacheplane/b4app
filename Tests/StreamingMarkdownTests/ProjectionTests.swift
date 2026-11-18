@@ -86,6 +86,30 @@ import Testing
     whole.finish()
     #expect(pieces.document == whole.document)
   }
+  @Test func aLongFencePushedInPiecesWithoutReadsStaysFast() {
+    // Many pushes per line, so most leave an unfinished line in the fence.
+    let token = String(repeating: "x", count: 400)
+    var (linear, parser) = staysLinear("```\n", lines: 1500, reading: false) {
+      $0 % 8 == 7 ? "\(token)\n" : "\(token) "
+    }
+    #expect(linear)
+    parser.finish()
+    guard case .code(_, let text, _) = parser.document.blocks[0].kind else {
+      Issue.record("not code")
+      return
+    }
+    #expect(text.split(separator: "\n").count == 750)
+  }
+  @Test func oneLongLineStreamedWithReadsStaysFast() {
+    let plain = String(repeating: "abcd efg", count: 8)
+    let markup = "see **bold** and `code` [l](u) _it_ ~~x~~ a*b " + String(repeating: "z", count: 19)
+    for piece in [plain, markup] {
+      // 390 pieces of 64 characters is about 25,000 characters; the long run is about 100,000.
+      let (linear, parser) = staysLinear("", lines: 390) { _ in piece }
+      #expect(linear, "for \(piece.debugDescription)")
+      #expect(parser.document.blocks.count == 1)
+    }
+  }
   @Test func readingTheDocumentDoesNotChangeTheParser() {
     var a = MarkdownParser()
     var b = MarkdownParser()
