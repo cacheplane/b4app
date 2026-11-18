@@ -16,6 +16,8 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
     var toolName: String?
     var toolUseId: String
     var input: JSONValue
+    /// The allow rules "Allow for session" sends back; empty when the request suggested none.
+    var sessionRules: [JSONValue] = []
     var generation: Int
   }
 
@@ -225,7 +227,9 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
           subtype: request.subtype, toolName: request.toolName)
         pendingRequests[request.requestId] = PendingRequest(
           sessionId: id, subtype: request.subtype, toolName: request.toolName,
-          toolUseId: request.toolUseId ?? "", input: request.input, generation: tracker.generation)
+          toolUseId: request.toolUseId ?? "", input: request.input,
+          sessionRules: ClaudeTurnTracker.sessionRules(request: request.request),
+          generation: tracker.generation)
         if autoDeclineUnsupported, !answerable {
           await autoDecline(requestId: request.requestId, sessionId: id, generation: tracker.generation)
         }
@@ -423,10 +427,16 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
     case ("can_use_tool", let tool, .decision(let decision)) where tool != "AskUserQuestion":
       switch decision {
       case .allowAlways:
-        // Claude Code applies a plain allow once. The request offers no wider allow, and one sent
-        // anyway is refused, not sent as that plain allow (D-248, amending D-018).
-        throw WorkspaceError(
-          .unsupportedCapability, "Claude Code allows this tool use once; it has no wider allow here.")
+        // The wider allow is the rule Claude Code suggested, kept for the session (D-250). A request
+        // that suggested none has no wider allow, and one sent anyway is refused, not sent as a plain
+        // allow (D-248).
+        guard !pending.sessionRules.isEmpty else {
+          throw WorkspaceError(
+            .unsupportedCapability, "Claude Code allows this tool use once; it has no wider allow here.")
+        }
+        line = try ClaudeStream.permissionResponse(
+          requestId: ref.nativeRequestId, toolUseId: pending.toolUseId,
+          decision: .allow(updatedInput: pending.input, updatedPermissions: pending.sessionRules))
       case .allowOnce:
         line = try ClaudeStream.permissionResponse(
           requestId: ref.nativeRequestId, toolUseId: pending.toolUseId,

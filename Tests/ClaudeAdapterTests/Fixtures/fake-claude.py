@@ -261,18 +261,23 @@ while True:
     if "tool" in text:
         request_id = next_id("req")
         tool_use_id = next_id("toolu")
+        # As 2.1.282 suggests live: the exact command for a settings file, and a mode change.
+        suggestions = [] if "suggested" not in text else [
+            {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "ls -la"}], "behavior": "allow", "destination": "localSettings"},
+            {"type": "setMode", "mode": "acceptEdits", "destination": "session"}]
         send({"type": "control_request", "request_id": request_id, "request": {"subtype": "can_use_tool", "tool_name": "Bash",
-              "input": {"command": "ls -la", "description": "List files"}, "tool_use_id": tool_use_id, "permission_suggestions": [],
+              "input": {"command": "ls -la", "description": "List files"}, "tool_use_id": tool_use_id, "permission_suggestions": suggestions,
               "decision_reason": None}})
         response = wait_control_response(request_id)
         behavior = (response.get("response") or {}).get("behavior")
+        granted = (response.get("response") or {}).get("updatedPermissions")
         send({"type": "system", "subtype": "session_state_changed", "state": "running", "uuid": next_id("uuid")})
         message = {"id": next_id("msg"), "role": "assistant", "model": "claude-fake",
                    "content": [{"type": "tool_use", "id": tool_use_id, "name": "Bash", "input": {"command": "ls -la"}}], "stop_reason": "tool_use"}
         send({"type": "assistant", "message": message, "parent_tool_use_id": None, "uuid": next_id("uuid"), "user_message_uuid": user_uuid})
         record({"type": "assistant", "uuid": next_id("uuid"), "message": message})
         if behavior == "allow":
-            tool_result = {"type": "tool_result", "tool_use_id": tool_use_id, "content": [{"type": "text", "text": "total 0\n"}], "is_error": False}
+            tool_result = {"type": "tool_result", "tool_use_id": tool_use_id, "content": [{"type": "text", "text": json.dumps(granted) if granted else "total 0\n"}], "is_error": False}
             reply = "The directory is empty."
         else:
             tool_result = {"type": "tool_result", "tool_use_id": tool_use_id, "content": "User declined", "is_error": True}
