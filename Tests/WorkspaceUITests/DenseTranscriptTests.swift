@@ -475,6 +475,23 @@ import WorkspaceProtocol
     #expect(!bare.canOpen)
   }
 
+  /// A turn ended by a reconcile or an abandon (its submission still unknown) was written terminal when
+  /// someone next looked: it has its count and no duration. An acknowledged turn keeps its duration.
+  @Test func aTurnWhoseSubmissionIsUnknownHasNoDuration() throws {
+    func make(_ submission: SubmissionState) -> Turn {
+      Turn(
+        id: "t1", threadId: "th", operationId: "op", status: .terminal, submission: submission,
+        outcome: .failed, createdAt: Self.began, updatedAt: "2026-11-19T05:40:00.000Z")
+    }
+    let items = [user("u1"), command("c1"), command("c2"), message("a1")]
+    let unknown = try #require(line(entries(items, turns: [make(.unknown)])))
+    #expect(unknown.text == "2 steps" && unknown.state == .ended)
+    #expect(unknown.duration == nil && unknown.durationText == nil)
+    let acknowledged = try #require(line(entries(items, turns: [make(.acknowledged)])))
+    #expect(acknowledged.text == "2 steps")
+    #expect(acknowledged.durationText == "19h 40m")
+  }
+
   @Test func theLineByTurnStatusAndItems() throws {
     let created = "2026-11-18T10:00:00.000Z"
     func make(_ status: TurnStatus, _ outcome: TurnOutcome?) -> Turn {

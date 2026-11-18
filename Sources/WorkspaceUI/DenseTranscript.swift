@@ -364,7 +364,11 @@ enum DenseTranscript {
   /// because `SessionService` does not touch a terminal turn but for a second `turnFinished`, the one way
   /// a duration reads long. A turn whose outcome is unknown, or a history group, has none.
   private static func duration(of turn: Turn?) -> Int? {
-    guard let turn, turn.status == .terminal,
+    // A terminal turn whose submission is still unknown ended through a reconcile or an abandon, written
+    // when someone next looked: its `updatedAt` is that moment, not its end. This also drops the duration
+    // of the rare turn whose acknowledgement was late and which then finished live; that loss is
+    // accepted: a missing duration is harmless and a wrong one is not.
+    guard let turn, turn.status == .terminal, turn.submission != .unknown,
       let seconds = ActivityTime.seconds(from: turn.createdAt, to: turn.updatedAt)
     else { return nil }
     return max(seconds, 0)
