@@ -940,8 +940,170 @@ private final class BackgroundWindow: NSWindow {
     for (place, size) in [
       ("mac", CGSize(width: 720, height: 740)), ("phone", CGSize(width: 390, height: 840)),
     ] {
-      try await render("transcript-markdown-\(place)-dense", size: size, window: window) { transcript(reply) }
+      try await render("transcript-markdown-\(place)", size: size, window: window) { transcript(reply) }
     }
+  }
+
+  // MARK: the activity line
+
+  /// A copy of `item` created at `createdAt`, and, for a step that ended, its `endedAt`.
+  private func timed(_ item: DisplayItem, _ createdAt: Date, ended: Date? = nil) -> DisplayItem {
+    var copy = item
+    copy.createdAt = Timestamp.string(from: createdAt)
+    if let ended, var members = copy.payload.objectValue {
+      members["endedAt"] = .string(Timestamp.string(from: ended))
+      copy.payload = .object(members)
+    }
+    return copy
+  }
+
+  /// A sub-agent's call: a `toolUse` named `Agent`, its description in `input`, an output on the call.
+  private func agent(
+    _ id: String, _ description: String, status: String, output: String? = nil, turn: String? = "t1"
+  ) -> DisplayItem {
+    var payload: [String: JSONValue] = [
+      "name": "Agent",
+      "input": .object(["description": .string(description), "prompt": .string("Find it and report.")]),
+    ]
+    if let output { payload["output"] = .string(output) }
+    return scripted(id, turn: turn, .tool, "toolUse", status: status, native: "n-\(id)", payload)
+  }
+
+  /// A step made by the sub-agent whose call is `parent`.
+  private func child(
+    _ id: String, _ command: String, of parent: String, status: String = "completed", output: String? = nil
+  ) -> DisplayItem {
+    var payload: [String: JSONValue] = [
+      "command": .string(command), "parentNativeItemId": .string("n-\(parent)"),
+    ]
+    if let output { payload["aggregatedOutput"] = .string(output) }
+    return scripted(id, .tool, "commandExecution", status: status, payload)
+  }
+
+  /// The turn's line and its opened rows as the design sketches them: `transcript-activity-<case>-
+  /// <mac|phone>-<light|dark>.png`. A running turn's clock is the seconds since its fixed start, so the
+  /// clock and a running step's clock in an image read the moment of capture (plus about a second).
+  @Test func activityLine() async throws {
+    let window = CGSize(width: 1200, height: 1000)
+    let places = [("mac", CGSize(width: 720, height: 420)), ("phone", CGSize(width: 390, height: 420))]
+    /// `height` is the Mac's; the phone's column is narrower, so its text wraps and it is `taller` more.
+    func capture(
+      _ name: String, height: CGFloat, taller: CGFloat = 0, _ scripted: Scripted, open: Set<String> = []
+    ) async throws {
+      for (place, size) in places {
+        let sized = CGSize(width: size.width, height: height + (place == "phone" ? taller : 0))
+        try await render("transcript-activity-\(name)-\(place)", size: sized, window: window) {
+          transcript(scripted, open: open)
+        }
+      }
+    }
+    let now = Date()
+    func ago(_ seconds: TimeInterval) -> Date { now.addingTimeInterval(-seconds) }
+    func running(_ seconds: TimeInterval, status: TurnStatus = .running) -> [Turn] {
+      [
+        Turn(
+          id: "t1", threadId: "th", operationId: "op", status: status,
+          createdAt: Timestamp.string(from: ago(seconds)), updatedAt: Timestamp.string(from: ago(1)))
+      ]
+    }
+    // A fixed run that took 1m 12s, for the ended cases.
+    let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+    func at(_ seconds: TimeInterval) -> Date { start.addingTimeInterval(seconds) }
+    func ended(_ outcome: TurnOutcome) -> [Turn] {
+      [
+        Turn(
+          id: "t1", threadId: "th", operationId: "op", status: .terminal, outcome: outcome,
+          createdAt: Timestamp.string(from: start), updatedAt: Timestamp.string(from: at(72)))
+      ]
+    }
+
+    // A running turn, closed: the newest open step is named, the clock counts, Show is at the right.
+    let closed = detail(
+      [
+        ask("u1", "Find out why the sync is slow."),
+        timed(step("c1", "git log --oneline -20"), ago(40), ended: ago(39)),
+        timed(step("c2", "rg \"hubSeq\" Sources"), ago(38), ended: ago(36)),
+        timed(step("c3", "swift test --filter SyncTests", status: "inProgress"), ago(35)),
+      ], .running, nil, turns: running(42))
+    try await capture("running-closed", height: 160, closed)
+
+    // Just sent: the turn exists and nothing else does yet.
+    let sent = detail([ask("u1", "Run the tests on both targets.")], .running, nil, turns: running(3))
+    try await capture("sent", height: 130, sent)
+
+    // An opened running turn: a finished step, an open sub-agent with a finished and a running step.
+    let nested = detail(
+      [
+        ask("u1", "Find the slow query."),
+        timed(thought("r1"), ago(41)),
+        timed(step("c1", "git log --oneline -20"), ago(40), ended: ago(39)),
+        timed(agent("g1", "find the slow query", status: "inProgress"), ago(38)),
+        timed(child("k1", "rg \"ORDER BY hub_seq\"", of: "g1"), ago(37), ended: ago(36)),
+        timed(child("k2", "cargo test changes::pull_pages", of: "g1", status: "inProgress"), ago(24)),
+        timed(step("c2", "swift build", status: "completed"), ago(20), ended: ago(8)),
+      ], .running, nil, turns: running(42))
+    try await capture("open-agent", height: 330, nested, open: ["t1", "g1"])
+
+    // A step opened to its output, in a turn that ended.
+    let output = detail(
+      [
+        ask("u1", "The build fails on the second target. Can you fix it?"),
+        timed(
+          step(
+            "c1", "swift build 2>&1 | tail -4",
+            output: "error: undefined symbol _main\nld: symbol(s) not found for architecture arm64\n"
+              + "error: linker command failed with exit code 1"), at(2), ended: at(20)),
+        timed(step("c2", "git diff --stat"), at(21), ended: at(22)),
+        message("a1", "The second target had no entry point; I added `main.swift`."),
+      ], turns: ended(.completed))
+    try await capture("open-step-output", height: 400, taller: 80, output, open: ["t1", "c1"])
+
+    // An ended turn with a failure: closed, then opened.
+    let failed = detail(
+      [
+        ask("u1", "Run the migration against staging."),
+        timed(step("c1", "migrate status"), at(1), ended: at(3)),
+        timed(step("c2", "migrate up --env staging", status: "failed"), at(4), ended: at(60)),
+        timed(step("c3", "migrate status"), at(61), ended: at(62)),
+        message("a1", "The migration failed on the third statement; staging is unchanged."),
+      ], .terminal, .failed, turns: ended(.failed))
+    try await capture("failed-closed", height: 190, taller: 50, failed)
+    try await capture("failed-open", height: 260, taller: 50, failed, open: ["t1"])
+    // A turn the user stopped with a step still open: the step is a muted dash, nothing moves.
+    let stopped = detail(
+      [
+        ask("u1", "Run the whole suite."),
+        timed(step("c1", "swift build"), at(1), ended: at(30)),
+        timed(step("c2", "swift test", status: "inProgress"), at(31)),
+      ], turns: ended(.cancelled))
+    try await capture("stopped-open", height: 230, stopped, open: ["t1"])
+
+    // A running turn's plan: its row stands after the line, its marks changing in place.
+    let steps = zip(
+      ["Read the adapter", "Add the mapping", "Write the tests for the mapping", "Update the docs"],
+      [TaskList.Status.completed, .completed, .inProgress, .pending]
+    ).map { TaskList.Step(text: $0, status: $1) }
+    let planning = detail(
+      [
+        ask("u1", "Map the plan updates."),
+        message("a1", "Here is how I will go about it.", native: "n1"),
+        scripted(
+          "p1", .tool, TaskList.itemType,
+          TaskList(steps: steps, explanation: "The mapping is in; tests next.").payload.objectValue ?? [:]),
+        timed(step("c1", "swift test --filter CodexEventsTests", status: "inProgress"), ago(20)),
+      ], .running, nil, turns: running(31))
+    try await capture("plan-running", height: 420, taller: 20, planning)
+    // An opened agent's own output: the call's input and its result.
+    let done = detail(
+      [
+        ask("u1", "Find the slow query."),
+        timed(
+          agent(
+            "g1", "find the slow query", status: "completed", output: "The query in changes.rs sorts twice."),
+          at(2), ended: at(50)),
+        timed(child("k1", "rg \"ORDER BY hub_seq\"", of: "g1"), at(3), ended: at(4)),
+      ], turns: ended(.completed))
+    try await capture("agent-output", height: 380, taller: 20, done, open: ["t1", "g1"])
   }
 
   // MARK: a dense composer
