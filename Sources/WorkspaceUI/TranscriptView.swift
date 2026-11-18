@@ -101,6 +101,7 @@ struct TranscriptView: View {
   /// Dense draws each turn as the message, one line for the work, and the answer.
   var dense = false
   @State private var folds: TranscriptFolds
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   init(
     detail: ThreadDetail, streams: MessageStreamStore, pending: PendingSend? = nil,
@@ -163,6 +164,11 @@ struct TranscriptView: View {
       .onChange(of: folds.shown) { _, _ in
         if let kept = folds.kept { proxy.scrollTo(kept, anchor: .top) }
       }
+      // A reply is revealed at a reading pace while the thread is on screen; with Reduce Motion on, or
+      // off screen, everything received is shown at once.
+      .onAppear { streams.transcriptAppeared(reduceMotion: reduceMotion) }
+      .onChange(of: reduceMotion) { _, now in streams.setReduceMotion(now) }
+      .onDisappear { streams.transcriptDisappeared() }
       .onChange(of: detail.items.count) { _, _ in follow(proxy) }
       .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in follow(proxy) }
       // Normal density has no lines to hold open, so a switch lets go and normal scrolls as it always has.
@@ -424,12 +430,10 @@ struct TranscriptRow: View {
       }
     case .assistant:
       if item.type == "agentMessage" {
-        // Trimmed: a reply's trailing blank lines otherwise widen the gap to the next item unevenly.
+        // The parser drops blank lines at either end, so nothing is trimmed here.
         MarkdownText(
-          text: streams.text(for: item).trimmingCharacters(in: .whitespacesAndNewlines),
-          streaming: item.nativeItemId.map(streams.isStreaming) ?? false
-        )
-        .frame(maxWidth: .infinity, alignment: .leading)
+          document: streams.document(for: item),
+          streaming: item.nativeItemId.map(streams.isStreaming) ?? false)
       } else {
         CollapsibleCard(
           title: item.type == "reasoning" || item.type == "thinking" ? "Reasoning" : item.type.capitalized,
@@ -456,54 +460,6 @@ struct TranscriptRow: View {
     if !summary.isEmpty { return summary.joined(separator: "\n") }
     return item.payload["text"]?.stringValue ?? item.payload["content"]?.arrayValue?.compactMap(\.stringValue)
       .joined(separator: "\n") ?? ""
-  }
-}
-
-/// A reply: prose through Foundation's parser (no HTML, no scripts, links stay inert text) and each
-/// fenced block as code. A reply with no fence is one text, as it always was.
-struct MarkdownText: View {
-  let text: String
-  /// The reply is still arriving: an open fence may yet close, so it offers no Copy.
-  var streaming = false
-
-  var body: some View {
-    let blocks = MarkdownBlocks.split(text)
-    if blocks.contains(where: { if case .code = $0 { true } else { false } }) {
-      VStack(alignment: .leading, spacing: LLA.Space.m) {
-        ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-          switch block {
-          case .prose(let prose): MarkdownProse(text: prose)
-          case .code(let language, let code, let closed):
-            CodeFence(language: language, code: code, copyable: closed || !streaming)
-          }
-        }
-      }
-    } else {
-      MarkdownProse(text: text)
-    }
-  }
-}
-
-/// Inline Markdown, whitespace kept. Equatable so a block whose text did not change is not parsed
-/// again as the reply's last block streams.
-struct MarkdownProse: View, Equatable {
-  let text: String
-
-  var body: some View {
-    Group {
-      if let attributed = try? AttributedString(
-        markdown: text,
-        options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace))
-      {
-        Text(attributed)
-      } else {
-        Text(text)
-      }
-    }
-    .llaBody()
-    .lineSpacing(4)
-    .textSelection(.enabled)
-    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 

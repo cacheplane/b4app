@@ -364,8 +364,9 @@
         createdAt: "2026-11-11T10:00:00Z", updatedAt: "2026-11-11T10:00:00Z")
     }
 
+    /// A reply of `count` paragraphs, one line each: a single newline is a soft break, read as a space.
     private func lines(_ count: Int) -> String {
-      (1...count).map { "Line \($0) of the streamed reply." }.joined(separator: "\n")
+      (1...count).map { "Line \($0) of the streamed reply." }.joined(separator: "\n\n")
     }
 
     // MARK: the hosted transcript
@@ -373,10 +374,14 @@
     @Observable @MainActor final class Host {
       var detail: ThreadDetail
       var dense: Bool
-      let streams = MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() })
-      init(_ detail: ThreadDetail, dense: Bool) {
+      let streams: MessageStreamStore
+      /// Immediate reveal unless a ticker is given: then the reveal is paced and the test fires it.
+      init(_ detail: ThreadDetail, dense: Bool, ticker: ManualTicker? = nil) {
         self.detail = detail
         self.dense = dense
+        streams =
+          ticker.map { ticker in MessageStreamStore(pacing: .paced, makeTicker: { ticker }) }
+          ?? MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() })
       }
 
       /// The reply `native` streams and shows `text`, as `detail.liveText[native] = text` did: a fresh
@@ -404,8 +409,10 @@
       private let window: NSWindow
       let scroll: NSScrollView
 
-      init(_ detail: ThreadDetail, dense: Bool = true, live: [String: String] = [:]) throws {
-        host = Host(detail, dense: dense)
+      init(
+        _ detail: ThreadDetail, dense: Bool = true, live: [String: String] = [:], ticker: ManualTicker? = nil
+      ) throws {
+        host = Host(detail, dense: dense, ticker: ticker)
         for (native, text) in live { host.streams.append(text, to: native) }
         folds = TranscriptFolds()
         let snapshot = SnapshotWindow(
@@ -834,6 +841,51 @@
       try await view.until("the answer is drawn") { view.documentHeight > height + 1 }
       try await view.settle()
       #expect(abs(view.origin - origin) <= 0.5, "the turn's end moved the reader by \(view.origin - origin)")
+    }
+
+    // MARK: a paced reveal
+
+    /// A reader at the end stays there while a reply taller than the window is revealed tick by tick.
+    @Test func aPinnedReaderStaysAtTheEndThroughAPacedReveal() async throws {
+      let ticker = ManualTicker()
+      let view = try Hosted(twelveAndARunningTurn(), dense: false, ticker: ticker)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      view.host.streams.append(lines(40), to: "n13")
+      #expect(ticker.running)
+      var ticks = 0
+      while ticker.running {
+        ticker.fire()
+        ticks += 1
+        try await view.settle()
+        // Following rests the end marker at the viewport's bottom edge, with the bottom padding below
+        // it: from there to the end is at most 8 pt.
+        #expect(
+          view.below >= -0.5 && view.below - LLA.Metrics.margin <= 8,
+          "after tick \(ticks), below the viewport: \(view.below)")
+      }
+      #expect(view.documentHeight > view.viewportHeight * 2)
+    }
+
+    /// A reader who scrolled back is left where they are while a reply is revealed tick by tick.
+    @Test func aHeldReaderIsNotMovedByAPacedReveal() async throws {
+      let ticker = ManualTicker()
+      let view = try Hosted(twelveAndARunningTurn(), dense: false, ticker: ticker)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      #expect(view.folds.holds)
+      let origin = view.origin
+      let height = view.documentHeight
+      view.host.streams.append(lines(40), to: "n13")
+      var ticks = 0
+      while ticker.running {
+        ticker.fire()
+        ticks += 1
+        try await view.settle()
+        #expect(abs(view.origin - origin) <= 0.5, "tick \(ticks) moved the reader by \(view.origin - origin)")
+      }
+      #expect(view.documentHeight > height + 1)
     }
 
     @Test func withNothingToggledNormalDensityScrollsAsToday() async throws {

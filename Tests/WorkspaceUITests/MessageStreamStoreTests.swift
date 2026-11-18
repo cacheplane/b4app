@@ -114,6 +114,27 @@ import WorkspaceProtocol
     #expect(store.stream(for: "m1")?.shown.count == 500)
   }
 
+  /// Reduce Motion, or no transcript on screen, shows everything at once; a transcript on screen
+  /// without it brings the store's own pacing back. An immediate store stays immediate.
+  @Test func theRevealFollowsReduceMotionAndTheScreen() {
+    let ticker = ManualTicker()
+    let paced = MessageStreamStore(pacing: .paced, makeTicker: { ticker })
+    paced.transcriptAppeared(reduceMotion: true)
+    #expect(paced.pacing == .immediate)
+    paced.setReduceMotion(false)
+    #expect(paced.pacing == .paced)
+    // The next thread's transcript appears before the last one goes: still on screen.
+    paced.transcriptAppeared(reduceMotion: false)
+    paced.transcriptDisappeared()
+    #expect(paced.pacing == .paced)
+    paced.append(String(repeating: "a", count: 500), to: "m1")
+    #expect(paced.stream(for: "m1")?.shown.isEmpty == true)
+    paced.transcriptDisappeared()
+    #expect(paced.stream(for: "m1")?.shown.count == 500 && !ticker.running)
+    store.transcriptAppeared(reduceMotion: false)
+    #expect(store.pacing == .immediate)
+  }
+
   @Test func revisionBumpsOnEachReveal() {
     var tickers: [ManualTicker] = []
     let store = MessageStreamStore(
