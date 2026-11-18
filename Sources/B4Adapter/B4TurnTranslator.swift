@@ -195,6 +195,10 @@ public struct B4TurnTranslator: Sendable {
         "interruptId": .string(interruptId), "type": .string(type), "kind": .string(kind ?? "tool"),
         "detail": detail, "allowAlways": .bool(raw["allowAlways"]?.boolValue ?? true),
       ]
+      // B4 keeps an "always" itself, past the session; a prompt that asks every time has none (D-248).
+      if raw["allowAlways"]?.boolValue ?? true {
+        request[AllowScope.payloadKey] = .string(AllowScope.always.rawValue)
+      }
       if let grant { request["grant"] = .string(grant) }
       if let toolCallId = raw["toolCallId"]?.stringValue { request["toolCallId"] = .string(toolCallId) }
       if let command = detail["command"]?.stringValue { request["command"] = .string(command) }

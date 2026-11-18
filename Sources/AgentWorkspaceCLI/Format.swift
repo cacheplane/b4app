@@ -132,8 +132,9 @@ enum Format {
     if request.kind == .userQuestion {
       lines.append("  answer: agent-workspace request respond \(request.id) --answer <id>=<value>")
     } else if request.payload["answerable"]?.boolValue == true {
-      lines.append(
-        "  answer: agent-workspace request respond \(request.id) --accept | --accept-session | --decline")
+      // The wider allow only where the request's runtime applies one (D-248).
+      let wider = AllowScope(requestPayload: request.payload) == nil ? "" : " | --accept-session"
+      lines.append("  answer: agent-workspace request respond \(request.id) --accept\(wider) | --decline")
     } else {
       lines.append("  (not answerable here; declined automatically)")
     }

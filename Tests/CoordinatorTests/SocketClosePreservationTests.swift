@@ -16,8 +16,15 @@ import WorkspaceProtocol
     let cleanupTiming: NarrowTimingObservation? =
       ordering == "peer-before-ack" ? NarrowTimingObservation(.peerBeforeAckCleanup) : nil
     defer { cleanupTiming?.emitAfterCleanup() }
-    let stopObservation: (@Sendable (NarrowTimingObservation.Stage, Bool?) -> Void)? =
-      cleanupTiming.map { collector in { collector.record($0, flag: $1) } }
+    let stopObservation: (@Sendable (NarrowTimingObservation.Stage, Bool?) -> Void)?
+    if let collector = cleanupTiming {
+      let record: @Sendable (NarrowTimingObservation.Stage, Bool?) -> Void = { stage, flag in
+        collector.record(stage, flag: flag)
+      }
+      stopObservation = record
+    } else {
+      stopObservation = nil
+    }
     let control = AcknowledgementControl()
     let inspectionObservation: InspectionRequestObservation? =
       ordering == "peer-before-ack"

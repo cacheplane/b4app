@@ -1250,6 +1250,13 @@ public actor SessionService {
       throw WorkspaceError(
         .staleRuntimeRequest, "Runtime request \(request.id) is already \(request.state.rawValue).")
     }
+    // A wider allow only where the request offers one: the card draws no such button otherwise, and
+    // the CLI's flag and a phone's relayed answer are held to the same (D-248).
+    if params.decision == .allowAlways, AllowScope(requestPayload: request.payload) == nil {
+      throw WorkspaceError(
+        .unsupportedCapability,
+        "This request can be allowed once or denied; its runtime offers nothing wider for it.")
+    }
     // First answer wins at the runtime: checked and claimed with no suspension point in between.
     guard answering.insert(request.id).inserted else {
       throw WorkspaceError(.staleRuntimeRequest, "Runtime request \(request.id) is already being answered.")

@@ -401,8 +401,10 @@ struct RequestCommand: AsyncParsableCommand {
     @OptionGroup var global: GlobalOptions
     @Argument var requestId: String
     @Flag(help: "Allow once.") var accept = false
-    @Flag(name: .customLong("accept-session"), help: "Allow for the rest of the session.") var acceptSession =
-      false
+    @Flag(
+      name: .customLong("accept-session"),
+      help: "Allow for the session, or always on B4: only where the request offers it.")
+    var acceptSession = false
     @Flag(help: "Decline.") var decline = false
     @Option(name: .customLong("answer"), parsing: .upToNextOption, help: "questionId=value (repeatable).")
     var answers: [String] = []

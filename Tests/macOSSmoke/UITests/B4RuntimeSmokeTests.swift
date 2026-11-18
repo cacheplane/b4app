@@ -93,6 +93,10 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     XCTAssertEqual(request.nativeRequestId, "7")
     XCTAssertEqual(request.payload["request"]?["command"]?.stringValue, "ls -la")
     XCTAssertEqual(request.turnId, pending.turns.first { $0.nativeTurnId == "turn_2" }?.id)
+    XCTAssertEqual(request.payload["request"]?["allowScope"]?.stringValue, "session")
+    let allowWider = app.buttons["allow-wider"]
+    try requireElement(allowWider, in: app)
+    XCTAssertTrue(allowWider.isEnabled)
     allow.click()
     let toolState = try await waitForTurns(fixture, id: currentId, completed: 1, cancelled: 1)
     try requireElement(text("Command completed.", in: app), in: app)
@@ -237,9 +241,11 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     XCTAssertTrue(
       checkAgain.isEnabled,
       "Historical cache refresh must be settled and available while execution controls stay disabled")
+    XCTAssertFalse(app.buttons["allow-wider"].exists)
+    XCTAssertFalse(app.buttons["Allow for session"].exists)
     for button in [
       app.buttons["stop"], app.buttons["abandon"],
-      app.buttons["allow-once"], app.buttons["Allow for session"], app.buttons["deny"],
+      app.buttons["allow-once"], app.buttons["deny"],
       app.buttons["Submit answers"],
     ] {
       try requireElement(button, in: app)

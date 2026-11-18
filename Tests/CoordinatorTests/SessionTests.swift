@@ -705,6 +705,35 @@ actor EventCollector {
     await h.stop()
   }
 
+  /// The CLI's flag and a phone's relayed answer come here too: a wider allow on a request that
+  /// offers none is refused before the adapter hears of it, and the request can still be answered.
+  @Test func aWiderAllowOnARequestThatOffersNoneIsRefused() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    let thread = try await h.newThread(claude)
+    let turn = try await h.send(thread, "use a tool")
+    let opened = try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == thread.id }
+    let request = try #require(try opened.payload["runtimeRequest"]?.decode(RuntimeRequest.self))
+    #expect(AllowScope(requestPayload: request.payload) == nil)
+    do {
+      _ = try await h.client.request(
+        RequestRespond.self, RequestRespond.Params(requestId: request.id, decision: .allowAlways),
+        options: RequestOptions(operationId: UUID().uuidString))
+      Issue.record("a wider allow must be refused")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .unsupportedCapability)
+      #expect(error.message.hasPrefix("This request can be allowed once or denied"))
+    }
+    #expect(try await h.read(thread).requests.map(\.id) == [request.id])
+    let answered = try await h.client.request(
+      RequestRespond.self, RequestRespond.Params(requestId: request.id, decision: .allowOnce),
+      options: RequestOptions(operationId: UUID().uuidString))
+    #expect(answered.request.state == .resolved)
+    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    await h.stop()
+  }
+
   @Test func claudeCrashIsScopedToItsThread() async throws {
     let h = try await Harness.start()
     let codex = try await h.addCodex()
@@ -1370,12 +1399,23 @@ actor EventCollector {
     let read = try await h.read(history.thread)
     #expect(read.turns[0].status == .waitingForUser)
     #expect(read.requests.map(\.id) == [request.id])
-    for decision in [RuntimeDecision.allowAlways, .deny] {
+    for decision in [RuntimeDecision.allowOnce, .deny] {
       try await HistoricalCoordinatorFixture.expectCutover {
         _ = try await h.client.request(
           RequestRespond.self, .init(requestId: request.id, decision: decision),
           options: RequestOptions(operationId: UUID().uuidString))
       }
+    }
+    do {
+      _ = try await h.client.request(
+        RequestRespond.self, .init(requestId: request.id, decision: .allowAlways),
+        options: RequestOptions(operationId: UUID().uuidString))
+      Issue.record("A historical request without a wider scope must refuse wider permission.")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .unsupportedCapability)
+      #expect(
+        error.message
+          == "This request can be allowed once or denied; its runtime offers nothing wider for it.")
     }
     try await HistoricalCoordinatorFixture.expectCutover {
       _ = try await h.send(history.thread, "never dispatch")
