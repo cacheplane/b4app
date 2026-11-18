@@ -7,10 +7,7 @@ enum UsageFormat {
   static func percent(_ used: Double) -> String { "\(Int(used.rounded()))%" }
 
   /// How much of the bar to fill, 0…1.
-  static func fill(_ used: Double) -> Double {
-    let fraction = used / 100
-    return min(max(fraction, 0), 1)
-  }
+  static func fill(_ used: Double) -> Double { min(max(used / 100, 0), 1) }
 
   /// A window at 90% or more draws in the danger colour.
   static func isHot(_ used: Double) -> Bool { used >= 90 }
