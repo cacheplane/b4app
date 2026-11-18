@@ -291,16 +291,17 @@ private final class BackgroundWindow: NSWindow {
   private var directory: String? { ProcessInfo.processInfo.environment["B4APP_SNAPSHOT_DIR"] }
 
   private func render<V: View>(
-    _ name: String, size: CGSize, @ViewBuilder _ content: () -> V
+    _ name: String, size: CGSize, window frame: CGSize = CGSize(width: 1200, height: 900),
+    @ViewBuilder _ content: () -> V
   ) async throws {
     // The window is larger than the content: a ScrollView drew nothing in a window as narrow as the
     // sidebar. The capture is cropped back to the content's size, from the window's top edge. The window
     // has no title bar: a scroll view under one drew its top edge across content that starts at y 0.
     let window = SnapshotWindow(
       rootView: content().frame(width: size.width, height: size.height).background(LLA.Color.surface)
-        .tint(LLA.Color.accent).frame(width: 1200, height: 900, alignment: .topLeading)
+        .tint(LLA.Color.accent).frame(width: frame.width, height: frame.height, alignment: .topLeading)
         .ignoresSafeArea(),
-      untitled: true, size: CGSize(width: 1200, height: 900))
+      untitled: true, size: frame)
     defer { window.close() }
     for (appearance, suffix) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
       window.appearance = NSAppearance(named: appearance)
@@ -953,6 +954,25 @@ private final class BackgroundWindow: NSWindow {
       ],
       live: ["n2": "It declares the targets:\n\n\(fence)swift\nlet package = Package(\n  name: \"b4app\","])
     try await render("thread-code-reply", size: size) { transcript(code, dense: false) }
+  }
+
+  /// A finished reply using every block kind the parser makes, at both densities, in the Mac's column
+  /// and at a phone's width (the macOS view at 390 pt, not the iOS app).
+  @Test func markdownReply() async throws {
+    let reply = detail([
+      ask("u1", "What changed in the release?"),
+      step("c1", "git log --oneline v0.4..v0.5"),
+      message("a1", MarkdownViewTests.everyKind),
+    ])
+    let window = CGSize(width: 1200, height: 1000)
+    for (place, size) in [
+      ("mac", CGSize(width: 720, height: 740)), ("phone", CGSize(width: 390, height: 840)),
+    ] {
+      try await render("transcript-markdown-\(place)-normal", size: size, window: window) {
+        transcript(reply, dense: false)
+      }
+      try await render("transcript-markdown-\(place)-dense", size: size, window: window) { transcript(reply) }
+    }
   }
 
   // MARK: a dense composer
