@@ -12,7 +12,7 @@ struct BlockState: Equatable, Sendable {
   static let maxDepth = 16
 
   enum Leaf: Equatable, Sendable {
-    case none, paragraph, fence
+    case none, paragraph, fence, table
   }
 
   struct Container: Equatable, Sendable {
@@ -58,6 +58,12 @@ struct BlockState: Equatable, Sendable {
   /// The open fence's code, kept joined as lines arrive so a read does not join them again.
   private var fenceText = ""
   private var fenceHasLines = false
+  /// The cells of the paragraph's first line when it reads as a table header; the next line decides.
+  private var pendingHeader: [String]?
+  /// The open table's columns and rows, appended to in place as its lines arrive.
+  private var tableAlignments: [MarkdownTable.Alignment?] = []
+  private var tableHeader: [String] = []
+  private var tableRows: [[String]] = []
   /// Top-level blocks handed back so far, which is the parser's committed count: the position, and
   /// so the id, of the next top-level block.
   private var emitted = 0
@@ -87,6 +93,7 @@ struct BlockState: Equatable, Sendable {
     {
       // A lazy continuation: the paragraph goes on and every container stays open.
       paragraphLines.append(Self.paragraphLine(content.text))
+      pendingHeader = nil
       return drain()
     }
     if !openings.isEmpty { closeLeaf() }
@@ -245,10 +252,33 @@ struct BlockState: Equatable, Sendable {
       closeLeaf()
       leaf = .fence
       fence = opening
+    } else if leaf == .table {
+      tableRow(line)
+    } else if leaf == .paragraph, let header = pendingHeader, paragraphLines.count == 1,
+      let alignments = LineScanner.delimiterRow(line), alignments.count == header.count
+    {
+      leaf = .table
+      tableAlignments = alignments
+      tableHeader = header
+      pendingHeader = nil
+      paragraphLines = []
     } else {
+      if leaf != .paragraph { pendingHeader = LineScanner.tableHeader(line) } else { pendingHeader = nil }
       leaf = .paragraph
       paragraphLines.append(Self.paragraphLine(line))
     }
+  }
+
+  /// A body row: padded with empty cells or cut to the header's count.
+  private mutating func tableRow(_ line: Substring) {
+    var cells = LineScanner.tableRow(line).cells
+    let count = tableHeader.count
+    if cells.count > count {
+      cells.removeSubrange(count...)
+    } else if cells.count < count {
+      cells += [String](repeating: "", count: count - cells.count)
+    }
+    tableRows.append(cells)
   }
 
   /// A line inside the open fence: its closer, or one more line of code.
@@ -287,6 +317,8 @@ struct BlockState: Equatable, Sendable {
       return .paragraph(text)
     case .fence:
       return .code(language: fence?.language, text: fenceText, closed: false)
+    case .table:
+      return .table(MarkdownTable(alignments: tableAlignments, header: tableHeader, rows: tableRows))
     }
   }
 
@@ -296,6 +328,10 @@ struct BlockState: Equatable, Sendable {
     fence = nil
     fenceText = ""
     fenceHasLines = false
+    pendingHeader = nil
+    tableAlignments = []
+    tableHeader = []
+    tableRows = []
   }
 
   private static func paragraphLine(_ line: Substring) -> ParagraphLine {

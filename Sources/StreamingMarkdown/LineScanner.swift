@@ -186,4 +186,99 @@ enum LineScanner {
   static func startsLeafBlock(_ line: Substring) -> Bool {
     thematicBreak(line) || heading(line) != nil || fenceOpening(line) != nil
   }
+
+  // MARK: Tables
+
+  /// A line read as a table row: its cells, and whether it holds a pipe that splits it.
+  struct TableRow: Equatable {
+    var cells: [String]
+    var splits: Bool
+  }
+
+  /// The cells of a line. A pipe splits unless it is escaped (`\|`, which is a literal pipe in the
+  /// cell) or inside a backtick code span; a leading and a trailing pipe are optional and make no
+  /// cell. Cell text is trimmed. A line with no splitting pipe is one cell.
+  static func tableRow(_ line: Substring) -> TableRow {
+    let chars = Array(trimmed(line))
+    var parts: [String] = []
+    var current = ""
+    var splits = false
+    var endsWithSplit = false
+    var index = 0
+    while index < chars.count {
+      let character = chars[index]
+      if character == "\\", index + 1 < chars.count, chars[index + 1] == "|" {
+        current.append("|")
+        index += 2
+      } else if character == "`" {
+        let length = chars[index...].prefix { $0 == "`" }.count
+        let end = codeSpanEnd(chars, from: index + length, length: length) ?? index + length
+        var inner = index
+        while inner < end {
+          if chars[inner] == "\\", inner + 1 < end, chars[inner + 1] == "|" {
+            current.append("|")
+            inner += 2
+          } else {
+            current.append(chars[inner])
+            inner += 1
+          }
+        }
+        index = end
+      } else if character == "|" {
+        parts.append(current)
+        current = ""
+        splits = true
+        endsWithSplit = index == chars.count - 1
+        index += 1
+      } else {
+        current.append(character)
+        index += 1
+      }
+    }
+    parts.append(current)
+    if splits {
+      if chars.first == "|" { parts.removeFirst() }
+      if endsWithSplit { parts.removeLast() }
+    }
+    return TableRow(cells: parts.map { String(trimmed(Substring($0))) }, splits: splits)
+  }
+
+  /// Where the code span opened by a run of `length` backticks ends (after its closing run), or nil
+  /// when the run has no closer, so it is text.
+  private static func codeSpanEnd(_ chars: [Character], from start: Int, length: Int) -> Int? {
+    var index = start
+    while index < chars.count {
+      if chars[index] == "`" {
+        let run = chars[index...].prefix { $0 == "`" }.count
+        if run == length { return index + run }
+        index += run
+      } else {
+        index += 1
+      }
+    }
+    return nil
+  }
+
+  /// A table's header row: it has a splitting pipe and at least one cell.
+  static func tableHeader(_ line: Substring) -> [String]? {
+    let row = tableRow(line)
+    return row.splits && !row.cells.isEmpty ? row.cells : nil
+  }
+
+  /// A delimiter row: cells of `-` with an optional `:` at either end, and a splitting pipe. Returns
+  /// one alignment per cell.
+  static func delimiterRow(_ line: Substring) -> [MarkdownTable.Alignment?]? {
+    guard unindented(line) != nil else { return nil }
+    let row = tableRow(line)
+    guard row.splits, !row.cells.isEmpty else { return nil }
+    var alignments: [MarkdownTable.Alignment?] = []
+    for cell in row.cells {
+      let left = cell.hasPrefix(":")
+      let right = cell.count > 1 && cell.hasSuffix(":")
+      let dashes = cell.dropFirst(left ? 1 : 0).dropLast(right ? 1 : 0)
+      guard !dashes.isEmpty, dashes.allSatisfy({ $0 == "-" }) else { return nil }
+      alignments.append(left && right ? .center : left ? .leading : right ? .trailing : nil)
+    }
+    return alignments
+  }
 }
