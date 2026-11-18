@@ -186,6 +186,8 @@ private struct RawLifecyclePeer {
 @Suite(.serialized, .timeLimit(.minutes(3))) struct UnixOwnedCloseConcurrencyTests {
   @Test func concurrentTransportClosersJoinTheReaderDespiteCallerCancellation() async throws {
     let timing = NativeTimingBoundary(.transportClosers)
+    let shutdownTiming = NarrowTimingObservation(.transportClosers)
+    defer { shutdownTiming.emitAfterCleanup() }
     let directory = try lifecycleDirectory()
     defer { try? FileManager.default.removeItem(atPath: directory) }
     var peer = try RawLifecyclePeer(path: directory + "/s")
@@ -211,7 +213,15 @@ private struct RawLifecyclePeer {
           readerHeld.release()
           await readerRelease.wait()
         }
-      }, sendSettlementObserver: { log.record(transportEventName($0)) })
+      },
+      sendSettlementObserver: { event in
+        switch event {
+        case .groupShutdownInvoked: shutdownTiming.record(.groupShutdownInvoked)
+        case .groupShutdownCallbackEntered: shutdownTiming.record(.groupShutdownCallbackEntered)
+        case .groupShutdownAwaitReturned: shutdownTiming.record(.groupShutdownAwaitReturned)
+        default: log.record(transportEventName(event))
+        }
+      })
     timing.record(.connectReturned)
     timing.record(.acceptIssued)
     do { try peer.acceptOnce(); timing.record(.acceptReturned) } catch {
@@ -273,7 +283,13 @@ private struct RawLifecyclePeer {
       lifecycleObserver: { event in
         log.record(transportEventName(event))
         if case .sendAdmitted = event { await sendRelease.wait() }
-      }, sendSettlementObserver: { log.record(transportEventName($0)) })
+      },
+      sendSettlementObserver: { event in
+        switch event {
+        case .groupShutdownInvoked, .groupShutdownCallbackEntered, .groupShutdownAwaitReturned: break
+        default: log.record(transportEventName(event))
+        }
+      })
     do { try peer.acceptOnce() } catch {
       sendRelease.release(); peer.finish(); await transport.close(); throw error
     }
@@ -315,7 +331,12 @@ private struct RawLifecyclePeer {
     let transport = try await UnixSocketTransport.connect(
       path: peer.path, timeout: .seconds(3),
       lifecycleObserver: { log.record(transportEventName($0)) },
-      sendSettlementObserver: { log.record(transportEventName($0)) })
+      sendSettlementObserver: { event in
+        switch event {
+        case .groupShutdownInvoked, .groupShutdownCallbackEntered, .groupShutdownAwaitReturned: break
+        default: log.record(transportEventName(event))
+        }
+      })
     do { try peer.acceptOnce() } catch { peer.finish(); await transport.close(); throw error }
     peer.finish()
     var incoming = transport.incoming.makeAsyncIterator()
@@ -342,5 +363,8 @@ private func transportEventName(_ event: TransportLifecycleEvent) -> String {
   case .existingCompletion: return "existingCompletion"
   case .cleanupStarted: return "cleanupStarted"
   case .cleanupFinished: return "cleanupFinished"
+  case .groupShutdownInvoked: return "groupShutdownInvoked"
+  case .groupShutdownCallbackEntered: return "groupShutdownCallbackEntered"
+  case .groupShutdownAwaitReturned: return "groupShutdownAwaitReturned"
   }
 }

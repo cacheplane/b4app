@@ -13,6 +13,11 @@ import WorkspaceProtocol
     let timing = NativeTimingBoundary(
       .preservedTurn,
       caseOrdinal: ordering == "peer-before-ack" ? .first : ordering == "local-before-ack" ? .second : .third)
+    let cleanupTiming: NarrowTimingObservation? =
+      ordering == "peer-before-ack" ? NarrowTimingObservation(.peerBeforeAckCleanup) : nil
+    defer { cleanupTiming?.emitAfterCleanup() }
+    let stopObservation: (@Sendable (NarrowTimingObservation.Stage, Bool?) -> Void)? =
+      cleanupTiming.map { collector in { collector.record($0, flag: $1) } }
     let control = AcknowledgementControl()
     let inspectionObservation: InspectionRequestObservation? =
       ordering == "peer-before-ack"
@@ -179,7 +184,7 @@ import WorkspaceProtocol
         timing.record(.cleanupRequestJoinReturned)
       }
       timing.record(.harnessStopIssued)
-      await h.stop()
+      await h.stop(observation: stopObservation)
       timing.record(.harnessStopReturned)
       throw error
     }
@@ -203,7 +208,7 @@ import WorkspaceProtocol
       timing.record(.cleanupRequestJoinReturned)
     }
     timing.record(.harnessStopIssued)
-    await h.stop()
+    await h.stop(observation: stopObservation)
     timing.record(.harnessStopReturned)
   }
 

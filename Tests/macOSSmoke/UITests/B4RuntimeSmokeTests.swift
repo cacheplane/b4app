@@ -218,8 +218,7 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     try requireElement(app.staticTexts["historical-read-only-reason"], in: app)
     let reason = app.staticTexts["historical-read-only-reason"]
     XCTAssertTrue(reason.isHittable)
-    XCTAssertTrue(reason.label.localizedCaseInsensitiveContains("historical"))
-    XCTAssertTrue(reason.label.localizedCaseInsensitiveContains("read-only"))
+    XCTAssertEqual(reason.value as? String, "This historical conversation is read-only.")
     // If local answer entry remains editable, make it nonempty before testing Submit answers.
     // Otherwise an empty-answer predicate alone could make the historical question check vacuous.
     let answer = app.textFields["Answer"]

@@ -66,6 +66,9 @@ struct InspectionRequestObservation: Sendable {
     let outcome = threw ? "threw" : "returned"
     let header =
       "connectionInspection caseOrdinal=\(caseID.rawValue) parameter=\(caseID.parameter) requestScope=connectionAdd requestOutcome=\(outcome) snapshotTiming=requestReturn"
-    report(header + "\n" + snapshot.formatted())
+    // Independent one-shot command snapshot at the same success/throw reporting boundary.
+    // This precedes fixture cleanup: a prerequisite throw can bypass the test's stop entirely.
+    let commandSnapshot = collector.commandTiming.snapshot()
+    report(header + "\n" + snapshot.formatted() + "\n" + commandSnapshot.formatted())
   }
 }

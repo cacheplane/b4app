@@ -42,12 +42,12 @@ public final class SocketServer: Sendable {
   // Observes actual ownership operations without providing lifecycle authority.
   static func start(
     socketPath: String, router: Router, eventLog: EventLog,
-    lifecycleObserver: SocketLifecycleObserver?
+    lifecycleObserver: SocketLifecycleObserver?, acceptanceObserver: SocketAcceptanceObserver? = nil
   ) async throws -> SocketServer {
     try await start(
       socketPath: socketPath, eventLog: eventLog,
       plainDispatch: { [router] line in await router.dispatch(line: line) },
-      lifecycleObserver: lifecycleObserver)
+      lifecycleObserver: lifecycleObserver, acceptanceObserver: acceptanceObserver)
   }
 
   // This internal fixture seam accepts only a plain request/response operation. Its captures must be
@@ -211,7 +211,23 @@ public final class SocketServer: Sendable {
       // Normal source finish preserves buffered children for unconditional structured handoff.
       await acceptTask.value
       await lifecycleObserver?(.groupShutdownStarted)
-      try? await group.shutdownGracefully()
+      if let acceptanceObserver {
+        // Same pinned NIO bridge and default global callback queue; no new shutdown authority.
+        try? await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+          acceptanceObserver(.groupShutdownInvoked)
+          group.shutdownGracefully { error in
+            acceptanceObserver(.groupShutdownCallbackEntered)
+            if let error = error {
+              cont.resume(throwing: error)
+            } else {
+              cont.resume()
+            }
+          }
+        }
+        acceptanceObserver(.groupShutdownAwaitReturned)
+      } else {
+        try? await group.shutdownGracefully()
+      }
       try? FileManager.default.removeItem(atPath: socketPath)
       await lifecycleObserver?(.cleanupFinished)
     }
@@ -240,6 +256,7 @@ enum SocketAcceptanceEvent: Sendable, Equatable {
   case active(ObjectIdentifier)
   case dequeued(child: ObjectIdentifier, connectionID: UUID)
   case sourceFinished
+  case groupShutdownInvoked, groupShutdownCallbackEntered, groupShutdownAwaitReturned
   case firstCloseTurnQueued, firstCloseTurnExecuting, listenerCloseInvoked, listenerClosed
 }
 typealias SocketAcceptanceObserver = @Sendable (SocketAcceptanceEvent) -> Void

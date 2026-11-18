@@ -342,12 +342,28 @@ final class L1FactoryCalls: Sendable {
       additiveSQLNull: try AgentProtocolFoundationFixture.additiveSQLNullFacts(c))
   }
 
-  static func observed(within budget: Duration = .seconds(3), _ value: () -> Bool) async -> Bool {
+  static func observed(
+    within budget: Duration = .seconds(3),
+    observation: NarrowTimingWitness? = nil,
+    _ value: () -> Bool
+  ) async -> Bool {
     let deadline = ContinuousClock.now + budget
+    observation?.record(.observationDeadline, nil)
     while !value(), ContinuousClock.now < deadline {
-      do { try await Task.sleep(for: .milliseconds(10)) } catch { return false }
+      do { try await Task.sleep(for: .milliseconds(10)) } catch {
+        observation?.record(.resultBool, false)
+        observation?.record(.callerCancelled, Task.isCancelled)
+        observation?.record(.atDeadline, ContinuousClock.now >= deadline)
+        observation?.record(.sleepThrew, nil)
+        return false
+      }
     }
-    return value()
+    let result = value()
+    observation?.record(.resultBool, result)
+    observation?.record(.callerCancelled, Task.isCancelled)
+    observation?.record(.atDeadline, ContinuousClock.now >= deadline)
+    observation?.record(.normalReturn, nil)
+    return result
   }
 
   static func canonicalOldStore(
@@ -773,35 +789,42 @@ final class L1FactoryCalls: Sendable {
 
   static func begin(
     _ fixture: Fixture, _ cleanup: L1Cleanup, session: AuthSession? = nil,
-    timing: NativeTimingBoundary? = nil
+    timing: NativeTimingBoundary? = nil,
+    observation: NarrowTimingWitness? = nil
   ) -> Run {
-    begin(fixture, cleanup, session: session, trace: nil, timing: timing)
+    begin(fixture, cleanup, session: session, trace: nil, timing: timing, observation: observation)
   }
 
   private static func begin(
     _ fixture: Fixture, _ cleanup: L1Cleanup, session: AuthSession? = nil, trace: L1PhaseTrace?,
-    timing: NativeTimingBoundary? = nil
+    timing: NativeTimingBoundary? = nil,
+    observation: NarrowTimingWitness? = nil
   ) -> Run {
     let state = L1RunState()
     let answer = session ?? Self.session()
     timing?.record(.issued)
+    observation?.record(.issued, nil)
     let task = Task {
+      observation?.record(.taskEntered, nil)
       timing?.record(.taskEntered)
       trace?.record(.taskEntered)
       defer {
         state.finished.withLock { $0 = true }
         trace?.record(.finished)
         timing?.record(.finished)
+        observation?.record(.finished, nil)
       }
       do {
         trace?.record(.signInCallIssued)
         let value = try await fixture.manager.signIn(session: answer, hubURL: fixture.hubURL)
         trace?.record(.signInReturned, flag: true)
         timing?.record(.operationReturned, flag: true)
+        observation?.record(.operationReturned, true)
         return Result<AccountStatus.Result, any Error>.success(value)
       } catch {
         trace?.record(.signInReturned, flag: false)
         timing?.record(.operationReturned, flag: false)
+        observation?.record(.operationReturned, false)
         return .failure(error)
       }
     }

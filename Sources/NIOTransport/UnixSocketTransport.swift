@@ -108,7 +108,7 @@ public final class UnixSocketTransport: WorkspaceTransport, Sendable {
 
   public func close() async {
     await lifecycle.close(observer: lifecycleObserver) {
-      [outbound, readerTask, channel, group, lifecycle, lifecycleObserver] in
+      [outbound, readerTask, channel, group, lifecycle, lifecycleObserver, sendSettlementObserver] in
       await lifecycleObserver?(.cleanupStarted)
       // Interrupt IO before draining writes: a backpressured writer needs the live loop to wake.
       outbound.finish()
@@ -118,7 +118,23 @@ public final class UnixSocketTransport: WorkspaceTransport, Sendable {
       await lifecycle.drainSends()
       await readerTask.value
       await lifecycleObserver?(.groupShutdownStarted)
-      try? await group.shutdownGracefully()
+      if let sendSettlementObserver {
+        // Same pinned NIO bridge and default global callback queue; no new shutdown authority.
+        try? await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+          sendSettlementObserver(.groupShutdownInvoked)
+          group.shutdownGracefully { error in
+            sendSettlementObserver(.groupShutdownCallbackEntered)
+            if let error = error {
+              cont.resume(throwing: error)
+            } else {
+              cont.resume()
+            }
+          }
+        }
+        sendSettlementObserver(.groupShutdownAwaitReturned)
+      } else {
+        try? await group.shutdownGracefully()
+      }
       await lifecycleObserver?(.cleanupFinished)
     }
   }
@@ -213,6 +229,7 @@ enum TransportLifecycleEvent: Sendable, Equatable {
   case sendSettled(activeSends: Int)
   case sendRejected, writeStarted, ioInterrupted, readerFinished, groupShutdownStarted
   case existingCompletion, cleanupStarted, cleanupFinished
+  case groupShutdownInvoked, groupShutdownCallbackEntered, groupShutdownAwaitReturned
 }
 typealias TransportLifecycleObserver = @Sendable (TransportLifecycleEvent) async -> Void
 typealias TransportSynchronousObserver = @Sendable (TransportLifecycleEvent) -> Void

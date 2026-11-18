@@ -1,8 +1,9 @@
-import Coordinator
 import Synchronization
 import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
+
+@testable import Coordinator
 
 /// Source-only controls: these exercise synthetic adapters, never a coordinator or native runtime.
 struct InspectionObservationTests {
@@ -25,6 +26,8 @@ struct InspectionObservationTests {
     #expect(((proxy as? any LoginCapable) != nil) == mask.login)
     #expect(((inner as? any UsageReporting) != nil) == mask.usage)
     #expect(((proxy as? any UsageReporting) != nil) == mask.usage)
+    #expect(((inner as? any CommandListing) != nil) == mask.commands)
+    #expect(((proxy as? any CommandListing) != nil) == mask.commands)
     #expect(proxy.kind == .codex)  // Deliberately differs from the factory input kind.
     #expect(try await proxy.inspectConnection() == ConnectionInspection(status: .ready))
 
@@ -94,6 +97,83 @@ struct InspectionObservationTests {
     }
     #expect(Set(callOrdinals).count == callOrdinals.count)
     // These local pairings do not associate a cached adapter call with an overlapping RPC.
+  }
+
+  @Test(
+    arguments: ObservationMask.allCases.filter(\.commands), ObservationCommandMode.allCases)
+  func commandsPreserveResultsOriginalErrorAndObservation(
+    _ mask: ObservationMask, _ mode: ObservationCommandMode
+  ) async throws {
+    let facts = ObservationFacts()
+    let failure = ObservationCommandError()
+    let inner = mask.adapter(
+      ObservationFakeCore(facts: facts), commandMode: mode, commandError: failure)
+    let original = try #require(inner as? any ObservationCommandFake)
+    let observation = InspectionObservation()
+    let secrets = MemorySecretStore()
+    let factory = observation.makeObservedFactory { connection, environment, version, suppliedSecrets in
+      facts.record(
+        .factory(connection, environment, version, (suppliedSecrets as? MemorySecretStore) === secrets))
+      return inner
+    }
+    let connection = syntheticConnection()
+    let proxy = try factory(connection, ["synthetic": "commands"], "commands-version", secrets)
+    let commands = try #require(proxy as? any CommandListing)
+
+    // The baseline is copied before the command call. Each collector is snapshotted only once.
+    let baseline = InspectionObservation()
+    let baselineFactory = baseline.makeObservedFactory { _, _, _, _ in
+      ObservationFakeCore(facts: ObservationFacts())
+    }
+    let baselineProxy = try baselineFactory(connection, [:], "synthetic", secrets)
+    #expect(try await baselineProxy.inspectConnection() == ConnectionInspection(status: .ready))
+    let before = baseline.snapshot()
+
+    switch mode {
+    case .value:
+      #expect(try await commands.readCommands() == ObservationCommandControl.values)
+    case .empty:
+      #expect(try await commands.readCommands() == [])
+    case .failure:
+      do {
+        _ = try await commands.readCommands()
+        Issue.record("Expected the original command error")
+      } catch {
+        #expect((error as? ObservationCommandError) === failure)
+      }
+    }
+    // A later observed call exposes any command-side ordinal allocation.
+    #expect(try await proxy.inspectConnection() == ConnectionInspection(status: .ready))
+    #expect(
+      facts.snapshot() == [
+        .factory(connection, ["synthetic": "commands"], "commands-version", true),
+        .commands(ObjectIdentifier(original)), .inspection,
+      ])
+    let after = observation.snapshot()
+    #expect(before.availability == .available && after.availability == .available)
+    #expect(before.partial && !before.joined && after.partial && !after.joined)
+    #expect(before.overflow == false && after.overflow == false)
+    #expect(!before.contentionDropAdvisory && !after.contentionDropAdvisory)
+    #expect(
+      before.records.map(\.phase) == [
+        .factoryEntered, .factoryReturned, .inspectionIssued, .inspectionReturned,
+      ])
+    #expect(after.records.map(\.phase) == before.records.map(\.phase))
+    #expect(after.records.map(\.callOrdinal) == before.records.map(\.callOrdinal))
+    #expect(after.records.map(\.callOrdinal) == [1, 1, 2, 2])
+    #expect(after.records.map(\.adapterOrdinal) == before.records.map(\.adapterOrdinal))
+    #expect(after.records.map(\.harnessOrdinal) == before.records.map(\.harnessOrdinal))
+    #expect(after.records.map(\.kind) == before.records.map(\.kind))
+    #expect(after.records.map(\.threw) == before.records.map(\.threw))
+    #expect(after.records.map(\.returnShape) == before.records.map(\.returnShape))
+    #expect(after.records.map(\.status) == before.records.map(\.status))
+    #expect(after.records.map(\.authStatus) == before.records.map(\.authStatus))
+    #expect(after.records.map(\.errorShape) == before.records.map(\.errorShape))
+    #expect(after.records.map(\.errorCode) == before.records.map(\.errorCode))
+    #expect(after.records.map(\.hasFiveHour) == before.records.map(\.hasFiveHour))
+    #expect(after.records.map(\.hasWeekly) == before.records.map(\.hasWeekly))
+    #expect(after.records.map(\.hasPlanType) == before.records.map(\.hasPlanType))
+    // Elapsed parent time is intentionally not an equality oracle.
   }
 
   @Test(arguments: [ObservationUsageMode.none, .failure])
@@ -240,14 +320,26 @@ private enum ObservationControlError: Error, Equatable { case forwarded }
 enum ObservationUsageMode: Sendable, Equatable { case value, none, failure }
 enum ObservationMask: CaseIterable, Sendable, Equatable {
   case neither, loginOnly, usageOnly, both
-  var login: Bool { self == .loginOnly || self == .both }
-  var usage: Bool { self == .usageOnly || self == .both }
-  fileprivate func adapter(_ core: ObservationFakeCore) -> any AgentAdapter {
+  case commandsOnly, loginAndCommands, usageAndCommands, all
+  var login: Bool { self == .loginOnly || self == .both || self == .loginAndCommands || self == .all }
+  var usage: Bool { self == .usageOnly || self == .both || self == .usageAndCommands || self == .all }
+  var commands: Bool {
+    self == .commandsOnly || self == .loginAndCommands || self == .usageAndCommands || self == .all
+  }
+  fileprivate func adapter(
+    _ core: ObservationFakeCore, commandMode: ObservationCommandMode = .value,
+    commandError: ObservationCommandError = ObservationCommandError()
+  ) -> any AgentAdapter {
+    let commands = ObservationCommandControl(facts: core.facts, mode: commandMode, failure: commandError)
     switch self {
     case .neither: return core
     case .loginOnly: return ObservationLoginFake(core: core)
     case .usageOnly: return ObservationUsageFake(core: core)
     case .both: return ObservationBothFake(core: core)
+    case .commandsOnly: return ObservationCommandsOnlyFake(core: core, commands: commands)
+    case .loginAndCommands: return ObservationLoginCommandsFake(core: core, commands: commands)
+    case .usageAndCommands: return ObservationUsageCommandsFake(core: core, commands: commands)
+    case .all: return ObservationAllFake(core: core, commands: commands)
     }
   }
 }
@@ -255,6 +347,7 @@ enum ObservationMask: CaseIterable, Sendable, Equatable {
 private enum ObservationFact: Equatable, Sendable {
   case factory(Connection, [String: String], String, Bool)
   case kind, inspection, events, dispose, login, usage
+  case commands(ObjectIdentifier)
   case create(NewSessionInput), load(NativeSessionRef), send(NativeSessionRef, TurnInput)
   case interrupt(NativeSessionRef, ActiveTurnRef), respond(RuntimeRequestRef, RuntimeResponse)
   case reconcile(NativeSessionRef, ActiveTurnRef?), delete(NativeSessionRef)
@@ -373,4 +466,380 @@ private struct ObservationBothFake: ObservationFakeForwarding, LoginCapable, Usa
   let core: ObservationFakeCore
   func startLogin() async throws -> LoginStart { try core.loginResult() }
   func readUsage() async throws -> UsageReading? { try core.usageResult() }
+}
+
+enum ObservationCommandMode: CaseIterable, Sendable { case value, empty, failure }
+private final class ObservationCommandError: Error {}
+
+private struct ObservationCommandControl: Sendable {
+  let facts: ObservationFacts
+  let mode: ObservationCommandMode
+  let failure: ObservationCommandError
+  static let values = [
+    RuntimeCommand(
+      name: "synthetic-second", description: "Second sentinel", argumentHint: "<second>",
+      aliases: ["second-alias", "s2"]),
+    RuntimeCommand(name: "synthetic-first", description: "First sentinel"),
+  ]
+  func result(from original: any ObservationCommandFake) throws -> [RuntimeCommand] {
+    facts.record(.commands(ObjectIdentifier(original)))
+    switch mode {
+    case .value: return Self.values
+    case .empty: return []
+    case .failure: throw failure
+    }
+  }
+}
+
+private protocol ObservationCommandFake: AnyObject, ObservationFakeForwarding, CommandListing {
+  var commands: ObservationCommandControl { get }
+}
+extension ObservationCommandFake {
+  func readCommands() async throws -> [RuntimeCommand] { try commands.result(from: self) }
+}
+private final class ObservationCommandsOnlyFake: ObservationCommandFake {
+  let core: ObservationFakeCore
+  let commands: ObservationCommandControl
+  init(core: ObservationFakeCore, commands: ObservationCommandControl) {
+    self.core = core
+    self.commands = commands
+  }
+}
+private final class ObservationLoginCommandsFake: ObservationCommandFake, LoginCapable {
+  let core: ObservationFakeCore
+  let commands: ObservationCommandControl
+  init(core: ObservationFakeCore, commands: ObservationCommandControl) {
+    self.core = core
+    self.commands = commands
+  }
+  func startLogin() async throws -> LoginStart { try core.loginResult() }
+}
+private final class ObservationUsageCommandsFake: ObservationCommandFake, UsageReporting {
+  let core: ObservationFakeCore
+  let commands: ObservationCommandControl
+  init(core: ObservationFakeCore, commands: ObservationCommandControl) {
+    self.core = core
+    self.commands = commands
+  }
+  func readUsage() async throws -> UsageReading? { try core.usageResult() }
+}
+private final class ObservationAllFake: ObservationCommandFake, LoginCapable, UsageReporting {
+  let core: ObservationFakeCore
+  let commands: ObservationCommandControl
+  init(core: ObservationFakeCore, commands: ObservationCommandControl) {
+    self.core = core
+    self.commands = commands
+  }
+  func startLogin() async throws -> LoginStart { try core.loginResult() }
+  func readUsage() async throws -> UsageReading? { try core.usageResult() }
+}
+
+/// Inert diagnostic controls only. They exercise no process, socket, account, or native fixture.
+struct NarrowTimingObservationTests {
+  @Test func commandBoundsSaturateWithoutReusingSlotsAndSnapshotIsOneShot() throws {
+    let collector = NarrowTimingObservation(.inspectionCommands)
+    for scope in UInt8(1)...16 {
+      #expect(collector.nextScopeOrdinal() == scope)
+      let observation = collector.commandObservation(scope: scope)
+      for command in UInt8(1)...8 {
+        #expect(observation.reserve() == command)
+        observation.record(command, .commandCoreEntered)
+        observation.record(command, .commandCoreExited)
+      }
+      #expect(observation.reserve() == nil)
+      #expect(observation.reserve() == nil)
+    }
+    #expect(collector.nextScopeOrdinal() == nil)
+    #expect(collector.nextScopeOrdinal() == nil)
+    let first = collector.snapshot()
+    #expect(first.availability == .available)
+    #expect(first.overflow == true)
+    #expect(first.records.count == 256)
+    #expect(
+      first.records.allSatisfy {
+        ($0.scope.map { (1...16).contains($0) } ?? false)
+          && ($0.command.map { (1...8).contains($0) } ?? false)
+      })
+    collector.record(.commandCoreEntered, scope: 1, command: 1)
+    #expect(first.records.count == 256)
+    let second = collector.snapshot()
+    #expect(second.availability == .alreadyAttempted)
+    #expect(second.records.isEmpty && second.overflow == nil)
+  }
+
+  @Test func firstStageSlotsRemainIndependentOfParentAndDropIsAdvisory() {
+    let parent = InspectionObservation()
+    parent.record(.requestIssued, kind: .codex)
+    let collector = parent.commandTiming
+    collector.exerciseContentionDropForTest()
+    let scope = collector.nextScopeOrdinal()
+    #expect(scope == 1)
+    collector.record(.commandCoreEntered, flag: true, scope: 1, command: 1)
+    collector.record(.commandCoreEntered, flag: false, scope: 1, command: 1)
+    let snapshot = collector.snapshot()
+    #expect(snapshot.records.count == 1 && snapshot.records.first?.flag == true)
+    #expect(snapshot.contentionDropAdvisory)
+    #expect(snapshot.overflow == false)
+    #expect(parent.nextCallOrdinal() == 1 && parent.nextAdapterOrdinal() == 1)
+    #expect(parent.snapshot().records.count == 1)
+    let text = snapshot.formatted()
+    #expect(text.contains("partial=true joined=false lateCallbacks=unknown"))
+    #expect(text.contains("stage=commandCoreEntered scope=1 command=1"))
+    let allowedKeys: Set<String> = [
+      "role", "partial", "joined", "lateCallbacks", "unavailable", "recordCount", "overflow",
+      "contentionDropAdvisory", "stage", "scope", "command", "elapsedNanoseconds", "flag",
+      "scopeCount", "adapterOrdinal", "inspectionCallOrdinal",
+    ]
+    for token in text.split(whereSeparator: { $0 == " " || $0 == "\n" }) where token.contains("=") {
+      #expect(allowedKeys.contains(String(token.prefix { $0 != "=" })))
+    }
+  }
+
+  @Test func overlappingCommandScopesKeepCopiedParentCorrelationWithoutParentAllocation() throws {
+    let parent = InspectionObservation()
+    let firstAdapter = try #require(parent.nextAdapterOrdinal())
+    let firstCall = try #require(parent.nextCallOrdinal())
+    let secondAdapter = try #require(parent.nextAdapterOrdinal())
+    let secondCall = try #require(parent.nextCallOrdinal())
+    let collector = parent.commandTiming
+    let first = try #require(
+      collector.nextScopeOrdinal(
+        adapterOrdinal: firstAdapter, inspectionCallOrdinal: firstCall))
+    let firstCore = collector.commandObservation(scope: first)
+    let firstCommand = try #require(firstCore.reserve())
+    firstCore.record(firstCommand, .commandCoreEntered)
+    let second = try #require(
+      collector.nextScopeOrdinal(
+        adapterOrdinal: secondAdapter, inspectionCallOrdinal: secondCall))
+    let secondCore = collector.commandObservation(scope: second)
+    let secondCommand = try #require(secondCore.reserve())
+    secondCore.record(secondCommand, .commandCoreEntered)
+    // Later scope reservations cannot retarget either in-flight command's parent metadata.
+    let missingAdapter = try #require(
+      collector.nextScopeOrdinal(
+        inspectionCallOrdinal: firstCall))
+    let missingCall = try #require(collector.nextScopeOrdinal(adapterOrdinal: secondAdapter))
+    let outOfRange = try #require(
+      collector.nextScopeOrdinal(
+        adapterOrdinal: 0, inspectionCallOrdinal: 129))
+    firstCore.record(firstCommand, .commandCoreExited)
+    secondCore.record(secondCommand, .commandCoreExited)
+    for scope in [missingAdapter, missingCall, outOfRange] {
+      let core = collector.commandObservation(scope: scope)
+      let command = try #require(core.reserve())
+      core.record(command, .commandCoreEntered)
+      core.record(command, .commandCoreExited)
+    }
+    let snapshot = collector.snapshot()
+    #expect(snapshot.scopes.count == 5 && snapshot.records.count == 10)
+    #expect(snapshot.overflow == false)
+    for record in snapshot.records {
+      let scope = try #require(record.scope)
+      switch scope {
+      case first:
+        #expect(record.adapterOrdinal == firstAdapter && record.inspectionCallOrdinal == firstCall)
+      case second:
+        #expect(record.adapterOrdinal == secondAdapter && record.inspectionCallOrdinal == secondCall)
+      case missingAdapter:
+        #expect(record.adapterOrdinal == nil && record.inspectionCallOrdinal == firstCall)
+      case missingCall:
+        #expect(record.adapterOrdinal == secondAdapter && record.inspectionCallOrdinal == nil)
+      case outOfRange:
+        #expect(record.adapterOrdinal == nil && record.inspectionCallOrdinal == nil)
+      default: Issue.record("Unexpected bounded command scope")
+      }
+    }
+    #expect(snapshot.scopes.map(\.ordinal) == [first, second, missingAdapter, missingCall, outOfRange])
+    #expect(snapshot.scopes.map(\.adapterOrdinal) == [firstAdapter, secondAdapter, nil, secondAdapter, nil])
+    #expect(snapshot.scopes.map(\.inspectionCallOrdinal) == [firstCall, secondCall, firstCall, nil, nil])
+    let text = snapshot.formatted()
+    #expect(text.contains("scope=1 adapterOrdinal=1 inspectionCallOrdinal=1"))
+    #expect(text.contains("scope=2 adapterOrdinal=2 inspectionCallOrdinal=2"))
+    #expect(text.contains("scope=3 adapterOrdinal=unavailable inspectionCallOrdinal=1"))
+    #expect(text.contains("scope=4 adapterOrdinal=2 inspectionCallOrdinal=unavailable"))
+    #expect(text.contains("scope=5 adapterOrdinal=unavailable inspectionCallOrdinal=unavailable"))
+    #expect(parent.nextAdapterOrdinal() == 3 && parent.nextCallOrdinal() == 3)
+    #expect(parent.snapshot().records.isEmpty)
+  }
+
+  @Test func unarmedOrFailedArmIsUnavailableAndCannotRetryArming() {
+    let neverArmed = NarrowTimingObservation(.l2SecondFixture)
+    neverArmed.record(.issued)
+    let never = neverArmed.snapshot()
+    #expect(never.availability == .notArmed)
+    #expect(never.records.isEmpty && never.scopes.isEmpty && never.overflow == nil)
+    #expect(!never.contentionDropAdvisory)
+    #expect(never.formatted().contains("unavailable=notArmed recordCount=unknown scopeCount=unknown"))
+    #expect(never.formatted().contains("partial=true joined=false lateCallbacks=unknown"))
+    #expect(neverArmed.snapshot().availability == .alreadyAttempted)
+
+    let failedArm = NarrowTimingObservation(.l2SecondFixture)
+    #expect(!failedArm.exerciseArmContentionForTest())
+    #expect(!failedArm.arm())
+    #expect(!failedArm.arm())
+    failedArm.record(.issued)
+    let failed = failedArm.snapshot()
+    #expect(failed.availability == .notArmed)
+    #expect(failed.records.isEmpty && failed.scopes.isEmpty && failed.overflow == nil)
+    #expect(failed.contentionDropAdvisory)
+    #expect(failed.formatted().contains("unavailable=notArmed recordCount=unknown scopeCount=unknown"))
+    #expect(failed.formatted().contains("partial=true joined=false lateCallbacks=unknown"))
+    #expect(failedArm.snapshot().availability == .alreadyAttempted)
+  }
+
+  @Test func l2IgnoresSetupAndUnselectedMigrationPhasesThenArmsOnlyOnce() {
+    let collector = NarrowTimingObservation(.l2SecondFixture)
+    collector.recordMigration(.actorSignInEntered, flag: false)
+    #expect(collector.arm())
+    #expect(!collector.arm())
+    collector.recordMigration(.poolDrainEntered, flag: true)
+    collector.recordMigration(.actorSignInEntered, flag: true)
+    collector.record(.issued)
+    let snapshot = collector.snapshot()
+    #expect(snapshot.records.map(\.stage) == [.actorSignInEntered, .issued])
+    #expect(snapshot.records.first?.flag == true)
+    #expect(snapshot.records.allSatisfy { $0.scope == nil && $0.command == nil })
+    #expect(snapshot.overflow == false)
+  }
+
+  @Test func fixedSocketAndPeerRolesRetainOnlyTheirFirstFiniteStages() {
+    for role in [
+      NarrowTimingObservation.Role.bufferedChildren, .serverClosers, .transportClosers,
+    ] {
+      let collector = NarrowTimingObservation(role)
+      collector.record(.groupShutdownInvoked, flag: true)
+      collector.record(.groupShutdownInvoked, flag: false)
+      collector.record(.groupShutdownCallbackEntered)
+      collector.record(.groupShutdownAwaitReturned)
+      let snapshot = collector.snapshot()
+      #expect(snapshot.records.count == 3 && snapshot.records.first?.flag == true)
+      #expect(snapshot.overflow == false)
+      #expect(snapshot.records.allSatisfy { $0.scope == nil && $0.command == nil })
+    }
+    let peer = NarrowTimingObservation(.peerBeforeAckCleanup)
+    peer.record(.clientCloseIssued)
+    peer.record(.clientCloseReturned)
+    peer.record(.coordinatorCloseIssued)
+    peer.record(.coordinatorCloseReturned)
+    peer.record(.commandCoreEntered, scope: 255, command: 255)
+    let snapshot = peer.snapshot()
+    #expect(snapshot.records.count == 4 && snapshot.overflow == true)
+    #expect(snapshot.records.allSatisfy { $0.scope == nil && $0.command == nil })
+  }
+
+  @Test func observedPreservesPredicateEvaluationCountWithNilAndPrimitiveCallback() async {
+    var nilCalls = 0
+    let plain = await AgentProtocolAccountMigrationTests.observed {
+      nilCalls += 1
+      return true
+    }
+    let collector = NarrowTimingObservation(.l2SecondFixture)
+    collector.arm()
+    var observedCalls = 0
+    let observed = await AgentProtocolAccountMigrationTests.observed(
+      observation: NarrowTimingWitness { collector.record($0, flag: $1) },
+      {
+        observedCalls += 1
+        return true
+      })
+    #expect(plain && observed && nilCalls == 2 && observedCalls == 2)
+    let snapshot = collector.snapshot()
+    #expect(
+      snapshot.records.map(\.stage) == [
+        .observationDeadline, .resultBool, .callerCancelled, .normalReturn, .atDeadline,
+      ])
+    #expect(snapshot.records.first { $0.stage == .resultBool }?.flag == true)
+    #expect(!snapshot.records.contains { $0.stage == .sleepThrew })
+  }
+
+  @Test func taskLocalScopesOnlyActualInspectionAndRestoresNil() async throws {
+    #expect(CommandRunner.coreObservation == nil)
+    let checks = NarrowScopeChecks()
+    let parent = InspectionObservation()
+    let factory = parent.makeObservedFactory { _, _, _, _ in
+      checks.record(CommandRunner.coreObservation != nil)
+      return NarrowScopeAdapter(checks: checks)
+    }
+    let proxy = try factory(syntheticConnection(), [:], "inert", MemorySecretStore())
+    #expect(try await proxy.inspectConnection() == ConnectionInspection(status: .ready))
+    let usage = try #require(proxy as? any UsageReporting)
+    let commands = try #require(proxy as? any CommandListing)
+    _ = try await usage.readUsage()
+    _ = try await commands.readCommands()
+    await proxy.dispose()
+    #expect(checks.snapshot() == [false, true, false, false, false])
+    #expect(CommandRunner.coreObservation == nil)
+    let snapshot = parent.commandTiming.snapshot()
+    #expect(snapshot.records.map(\.stage) == [.commandCoreEntered, .commandCoreExited])
+    #expect(
+      snapshot.records.allSatisfy {
+        $0.scope == 1 && $0.command == 1 && $0.adapterOrdinal == 1 && $0.inspectionCallOrdinal == 2
+      })
+    #expect(snapshot.scopes.count == 1)
+    #expect(snapshot.scopes.first?.adapterOrdinal == 1 && snapshot.scopes.first?.inspectionCallOrdinal == 2)
+    #expect(parent.nextCallOrdinal() == 5 && parent.nextAdapterOrdinal() == 2)
+  }
+}
+
+private final class NarrowScopeChecks: Sendable {
+  private struct State: Sendable {
+    var slots = [Bool?](repeating: nil, count: 5)
+    var next = 0
+  }
+  private let state = Mutex(State())
+  func record(_ value: Bool) {
+    state.withLock {
+      guard $0.next < 5 else { return }
+      $0.slots[$0.next] = value
+      $0.next += 1
+    }
+  }
+  func snapshot() -> [Bool] {
+    let slots = state.withLock { $0.slots }
+    return slots.compactMap { $0 }
+  }
+}
+
+/// Synthetic scope witness; production CommandRunner and all real integration controls stay intact.
+private struct NarrowScopeAdapter: AgentAdapter, UsageReporting, CommandListing {
+  let checks: NarrowScopeChecks
+  var kind: ConnectionKind { .codex }
+  func inspectConnection() async throws -> ConnectionInspection {
+    let observation = CommandRunner.coreObservation
+    checks.record(observation != nil)
+    if let observation, let ordinal = observation.reserve() {
+      observation.record(ordinal, .commandCoreEntered)
+      observation.record(ordinal, .commandCoreExited)
+    }
+    return ConnectionInspection(status: .ready)
+  }
+  func readUsage() async throws -> UsageReading? {
+    checks.record(CommandRunner.coreObservation != nil)
+    return nil
+  }
+  func readCommands() async throws -> [RuntimeCommand] {
+    checks.record(CommandRunner.coreObservation != nil)
+    return []
+  }
+  func dispose() async { checks.record(CommandRunner.coreObservation != nil) }
+  func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
+    throw ObservationControlError.forwarded
+  }
+  func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot {
+    throw ObservationControlError.forwarded
+  }
+  func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
+    throw ObservationControlError.forwarded
+  }
+  func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
+    throw ObservationControlError.forwarded
+  }
+  func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
+    throw ObservationControlError.forwarded
+  }
+  func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
+    throw ObservationControlError.forwarded
+  }
+  func events() -> AsyncStream<AdapterEvent> { AsyncStream { $0.finish() } }
+  func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion { .deleted }
 }

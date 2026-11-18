@@ -201,9 +201,13 @@ struct Harness {
       ThreadRead.self, ThreadRead.Params(threadId: thread.id), options: RequestOptions(timeout: .seconds(30)))
   }
 
-  func stop() async {
+  func stop(observation: (@Sendable (NarrowTimingObservation.Stage, Bool?) -> Void)? = nil) async {
+    observation?(.clientCloseIssued, nil)
     await client.close()
+    observation?(.clientCloseReturned, nil)
+    observation?(.coordinatorCloseIssued, nil)
     await coordinator.close()
+    observation?(.coordinatorCloseReturned, nil)
   }
 }
 

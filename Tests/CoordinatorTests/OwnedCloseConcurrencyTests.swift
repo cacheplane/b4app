@@ -11,6 +11,8 @@ import WorkspaceProtocol
 @Suite(.serialized, .timeLimit(.minutes(3))) struct OwnedCloseConcurrencyTests {
   @Test func concurrentServerClosersAwaitTheAcceptOwnerAndSharedCleanup() async throws {
     let timing = NativeTimingBoundary(.serverClosers)
+    let shutdownTiming = NarrowTimingObservation(.serverClosers)
+    defer { shutdownTiming.emitAfterCleanup() }
     timing.record(.harnessIssued)
     let h = try await Harness.start()
     timing.record(.harnessReturned)
@@ -43,6 +45,14 @@ import WorkspaceProtocol
           case .groupShutdownStarted:
             log.record("groupShutdownStarted")
             timing.record(.groupShutdownStarted)
+          default: break
+          }
+        },
+        acceptanceObserver: { event in
+          switch event {
+          case .groupShutdownInvoked: shutdownTiming.record(.groupShutdownInvoked)
+          case .groupShutdownCallbackEntered: shutdownTiming.record(.groupShutdownCallbackEntered)
+          case .groupShutdownAwaitReturned: shutdownTiming.record(.groupShutdownAwaitReturned)
           default: break
           }
         })
@@ -115,7 +125,13 @@ import WorkspaceProtocol
       lifecycleObserver: { event in
         lifecycle.record(event)
         if case .connectionDequeued(let id) = event { await firstHandoff.holdIfFirst(id) }
-      }, acceptanceObserver: { acceptance.record($0) })
+      },
+      acceptanceObserver: { event in
+        switch event {
+        case .groupShutdownInvoked, .groupShutdownCallbackEntered, .groupShutdownAwaitReturned: return
+        default: acceptance.record(event)
+        }
+      })
     var peers: [UnixSocketTransport] = []
     do {
       let firstPeer = try await UnixSocketTransport.connect(path: server.socketPath)
@@ -220,6 +236,10 @@ import WorkspaceProtocol
         if case .connectionDequeued(let id) = event { await firstHandoff.holdIfFirst(id) }
       },
       acceptanceObserver: { event in
+        switch event {
+        case .groupShutdownInvoked, .groupShutdownCallbackEntered, .groupShutdownAwaitReturned: return
+        default: break
+        }
         acceptance.record(event)
         if case .rawRead = event { rawRead.wait() }
       })

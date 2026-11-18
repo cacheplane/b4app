@@ -9,6 +9,8 @@ import WorkspaceProtocol
 @Suite(.serialized, .timeLimit(.minutes(2))) struct SocketServerShutdownTests {
   @Test func initializedBufferedChildrenReachScopedOwnersBeforeLoopShutdown() async throws {
     let timing = NativeTimingBoundary(.bufferedChildren)
+    let shutdownTiming = NarrowTimingObservation(.bufferedChildren)
+    defer { shutdownTiming.emitAfterCleanup() }
     let root = try directory()
     defer { try? FileManager.default.removeItem(at: root) }
     let probe = ShutdownProbe()
@@ -29,6 +31,12 @@ import WorkspaceProtocol
         if case .connectionDequeued = event { await handoff.holdFirst() }
       },
       acceptanceObserver: { event in
+        switch event {
+        case .groupShutdownInvoked: shutdownTiming.record(.groupShutdownInvoked); return
+        case .groupShutdownCallbackEntered: shutdownTiming.record(.groupShutdownCallbackEntered); return
+        case .groupShutdownAwaitReturned: shutdownTiming.record(.groupShutdownAwaitReturned); return
+        default: break
+        }
         probe.record(event)
         switch event {
         case .initialized: timing.record(.initialized)
@@ -222,6 +230,11 @@ private final class ShutdownProbe: Sendable {
   }
   private let state = Mutex(State())
   func record(_ event: SocketAcceptanceEvent) {
+    // New diagnostics never enter the original ownership oracle's lock or history.
+    switch event {
+    case .groupShutdownInvoked, .groupShutdownCallbackEntered, .groupShutdownAwaitReturned: return
+    default: break
+    }
     state.withLock { state in
       switch event {
       case .rawRead(let child): state.events.append(.rawRead(child))
@@ -235,6 +248,7 @@ private final class ShutdownProbe: Sendable {
       case .listenerCloseInvoked: state.events.append(.listenerCloseInvoked)
       case .listenerClosed: state.events.append(.listenerClosed)
       case .rawReadForwarded, .parentReadComplete, .active: break
+      case .groupShutdownInvoked, .groupShutdownCallbackEntered, .groupShutdownAwaitReturned: break
       }
     }
   }

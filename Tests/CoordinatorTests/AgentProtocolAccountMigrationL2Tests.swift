@@ -878,7 +878,11 @@ private final class L2LifetimeOwner: Sendable {
 
   @Test func oldInstanceCallbacksCannotMutateReplacement() async throws {
     let observation = L2Observation(.oldCallbacks)
-    defer { observation.emitAfterFixtureCleanup() }
+    let secondFixtureTiming = NarrowTimingObservation(.l2SecondFixture)
+    defer {
+      observation.emitAfterFixtureCleanup()
+      secondFixtureTiming.emitAfterCleanup()
+    }
     try await H.withFixture { fixture, cleanup in
       let writer = try H.connection(fixture.endpoint)
       let pid = try #require(writer.execute("SELECT pg_backend_pid() AS pid").rows.first?.text("pid"))
@@ -954,7 +958,8 @@ private final class L2LifetimeOwner: Sendable {
     // HubSync.close cancels it without joining. Hold actual fake adapter disposal instead.
     let adapters = StubbornAdapters()
     try await H.withFixture(
-      adapterFactory: { _, _, _, _ in adapters.make() }, expectedAdapterFactoryCalls: 1
+      adapterFactory: { _, _, _, _ in adapters.make() }, expectedAdapterFactoryCalls: 1,
+      migrationObserver: { secondFixtureTiming.recordMigration($0, flag: $1) }
     ) { fixture, cleanup in
       cleanup.release { adapters.release() }
       _ = try await fixture.scope.sessions.adapter(
@@ -963,10 +968,17 @@ private final class L2LifetimeOwner: Sendable {
       let pumps = Array((await fixture.scope.sessions.pumps).values)
       cleanup.release { for pump in pumps { pump.cancel() } }
       cleanup.join { for pump in pumps { await pump.value } }
-      let run = H.begin(fixture, cleanup)
+      secondFixtureTiming.arm()
+      let run = H.begin(
+        fixture, cleanup, observation: NarrowTimingWitness { secondFixtureTiming.record($0, flag: $1) })
       guard
         await observation.observed(
-          .callbacksDisposeEnteredObservation, { await H.observed({ adapters.disposes == 1 }) })
+          .callbacksDisposeEnteredObservation,
+          {
+            await H.observed(
+              observation: NarrowTimingWitness { secondFixtureTiming.record($0, flag: $1) },
+              { adapters.disposes == 1 })
+          })
       else { throw H.SetupFailure.observationTimeout }
       // AccountManager is suspended in bounded Self.close while disposal is held, so its actor
       // can actually run profileArrived with slot nil BEFORE any storage admission/capture.

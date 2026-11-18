@@ -1,6 +1,8 @@
-import Coordinator
 import Synchronization
+import WorkspacePlatform
 import WorkspaceProtocol
+
+@testable import Coordinator
 
 /// Finite test-fixture observation only. Parent markers are neither actor entry nor child joins.
 /// Try-lock failures lose observations; even a false advisory drop flag cannot prove coverage/order.
@@ -76,6 +78,9 @@ final class InspectionObservation: Sendable {
       return lines.joined(separator: "\n")
     }
   }
+
+  // Independent of parent records, ordinals, and the parent one-shot snapshot.
+  let commandTiming = NarrowTimingObservation(.inspectionCommands)
 
   private static let capacity = 128
   private struct State: Sendable {
@@ -225,15 +230,25 @@ final class InspectionObservation: Sendable {
       }
       self.record(.factoryReturned, kind: kind, adapterOrdinal: adapter, callOrdinal: call)
       let forwarding = InspectionForwarding(inner: inner, observation: self, kind: kind, adapter: adapter)
-      // Both optional references come from this exact result, independently of runtime kind.
+      // All optional references come from this exact result, independently of runtime kind.
       let login = inner as? any LoginCapable
       let usage = inner as? any UsageReporting
-      switch (login, usage) {
-      case (nil, nil): return InspectionPlainAdapter(forwarding: forwarding)
-      case (let login?, nil): return InspectionLoginAdapter(forwarding: forwarding, login: login)
-      case (nil, let usage?): return InspectionUsageAdapter(forwarding: forwarding, usage: usage)
-      case (let login?, let usage?):
+      let commands = inner as? any CommandListing
+      switch (login, usage, commands) {
+      case (nil, nil, nil): return InspectionPlainAdapter(forwarding: forwarding)
+      case (let login?, nil, nil): return InspectionLoginAdapter(forwarding: forwarding, login: login)
+      case (nil, let usage?, nil): return InspectionUsageAdapter(forwarding: forwarding, usage: usage)
+      case (let login?, let usage?, nil):
         return InspectionBothAdapter(forwarding: forwarding, login: login, usage: usage)
+      case (nil, nil, let commands?):
+        return InspectionCommandsAdapter(forwarding: forwarding, commands: commands)
+      case (let login?, nil, let commands?):
+        return InspectionLoginCommandsAdapter(forwarding: forwarding, login: login, commands: commands)
+      case (nil, let usage?, let commands?):
+        return InspectionUsageCommandsAdapter(forwarding: forwarding, usage: usage, commands: commands)
+      case (let login?, let usage?, let commands?):
+        return InspectionAllAdapter(
+          forwarding: forwarding, login: login, usage: usage, commands: commands)
       }
     }
   }
@@ -249,7 +264,12 @@ private struct InspectionForwarding: Sendable {
     let call = observation.nextCallOrdinal()
     observation.record(.inspectionIssued, kind: kind, adapterOrdinal: adapter, callOrdinal: call)
     do {
-      let result = try await inner.inspectConnection()
+      let scope = observation.commandTiming.nextScopeOrdinal(
+        adapterOrdinal: adapter, inspectionCallOrdinal: call)
+      let core = scope.map { observation.commandTiming.commandObservation(scope: $0) }
+      let result = try await CommandRunner.$coreObservation.withValue(core) {
+        try await inner.inspectConnection()
+      }
       observation.record(
         .inspectionReturned, kind: kind, adapterOrdinal: adapter, callOrdinal: call,
         returnShape: .returned, status: result.status, authStatus: result.authStatus,
@@ -341,6 +361,37 @@ private struct InspectionBothAdapter: InspectionAdapterForwarding, LoginCapable,
   func readUsage() async throws -> UsageReading? { try await forwarding.readUsage(usage) }
 }
 
+private struct InspectionCommandsAdapter: InspectionAdapterForwarding, CommandListing {
+  let forwarding: InspectionForwarding
+  let commands: any CommandListing
+  func readCommands() async throws -> [RuntimeCommand] { try await commands.readCommands() }
+}
+private struct InspectionLoginCommandsAdapter: InspectionAdapterForwarding, LoginCapable, CommandListing {
+  let forwarding: InspectionForwarding
+  let login: any LoginCapable
+  let commands: any CommandListing
+  func startLogin() async throws -> LoginStart { try await login.startLogin() }
+  func readCommands() async throws -> [RuntimeCommand] { try await commands.readCommands() }
+}
+private struct InspectionUsageCommandsAdapter: InspectionAdapterForwarding, UsageReporting, CommandListing {
+  let forwarding: InspectionForwarding
+  let usage: any UsageReporting
+  let commands: any CommandListing
+  func readUsage() async throws -> UsageReading? { try await forwarding.readUsage(usage) }
+  func readCommands() async throws -> [RuntimeCommand] { try await commands.readCommands() }
+}
+private struct InspectionAllAdapter:
+  InspectionAdapterForwarding, LoginCapable, UsageReporting, CommandListing
+{
+  let forwarding: InspectionForwarding
+  let login: any LoginCapable
+  let usage: any UsageReporting
+  let commands: any CommandListing
+  func startLogin() async throws -> LoginStart { try await login.startLogin() }
+  func readUsage() async throws -> UsageReading? { try await forwarding.readUsage(usage) }
+  func readCommands() async throws -> [RuntimeCommand] { try await commands.readCommands() }
+}
+
 /// Test-only first-observed boundaries, never evidence that every child reached that stage.
 /// A missing sample is unknown, never proof of missing work.
 /// Diagnostic state never waits for its lock; loss is advisory and never retried.
@@ -412,5 +463,314 @@ final class NativeTimingBoundary: Sendable {
     print(
       "NATIVE_TIMING role=\(role.rawValue) caseOrdinal=\(ordinal.rawValue) stage=\(stage.rawValue) elapsedNanoseconds=\(elapsed) flag=\(flagLabel) partial=true joined=false lateCallbacks=unknown contentionDropAdvisory=\(drop)"
     )
+  }
+}
+
+/// Value-typed optional test witness keeps existing trailing-closure predicates unambiguous.
+struct NarrowTimingWitness: Sendable {
+  let record: @Sendable (NarrowTimingObservation.Stage, Bool?) -> Void
+  init(_ record: @escaping @Sendable (NarrowTimingObservation.Stage, Bool?) -> Void) {
+    self.record = record
+  }
+}
+
+/// Independent, preallocated diagnostic storage. No callback prints, waits, or observes an owner.
+/// First samples only: contention, overflow, and inherited late work leave coverage unknown.
+/// Enabling callbacks can perturb scheduling; callback entry is not physical thread quiescence.
+final class NarrowTimingObservation: Sendable {
+  enum Role: String, Sendable {
+    case inspectionCommands, bufferedChildren, serverClosers, transportClosers
+    case l2SecondFixture, peerBeforeAckCleanup
+  }
+  enum Stage: Int, Sendable {
+    case commandCoreEntered, commandCoreExited
+    case groupShutdownInvoked, groupShutdownCallbackEntered, groupShutdownAwaitReturned
+    case clientCloseIssued, clientCloseReturned, coordinatorCloseIssued, coordinatorCloseReturned
+    case actorSignInEntered, transitionAcquired, preflightEntered, preflightReturned
+    case scopeDrainEntered, scopeDrainReturned, scopeCloseAwaitEntered
+    case scopeCloseWorkEntered, scopeCloseWorkReturned, scopeCloseAwaitReturned
+    case issued, taskEntered, operationReturned, finished
+    case observationDeadline, resultBool, callerCancelled, normalReturn, sleepThrew, atDeadline
+  }
+  enum Availability: String, Sendable { case available, notArmed, lockUnavailable, alreadyAttempted }
+  struct Scope: Sendable {
+    let ordinal: UInt8
+    let adapterOrdinal: UInt16?
+    let inspectionCallOrdinal: UInt16?
+  }
+  struct Record: Sendable {
+    let stage: Stage
+    let scope: UInt8?
+    let command: UInt8?
+    let adapterOrdinal: UInt16?
+    let inspectionCallOrdinal: UInt16?
+    let elapsedNanoseconds: UInt64
+    let flag: Bool?
+  }
+  struct Snapshot: Sendable {
+    let role: Role
+    let availability: Availability
+    let scopes: [Scope]
+    let records: [Record]
+    let overflow: Bool?
+    let contentionDropAdvisory: Bool
+
+    func formatted() -> String {
+      let count = availability == .available ? String(records.count) : "unknown"
+      let scopeCount = availability == .available ? String(scopes.count) : "unknown"
+      let overflowLabel = overflow.map { String($0) } ?? "unknown"
+      var lines = [
+        "NARROW_TIMING role=\(role.rawValue) partial=true joined=false lateCallbacks=unknown unavailable=\(availability.rawValue) recordCount=\(count) scopeCount=\(scopeCount) overflow=\(overflowLabel) contentionDropAdvisory=\(contentionDropAdvisory)"
+      ]
+      for scope in scopes {
+        let adapter = scope.adapterOrdinal.map { String($0) } ?? "unavailable"
+        let call = scope.inspectionCallOrdinal.map { String($0) } ?? "unavailable"
+        lines.append(
+          "scope=\(scope.ordinal) adapterOrdinal=\(adapter) inspectionCallOrdinal=\(call)")
+      }
+      for record in records {
+        let scope = record.scope.map { String($0) } ?? "unavailable"
+        let command = record.command.map { String($0) } ?? "unavailable"
+        let adapter = record.adapterOrdinal.map { String($0) } ?? "unavailable"
+        let call = record.inspectionCallOrdinal.map { String($0) } ?? "unavailable"
+        let flag = record.flag.map { String($0) } ?? "unavailable"
+        lines.append(
+          "stage=\(record.stage.label) scope=\(scope) command=\(command) adapterOrdinal=\(adapter) inspectionCallOrdinal=\(call) elapsedNanoseconds=\(record.elapsedNanoseconds) flag=\(flag)"
+        )
+      }
+      return lines.joined(separator: "\n")
+    }
+  }
+  private struct State: Sendable {
+    var slots: [Record?]
+    var nextScope: UInt8 = 1
+    var scopes = [Scope?](repeating: nil, count: 16)
+    var nextCommand = [UInt8](repeating: 1, count: 16)
+    var overflow = false
+    init(capacity: Int) { slots = [Record?](repeating: nil, count: capacity) }
+  }
+  private let role: Role
+  private let capacity: Int
+  private let state: Mutex<State>
+  private let origin = ContinuousClock.now
+  private let armed: Atomic<Bool>
+  private let armAttempted = Atomic<Bool>(false)
+  private let contentionDrop = Atomic<Bool>(false)
+  private let snapshotAttempted = Atomic<Bool>(false)
+
+  init(_ role: Role) {
+    self.role = role
+    switch role {
+    case .inspectionCommands: capacity = 16 * 8 * 2
+    case .bufferedChildren, .serverClosers, .transportClosers: capacity = 3
+    case .l2SecondFixture: capacity = 32
+    case .peerBeforeAckCleanup: capacity = 4
+    }
+    state = Mutex(State(capacity: capacity))
+    armed = Atomic(role != .l2SecondFixture)
+  }
+
+  /// Used once immediately before the selected second-fixture begin; setup stays disarmed.
+  @discardableResult func arm() -> Bool {
+    guard role == .l2SecondFixture, !armAttempted.exchange(true, ordering: .relaxed) else {
+      return false
+    }
+    guard
+      let result = state.withLockIfAvailable({ _ in
+        armed.store(true, ordering: .relaxed)
+        return true
+      })
+    else {
+      contentionDrop.store(true, ordering: .relaxed)
+      return false
+    }
+    return result
+  }
+
+  func nextScopeOrdinal(
+    adapterOrdinal: UInt16? = nil, inspectionCallOrdinal: UInt16? = nil
+  ) -> UInt8? {
+    guard role == .inspectionCommands else { return nil }
+    guard
+      let result = state.withLockIfAvailable({ protected -> UInt8? in
+        guard protected.nextScope <= 16 else { protected.overflow = true; return nil }
+        let value = protected.nextScope
+        // Copy existing parent metadata once; this never consumes either parent allocator.
+        protected.scopes[Int(value) - 1] = Scope(
+          ordinal: value, adapterOrdinal: Self.boundedParent(adapterOrdinal),
+          inspectionCallOrdinal: Self.boundedParent(inspectionCallOrdinal))
+        protected.nextScope += 1  // 17 is a permanent exhausted sentinel.
+        return value
+      })
+    else {
+      contentionDrop.store(true, ordering: .relaxed)
+      return nil
+    }
+    return result
+  }
+
+  private static func boundedParent(_ ordinal: UInt16?) -> UInt16? {
+    guard let ordinal, ordinal >= 1, ordinal <= 128 else { return nil }
+    return ordinal
+  }
+
+  private func nextCommandOrdinal(scope: UInt8) -> UInt8? {
+    guard scope >= 1, scope <= 16 else { return nil }
+    guard
+      let result = state.withLockIfAvailable({ protected -> UInt8? in
+        let index = Int(scope) - 1
+        guard protected.nextCommand[index] <= 8 else { protected.overflow = true; return nil }
+        let value = protected.nextCommand[index]
+        protected.nextCommand[index] += 1  // 9 is permanent; scopes/ordinals are never reused.
+        return value
+      })
+    else {
+      contentionDrop.store(true, ordering: .relaxed)
+      return nil
+    }
+    return result
+  }
+
+  func commandObservation(scope: UInt8) -> CommandRunner.CoreObservation {
+    CommandRunner.CoreObservation(
+      reserve: { self.nextCommandOrdinal(scope: scope) },
+      record: { ordinal, stage in
+        switch stage {
+        case .commandCoreEntered: self.record(.commandCoreEntered, scope: scope, command: ordinal)
+        case .commandCoreExited: self.record(.commandCoreExited, scope: scope, command: ordinal)
+        }
+      })
+  }
+
+  func record(_ stage: Stage, flag: Bool? = nil, scope: UInt8? = nil, command: UInt8? = nil) {
+    guard armed.load(ordering: .relaxed) else { return }
+    let elapsed = InspectionObservation.elapsedNanoseconds(origin.duration(to: ContinuousClock.now))
+    let slot: Int?
+    switch role {
+    case .inspectionCommands:
+      if let scope, let command, scope >= 1, scope <= 16, command >= 1, command <= 8,
+        stage == .commandCoreEntered || stage == .commandCoreExited
+      {
+        slot = ((Int(scope) - 1) * 8 + Int(command) - 1) * 2 + stage.rawValue
+      } else {
+        slot = nil
+      }
+    case .bufferedChildren, .serverClosers, .transportClosers:
+      slot = (2...4).contains(stage.rawValue) ? stage.rawValue - 2 : nil
+    case .peerBeforeAckCleanup:
+      slot = (5...8).contains(stage.rawValue) ? stage.rawValue - 5 : nil
+    case .l2SecondFixture:
+      slot = (9...28).contains(stage.rawValue) ? stage.rawValue - 9 : nil
+    }
+    let acquired = state.withLockIfAvailable { protected in
+      guard let slot else { protected.overflow = true; return }
+      if protected.slots[slot] == nil {
+        let parent: Scope?
+        if role == .inspectionCommands, let scope, scope >= 1, scope <= 16 {
+          parent = protected.scopes[Int(scope) - 1]
+        } else {
+          parent = nil
+        }
+        protected.slots[slot] = Record(
+          stage: stage, scope: role == .inspectionCommands ? scope : nil,
+          command: role == .inspectionCommands ? command : nil,
+          adapterOrdinal: parent?.adapterOrdinal, inspectionCallOrdinal: parent?.inspectionCallOrdinal,
+          elapsedNanoseconds: elapsed, flag: flag)
+      }
+    }
+    if acquired == nil { contentionDrop.store(true, ordering: .relaxed) }
+  }
+
+  /// Maps only the ten admitted migration boundaries; all other phases are ignored.
+  func recordMigration(_ phase: AccountMigrationPhase, flag: Bool?) {
+    switch phase {
+    case .actorSignInEntered: record(.actorSignInEntered, flag: flag)
+    case .transitionAcquired: record(.transitionAcquired, flag: flag)
+    case .preflightEntered: record(.preflightEntered, flag: flag)
+    case .preflightReturned: record(.preflightReturned, flag: flag)
+    case .scopeDrainEntered: record(.scopeDrainEntered, flag: flag)
+    case .scopeDrainReturned: record(.scopeDrainReturned, flag: flag)
+    case .scopeCloseAwaitEntered: record(.scopeCloseAwaitEntered, flag: flag)
+    case .scopeCloseWorkEntered: record(.scopeCloseWorkEntered, flag: flag)
+    case .scopeCloseWorkReturned: record(.scopeCloseWorkReturned, flag: flag)
+    case .scopeCloseAwaitReturned: record(.scopeCloseAwaitReturned, flag: flag)
+    case .poolDrainEntered, .poolDrainReturned, .targetOpenEntered, .targetOpenReturned: break
+    }
+  }
+
+  func snapshot() -> Snapshot {
+    guard !snapshotAttempted.exchange(true, ordering: .relaxed) else {
+      return unavailable(.alreadyAttempted)
+    }
+    guard role != .l2SecondFixture || armed.load(ordering: .relaxed) else {
+      return unavailable(.notArmed)
+    }
+    var destination = [Record?](repeating: nil, count: capacity)
+    var scopeDestination = [Scope?](repeating: nil, count: 16)
+    let overflow = state.withLockIfAvailable { protected in
+      for index in 0..<capacity { destination[index] = protected.slots[index] }
+      for index in 0..<16 { scopeDestination[index] = protected.scopes[index] }
+      return protected.overflow
+    }
+    guard let overflow else {
+      contentionDrop.store(true, ordering: .relaxed)
+      return unavailable(.lockUnavailable)
+    }
+    return Snapshot(
+      role: role, availability: .available, scopes: scopeDestination.compactMap { $0 },
+      records: destination.compactMap { $0 }, overflow: overflow,
+      contentionDropAdvisory: contentionDrop.load(ordering: .relaxed))
+  }
+  private func unavailable(_ availability: Availability) -> Snapshot {
+    Snapshot(
+      role: role, availability: availability, scopes: [], records: [], overflow: nil,
+      contentionDropAdvisory: contentionDrop.load(ordering: .relaxed))
+  }
+  func emitAfterCleanup() { print(snapshot().formatted()) }
+
+  /// Inert self-contention control only; does not block or create concurrent work.
+  func exerciseContentionDropForTest() {
+    state.withLock { _ in record(.commandCoreEntered, scope: 1, command: 1) }
+  }
+
+  /// Inert failed-arm control: one nonblocking arm attempt while diagnostic storage is held.
+  func exerciseArmContentionForTest() -> Bool {
+    state.withLock { _ in arm() }
+  }
+}
+
+extension NarrowTimingObservation.Stage {
+  fileprivate var label: String {
+    switch self {
+    case .commandCoreEntered: return "commandCoreEntered"
+    case .commandCoreExited: return "commandCoreExited"
+    case .groupShutdownInvoked: return "groupShutdownInvoked"
+    case .groupShutdownCallbackEntered: return "groupShutdownCallbackEntered"
+    case .groupShutdownAwaitReturned: return "groupShutdownAwaitReturned"
+    case .clientCloseIssued: return "clientCloseIssued"
+    case .clientCloseReturned: return "clientCloseReturned"
+    case .coordinatorCloseIssued: return "coordinatorCloseIssued"
+    case .coordinatorCloseReturned: return "coordinatorCloseReturned"
+    case .actorSignInEntered: return "actorSignInEntered"
+    case .transitionAcquired: return "transitionAcquired"
+    case .preflightEntered: return "preflightEntered"
+    case .preflightReturned: return "preflightReturned"
+    case .scopeDrainEntered: return "scopeDrainEntered"
+    case .scopeDrainReturned: return "scopeDrainReturned"
+    case .scopeCloseAwaitEntered: return "scopeCloseAwaitEntered"
+    case .scopeCloseWorkEntered: return "scopeCloseWorkEntered"
+    case .scopeCloseWorkReturned: return "scopeCloseWorkReturned"
+    case .scopeCloseAwaitReturned: return "scopeCloseAwaitReturned"
+    case .issued: return "issued"
+    case .taskEntered: return "taskEntered"
+    case .operationReturned: return "operationReturned"
+    case .finished: return "finished"
+    case .observationDeadline: return "observationDeadline"
+    case .resultBool: return "resultBool"
+    case .callerCancelled: return "callerCancelled"
+    case .normalReturn: return "normalReturn"
+    case .sleepThrew: return "sleepThrew"
+    case .atDeadline: return "atDeadline"
+    }
   }
 }

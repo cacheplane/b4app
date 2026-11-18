@@ -135,10 +135,20 @@ struct AgentProtocolOwnedPostgresLog: Sendable {
     } catch { throw Failure.unsafeLog }
   }
 
+  /// Test-only scheduling seam; real consumers retain the continuous-clock defaults.
+  struct PollSchedule: Sendable {
+    let now: @Sendable () -> ContinuousClock.Instant
+    let pause: @Sendable (Duration) async throws -> Void
+
+    static let continuous = Self(
+      now: { ContinuousClock.now }, pause: { try await Task.sleep(for: $0) })
+  }
+
   func observed(
-    _ marker: String, after start: UInt64, observation: OwnedLogWitnessTiming? = nil
+    _ marker: String, after start: UInt64, observation: OwnedLogWitnessTiming? = nil,
+    schedule: PollSchedule = .continuous
   ) async throws -> Bool {
-    let deadline = ContinuousClock.now + .seconds(2)
+    let deadline = schedule.now() + .seconds(2)
     observation?.started(deadline: deadline)
     defer { observation?.returned() }
     repeat {
@@ -146,8 +156,8 @@ struct AgentProtocolOwnedPostgresLog: Sendable {
       let matched = try tail(start).contains(marker)
       observation?.readReturned()
       if matched { return true }
-      do { try await Task.sleep(for: .milliseconds(10)) } catch { throw Failure.unsafeLog }
-    } while ContinuousClock.now < deadline
+      do { try await schedule.pause(.milliseconds(10)) } catch { throw Failure.unsafeLog }
+    } while schedule.now() < deadline
     return false
   }
 }

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 import WorkspacePlatform
 
@@ -9,7 +10,7 @@ struct AgentProtocolOwnedPostgresLogTests {
   private typealias Configuration = Log.Configuration
   private let pid: Int32 = 27182
 
-  private struct Scratch {
+  private struct Scratch: Sendable {
     let root: String
     init() throws {
       let base = try AgentProtocolResourceFixture.physicalExistingDirectory(NSTemporaryDirectory())
@@ -275,15 +276,33 @@ struct AgentProtocolOwnedPostgresLogTests {
     let offset = try log.offset()
     let initiallyEmpty = try log.tail(offset).isEmpty
     #expect(initiallyEmpty)
-    let timing = OwnedLogWitnessTiming()
-    timing.issued()
-    async let observation = log.observed(marker, after: offset, observation: timing)
-    try await Task.sleep(for: .milliseconds(30))
     let suffix = "owned appended witness\n" + marker + "\n"
-    try scratch.append(suffix, to: path)
-    timing.appendReturned()
-    let witnessed = try await observation
+    let origin = ContinuousClock.now
+    let state = Mutex((elapsed: Duration.zero, pauseCount: 0, appendCount: 0))
+    // Virtual time tests the polling/file ordering, not the host scheduler's responsiveness.
+    // Omit real-clock diagnostics so this logical deadline cannot appear as real enforcement.
+    let schedule = Log.PollSchedule(
+      now: { origin + state.withLock { $0.elapsed } },
+      pause: { duration in
+        #expect(duration == .milliseconds(10))
+        let counts = state.withLock { state in
+          state.pauseCount += 1
+          return (state.pauseCount, state.appendCount)
+        }
+        if counts.0 == 1 {
+          #expect(counts.1 == 0)
+          // This pause is reached only after the actual first tail read missed the stale prefix.
+          try scratch.append(suffix, to: path)
+          state.withLock { $0.appendCount += 1 }
+        }
+        // Advance on every miss so an absent marker still expires after a logical two seconds.
+        state.withLock { $0.elapsed += .milliseconds(10) }
+      })
+    let witnessed = try await log.observed(marker, after: offset, schedule: schedule)
     #expect(witnessed)
+    let counts = state.withLock { ($0.pauseCount, $0.appendCount) }
+    #expect(counts.0 == 1)
+    #expect(counts.1 == 1)
     let exact = try log.tail(offset) == suffix
     #expect(exact)
     let end = try log.offset()

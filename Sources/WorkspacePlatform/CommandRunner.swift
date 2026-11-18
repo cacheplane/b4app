@@ -68,9 +68,34 @@ public enum CommandRunner {
     return try await runCore(executable, arguments, options: options)
   }
 
+  package enum CoreStage: Sendable { case commandCoreEntered, commandCoreExited }
+
+  /// Primitive fixture observation only; descendants may inherit this value past lexical scope exit.
+  package struct CoreObservation: Sendable {
+    package let reserve: @Sendable () -> UInt8?
+    package let record: @Sendable (UInt8, CoreStage) -> Void
+
+    package init(
+      reserve: @escaping @Sendable () -> UInt8?,
+      record: @escaping @Sendable (UInt8, CoreStage) -> Void
+    ) {
+      self.reserve = reserve
+      self.record = record
+    }
+  }
+
+  @TaskLocal package static var coreObservation: CoreObservation? = nil
+
   private static func runCore(
     _ executable: String, _ arguments: [String], options: CommandOptions
   ) async throws -> ObservedResult {
+    let observation = coreObservation
+    let ordinal = observation?.reserve()
+    if let observation, let ordinal { observation.record(ordinal, .commandCoreEntered) }
+    defer {
+      // Unwinds only after the original structured task-group completion, on return or throw.
+      if let observation, let ordinal { observation.record(ordinal, .commandCoreExited) }
+    }
     let environment: Subprocess.Environment
     if let custom = options.environment {
       environment = .custom(
