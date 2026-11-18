@@ -15,6 +15,7 @@ let package = Package(
   products: [
     .library(name: "WorkspaceProtocol", targets: ["WorkspaceProtocol"]),
     .library(name: "WorkspaceClient", targets: ["WorkspaceClient"]),
+    .library(name: "StreamingMarkdown", targets: ["StreamingMarkdown"]),
     .library(name: "WorkspaceSecrets", targets: ["WorkspaceSecrets"]),
     .library(name: "WorkspaceSync", targets: ["WorkspaceSync"]),
     .library(name: "WorkspaceMirror", targets: ["WorkspaceMirror"]),
@@ -39,6 +40,8 @@ let package = Package(
     // Runtime-neutral: Foundation only, links on iOS.
     .target(name: "WorkspaceProtocol", swiftSettings: concurrency),
     .target(name: "WorkspaceClient", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
+    // The append-only markdown block parser: Foundation only, links on both platforms.
+    .target(name: "StreamingMarkdown", swiftSettings: concurrency),
 
     // Keychain-backed secret store: Foundation and Security only, links on both platforms.
     .target(name: "WorkspaceSecrets", swiftSettings: concurrency),
@@ -108,7 +111,7 @@ let package = Package(
 
     // SwiftUI shared by the macOS and iOS apps.
     .target(
-      name: "WorkspaceUI", dependencies: ["WorkspaceProtocol", "WorkspaceClient"],
+      name: "WorkspaceUI", dependencies: ["WorkspaceProtocol", "WorkspaceClient", "StreamingMarkdown"],
       resources: [.copy("Resources/Fonts"), .copy("Resources/Brand")],
       swiftSettings: mainActorDefault),
 
@@ -116,6 +119,9 @@ let package = Package(
     .testTarget(
       name: "WorkspaceProtocolTests", dependencies: ["WorkspaceProtocol"], swiftSettings: concurrency),
     .testTarget(name: "WorkspaceClientTests", dependencies: ["WorkspaceClient"], swiftSettings: concurrency),
+    .testTarget(
+      name: "StreamingMarkdownTests", dependencies: ["StreamingMarkdown"],
+      resources: [.copy("Corpus")], swiftSettings: concurrency),
     .testTarget(
       name: "AgentWorkspaceCLITests", dependencies: ["AgentWorkspaceCLI", "WorkspaceClient"],
       swiftSettings: concurrency),

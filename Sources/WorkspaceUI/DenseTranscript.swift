@@ -1,5 +1,9 @@
 import WorkspaceProtocol
 
+#if DEBUG
+  import Synchronization
+#endif
+
 /// What a thread draws at dense density, in order. No SwiftUI: the views only draw it, so the Mac and
 /// the phone read a thread the same way.
 enum DenseTranscript {
@@ -134,8 +138,24 @@ enum DenseTranscript {
     items.filter { $0.type != TaskList.itemType || !($0.payload["steps"]?.arrayValue ?? []).isEmpty }
   }
 
+  #if DEBUG
+    /// Calls of `entries` and `plain` by thread id, for the test that a streamed token does not run
+    /// the grouping again. Keyed by thread so tests running beside it do not move its count.
+    private static let projectionCalls = Mutex<[String: Int]>([:])
+
+    static func projections(of thread: String) -> Int { projectionCalls.withLock { $0[thread] ?? 0 } }
+
+    private static func countProjection(_ items: [DisplayItem]) {
+      guard let thread = items.first?.threadId else { return }
+      projectionCalls.withLock { $0[thread, default: 0] += 1 }
+    }
+  #endif
+
   /// `open` holds the groups whose lines are open.
   static func entries(items: [DisplayItem], turns: [Turn], open: Set<String>) -> [Entry] {
+    #if DEBUG
+      countProjection(items)
+    #endif
     let known = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     let ordered = drawn(items).enumerated().sorted {
       ($0.element.sequence, $0.offset) < ($1.element.sequence, $1.offset)
@@ -178,6 +198,9 @@ enum DenseTranscript {
   /// each turn's note, or a running turn's line, after that turn's last item (a turn with no items:
   /// after everything).
   static func plain(items stored: [DisplayItem], turns: [Turn]) -> [Entry] {
+    #if DEBUG
+      countProjection(stored)
+    #endif
     let items = drawn(stored)
     let known = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     let keys = groupKeys(items)

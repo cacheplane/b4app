@@ -175,6 +175,8 @@ jobs:
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
         run: swift test --filter 'AccountRegistryTests/aLedgerIsCreatedOnlyWhenMissing'
+      # The parser's linearity checks (ParserTimingTests) compare CPU times, so they run only with
+      # B4APP_TIMING, in a third process of their own after the others, with no other test running.
       - name: Test
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
@@ -182,6 +184,7 @@ jobs:
           status=0
           swift test --skip-build --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           swift test --skip-build --skip '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
+          B4APP_TIMING=1 swift test --skip-build --filter ParserTimingTests || status=1
           exit "$status"
       - name: Save the SwiftPM build
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
