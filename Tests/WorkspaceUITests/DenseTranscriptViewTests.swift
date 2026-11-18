@@ -845,12 +845,22 @@
 
     // MARK: a paced reveal
 
+    /// Waits for the transcript to tell the store it is on screen, and paces the reveal whatever the
+    /// machine's Reduce Motion setting is: a runner with it on reveals at once, and no tick is asked for.
+    private func paced(_ view: Hosted) async throws {
+      try await view.until("the reveal is paced") {
+        view.host.streams.setReduceMotion(false)
+        return view.host.streams.pacing == .paced
+      }
+    }
+
     /// A reader at the end stays there while a reply taller than the window is revealed tick by tick.
     @Test func aPinnedReaderStaysAtTheEndThroughAPacedReveal() async throws {
       let ticker = ManualTicker()
       let view = try Hosted(twelveAndARunningTurn(), dense: false, ticker: ticker)
       defer { view.close() }
       try await view.scrollToEnd()
+      try await paced(view)
       view.host.streams.append(lines(40), to: "n13")
       #expect(ticker.running)
       var ticks = 0
@@ -877,7 +887,9 @@
       #expect(view.folds.holds)
       let origin = view.origin
       let height = view.documentHeight
+      try await paced(view)
       view.host.streams.append(lines(40), to: "n13")
+      #expect(ticker.running)
       var ticks = 0
       while ticker.running {
         ticker.fire()
