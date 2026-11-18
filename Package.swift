@@ -111,7 +111,7 @@ let package = Package(
 
     // SwiftUI shared by the macOS and iOS apps.
     .target(
-      name: "WorkspaceUI", dependencies: ["WorkspaceProtocol", "WorkspaceClient"],
+      name: "WorkspaceUI", dependencies: ["WorkspaceProtocol", "WorkspaceClient", "StreamingMarkdown"],
       resources: [.copy("Resources/Fonts"), .copy("Resources/Brand")],
       swiftSettings: mainActorDefault),
 
