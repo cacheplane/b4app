@@ -114,15 +114,28 @@
         row(items[4])
       }
       #expect(drawn == height(reference))
-      #expect(drawn < height(column { ForEach(items) { row($0) } }))
-    }
-
-    @Test func anOpenTurnIsAsTallAsItsItemsPlusTheLine() {
-      let items = fiveItems()
-      let every = height(column { ForEach(items) { row($0) } })
       let open = height(
         TranscriptContent(detail: detail(items), streams: streams, folds: TranscriptFolds(open: ["t1"])))
-      #expect(open == every + height(lineRow(line(), open: true)) + LLA.Space.l)
+      #expect(drawn < open)
+    }
+
+    /// Opened, the line and one row per folded item stand close together, between the message and the
+    /// answer.
+    @Test func anOpenTurnIsItsLineAndOneRowPerStep() {
+      let items = fiveItems()
+      let open = height(
+        TranscriptContent(detail: detail(items), streams: streams, folds: TranscriptFolds(open: ["t1"])))
+      let reference = column {
+        row(items[0])
+        VStack(alignment: .leading, spacing: 0) {
+          lineRow(line(), open: true)
+          ForEach(items[1...3]) { item in
+            StepRowView(row: DenseTranscript.stepRow(item), streams: streams, open: false, toggle: {})
+          }
+        }
+        row(items[4])
+      }
+      #expect(open == height(reference))
     }
 
     @Test func aThreadFromHistoryDrawsAsAThreadWithATurn() {
@@ -581,6 +594,29 @@
       try await view.until("the turn's steps are gone") { view.documentHeight < open - 1 }
       try await view.settle()
       #expect(abs(view.origin - origin) <= 0.5 || view.atDocumentEnd, "moved by \(view.origin - origin)")
+    }
+
+    /// Opening a step in a thread taller than the window holds the view, and the output is drawn under
+    /// the pressed row without moving it: the view's top edge stays, and so does everything above the
+    /// row's own bottom edge.
+    @Test func openingAStepLeavesItsRowWhereItWas() async throws {
+      let view = try Hosted(twelveTurns())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      view.folds.toggle("t10")
+      try await view.settle()
+      view.folds.release()
+      #expect(!view.folds.holds)
+      let origin = view.origin
+      let closed = view.documentHeight
+
+      view.folds.toggle("s10-2")
+      #expect(view.folds.holds)
+      try await view.until("the step's output is drawn") { view.documentHeight > closed + 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5, "moved by \(view.origin - origin)")
+      #expect(view.folds.open == ["t10", "s10-2"])
     }
 
     @Test func aStreamDoesNotMoveAnOpenedTurn() async throws {

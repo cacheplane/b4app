@@ -844,6 +844,8 @@ private final class BackgroundWindow: NSWindow {
     ])
     try await render("dense-thread-closed", size: size) { transcript(finished) }
     try await render("dense-thread-open", size: size) { transcript(finished, open: ["t1"]) }
+    // A step opened to its output, and the thought to its text.
+    try await render("dense-thread-open-step", size: size) { transcript(finished, open: ["t1", "c1", "r1"]) }
 
     let failed = detail(
       [

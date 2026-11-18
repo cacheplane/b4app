@@ -15,7 +15,7 @@ import WorkspaceProtocol
   struct Invocation {
     var id: String
     var title: String
-    /// The word its badge must draw once the scenario's turn states are taken into account.
+    /// The state its row must be spoken with once the scenario's turn states are taken into account.
     var outcome: String
   }
 
@@ -37,22 +37,29 @@ import WorkspaceProtocol
   )
     -> [String]
   {
-    entries.map { entry in
+    func plan(_ item: DisplayItem) -> String {
+      let display = TaskListDisplay(item: item)
+      let steps = display?.steps.map { "\($0.text) (\($0.mark.spoken))" }.joined(separator: "; ") ?? ""
+      return "plan: \(display?.header ?? "nothing"): \(steps)"
+    }
+    return entries.map { entry in
       switch entry {
       case .item(let item):
         switch item.role {
         case .user: return "user: \(item.payload["text"]?.stringValue ?? "")"
         case .assistant where item.type == "agentMessage":
           return "reply: \(item.nativeItemId.flatMap { live[$0] } ?? item.payload["text"]?.stringValue ?? "")"
-        case .assistant: return "working: \(item.type)"
-        case .tool where item.type == TaskList.itemType:
-          let display = TaskListDisplay(item: item)
-          let steps = display?.steps.map { "\($0.text) (\($0.mark.spoken))" }.joined(separator: "; ") ?? ""
-          return "plan: \(display?.header ?? "nothing"): \(steps)"
-        case .tool:
-          let status = item.payload["status"]?.stringValue.map(DenseTranscript.statusLabel) ?? "no status"
-          return "\(DenseTranscript.title(of: item)) [\(status)]"
+        case .tool where item.type == TaskList.itemType: return plan(item)
+        // `TranscriptRow` draws nothing else of these: work is a step row.
+        case .assistant, .tool: return "not drawn: \(item.id)"
         case .system: return "system: \(item.type)"
+        }
+      case .step(let row):
+        switch row.kind {
+        case .message: return "reply: \(row.item.payload["text"]?.stringValue ?? "")"
+        case .plan: return plan(row.item)
+        case .thought: return "working: \(row.title)"
+        case .step, .agent, .other: return "\(row.title) [\(row.state ?? "no status")]"
         }
       case .line(let line):
         // The duration is left out: the scenarios' rows are made now, so it would be the test's own speed.
@@ -145,8 +152,8 @@ import WorkspaceProtocol
         turns: [turn("t1", .running, nil)],
         invocations: [
           Invocation(id: "k1", title: "swift test", outcome: "Completed"),
-          Invocation(id: "k2", title: "swift test", outcome: "In progress"),
-          Invocation(id: "k3", title: "swift test --filter Sync", outcome: "In progress"),
+          Invocation(id: "k2", title: "swift test", outcome: "Running"),
+          Invocation(id: "k3", title: "swift test --filter Sync", outcome: "Running"),
         ],
         // The running line names the newest open step; it gives no count while the turn runs.
         dense: ["user: Run the tests on both targets.", "line: swift test --filter Sync, Show"]))
@@ -341,7 +348,7 @@ import WorkspaceProtocol
     // The two open steps of the running turn are two rows, and the stopped turn's open step is not
     // one of them.
     let opened = dense(scenario, open: ["t1", "t2"])
-    #expect(opened.filter { $0 == "swift build [In progress]" }.count == 2)
+    #expect(opened.filter { $0 == "swift build [Running]" }.count == 2)
     #expect(opened.filter { $0 == "swift build [Unfinished]" }.count == 1)
     // The streaming reply's block is open: code, no Copy yet.
     var parser = MarkdownParser()

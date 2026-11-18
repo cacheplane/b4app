@@ -213,7 +213,7 @@ import WorkspaceProtocol
     #expect(closed.text == "2 steps")
     let opened = entries(items, turns: [stopped], open: ["t1"])
     let second = opened.compactMap { entry -> DisplayItem? in
-      if case .item(let item) = entry, item.id == "k2" { return item }
+      if case .step(let row) = entry, row.id == "k2" { return row.item }
       return nil
     }.first
     #expect(second?.payload["status"] == .string("stopped"))
@@ -235,7 +235,7 @@ import WorkspaceProtocol
     #expect(first.text == "swift test")
   }
 
-  @Test func theNameIsTheLabelThenTheCardTitleCutAt120() throws {
+  @Test func theNameIsTheLabelThenTheStepTitleCutAt120() throws {
     let running = turn("t1", .running, nil)
     func name(_ step: DisplayItem) throws -> String? {
       try #require(line(entries([user("u1"), step], turns: [running]))).text
@@ -355,6 +355,7 @@ import WorkspaceProtocol
     #expect(steps.folded.map(\.id) == ["k1", "a1", "k2"])
   }
 
+  /// Where they stand; the tool is a step row (`StepRowTests`).
   @Test func turnlessItemsBeforeAnyGroupAreDrawnAsTheyAre() {
     let result = entries(
       [
@@ -406,15 +407,18 @@ import WorkspaceProtocol
     let turns = [turn("t1", .terminal, .failed), turn("t2", .running, nil)]
     let result = entries(items, turns: turns, open: ["h-h1", "t1", "t2"])
     let drawn = result.compactMap { entry -> String? in
-      if case .item(let item) = entry { return item.id }
-      return nil
+      switch entry {
+      case .item(let item): return item.id
+      case .step(let row): return row.id
+      case .line, .note: return nil
+      }
     }
     #expect(drawn.sorted() == items.map(\.id).sorted())
   }
 
   // MARK: titles
 
-  @Test func theCardTitleIsUnchanged() {
+  @Test func theStepTitleIsTheCardsWas() {
     #expect(DenseTranscript.title(of: command("c", command: "swift test")) == "swift test")
     #expect(DenseTranscript.title(of: item("c", role: .tool, type: "commandExecution")) == "Command")
     let two = item(
@@ -547,7 +551,13 @@ import WorkspaceProtocol
   // MARK: settling an ended turn's open steps
 
   private func status(_ id: String, in entries: [DenseTranscript.Entry]) -> String? {
-    for case .item(let item) in entries where item.id == id { return item.payload["status"]?.stringValue }
+    for entry in entries {
+      switch entry {
+      case .item(let item) where item.id == id: return item.payload["status"]?.stringValue
+      case .step(let row) where row.id == id: return row.item.payload["status"]?.stringValue
+      default: continue
+      }
+    }
     return nil
   }
 
@@ -610,8 +620,8 @@ import WorkspaceProtocol
         == ["u1", "steps-t1", "note-t1", "u2", "steps-t2", "m2", "u3", "steps-t3", "note-t3"])
   }
 
-  @Test func theBadgeWordsAreWordsAndUnknownStatusesAreShownAsTheyAre() {
-    #expect(DenseTranscript.statusLabel("inProgress") == "In progress")
+  @Test func theStateWordsAreWordsAndUnknownStatusesAreSpokenAsTheyAre() {
+    #expect(DenseTranscript.statusLabel("inProgress") == "Running")
     #expect(DenseTranscript.statusLabel("completed") == "Completed")
     #expect(DenseTranscript.statusLabel("failed") == "Failed")
     #expect(DenseTranscript.statusLabel("declined") == "Declined")

@@ -247,18 +247,10 @@ struct TranscriptContent: View {
         .accessibilityLabel("Show earlier, \(window.hidden) more")
         .accessibilityIdentifier("show-earlier")
     }
-    ForEach(window.entries) { entry in
-      switch entry {
-      case .item(let item):
-        TranscriptRow(item: item, streams: streams)
-          .id(item.id)
-      case .line(let line):
-        ActivityLineRow(line: line, open: folds.open.contains(line.group)) {
-          folds.toggle(line.group)
-        }
-        .id(entry.id)
-      case .note(let turn):
-        TurnNoteRow(turn: turn).id(entry.id)
+    // A line and the step rows under it are one child of the column, so they stand close.
+    ForEach(DenseTranscript.runs(window.entries), id: \.first?.id) { run in
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(run) { entry in self.entry(entry) }
       }
     }
     if let pending {
@@ -274,6 +266,26 @@ struct TranscriptContent: View {
       }
     }
     Color.clear.frame(height: 1).id("bottom")
+  }
+
+  @ViewBuilder private func entry(_ entry: DenseTranscript.Entry) -> some View {
+    switch entry {
+    case .item(let item):
+      TranscriptRow(item: item, streams: streams)
+        .id(item.id)
+    case .line(let line):
+      ActivityLineRow(line: line, open: folds.open.contains(line.group)) {
+        folds.toggle(line.group)
+      }
+      .id(entry.id)
+    case .step(let row):
+      StepRowView(row: row, streams: streams, open: folds.open.contains(row.id)) {
+        folds.toggle(row.id)
+      }
+      .id(entry.id)
+    case .note(let turn):
+      TurnNoteRow(turn: turn).id(entry.id)
+    }
   }
 }
 
@@ -456,6 +468,8 @@ struct PendingMessageRow: View {
   }
 }
 
+/// A user's message, a reply, a plan row or a system item. Work (a tool, reasoning) reaches the screen
+/// as a step row (`StepRowView`), never here.
 struct TranscriptRow: View {
   let item: DisplayItem
   let streams: MessageStreamStore
@@ -479,32 +493,14 @@ struct TranscriptRow: View {
         MarkdownText(
           document: streams.document(for: item),
           streaming: item.nativeItemId.map(streams.isStreaming) ?? false)
-      } else {
-        CollapsibleCard(
-          title: item.type == "reasoning" || item.type == "thinking" ? "Reasoning" : item.type.capitalized,
-          status: nil
-        ) {
-          Text(reasoningText).llaSmallMuted().textSelection(.enabled).fixedSize(
-            horizontal: false, vertical: true)
-        }
       }
     case .tool:
-      if item.type == TaskList.itemType {
-        if let display = TaskListDisplay(item: item) { TaskListRow(display: display) }
-      } else {
-        ToolCard(item: item)
+      if item.type == TaskList.itemType, let display = TaskListDisplay(item: item) {
+        TaskListRow(display: display)
       }
     case .system:
       Text(item.type).llaCaption()
     }
-  }
-
-  private var reasoningText: String {
-    if let text = item.payload["text"]?.stringValue, !text.isEmpty { return text }
-    let summary = item.payload["summary"]?.arrayValue?.compactMap(\.stringValue) ?? []
-    if !summary.isEmpty { return summary.joined(separator: "\n") }
-    return item.payload["text"]?.stringValue ?? item.payload["content"]?.arrayValue?.compactMap(\.stringValue)
-      .joined(separator: "\n") ?? ""
   }
 }
 
@@ -570,104 +566,6 @@ enum Clipboard {
     #else
       UIPasteboard.general.string = text
     #endif
-  }
-}
-
-struct ToolCard: View {
-  let item: DisplayItem
-
-  var body: some View {
-    CollapsibleCard(title: title, status: item.payload["status"]?.stringValue) {
-      let detail = ToolEvidence.detail(of: item)
-      VStack(alignment: .leading, spacing: LLA.Space.s) {
-        if let cwd = detail.cwd {
-          Text(cwd).llaCodeMuted()
-        }
-        if let input = detail.input {
-          Text("Input").llaCaption()
-          LLACodeBlock(input)
-        }
-        switch detail.output {
-        case .none: EmptyView()
-        // A result with no text is still a result; say so rather than draw nothing.
-        case .empty: Text("No text output.").llaSmallMuted()
-        case .text(let output):
-          if detail.input != nil { Text("Output").llaCaption() }
-          LLACodeBlock(output)
-        }
-        if let exitCode = detail.exitCode {
-          Text("Exit code \(exitCode)").llaSmallMuted()
-        }
-        ForEach(Array(detail.changes.enumerated()), id: \.offset) { _, change in
-          Text(change.path).font(LLAFont.mono(12, weight: .semibold)).foregroundStyle(LLA.Color.ink)
-          if let diff = change.diff {
-            LLACodeBlock(diff)
-          }
-        }
-        if let raw = detail.raw {
-          Text(raw).llaCodeMuted().textSelection(.enabled)
-          if detail.rawCut {
-            Text("Cut at \(ToolEvidence.rawLimit) characters.").llaSmallMuted()
-          }
-        }
-      }
-    }
-  }
-
-  private var title: String { DenseTranscript.title(of: item) }
-}
-
-/// A bordered row with a mono title that opens to its detail. No icon; the title says what it is.
-struct CollapsibleCard<Content: View>: View {
-  let title: String
-  let status: String?
-  @ViewBuilder let content: () -> Content
-  @State private var expanded = false
-  @Environment(\.dynamicTypeSize) private var typeSize
-
-  var body: some View {
-    LLACard(fill: .bg, padding: LLA.Space.m) {
-      VStack(alignment: .leading, spacing: 0) {
-        Button {
-          withAnimation(.none) { expanded.toggle() }
-        } label: {
-          // At accessibility sizes the title takes the full width and wraps; the badge and the
-          // Show/Hide word go under it rather than squeezing it to an ellipsis.
-          let stacked = typeSize.isAccessibilitySize
-          let layout =
-            stacked
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
-            : AnyLayout(HStackLayout(spacing: LLA.Space.s))
-          layout {
-            Text(title).llaCode().lineLimit(stacked ? 4 : 1).truncationMode(.middle)
-            if !stacked { Spacer() }
-            HStack(spacing: LLA.Space.s) {
-              if let status { LLABadge(DenseTranscript.statusLabel(status), tone: statusTone(status)) }
-              Text(expanded ? "Hide" : "Show").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
-            }
-          }
-          // The target reaches over the card's padding, so the whole closed card is the button: at
-          // least 44 pt tall on the phone without making the card itself taller.
-          .frame(
-            maxWidth: .infinity, minHeight: max(LLA.Metrics.row - 2 * LLA.Space.m, 0), alignment: .leading
-          )
-          .contentShape(Rectangle().inset(by: -LLA.Space.m))
-        }
-        .buttonStyle(.plain)
-        if expanded {
-          content().padding(.top, LLA.Space.m)
-        }
-      }
-    }
-  }
-
-  private func statusTone(_ status: String) -> LLABadge.Tone {
-    switch status {
-    case "completed": return .neutral
-    case "failed", "declined": return .danger
-    case "inProgress": return .accent
-    default: return .muted
-    }
   }
 }
 

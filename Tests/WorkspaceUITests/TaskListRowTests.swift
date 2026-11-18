@@ -37,8 +37,13 @@ import WorkspaceProtocol
     DenseTranscript.entries(items: items, turns: [turn], open: open)
   }
   private func marks(_ id: String = "p1", in entries: [DenseTranscript.Entry]) -> [TaskStepMark]? {
-    for case .item(let item) in entries where item.id == id {
-      return TaskListDisplay(item: item)?.steps.map(\.mark)
+    // A running turn's list stands outside the fold; an ended turn's is one of its opened rows.
+    for entry in entries {
+      switch entry {
+      case .item(let item) where item.id == id: return TaskListDisplay(item: item)?.steps.map(\.mark)
+      case .step(let row) where row.id == id: return TaskListDisplay(item: row.item)?.steps.map(\.mark)
+      default: continue
+      }
     }
     return nil
   }

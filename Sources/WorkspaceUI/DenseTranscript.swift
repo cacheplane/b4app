@@ -8,10 +8,12 @@ import WorkspaceProtocol
 /// the phone read a thread the same way.
 enum DenseTranscript {
   enum Entry: Equatable, Identifiable, Sendable {
-    /// Drawn by `TranscriptRow`.
+    /// Drawn by `TranscriptRow`: a user's message, a reply, a plan row or a system item.
     case item(DisplayItem)
     /// The turn's line.
     case line(ActivityLine)
+    /// One row of an opened turn's work, drawn by `StepRowView`.
+    case step(StepRow)
     /// "Turn failed.", "Turn stopped." or, with no outcome recorded, "Turn ended."
     case note(Turn)
 
@@ -19,6 +21,7 @@ enum DenseTranscript {
       switch self {
       case .item(let item): return item.id
       case .line(let line): return "steps-\(line.group)"
+      case .step(let row): return row.id
       case .note(let turn): return "note-\(turn.id)"
       }
     }
@@ -96,7 +99,7 @@ enum DenseTranscript {
   /// The longest name the running line draws.
   static let nameLimit = 120
 
-  /// The title a tool item's card draws.
+  /// The title a tool item's step row draws.
   static func title(of item: DisplayItem) -> String {
     switch item.type {
     case "commandExecution": return item.payload["command"]?.stringValue ?? "Command"
@@ -161,7 +164,8 @@ enum DenseTranscript {
     }
   #endif
 
-  /// `open` holds the groups whose lines are open.
+  /// `open` holds the groups whose lines are open, and the ids of the step rows that are open, which
+  /// the projection does not read.
   static func entries(items: [DisplayItem], turns: [Turn], open: Set<String>) -> [Entry] {
     #if DEBUG
       countProjection(items)
@@ -178,7 +182,8 @@ enum DenseTranscript {
     var layoutOrder: [Entry?] = []  // a plain item, or nil where the next group goes
     for (item, key) in zip(ordered, groupKeys(ordered)) {
       guard let key else {
-        layoutOrder.append(.item(item))
+        // No line stands above it, so its work is a row of its own; a turnless step never runs.
+        layoutOrder.append(isWork(item) ? .step(stepRow(settled(item, in: nil))) : .item(item))
         continue
       }
       if members[key] == nil {
@@ -209,11 +214,10 @@ enum DenseTranscript {
     return result
   }
 
-  /// The word a step's badge draws for its status. "In progress" and not "Running": a runtime opens
-  /// a step when it names the tool, before its arguments are complete or a permission is answered.
+  /// The word a step row is spoken with for its status: "Running, swift test, 24 seconds".
   static func statusLabel(_ status: String) -> String {
     switch status {
-    case "inProgress": return "In progress"
+    case "inProgress": return "Running"
     case "completed": return "Completed"
     case "failed": return "Failed"
     case "declined": return "Declined"
@@ -302,7 +306,12 @@ enum DenseTranscript {
     if running || !folded.isEmpty {
       entries.append(.line(activityLine(key: key, folded: folded, turn: turn)))
     }
-    entries += (isOpen && !folded.isEmpty ? rest : visible).map(Entry.item)
+    if isOpen && !folded.isEmpty {
+      // Opened, the work is drawn row by row where it stands; what the closed group shows is unchanged.
+      entries += rest.map { shownIds.contains($0.id) ? .item($0) : .step(stepRow($0)) }
+    } else {
+      entries += visible.map(Entry.item)
+    }
     entries += systems.map(Entry.item)
     if let turn, hasNote(turn) { entries.append(.note(turn)) }
     return entries
@@ -337,7 +346,7 @@ enum DenseTranscript {
     return max(seconds, 0)
   }
 
-  /// The newest in-progress step's name: B4's label, else the card's title (a B4 call whose input is
+  /// The newest in-progress step's name: B4's label, else the step's title (a B4 call whose input is
   /// not a string: its name alone); first line, trimmed, cut.
   private static func runningName(of steps: [DisplayItem]) -> String? {
     guard let step = steps.last(where: { $0.payload["status"]?.stringValue == "inProgress" }) else {
@@ -391,5 +400,135 @@ enum DenseTranscript {
     var copy = item
     copy.payload = .object(members)
     return copy
+  }
+}
+
+// MARK: step rows
+
+extension DenseTranscript {
+  /// One row of an opened turn: a mark, a title and a time on one line, which opens to the step's
+  /// output; an interim message or a plan drawn as it is.
+  struct StepRow: Equatable, Sendable, Identifiable {
+    enum Kind: Equatable, Sendable {
+      /// A counted step.
+      case step
+      /// A sub-agent's call and how many counted steps it holds.
+      case agent(steps: Int)
+      /// Reasoning: "Thought", which opens to its text.
+      case thought
+      /// An interim message, drawn as its text.
+      case message
+      /// A task list, drawn as `TaskListRow`.
+      case plan
+      /// Any other working row: a step row that is not counted.
+      case other
+    }
+
+    enum Mark: Equatable, Sendable { case done, running, failed, declined, unfinished, none }
+
+    /// Settled: a step of a turn that is no longer running never reads as in progress.
+    var item: DisplayItem
+    /// How far in the row is drawn, 1 to 4.
+    var depth: Int
+    var kind: Kind
+    var mark: Mark
+    var title: String
+    /// A running step's `createdAt`: its clock counts from it.
+    var startedAt: String?
+    /// Seconds, once the step's end is known.
+    var duration: Int?
+    /// It has something to draw when pressed: a step's output, a thought's text, an agent's steps.
+    var opens: Bool
+
+    var id: String { item.id }
+
+    /// The state in words, for a row that has a status: "Running", "Completed", "Unfinished".
+    var state: String? {
+      switch kind {
+      case .step, .agent, .other: return item.payload["status"]?.stringValue.map(DenseTranscript.statusLabel)
+      case .thought, .message, .plan: return nil
+      }
+    }
+
+    /// The state, the title and the duration: "Completed, swift test, 8 seconds". A running step's
+    /// clock speaks its own time after it.
+    var spoken: String {
+      [state, title, duration.map(ActivityTime.words)].compactMap { $0 }.joined(separator: ", ")
+    }
+  }
+
+  /// A tool or a reasoning item: drawn as a step row, never by `TranscriptRow`.
+  static func isWork(_ item: DisplayItem) -> Bool {
+    item.role == .tool || (item.role == .assistant && item.type != "agentMessage")
+  }
+
+  /// The row of one settled item.
+  static func stepRow(_ item: DisplayItem, depth: Int = 1) -> StepRow {
+    let kind: StepRow.Kind
+    if item.role == .assistant {
+      kind = item.type == "agentMessage" ? .message : .thought
+    } else if item.type == TaskList.itemType {
+      kind = .plan
+    } else {
+      kind = isCountedStep(item) ? .step : .other
+    }
+    let mark: StepRow.Mark
+    switch (kind, item.payload["status"]?.stringValue) {
+    case (.thought, _), (.message, _), (.plan, _): mark = .none
+    case (_, "completed"?): mark = .done
+    case (_, "inProgress"?): mark = .running
+    case (_, "failed"?): mark = .failed
+    case (_, "declined"?): mark = .declined
+    case (_, "stopped"?), (_, "unknown"?): mark = .unfinished
+    default: mark = .none
+    }
+    let title: String
+    let opens: Bool
+    switch kind {
+    case .thought:
+      title = "Thought"
+      opens = !thoughtText(of: item).isEmpty
+    case .message:
+      title = item.payload["text"]?.stringValue ?? ""
+      opens = false
+    case .plan:
+      title = DenseTranscript.title(of: item)
+      opens = false
+    case .step, .agent, .other:
+      title = DenseTranscript.title(of: item)
+      let detail = ToolEvidence.detail(of: item)
+      opens =
+        detail.input != nil || detail.output != .none || detail.exitCode != nil || !detail.changes.isEmpty
+        || detail.raw != nil
+    }
+    return StepRow(
+      item: item, depth: min(max(depth, 1), 4), kind: kind, mark: mark, title: title,
+      startedAt: mark == .running ? item.createdAt : nil, duration: nil, opens: opens)
+  }
+
+  /// A reasoning item's text: its text, else its summary, else its content, one part a line.
+  static func thoughtText(of item: DisplayItem) -> String {
+    if let text = item.payload["text"]?.stringValue, !text.isEmpty { return text }
+    let summary = item.payload["summary"]?.arrayValue?.compactMap(\.stringValue) ?? []
+    if !summary.isEmpty { return summary.joined(separator: "\n") }
+    return item.payload["content"]?.arrayValue?.compactMap(\.stringValue).joined(separator: "\n") ?? ""
+  }
+
+  /// The entries in runs drawn as one child of the column: a step row joins the line or step row
+  /// before it, so an opened turn's rows stand close under its line. Every entry is in one run, in order.
+  static func runs(_ entries: [Entry]) -> [[Entry]] {
+    var runs: [[Entry]] = []
+    for entry in entries {
+      if case .step = entry, let last = runs.last?.last {
+        switch last {
+        case .line, .step:
+          runs[runs.count - 1].append(entry)
+          continue
+        case .item, .note: break
+        }
+      }
+      runs.append([entry])
+    }
+    return runs
   }
 }
