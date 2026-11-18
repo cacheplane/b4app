@@ -47,6 +47,7 @@ struct ComposerView: View {
           .llaCaption()
           .lineLimit(2)
           .padding(.horizontal, Self.textLeading)
+          .accessibilityLabel(reason)
           .accessibilityIdentifier(
             model.connection(id: detail.thread.connectionId)?.kind == .b4
               ? "historical-read-only-reason" : "runtime-unavailable-reason")

@@ -230,6 +230,15 @@ final class L1FactoryCalls: Sendable {
     let task: Task<Result<AccountStatus.Result, any Error>, Never>
     let state: L1RunState
     let timing: NativeTimingBoundary?
+
+    init(
+      task: Task<Result<AccountStatus.Result, any Error>, Never>, state: L1RunState,
+      timing: NativeTimingBoundary? = nil
+    ) {
+      self.task = task
+      self.state = state
+      self.timing = timing
+    }
   }
 
   /// Held synchronous leases must not occupy Swift's cooperative executor while their

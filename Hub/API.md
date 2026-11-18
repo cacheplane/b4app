@@ -1442,7 +1442,7 @@ events, holds, and presence never cross instances; no frame is ever forwarded be
 
 | Direction | `type` | Body |
 | --- | --- | --- |
-| hub to device | `hello` | `protocol` (1), `minClientProtocol`, `deviceId`, `role` (`host` or `client`), `heartbeatSeconds` (10), `hubTime` |
+| hub to device | `hello` | `protocol` (2), `minClientProtocol`, `deviceId`, `role` (`host` or `client`), `heartbeatSeconds` (10), `hubTime` |
 | device to hub | `ping` | none |
 | hub to device | `pong` | `hubTime` |
 | hub to client | `presence` | `hosts: [{ deviceId, name, online, lastSeenAt? }]` |
