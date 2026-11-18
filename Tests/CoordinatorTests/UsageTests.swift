@@ -54,7 +54,7 @@ actor RefusingRemoveStore: SecretStore {
     #expect(week == "2026-10-26T06:00:00.000Z")
   }
 
-  @Test func codexCheckStoresUsage() async throws {
+  @Test(NativeDBResources()) func codexCheckStoresUsage() async throws {
     let h = try await Harness.start(
       inspectionObservation: InspectionRequestObservation(caseID: .codexUsage))
     let codex = try await h.addCodex()
@@ -67,7 +67,7 @@ actor RefusingRemoveStore: SecretStore {
     await h.stop()
   }
 
-  @Test func claudeTurnStoresUsage() async throws {
+  @Test(NativeDBResources()) func claudeTurnStoresUsage() async throws {
     let h = try await Harness.start()
     let claude = try await h.addClaude()
     #expect(try await h.usage(claude.id)?.reading == nil)
@@ -81,7 +81,7 @@ actor RefusingRemoveStore: SecretStore {
     await h.stop()
   }
 
-  @Test func storedHistoricalTokensSumIntoTodayAndWeek() async throws {
+  @Test(NativeDBResources()) func storedHistoricalTokensSumIntoTodayAndWeek() async throws {
     let witness = HistoricalFactoryWitness()
     let h = try await Harness.start(adapterFactory: witness.makeFactory())
     let db = h.coordinator.database
@@ -115,7 +115,7 @@ actor RefusingRemoveStore: SecretStore {
     await h.stop()
   }
 
-  @Test func unreachableCurrentRuntimeRetriesThenFails() async throws {
+  @Test(NativeDBResources()) func unreachableCurrentRuntimeRetriesThenFails() async throws {
     let state = CurrentCoordinatorFixtureState()
     let witness = HistoricalFactoryWitness()
     let h = try await Harness.start(
@@ -155,7 +155,7 @@ actor RefusingRemoveStore: SecretStore {
     await h.stop()
   }
 
-  @Test func incompatibleCurrentRuntimeDoesNotRetry() async throws {
+  @Test(NativeDBResources()) func incompatibleCurrentRuntimeDoesNotRetry() async throws {
     let state = CurrentCoordinatorFixtureState(incompatible: true)
     let h = try await Harness.start(adapterFactory: { _, _, _, _ in
       CurrentCoordinatorFixtureAdapter(state: state)
@@ -178,7 +178,7 @@ actor RefusingRemoveStore: SecretStore {
     #expect(await state.inspections == 1)
   }
 
-  @Test func labelEditSucceedsAndRetiredKeyEditsAreAtomic() async throws {
+  @Test(NativeDBResources()) func labelEditSucceedsAndRetiredKeyEditsAreAtomic() async throws {
     let secrets = FixtureCredentialStore()
     let witness = HistoricalFactoryWitness()
     let h = try await Harness.start(secretStore: secrets, adapterFactory: witness.makeFactory())
@@ -217,7 +217,7 @@ actor RefusingRemoveStore: SecretStore {
     await h.stop()
   }
 
-  @Test func updateRefusesAnUnknownReferenceOrConnection() async throws {
+  @Test(NativeDBResources()) func updateRefusesAnUnknownReferenceOrConnection() async throws {
     let h = try await Harness.start()
     let b4 = try HistoricalCoordinatorFixture.seedEarlierConnection(h.coordinator.database)
     for params in [
@@ -246,7 +246,7 @@ actor RefusingRemoveStore: SecretStore {
 
   }
 
-  @Test func refusedEditsKeepSharedHistoricalCredentials() async throws {
+  @Test(NativeDBResources()) func refusedEditsKeepSharedHistoricalCredentials() async throws {
     let secrets = MemorySecretStore()
     let h = try await Harness.start(secretStore: secrets)
     let shared = try await h.storeCredential("shared")
@@ -273,7 +273,7 @@ actor RefusingRemoveStore: SecretStore {
     await h.stop()
   }
 
-  @Test func historicalWorkAllowsRenameAndAlwaysRefusesKeyEdits() async throws {
+  @Test(NativeDBResources()) func historicalWorkAllowsRenameAndAlwaysRefusesKeyEdits() async throws {
     let witness = HistoricalFactoryWitness()
     let h = try await Harness.start(adapterFactory: witness.makeFactory())
     let key = try await h.storeCredential("k")
@@ -302,7 +302,7 @@ actor RefusingRemoveStore: SecretStore {
 
   /// A background check answers at once and reports through events, so it never holds the socket (the
   /// coordinator serves one client's requests in order) while it retries.
-  @Test func aBackgroundCheckAnswersAtOnce() async throws {
+  @Test(NativeDBResources()) func aBackgroundCheckAnswersAtOnce() async throws {
     // Six seconds of retries: the two answers below must come back inside them, and a starved CI
     // runner has taken over a second for each (the bounds were 0.8 s and 0.9 s of a 2 s check).
     let state = CurrentCoordinatorFixtureState()
@@ -345,7 +345,7 @@ actor RefusingRemoveStore: SecretStore {
     await h.stop()
   }
 
-  @Test func aRenameCarriesTheConnection() async throws {
+  @Test(NativeDBResources()) func aRenameCarriesTheConnection() async throws {
     let h = try await Harness.start()
     let b4 = try HistoricalCoordinatorFixture.seedEarlierConnection(h.coordinator.database, label: "Old")
     let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
@@ -373,7 +373,7 @@ actor RefusingRemoveStore: SecretStore {
     await h.stop()
   }
 
-  @Test func credentialRemoveKeepsASecretInUse() async throws {
+  @Test(NativeDBResources()) func credentialRemoveKeepsASecretInUse() async throws {
     let secrets = MemorySecretStore()
     let h = try await Harness.start(secretStore: secrets)
     let used = try await h.storeCredential("used")
@@ -394,7 +394,7 @@ actor RefusingRemoveStore: SecretStore {
   }
 
   /// D240 retires successful key swaps; refusal must not reach even a failing cleanup store.
-  @Test func retiredKeyEditNeverAttemptsOldKeyCleanup() async throws {
+  @Test(NativeDBResources()) func retiredKeyEditNeverAttemptsOldKeyCleanup() async throws {
     let secrets = RefusingRemoveStore()
     let h = try await Harness.start(secretStore: secrets)
     let old = try await h.storeCredential("old")
@@ -427,7 +427,7 @@ actor RefusingRemoveStore: SecretStore {
     await h.stop()
   }
 
-  @Test func usageIsWrittenForThePhone() async throws {
+  @Test(NativeDBResources()) func usageIsWrittenForThePhone() async throws {
     let h = try await Harness.start()
     let codex = try await h.addCodex()
     let synced = try #require(try h.coordinator.database.syncedUsage(connectionId: codex.id))

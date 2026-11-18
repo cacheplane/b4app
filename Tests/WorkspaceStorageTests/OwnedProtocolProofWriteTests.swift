@@ -196,13 +196,13 @@ import WorkspaceProtocol
     return inactive
   }
 
-  @Test func independentlyValidatedLinkedModernInactiveFixture() throws {
+  @Test(NativeDBResources()) func independentlyValidatedLinkedModernInactiveFixture() throws {
     try Self.withFixture { f in
       _ = try Self.validateFixture(f)
     }
   }
 
-  @Test func ownedBindCommitsExactSuccessorFromModernInactiveAnchor() throws {
+  @Test(NativeDBResources()) func ownedBindCommitsExactSuccessorFromModernInactiveAnchor() throws {
     try Self.withFixture { f in
       let predecessor = try Self.validateFixture(f)
       let before = try Self.preserved(f)
@@ -284,7 +284,7 @@ extension OwnedProtocolProofWriteTests {
     let laterOrdinarySucceeded: Bool
   }
 
-  @Test func ownedProofFreshCheckoutNeverReturnsFreshToIdle() throws {
+  @Test(NativeDBResources()) func ownedProofFreshCheckoutNeverReturnsFreshToIdle() throws {
     var observed: OwnedProofPoolFacts?
     try Self.withFixture { f in
       _ = try Self.validateFixture(f)
@@ -619,7 +619,7 @@ extension OwnedProtocolProofWriteTests {
     try result.get()
   }
 
-  @Test func ownedProofClosedBeforeAdmissionDoesNotWaitOrRunBody() throws {
+  @Test(NativeDBResources()) func ownedProofClosedBeforeAdmissionDoesNotWaitOrRunBody() throws {
     var exactClosed = false
     var observerAbsent = false
     var bodyAbsent = false
@@ -647,7 +647,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(finalDrain)
   }
 
-  @Test func ownedProofTimesOutAtActualFiveSecondSlotDeadlineWithoutExtraLease() throws {
+  @Test(NativeDBResources()) func ownedProofTimesOutAtActualFiveSecondSlotDeadlineWithoutExtraLease() throws {
     var actualFiveSeconds = false
     var validGuardMargin = false
     var heldThroughTimeout = false
@@ -742,7 +742,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(finalDrain)
   }
 
-  @Test func ownedProofQueuedAdmissionRefusesAfterConcurrentClose() throws {
+  @Test(NativeDBResources()) func ownedProofQueuedAdmissionRefusesAfterConcurrentClose() throws {
     var closedBeforeDeadline = false
     var exactClosed = false
     var bodyAbsent = false
@@ -795,7 +795,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(finalDrain)
   }
 
-  @Test func ownedProofBodyKeepsLogicalLeaseAndSlotThroughWork() throws {
+  @Test(NativeDBResources()) func ownedProofBodyKeepsLogicalLeaseAndSlotThroughWork() throws {
     var drainRefusedWhileHeld = false
     var secondBodyAbsent = false
     var firstReturnedReceipt = false
@@ -890,7 +890,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(openSerialResults)
   }
 
-  @Test func ownedProofFreshConstructorRefusalReleasesLeaseAndSlotWithoutBody() throws {
+  @Test(NativeDBResources()) func ownedProofFreshConstructorRefusalReleasesLeaseAndSlotWithoutBody() throws {
     var nativeSession = false
     var bothNativeRefusals = false
     var heldThroughBoth = false
@@ -955,7 +955,8 @@ extension OwnedProtocolProofWriteTests {
     #expect(finalDrain)
   }
 
-  @Test func ownedProofDoesNotReuseLiveOrdinaryIdleProbeWhenFreshConnectMustFail() throws {
+  @Test(NativeDBResources()) func ownedProofDoesNotReuseLiveOrdinaryIdleProbeWhenFreshConnectMustFail() throws
+  {
     var nativeSessionBefore = false
     var nativeSessionAfter = false
     var liveBefore = false
@@ -1007,7 +1008,7 @@ extension OwnedProtocolProofWriteTests {
 }
 
 extension OwnedProtocolProofWriteTests {
-  @Test func ownedBindEqualBindingNoopRequiresActualCommitReceipt() throws {
+  @Test(NativeDBResources()) func ownedBindEqualBindingNoopRequiresActualCommitReceipt() throws {
     var committedCurrent = false
     var redeemed = false
     try Self.withFixture { f in
@@ -1131,7 +1132,8 @@ extension OwnedProtocolProofWriteTests {
       expectedSnapshot: successor, expectedTokenRef: f.link.tokenRef)
   }
 
-  @Test func ownedBindLegacyOnlyStoreCommitsWithoutHealthyProtocolTwoObservation() throws {
+  @Test(NativeDBResources()) func ownedBindLegacyOnlyStoreCommitsWithoutHealthyProtocolTwoObservation() throws
+  {
     var committedCurrent = false
     var redeemed = false
     var exactSuccessor = false
@@ -1196,7 +1198,8 @@ extension OwnedProtocolProofWriteTests {
     #expect(redeemed)
   }
 
-  @Test func ownedBindCurrentReceiptRequiresOriginalAnchorReferenceAdmissionAndFreshMemory() throws {
+  @Test(NativeDBResources())
+  func ownedBindCurrentReceiptRequiresOriginalAnchorReferenceAdmissionAndFreshMemory() throws {
     var committedCurrent = false
     var positive = false
     var wrongAnchorRefused = false
@@ -1936,7 +1939,7 @@ extension OwnedProtocolProofWriteTests {
     return results
   }
 
-  @Test func ownedBindRawStageFixtureValidation() throws {
+  @Test(NativeDBResources()) func ownedBindRawStageFixtureValidation() throws {
     let rows = try Self.ownedBindRawStageControls()
     #expect(rows.count == 4)
     for row in rows {
@@ -2518,7 +2521,7 @@ extension OwnedProtocolProofWriteTests {
     return facts
   }
 
-  @Test func ownedBindRetirementAfterObservedNativePreWaitRefuses() throws {
+  @Test(NativeDBResources()) func ownedBindRetirementAfterObservedNativePreWaitRefuses() throws {
     for kind in [OwnedBindWaitKind.advisory, .link] {
       let facts = try Self.ownedBindHeldPair(kind)
       // Only fixed primitive facts remain after target pool/inspector/physical-root teardown.
@@ -2530,7 +2533,7 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test func ownedBindMemoryPostAndImmediatePreCommitRefuseAfterSuccessfulBody() throws {
+  @Test(NativeDBResources()) func ownedBindMemoryPostAndImmediatePreCommitRefuseAfterSuccessfulBody() throws {
     for selector in [2, 3] {
       let facts = try Self.ownedBindUnheldPair(selector: selector, replacingReference: false)
       #expect(facts.qualified)
@@ -2541,7 +2544,8 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test func ownedBindSuccessfulReferenceReplacementRefusesPostAndSameEnabledAtoACommits() throws {
+  @Test(NativeDBResources())
+  func ownedBindSuccessfulReferenceReplacementRefusesPostAndSameEnabledAtoACommits() throws {
     let facts = try Self.ownedBindUnheldPair(selector: nil, replacingReference: true)
     #expect(facts.qualified)
     #expect(facts.rawControls == 4)
@@ -3344,7 +3348,9 @@ extension OwnedProtocolProofWriteTests {
     return facts
   }
 
-  @Test func ownedBindPrecheckoutRejectsOnlyExactContextAndMalformedExpectedReference() throws {
+  @Test(NativeDBResources()) func ownedBindPrecheckoutRejectsOnlyExactContextAndMalformedExpectedReference()
+    throws
+  {
     let units: [OwnedT09Unit] = [
       .object, .fact, .account, .database, .hubBase, .device, .joined, .unlinked, .callerUserOrg,
       .boundUser, .boundOrg,
@@ -3362,7 +3368,7 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test func ownedBindNativePreRejectsExactEpochTupleAndReferenceDrift() throws {
+  @Test(NativeDBResources()) func ownedBindNativePreRejectsExactEpochTupleAndReferenceDrift() throws {
     let units: [OwnedT09Unit] = [
       .store, .member, .revision, .missingControl, .extraKey, .version, .noncanonicalRevision,
       .nativeBase, .nativeDevice, .nativeJoined, .missingLink,
@@ -3380,7 +3386,7 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test func ownedBindUsesOriginalOpaqueReferenceBytesThroughOwnedWriter() throws {
+  @Test(NativeDBResources()) func ownedBindUsesOriginalOpaqueReferenceBytesThroughOwnedWriter() throws {
     let units: [OwnedT09Unit] = [
       .opaque("secret:x", mismatch: nil), .opaque("secret:not-a-uuid", mismatch: nil),
       .opaque("secret:x ", mismatch: nil), .opaque("secret:\u{96EA}", mismatch: nil),
@@ -3397,7 +3403,7 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test func ownedBindNativeMaximumRevisionRefusesBeforeBodyWithoutRepair() throws {
+  @Test(NativeDBResources()) func ownedBindNativeMaximumRevisionRefusesBeforeBodyWithoutRepair() throws {
     let facts = try Self.ownedT09Unit(.maximum)
     #expect(facts.qualified && facts.rawControls == 4 && facts.mutating)
     #expect(facts.negativeCalls == 1 && facts.positiveCalls == 4)
@@ -3405,7 +3411,9 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.memoryCalls == 6)
   }
 
-  @Test func ownedBindRedemptionRetainsCapturedContextWithoutSnapshotInstanceIdentity() throws {
+  @Test(NativeDBResources()) func ownedBindRedemptionRetainsCapturedContextWithoutSnapshotInstanceIdentity()
+    throws
+  {
     let raw = try Self.ownedBindRawStageControls()
     guard raw.count == 4, raw.enumerated().allSatisfy({ $0.element.row == $0.offset && $0.element.qualified })
     else { throw FixtureFailure.nativeShape }
@@ -4541,7 +4549,9 @@ extension OwnedProtocolProofWriteTests {
     return facts
   }
 
-  @Test func ownedBindOverridesInheritedIsolationAndSamplesClockAfterAdvisoryWait() throws {
+  @Test(NativeDBResources()) func ownedBindOverridesInheritedIsolationAndSamplesClockAfterAdvisoryWait()
+    throws
+  {
     // Explicit local and nonlocal units, each with its own rawfour and NEW unique target DB.
     for device in [OwnedT11Device.local, .nonlocal] {
       let diagnostic = OwnedT11Diagnostic(device)
@@ -4564,7 +4574,7 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test func ownedBindLocksLinkBeforeControlWithNativeWaitEvidence() throws {
+  @Test(NativeDBResources()) func ownedBindLocksLinkBeforeControlWithNativeWaitEvidence() throws {
     let facts = try Self.ownedT11OrderUnit()
     #expect(facts.rawControls == 4 && facts.nativeWaits == 2)
     #expect(facts.writerCalls == 4 && facts.redemptionCalls == 1)
@@ -6120,7 +6130,7 @@ extension OwnedProtocolProofWriteTests {
     return facts
   }
 
-  @Test func ownedBindRetirementDuringRealSuccessfulCommitIsStale() throws {
+  @Test(NativeDBResources()) func ownedBindRetirementDuringRealSuccessfulCommitIsStale() throws {
     let facts = try Self.ownedDeferredDiagnosedTarget(.stale)
     #expect(facts.oldControls == 4 && facts.newControls == 5)
     #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
@@ -6129,7 +6139,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.timeoutAllocations == 0 && facts.qualified)
   }
 
-  @Test func ownedBindActualDeferredFaultAndSameInputAllow() throws {
+  @Test(NativeDBResources()) func ownedBindActualDeferredFaultAndSameInputAllow() throws {
     let facts = try Self.ownedDeferredDiagnosedTarget(.fault)
     #expect(facts.oldControls == 4 && facts.newControls == 5)
     #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
@@ -6138,7 +6148,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.timeoutAllocations == 0 && facts.qualified)
   }
 
-  @Test func ownedBindActualCommitServerTimeoutIsUnknown() throws {
+  @Test(NativeDBResources()) func ownedBindActualCommitServerTimeoutIsUnknown() throws {
     let facts = try Self.ownedDeferredDiagnosedTarget(.timeout)
     #expect(facts.oldControls == 4 && facts.newControls == 5)
     #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
@@ -6887,7 +6897,7 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test func ownedBindIntegratedCurrentDisposalAndLease() throws {
+  @Test(NativeDBResources()) func ownedBindIntegratedCurrentDisposalAndLease() throws {
     let facts = try Self.ownedT12Run(.current)
     #expect(facts.oldControls == 4 && facts.newControls == 5)
     #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
@@ -6899,7 +6909,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.timeoutAllocations == 0 && facts.qualified)
   }
 
-  @Test func ownedBindIntegratedStaleDisposalAndLease() throws {
+  @Test(NativeDBResources()) func ownedBindIntegratedStaleDisposalAndLease() throws {
     let facts = try Self.ownedT12Run(.stale)
     #expect(facts.oldControls == 4 && facts.newControls == 5)
     #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
@@ -6911,7 +6921,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.timeoutAllocations == 0 && facts.qualified)
   }
 
-  @Test func ownedBindIntegratedNoncommitDisposalAndLease() throws {
+  @Test(NativeDBResources()) func ownedBindIntegratedNoncommitDisposalAndLease() throws {
     let facts = try Self.ownedT12Run(.noncommit)
     #expect(facts.oldControls == 4 && facts.newControls == 5)
     #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
@@ -6923,7 +6933,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.timeoutAllocations == 0 && facts.qualified)
   }
 
-  @Test func ownedBindIntegratedCommitUnknownDisposalAndLease() throws {
+  @Test(NativeDBResources()) func ownedBindIntegratedCommitUnknownDisposalAndLease() throws {
     let facts = try Self.ownedT12Run(.commitTimeoutUnknown)
     #expect(facts.oldControls == 4 && facts.newControls == 5)
     #expect(facts.rawAttempts == 9 && facts.rawHolders == 4)
@@ -7719,7 +7729,7 @@ extension OwnedProtocolProofWriteTests {
   }
 
   // P01a real mutating parent; P01b an additional actual equal-binding no-op parent.
-  @Test(arguments: [false, true])
+  @Test(NativeDBResources(), arguments: [false, true])
   func ownedPositiveCommitsExactObservationAndSingleRevisionFromOwnedBind(noopParent: Bool) throws {
     try Self.ownedPositiveRequireCoreControls()
     try Self.withFixture { f in
@@ -7778,7 +7788,7 @@ extension OwnedProtocolProofWriteTests {
       body: body, commit: commit, bodies: ordinal == 1 ? 0 : 1, commits: 0)
   }
 
-  @Test(arguments: [1, 2, 3])
+  @Test(NativeDBResources(), arguments: [1, 2, 3])
   func ownedPositiveCountsMemoryChecksAtPREPOSTAndImmediatePreCommit(ordinal: Int) throws {
     try Self.ownedPositiveRequireCoreControls()
     try Self.withFixture { f in
@@ -7833,7 +7843,7 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test(arguments: [false, true])
+  @Test(NativeDBResources(), arguments: [false, true])
   func ownedPositiveRefusesSuccessfulBodyReferenceReplacementAndBodyFault(bodyFault: Bool) throws {
     try Self.ownedPositiveRequireCoreControls()
     try Self.withFixture { f in
@@ -7888,7 +7898,7 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test(arguments: [0, 1])
+  @Test(NativeDBResources(), arguments: [0, 1])
   func ownedPositiveRechecksMemoryAfterActualNativeWait(kindValue: Int) throws {
     try Self.ownedPositiveRequireCoreControls()
     let kind: OwnedBindWaitKind = kindValue == 0 ? .advisory : .link
@@ -8191,7 +8201,7 @@ extension OwnedProtocolProofWriteTests {
     return facts
   }
 
-  @Test func ownedPositiveActualSuccessfulCommitRetirementIsStale() throws {
+  @Test(NativeDBResources()) func ownedPositiveActualSuccessfulCommitRetirementIsStale() throws {
     let diagnostic = OwnedDeferredDiagnostic(unit: .stale)
     let facts = try Self.ownedPositiveDeferredTarget(.stale, diagnostic: diagnostic)
     #expect(facts.oldControls == 4 && facts.newControls == 5 && facts.rawAttempts == 9)
@@ -8200,7 +8210,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.qualified)
   }
 
-  @Test func ownedPositiveActualDeferredCommitFaultRemainsUnknown() throws {
+  @Test(NativeDBResources()) func ownedPositiveActualDeferredCommitFaultRemainsUnknown() throws {
     let diagnostic = OwnedDeferredDiagnostic(unit: .fault)
     let facts = try Self.ownedPositiveDeferredTarget(.fault, diagnostic: diagnostic)
     #expect(facts.oldControls == 4 && facts.newControls == 5 && facts.rawAttempts == 9)
@@ -8209,7 +8219,7 @@ extension OwnedProtocolProofWriteTests {
     #expect(facts.qualified)
   }
 
-  @Test func ownedPositiveActualCommitServerTimeoutIsUnknown() throws {
+  @Test(NativeDBResources()) func ownedPositiveActualCommitServerTimeoutIsUnknown() throws {
     let diagnostic = OwnedDeferredDiagnostic(unit: .timeout)
     let facts = try Self.ownedPositiveDeferredTarget(.timeout, diagnostic: diagnostic)
     #expect(facts.oldControls == 4 && facts.newControls == 5 && facts.rawAttempts == 9)
@@ -8245,11 +8255,13 @@ extension OwnedProtocolProofWriteTests {
     acknowledged = true
   }
 
-  @Test(arguments: [
-    "store", "member", "revision", "binding", "observation", "missingControl", "malformedControl",
-    "missingLink", "base", "device", "joined", "referenceB", "referenceEmpty", "referenceMalformed",
-    "allow", "maximum",
-  ])
+  @Test(
+    NativeDBResources(),
+    arguments: [
+      "store", "member", "revision", "binding", "observation", "missingControl", "malformedControl",
+      "missingLink", "base", "device", "joined", "referenceB", "referenceEmpty", "referenceMalformed",
+      "allow", "maximum",
+    ])
   func ownedPositiveComparesExactNativeS1AndRefusesExhaustion(row: String) throws {
     try Self.ownedPositiveRequireCoreControls()
     try Self.withFixture { f in
@@ -8481,13 +8493,15 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test(arguments: [
-    "S0", "fact", "account", "object", "empty", "prefixOnly", "wrongPrefix", "nul",
-    "differentRef", "unicodeComposed", "unicodeDecomposed", "admission", "observationAccount",
-    "observationUser", "observationOrg", "observationBase", "observationDevice",
-    "observationDatabase", "observationJoined", "noncommitParent", "unknownParent", "staleParent",
-    "positiveParent",
-  ])
+  @Test(
+    NativeDBResources(),
+    arguments: [
+      "S0", "fact", "account", "object", "empty", "prefixOnly", "wrongPrefix", "nul",
+      "differentRef", "unicodeComposed", "unicodeDecomposed", "admission", "observationAccount",
+      "observationUser", "observationOrg", "observationBase", "observationDevice",
+      "observationDatabase", "observationJoined", "noncommitParent", "unknownParent", "staleParent",
+      "positiveParent",
+    ])
   func ownedPositiveRequiresExactGenuineCurrentBindParentBeforeSQL(row: String) throws {
     try Self.ownedPositiveRequireCoreControls()
     if row == "unknownParent" || row == "staleParent" {
@@ -8608,7 +8622,7 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test func ownedPositiveRedemptionRequiresS1ReferenceAdmissionAndFreshMemory() throws {
+  @Test(NativeDBResources()) func ownedPositiveRedemptionRequiresS1ReferenceAdmissionAndFreshMemory() throws {
     try Self.ownedPositiveRequireCoreControls()
     try Self.withFixture { f in
       _ = try Self.validateFixture(f)
@@ -8751,7 +8765,8 @@ extension OwnedProtocolProofWriteTests {
     }
   }
 
-  @Test func ownedPositiveAlwaysAdvancesForAlreadyEqualObservationWithNewGenuineBindParent() throws {
+  @Test(NativeDBResources())
+  func ownedPositiveAlwaysAdvancesForAlreadyEqualObservationWithNewGenuineBindParent() throws {
     try Self.ownedPositiveRequireCoreControls()
     try Self.withFixture { f in
       _ = try Self.validateFixture(f)
@@ -8947,7 +8962,7 @@ extension OwnedProtocolProofWriteTests {
 
   // F01a/F01b: O=S0 or saved genuine S1, actual PRE is genuine S2.
   // F01 matrix: F01a, F01b
-  @Test(arguments: [false, true])
+  @Test(NativeDBResources(), arguments: [false, true])
   func ownedFenceOriginalAnchorClearsActualLaterPositivePreservingPrincipal(boundOriginal: Bool) throws {
     try Self.ownedFenceRequireCoreControls()
     try Self.withFixture { f in
@@ -8966,7 +8981,7 @@ extension OwnedProtocolProofWriteTests {
 
   // F02a/F02b: first clear is extra uninstrumented setup; lawful unbound has B1/B2 N/A.
   // F02 matrix: F02a, F02b
-  @Test(arguments: [false, true])
+  @Test(NativeDBResources(), arguments: [false, true])
   func ownedFenceDenialOnlyAlreadyClearAndLawfulUnbound(unbound: Bool) throws {
     try Self.ownedFenceRequireCoreControls()
     try Self.withFixture { f in
@@ -9032,7 +9047,7 @@ extension OwnedProtocolProofWriteTests {
   }
 
   // F03 matrix: F03.databaseObject, F03.missingContext, F03.missingLinkedMembership, F03.contextAccount, F03.databaseName, F03.nativeHub, F03.nativeDevice, F03.nativeJoined, F03.anchorHubUser, F03.anchorHubOrg, F03.anchorAccount, F03.emptyRef, F03.prefixOnlyRef, F03.wrongPrefixRef, F03.nulRef
-  @Test(arguments: OwnedFenceInput.allCases)
+  @Test(NativeDBResources(), arguments: OwnedFenceInput.allCases)
   private func ownedFencePrecheckoutRejectsInvalidOriginalContextPrincipalReference(
     row: OwnedFenceInput
   ) throws {
@@ -9141,7 +9156,7 @@ extension OwnedProtocolProofWriteTests {
   }
 
   // F04 matrix: F04.controlMissing, F04.controlMalformed, F04.controlVersion, F04.storeEpoch, F04.memberEpoch, F04.lowerRevision, F04.nativeMissing, F04.nativeHub, F04.nativeDevice, F04.nativeJoined, F04.refMissing, F04.refMalformed, F04.refReplaced, F04.currentAccount, F04.currentHubUser, F04.currentHubOrg
-  @Test(arguments: OwnedFenceNative.allCases)
+  @Test(NativeDBResources(), arguments: OwnedFenceNative.allCases)
   private func ownedFenceNativePreRejectsEpochPrincipalAndReferenceDriftBeforeMemory(
     row: OwnedFenceNative
   ) throws {
@@ -9233,7 +9248,7 @@ extension OwnedProtocolProofWriteTests {
   }
 
   // F05 matrix: F05.pre, F05.post, F05.preCommit
-  @Test(arguments: [1, 2, 3])
+  @Test(NativeDBResources(), arguments: [1, 2, 3])
   func ownedFenceMemoryPrePostImmediatePreCommitRefuseAndSameInputAllows(ordinal: Int) throws {
     try Self.ownedFenceRequireCoreControls()
     try Self.withFixture { f in
@@ -9831,7 +9846,7 @@ extension OwnedProtocolProofWriteTests {
 
 extension OwnedProtocolProofWriteTests {
   // F06 matrix: F06.advisory, F06.link
-  @Test(arguments: [0, 1])
+  @Test(NativeDBResources(), arguments: [0, 1])
   func ownedFenceRetirementAfterActualAdvisoryOrLinkPreWaitRefuses(kindValue: Int) throws {
     try Self.ownedFenceRequireCoreControls()
     let kind: OwnedBindWaitKind = kindValue == 0 ? .advisory : .link
@@ -9916,7 +9931,7 @@ extension OwnedProtocolProofWriteTests {
 
 extension OwnedProtocolProofWriteTests {
   // F07 matrix: F07.bodyFault, F07.reference
-  @Test(arguments: [false, true])
+  @Test(NativeDBResources(), arguments: [false, true])
   func ownedFenceActualBodyFaultOrReferenceReplacementNeverCreatesContinuation(bodyFault: Bool) throws {
     try Self.ownedFenceRequireCoreControls()
     try Self.withFixture { f in
@@ -9967,7 +9982,7 @@ extension OwnedProtocolProofWriteTests {
   }
 
   // F10 matrix: F10.write, F10.redemptions
-  @Test func ownedFenceCurrentReceiptRedeemsOriginalAnchorOnlyAndFreshMemory() throws {
+  @Test(NativeDBResources()) func ownedFenceCurrentReceiptRedeemsOriginalAnchorOnlyAndFreshMemory() throws {
     try Self.ownedFenceRequireCoreControls()
     try Self.withFixture { f in
       _ = try Self.validateFixture(f)
@@ -10110,7 +10125,7 @@ extension OwnedProtocolProofWriteTests {
 
 extension OwnedProtocolProofWriteTests {
   // F08 matrix: F08.max
-  @Test func ownedFenceActualLatestRevisionOverflowNeverRepairsOrWraps() throws {
+  @Test(NativeDBResources()) func ownedFenceActualLatestRevisionOverflowNeverRepairsOrWraps() throws {
     try Self.ownedFenceRequireCoreControls()
     try Self.withFixture { f in
       let inactive = try Self.validateFixture(f)
@@ -10157,7 +10172,7 @@ extension OwnedProtocolProofWriteTests {
   }
 
   // F09 matrix: F09.selector4
-  @Test func ownedFencePostAckMemoryFailureIsCommittedStale() throws {
+  @Test(NativeDBResources()) func ownedFencePostAckMemoryFailureIsCommittedStale() throws {
     let diagnostic = OwnedDeferredDiagnostic(unit: .stale)
     let prerequisites = try Self.ownedFenceDeferredPrerequisites(diagnostic: diagnostic)
     guard prerequisites.old == 4, prerequisites.controls == 5,
@@ -10462,7 +10477,7 @@ extension OwnedProtocolProofWriteTests {
   }
 
   // F11 matrix: F11.current, F11.stale, F11.fault, F11.timeout
-  @Test(arguments: ["current", "stale", "fault", "timeout"])
+  @Test(NativeDBResources(), arguments: ["current", "stale", "fault", "timeout"])
   func ownedFenceObservedActualCommitCurrentStaleFaultAndTimeoutInverses(row: String) throws {
     guard ["current", "stale", "fault", "timeout"].contains(row) else { throw FixtureFailure.nativeShape }
     let diagnostic = OwnedDeferredDiagnostic(
@@ -10742,7 +10757,7 @@ extension OwnedProtocolProofWriteTests {
   }
 
   // F12 matrix: F12.isolation, F12.clock, F12.device, F12.local, F12.order
-  @Test(arguments: ["isolation", "clock", "device", "local", "order"])
+  @Test(NativeDBResources(), arguments: ["isolation", "clock", "device", "local", "order"])
   func ownedFenceSessionSettingsClockAndLinkBeforeControlRemainFixed(row: String) throws {
     if row == "order" {
       let facts = try Self.ownedFenceOrderUnit()
@@ -10781,7 +10796,7 @@ extension OwnedProtocolProofWriteTests {
   }
 
   // F13 matrix: F13.catalog, F13.cleanup
-  @Test func ownedFenceRecipeCatalogAndCleanupFailuresInvalidateFixtures() throws {
+  @Test(NativeDBResources()) func ownedFenceRecipeCatalogAndCleanupFailuresInvalidateFixtures() throws {
     let diagnostic = OwnedDeferredDiagnostic(unit: .stale)
     let prerequisites = try Self.ownedFenceDeferredPrerequisites(diagnostic: diagnostic)
     guard prerequisites.old == 4, prerequisites.controls == 5,

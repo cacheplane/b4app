@@ -53,7 +53,7 @@ import WorkspaceSync
     #expect(awake.isHeld)
   }
 
-  @Test func leaveReleasesTheAssertion() async throws {
+  @Test(NativeDBResources()) func leaveReleasesTheAssertion() async throws {
     let rig = try await SyncRig.make(joined: false)
     #expect(!rig.assertions.isHeld)
     #expect(try await rig.sync.status().keepAwakeHeld == false)
@@ -68,14 +68,14 @@ import WorkspaceSync
     #expect(await rig.sync.keepAwakeHeld() == false)
   }
 
-  @Test func stoppingTheCoordinatorReleasesTheAssertion() async throws {
+  @Test(NativeDBResources()) func stoppingTheCoordinatorReleasesTheAssertion() async throws {
     let rig = try await SyncRig.make()
     #expect(rig.assertions.isHeld)
     await rig.sync.stop()
     #expect(!rig.assertions.isHeld)
   }
 
-  @Test func turningTheToggleOffReleasesAndOnTakesAgain() async throws {
+  @Test(NativeDBResources()) func turningTheToggleOffReleasesAndOnTakesAgain() async throws {
     let rig = try await SyncRig.make()
     #expect(rig.assertions.isHeld)
     let off = try await rig.sync.updateSettings(SettingsUpdate.Params(keepAwake: false))
@@ -87,7 +87,7 @@ import WorkspaceSync
     #expect(rig.assertions.isHeld)
   }
 
-  @Test func theToggleOnAnUnjoinedMacHoldsNothing() async throws {
+  @Test(NativeDBResources()) func theToggleOnAnUnjoinedMacHoldsNothing() async throws {
     let rig = try await SyncRig.make(joined: false)
     _ = try await rig.sync.updateSettings(SettingsUpdate.Params(keepAwake: true))
     #expect(!rig.assertions.isHeld)
@@ -95,7 +95,7 @@ import WorkspaceSync
     #expect(rig.assertions.isHeld)
   }
 
-  @Test func toggleDefaultsOnAndPersists() async throws {
+  @Test(NativeDBResources()) func toggleDefaultsOnAndPersists() async throws {
     let rig = try await SyncRig.make(joined: false)
     #expect(try await rig.sync.settings() == SettingsRead.Result(keepAwake: true))
     #expect(try rig.database.settings(key: "keepAwake") == nil)
@@ -123,7 +123,8 @@ import WorkspaceSync
     await again.stop()
   }
 
-  @Test func settingsAreServedOverTheSocketAndDiagnosticsShowTheAssertion() async throws {
+  @Test(NativeDBResources()) func settingsAreServedOverTheSocketAndDiagnosticsShowTheAssertion() async throws
+  {
     let rig = try await SocketRig.start()
     defer { Task { await rig.close() } }
     // Signed out: the preference is an account's, and no assertion is held.

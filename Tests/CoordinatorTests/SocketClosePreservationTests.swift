@@ -7,7 +7,7 @@ import WorkspaceProtocol
 
 @testable import Coordinator
 
-@Suite(.serialized, .timeLimit(.minutes(3))) struct SocketClosePreservationTests {
+@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(3))) struct SocketClosePreservationTests {
   @Test(arguments: ["peer-before-ack", "local-before-ack", "peer-after-ack"])
   func acceptedTurnSurvivesViewerDisconnectBeforeAcknowledgement(_ ordering: String) async throws {
     let timing = NativeTimingBoundary(

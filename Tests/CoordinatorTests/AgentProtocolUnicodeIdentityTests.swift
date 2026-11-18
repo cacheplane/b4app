@@ -6,7 +6,7 @@ import WorkspaceProtocol
 
 /// Opaque protocol identity preserves its spelling. Swift's canonically equivalent String == is
 /// intentionally a setup control here, never the retained-identity or snapshot oracle.
-@Suite(.serialized) struct AgentProtocolUnicodeIdentityTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolUnicodeIdentityTests {
   private typealias F = AgentProtocolIdentityManagedFixture
   private struct Bytes: Sendable, Equatable {
     var rows: [String: [Data]]

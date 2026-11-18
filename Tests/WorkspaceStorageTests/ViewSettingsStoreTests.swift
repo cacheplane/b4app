@@ -35,7 +35,7 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
   try db.changes(after: 0).filter { $0.table == "viewSettings" }
 }
 
-@Suite struct ViewSettingsStoreTests {
+@Suite(NativeDBResources()) struct ViewSettingsStoreTests {
   @Test func readingWithNoRowGivesDefaultsAndWritesNothing() throws {
     let db = try WorkspaceDatabase.temporary()
     #expect(try db.viewSettings() == ViewSettings())

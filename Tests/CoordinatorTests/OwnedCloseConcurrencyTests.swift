@@ -9,7 +9,7 @@ import WorkspaceProtocol
 @testable import Coordinator
 
 @Suite(.serialized, .timeLimit(.minutes(3))) struct OwnedCloseConcurrencyTests {
-  @Test func concurrentServerClosersAwaitTheAcceptOwnerAndSharedCleanup() async throws {
+  @Test(NativeDBResources()) func concurrentServerClosersAwaitTheAcceptOwnerAndSharedCleanup() async throws {
     let timing = NativeTimingBoundary(.serverClosers)
     let shutdownTiming = NarrowTimingObservation(.serverClosers)
     let shutdownCallbackQueue = DispatchQueue(label: "b4app.test.serverClosers.shutdown")
@@ -307,7 +307,7 @@ import WorkspaceProtocol
     await events.finish()
   }
 
-  @Test func concurrentCoordinatorClosersWaitThroughLockRelease() async throws {
+  @Test(NativeDBResources()) func concurrentCoordinatorClosersWaitThroughLockRelease() async throws {
     let h = try await Harness.start()
     let log = CloseProbe<String>()
     let lockHeld = CloseGate()

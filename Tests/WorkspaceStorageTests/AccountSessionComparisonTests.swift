@@ -7,7 +7,7 @@ import WorkspaceProtocol
 @testable import WorkspaceStorage
 
 // These are native comparison controls, not HTTP, authentication, admission or quiescence proof.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AccountSessionComparisonTests {
+@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(1))) struct AccountSessionComparisonTests {
   @Test func p2bB01EmptyLegitimateTableCapturesSealedAbsence() throws {
     try P2BNativeFixture.withFixture { f in
       try f.requireCatalog()

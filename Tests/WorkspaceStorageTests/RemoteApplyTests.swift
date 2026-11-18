@@ -51,7 +51,7 @@ private func storedDensity(_ db: WorkspaceDatabase) throws -> String? {
   }
 }
 
-@Suite(.serialized) struct RemoteApplyTests {
+@Suite(NativeDBResources(), .serialized) struct RemoteApplyTests {
   @Test func remoteTitleAppliesAndOlderLoses() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)

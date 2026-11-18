@@ -12,7 +12,7 @@ private func seed(_ db: WorkspaceDatabase, kind: ConnectionKind = .claude) throw
   }
 }
 
-@Suite(.serialized) struct ThreadDeleteStoreTests {
+@Suite(NativeDBResources(), .serialized) struct ThreadDeleteStoreTests {
   @Test func aDeletedThreadLeavesEveryList() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)

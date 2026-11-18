@@ -363,7 +363,7 @@ import WorkspaceProtocol
     #expect(try snapshot(c) == before)
   }
 
-  @Test func privateContainersPersistOwnerFactsWithoutSyncOrPresentationWrites() throws {
+  @Test(NativeDBResources()) func privateContainersPersistOwnerFactsWithoutSyncOrPresentationWrites() throws {
     try Self.withFixture { fixture in
       let c = fixture.raw
       try Self.requireTables(c)
@@ -426,7 +426,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func privateOwnerLinksRejectCrossThreadConnectionAndTurn() throws {
+  @Test(NativeDBResources()) func privateOwnerLinksRejectCrossThreadConnectionAndTurn() throws {
     try Self.withFixture { fixture in
       try Self.seedMetadata(fixture.raw)
       for spec in Self.metadata {
@@ -440,7 +440,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func privateJsonAndScalarValidityMatchesOpaqueProtocolFacts() throws {
+  @Test(NativeDBResources()) func privateJsonAndScalarValidityMatchesOpaqueProtocolFacts() throws {
     try Self.withFixture(observation: .opaqueProtocolFacts) { fixture in
       let c = fixture.raw
       try Self.seedMetadata(c)

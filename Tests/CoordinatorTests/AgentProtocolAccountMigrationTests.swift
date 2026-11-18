@@ -192,7 +192,7 @@ final class L1FactoryCalls: Sendable {
   var value: Int { count.withLock { $0 } }
 }
 
-@Suite(.serialized) struct AgentProtocolAccountMigrationTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolAccountMigrationTests {
   static let hubURL = "https://fixture.invalid"
   static let accountValue = "L1_FAKE_OLD_ACCOUNT_VALUE"
   static let endpointValue = "L1_FAKE_ENDPOINT_VALUE"
@@ -849,6 +849,32 @@ final class L1FactoryCalls: Sendable {
 
   // This moves only the fixed native query observer, never the actor-isolated signIn SQL.
   // The deadline is fixed by its caller BEFORE dispatch; late Thread startup gets no new window.
+  static func observedNativeQuery(
+    until deadline: ContinuousClock.Instant,
+    _ body: @escaping @Sendable () -> Bool
+  ) async -> Bool {
+    let retained = Mutex<Thread?>(nil)
+    let observed: Bool = await withCheckedContinuation { continuation in
+      retained.withLock { thread in
+        thread = Thread {
+          var onTime = false
+          while ContinuousClock.now < deadline {
+            let matched = body()
+            let completed = ContinuousClock.now
+            if matched, completed <= deadline { onTime = true; break }
+            guard completed < deadline else { break }
+            Thread.sleep(forTimeInterval: 0.010)
+          }
+          continuation.resume(returning: onTime)
+        }
+        thread?.start()
+      }
+    }
+    // The retained native observation operation completed; this is not kernel-thread exit.
+    retained.withLock { $0 = nil }
+    return observed
+  }
+
   private static func observedNativeQuery(
     until deadline: ContinuousClock.Instant, trace: L1PhaseTrace,
     _ body: @escaping @Sendable () -> Bool

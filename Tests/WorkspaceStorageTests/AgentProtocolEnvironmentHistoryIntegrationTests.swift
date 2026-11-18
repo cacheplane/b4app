@@ -8,7 +8,7 @@ import WorkspaceProtocol
 
 /// Real prefix10 admission controls. Ordinary witness data stays outside the closed public schema;
 /// the archive oracle is the independent shared test reader, not the production decoder.
-@Suite(.serialized)
+@Suite(NativeDBResources(), .serialized)
 struct AgentProtocolEnvironmentHistoryIntegrationTests {
   private struct Fixture: Sendable {
     let endpoint: PostgresEndpoint

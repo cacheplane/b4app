@@ -1,4 +1,6 @@
+import Dispatch
 import Synchronization
+import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
 
@@ -811,6 +813,35 @@ extension NarrowTimingObservation.Stage {
     case .normalReturn: return "normalReturn"
     case .sleepThrew: return "sleepThrew"
     case .atDeadline: return "atDeadline"
+    }
+  }
+}
+
+/// One concurrent resource per executing test case; actor isolation and runner ownership remain intact.
+/// This is an executor preference, not a deadline or a join of unstructured descendants.
+final class NativeDBCaseExecutor: TaskExecutor {
+  private let queue = DispatchQueue(
+    label: "b4app.tests.native-db-case", attributes: .concurrent)
+
+  func enqueue(_ job: consuming ExecutorJob) {
+    let job = UnownedJob(job)
+    queue.async { [self] in
+      job.runSynchronously(on: asUnownedTaskExecutor())
+    }
+  }
+}
+
+struct NativeDBResources: TestTrait, SuiteTrait, TestScoping {
+  var isRecursive: Bool { true }
+
+  func provideScope(
+    for test: Test, testCase: Test.Case?,
+    performing function: @Sendable () async throws -> Void
+  ) async throws {
+    let executor = NativeDBCaseExecutor()
+    defer { withExtendedLifetime(executor) {} }
+    try await withTaskExecutorPreference(executor) {
+      try await function()
     }
   }
 }

@@ -16,7 +16,7 @@ private func thread(
     title: "ConversationThread \(id)", context: "/tmp/project")
 }
 
-@Suite struct DatabaseTests {
+@Suite(NativeDBResources()) struct DatabaseTests {
   @Test func appliesTheBundledMigrationsOnce() throws {
     let db = try WorkspaceDatabase.temporary()
     #expect(

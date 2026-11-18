@@ -9,7 +9,7 @@ import WorkspaceProtocol
 @testable import WorkspaceStorage
 
 /// No route or adapter: real private storage plus existing public normalization/diagnostics only.
-@Suite(.serialized) struct AgentProtocolGrantCredentialTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolGrantCredentialTests {
   private typealias Store = ProtocolGrantSecretStore
   private static let owner = Store.Owner(connectionId: "connection-a", threadId: "thread-a")
   private static let message = "The private protocol credential transaction could not be completed."

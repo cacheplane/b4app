@@ -159,7 +159,7 @@ private actor EventRecorder {
 }
 
 @Suite(.serialized) struct HubPullTests {
-  @Test func pullAppliesPhoneEditsAndPublishes() async throws {
+  @Test(NativeDBResources()) func pullAppliesPhoneEditsAndPublishes() async throws {
     try await PullHarness.with { h in
       let recorder = await EventRecorder(h.events, signal: h.signal)
       _ = try h.db.insertEnvironment(WorkEnvironment(id: "p1", name: ""), folders: ["/tmp/p"])
@@ -208,7 +208,7 @@ private actor EventRecorder {
 
   /// The first pull waits for the device list, which is what keeps a revoked old Mac's rows (this Mac
   /// before a rejoin) from applying; afterwards they are skipped and the phone's edit applies.
-  @Test func appliesNothingUntilTheDeviceListLoads() async throws {
+  @Test(NativeDBResources()) func appliesNothingUntilTheDeviceListLoads() async throws {
     let db = try WorkspaceDatabase.temporary()
     try await withCleanup({ try? db.close() }) {
       _ = try db.insertConnection(Connection(id: "c1", kind: .codex, label: "Codex", target: "/bin/codex"))
@@ -261,7 +261,7 @@ private actor EventRecorder {
     }
   }
 
-  @Test func staleCursorResyncsFromSnapshotWithoutLosingLocalRows() async throws {
+  @Test(NativeDBResources()) func staleCursorResyncsFromSnapshotWithoutLosingLocalRows() async throws {
     try await PullHarness.with { h in
       let recorder = await EventRecorder(h.events, signal: h.signal)
       let connection = try #require(try h.db.connection(id: "c1"))
@@ -316,7 +316,7 @@ private actor EventRecorder {
   /// View settings written on another Mac reach this one through the feed and through a snapshot (whose
   /// columns are attributed to their clocks' Mac), while this Mac's own write, echoed back by the hub,
   /// changes nothing and publishes no `viewSettings.changed`.
-  @Test func viewSettingsFromAnotherMacApplyThroughTheFeedAndTheSnapshot() async throws {
+  @Test(NativeDBResources()) func viewSettingsFromAnotherMacApplyThroughTheFeedAndTheSnapshot() async throws {
     try await PullHarness.with { h in
       let recorder = await EventRecorder(h.events, signal: h.signal)
       let fed = await h.append(
@@ -418,7 +418,7 @@ private actor EventRecorder {
       ])
   }
 
-  @Test func rejectedChangesAreRecordedAndDoNotStall() async throws {
+  @Test(NativeDBResources()) func rejectedChangesAreRecordedAndDoNotStall() async throws {
     let db = try WorkspaceDatabase.temporary()
     try await withCleanup({ try? db.close() }) {
       _ = try db.insertConnection(Connection(id: "c1", kind: .codex, label: "Codex", target: "/bin/codex"))
@@ -455,7 +455,7 @@ private actor EventRecorder {
     }
   }
 
-  @Test func unauthorizedLeaveAndStopEndThePull() async throws {
+  @Test(NativeDBResources()) func unauthorizedLeaveAndStopEndThePull() async throws {
     try await PullHarness.with { h in
       await h.fake.setFailNext(
         HubError(kind: "request_error", code: "unauthorized", message: "Unauthorized.", status: 401))

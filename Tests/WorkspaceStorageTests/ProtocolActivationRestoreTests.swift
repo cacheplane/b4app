@@ -5,7 +5,7 @@ import WorkspaceProtocol
 @testable import WorkspaceStorage
 
 /// First native RED uses only today's public export/restore surface; it cannot activate a protocol.
-@Suite struct ProtocolActivationRestoreTests {
+@Suite(NativeDBResources()) struct ProtocolActivationRestoreTests {
   private static let controlKey = "__b4app_agent_protocol_activation_v1"
   private static let migrations = [
     "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay",

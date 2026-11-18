@@ -4,7 +4,7 @@ import WorkspaceProtocol
 
 @testable import WorkspaceStorage
 
-@Suite(.serialized) struct AgentProtocolConnectionIdentityTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolConnectionIdentityTests {
   private typealias F = AgentProtocolIdentityManagedFixture
   @Test func protocolIdentityEditsRefuseWithoutChangingRowsCatalogOrSequences() async throws {
     let edits: [(String, @Sendable (inout Connection) -> Void)] = [

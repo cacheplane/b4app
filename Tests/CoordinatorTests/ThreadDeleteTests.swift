@@ -158,7 +158,7 @@ private func markDeletedAndCaptureCursor(
 }
 
 @Suite(.serialized) struct ThreadDeleteTests {
-  @Test func deletingAThreadHidesItAndDeletesItInCodex() async throws {
+  @Test(NativeDBResources()) func deletingAThreadHidesItAndDeletesItInCodex() async throws {
     let calls = RuntimeCalls()
     let h = try await Harness.start(
       adapterFactory: recording(calls),
@@ -188,7 +188,7 @@ private func markDeletedAndCaptureCursor(
     await h.stop()
   }
 
-  @Test func deletingStopsARunningTurnFirst() async throws {
+  @Test(NativeDBResources()) func deletingStopsARunningTurnFirst() async throws {
     let calls = RuntimeCalls()
     let h = try await Harness.start(adapterFactory: recording(calls))
     let codex = try await h.addCodex()
@@ -208,7 +208,7 @@ private func markDeletedAndCaptureCursor(
     await h.stop()
   }
 
-  @Test func aPhonesDeleteIsSweptLater() async throws {
+  @Test(NativeDBResources()) func aPhonesDeleteIsSweptLater() async throws {
     let calls = RuntimeCalls()
     let h = try await Harness.start(adapterFactory: recording(calls))
     let codex = try await h.addCodex()
@@ -222,7 +222,7 @@ private func markDeletedAndCaptureCursor(
     await h.stop()
   }
 
-  @Test func anUnreachableRuntimeIsRetried() async throws {
+  @Test(NativeDBResources()) func anUnreachableRuntimeIsRetried() async throws {
     let reachability = DeleteReachability()
     let calls = RuntimeCalls()
     let h = try await Harness.start(
@@ -250,7 +250,7 @@ private func markDeletedAndCaptureCursor(
 
   /// The wait counts from when the try failed, not from when the sweep began: a slow failure (a request
   /// that hangs until its timeout) is not due again the moment it ends.
-  @Test func aRetryWaitsFromTheFailedTry() async throws {
+  @Test(NativeDBResources()) func aRetryWaitsFromTheFailedTry() async throws {
     let reachability = DeleteReachability()
     let calls = RuntimeCalls()
     let h = try await Harness.start(
@@ -267,7 +267,7 @@ private func markDeletedAndCaptureCursor(
     await h.stop()
   }
 
-  @Test func anUnsupportedRuntimeIsFinal() async throws {
+  @Test(NativeDBResources()) func anUnsupportedRuntimeIsFinal() async throws {
     let calls = RuntimeCalls()
     let h = try await Harness.start(
       extraEnvironment: ["FAKE_CODEX_NO_DELETE": "1"], adapterFactory: recording(calls))
@@ -282,7 +282,7 @@ private func markDeletedAndCaptureCursor(
     await h.stop()
   }
 
-  @Test func deletingAnswersBeforeASlowRuntimeDelete() async throws {
+  @Test(NativeDBResources()) func deletingAnswersBeforeASlowRuntimeDelete() async throws {
     let calls = RuntimeCalls()
     let h = try await Harness.start(adapterFactory: recording(calls, deleteDelay: .seconds(5)))
     let codex = try await h.addCodex()
@@ -299,7 +299,7 @@ private func markDeletedAndCaptureCursor(
     await h.stop()
   }
 
-  @Test func aPhonesDeleteStopsTheRunningTurn() async throws {
+  @Test(NativeDBResources()) func aPhonesDeleteStopsTheRunningTurn() async throws {
     let calls = RuntimeCalls()
     let h = try await Harness.start(adapterFactory: recording(calls))
     let codex = try await h.addCodex()
@@ -317,7 +317,7 @@ private func markDeletedAndCaptureCursor(
     await h.stop()
   }
 
-  @Test func aReconcilingTurnOfADeletedThreadIsEnded() async throws {
+  @Test(NativeDBResources()) func aReconcilingTurnOfADeletedThreadIsEnded() async throws {
     let h = try await Harness.start()
     let codex = try await h.addCodex()
     let thread = try await h.newThread(codex)
@@ -332,7 +332,7 @@ private func markDeletedAndCaptureCursor(
   }
 
   /// A sweep that read its due list before another sweep finished a thread does not try it again.
-  @Test func aSweepSkipsAThreadAnotherSweepFinished() async throws {
+  @Test(NativeDBResources()) func aSweepSkipsAThreadAnotherSweepFinished() async throws {
     let calls = RuntimeCalls()
     let h = try await Harness.start(adapterFactory: recording(calls))
     let codex = try await h.addCodex()
@@ -358,7 +358,7 @@ private func markDeletedAndCaptureCursor(
   }
 
   /// A delete marked on the phone reaches the Mac by pull, and the sweep then deletes the runtime's copy.
-  @Test func aPulledPhoneDeleteIsSweptToTheRuntime() async throws {
+  @Test(NativeDBResources()) func aPulledPhoneDeleteIsSweptToTheRuntime() async throws {
     let base = AgentProtocolResourceFixture.temporaryDirectory + "b4td-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
@@ -408,7 +408,7 @@ private func markDeletedAndCaptureCursor(
     await coordinator.close()
   }
 
-  @Test func aLateEventDoesNotBringTheThreadBack() async throws {
+  @Test(NativeDBResources()) func aLateEventDoesNotBringTheThreadBack() async throws {
     let completion = LateCompletion()
     let calls = RuntimeCalls()
     let h = try await Harness.start(

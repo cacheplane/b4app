@@ -264,7 +264,7 @@ struct EnvironmentHistoryGuardTests {
     #expect(files.last?.name == "0016_agent_protocol")
   }
 
-  @Test func opaqueAndStructuralHistoryStayDistinct() throws {
+  @Test(NativeDBResources()) func opaqueAndStructuralHistoryStayDistinct() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     for table in ["projects", "projectFolders", "threads", "connections", "changes", "columnClocks"] {
@@ -302,7 +302,7 @@ struct EnvironmentHistoryGuardTests {
     try outcome.get()
   }
 
-  @Test func ambiguousStructuralInsertRefusesAtomically() throws {
+  @Test(NativeDBResources()) func ambiguousStructuralInsertRefusesAtomically() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute(
@@ -314,7 +314,7 @@ struct EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test func reservedPublicPreimageRefusesAtomically() throws {
+  @Test(NativeDBResources()) func reservedPublicPreimageRefusesAtomically() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute("CREATE TABLE public.b4app_environment_history_preimage (n int)")
@@ -327,7 +327,7 @@ struct EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test func unsupportedPublicTableRefusesAtBackupAdmission() throws {
+  @Test(NativeDBResources()) func unsupportedPublicTableRefusesAtBackupAdmission() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute("CREATE TABLE public.b4app_environment_history_rows (n int)")
@@ -348,7 +348,7 @@ struct EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test func shadowLedgerRefusesOnTheSameRawSession() throws {
+  @Test(NativeDBResources()) func shadowLedgerRefusesOnTheSameRawSession() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute("CREATE TEMP TABLE \"schemaMigrations\" (name text PRIMARY KEY,\"appliedAt\" text)")
@@ -360,7 +360,7 @@ struct EnvironmentHistoryGuardTests {
     // This session-only condition is intentionally an internal migration control, not public init.
   }
 
-  @Test func wrongNativeValueTypeRefusesAtomically() throws {
+  @Test(NativeDBResources()) func wrongNativeValueTypeRefusesAtomically() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute("ALTER TABLE public.changes ALTER COLUMN value TYPE json USING value::json")
@@ -370,7 +370,7 @@ struct EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test(arguments: [false, true])
+  @Test(NativeDBResources(), arguments: [false, true])
   func nativeRestoreAndDeferredCommitFaultsRollback(deferred: Bool) throws {
     let control = try HistoryControl()
     let raw = try control.connection()
@@ -408,7 +408,7 @@ struct EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test(arguments: [false, true])
+  @Test(NativeDBResources(), arguments: [false, true])
   func alreadyAppliedHistoryIsNotRepairedAndReopenIsStable(through12: Bool) throws {
     let control = try HistoryControl()
     let raw = try control.connection()
@@ -438,7 +438,7 @@ struct EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test func futureVersionRefusesAndDoesNotLeaveTheSessionLock() throws {
+  @Test(NativeDBResources()) func futureVersionRefusesAndDoesNotLeaveTheSessionLock() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute("INSERT INTO \"schemaMigrations\" (name,\"appliedAt\") VALUES ('9999_future','future')")
@@ -455,7 +455,7 @@ struct EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test func laterFileFailureKeepsTheEarlierGuardCommit() throws {
+  @Test(NativeDBResources()) func laterFileFailureKeepsTheEarlierGuardCommit() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     let priorLedgerSQL =
@@ -531,7 +531,7 @@ struct EnvironmentHistoryGuardTests {
 }
 
 extension EnvironmentHistoryGuardTests {
-  @Test(arguments: [false, true])
+  @Test(NativeDBResources(), arguments: [false, true])
   func malformedLedgerNullabilityOrPrimaryKeyRefuses(nullable: Bool) throws {
     let control = try HistoryControl()
     let raw = try control.connection()
@@ -555,7 +555,7 @@ extension EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test func suppressedStructuralRenameRefusesAndRollsBack() throws {
+  @Test(NativeDBResources()) func suppressedStructuralRenameRefusesAndRollsBack() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute(
@@ -579,7 +579,7 @@ extension EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test func sameCountUncapturedValueMutationRefusesAndRollsBack() throws {
+  @Test(NativeDBResources()) func sameCountUncapturedValueMutationRefusesAndRollsBack() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute(
@@ -603,7 +603,7 @@ extension EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test func suppressedLedgerInsertRefusesAndRollsBack() throws {
+  @Test(NativeDBResources()) func suppressedLedgerInsertRefusesAndRollsBack() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute(
@@ -626,7 +626,7 @@ extension EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test(arguments: ["read committed", "repeatable read"])
+  @Test(NativeDBResources(), arguments: ["read committed", "repeatable read"])
   func writerBeforeFirstLockIsIncluded(isolation: String) throws {
     let control = try HistoryControl()
     let observer = try control.connection()
@@ -706,7 +706,7 @@ extension EnvironmentHistoryGuardTests {
       ).rows.first?.text("n") == "1")
   }
 
-  @Test(arguments: ["0011_environments", "0012_app_folders"])
+  @Test(NativeDBResources(), arguments: ["0011_environments", "0012_app_folders"])
   func concurrentConstructorsHoldSessionLockThroughCommit(migration: String) throws {
     let control = try HistoryControl()
     let observer = try control.connection()
@@ -813,7 +813,7 @@ extension EnvironmentHistoryGuardTests {
 }
 
 extension EnvironmentHistoryGuardTests {
-  @Test func unexpectedCreationSchemaRefusesWithoutCreatingAnotherLedger() throws {
+  @Test(NativeDBResources()) func unexpectedCreationSchemaRefusesWithoutCreatingAnotherLedger() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute("CREATE SCHEMA guard_test_other")
@@ -835,7 +835,7 @@ extension EnvironmentHistoryGuardTests {
     try historyClientsClosed(raw)
   }
 
-  @Test func preexistingTemporaryWitnessRefusesOnTheSameSession() throws {
+  @Test(NativeDBResources()) func preexistingTemporaryWitnessRefusesOnTheSameSession() throws {
     let control = try HistoryControl()
     let raw = try control.connection()
     try raw.execute("CREATE TEMP TABLE b4app_environment_history_state (n int)")
@@ -850,7 +850,7 @@ extension EnvironmentHistoryGuardTests {
     // Direct internal path: another connection cannot install TEMP state on a future public pool.
   }
 
-  @Test func activeRowFilteringRefusesForANonSuperuserOwner() throws {
+  @Test(NativeDBResources()) func activeRowFilteringRefusesForANonSuperuserOwner() throws {
     let endpoint = try EphemeralPostgres.endpoint()
     let binDir = try #require(endpoint.binDir)
     let role = "guard_role_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")

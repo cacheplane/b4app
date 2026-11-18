@@ -5,7 +5,7 @@ import WorkspaceProtocol
 @testable import Coordinator
 @testable import WorkspaceStorage
 
-@Suite(.serialized) struct AgentProtocolLegacyManagedTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolLegacyManagedTests {
   private typealias F = AgentProtocolIdentityManagedFixture
   @Test func enabledAndDisabledLegacyOnlyRegistrationsStayUntouchedAtStartup() async throws {
     for disabled in [false, true] {

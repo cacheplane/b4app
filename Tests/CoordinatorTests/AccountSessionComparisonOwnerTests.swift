@@ -9,7 +9,7 @@ import WorkspaceSync
 @testable import WorkspaceStorage
 
 // Real native stores and genuine dormant P2a owners; counted fake requests are not HTTP proof.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AccountSessionComparisonOwnerTests {
+@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(1))) struct AccountSessionComparisonOwnerTests {
   @Test func p2bB16InstalledOwnerOnlyAndZeroNewEffects() async throws {
     for linked in [false, true] {
       try await P2BOwnerFixture.withFixture(linked: linked) { f in

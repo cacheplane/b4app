@@ -8,7 +8,7 @@ import WorkspaceProtocol
 
 /// Real PostgreSQL controls for the shared migration admission core. Faults are injected at observed
 /// durability boundaries, not reported as actual kernel syscall failures. No account/runtime starts.
-@Suite(.serialized) struct AgentProtocolBackupBoundaryTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolBackupBoundaryTests {
   private struct Fixture: Sendable {
     let endpoint: PostgresEndpoint
     let raw: PostgresConnection

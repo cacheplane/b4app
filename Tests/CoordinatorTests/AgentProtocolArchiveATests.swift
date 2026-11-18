@@ -823,7 +823,9 @@ import WorkspaceProtocol
     row[key] = value; document.records[index]["row"] = row
   }
 
-  @Test func archiveA1BothWritersRoundTripPrivateAuthorityWithoutEndpointValues() async throws {
+  @Test(NativeDBResources()) func archiveA1BothWritersRoundTripPrivateAuthorityWithoutEndpointValues()
+    async throws
+  {
     try await Self.withFixture { f in
       let db = try #require(f.database)
       let publicPath = f.root + "/on-demand.jsonl"
@@ -884,7 +886,9 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func archiveA2ReplacePreservesInt64SequencesAndOrdersNextRealLocalClock() async throws {
+  @Test(NativeDBResources()) func archiveA2ReplacePreservesInt64SequencesAndOrdersNextRealLocalClock()
+    async throws
+  {
     try await Self.withFixture { f in
       // Both persisted clock sources exceed the pinned target wall (1024). Imported facts are exact.
       let sourceClock = HLC(millis: 8192, counter: 7, deviceId: "source-mac").rawValue
@@ -959,7 +963,8 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func archiveA3MalformedFutureAndJoinedTargetsRefuseBeforeMutation() async throws {
+  @Test(NativeDBResources()) func archiveA3MalformedFutureAndJoinedTargetsRefuseBeforeMutation() async throws
+  {
     try await Self.withFixture { f in
       let original = try Self.document(f.raw)
       try await Self.withTarget(f, populated: true, forensicPhase: .malformed) { target in
@@ -1219,7 +1224,9 @@ import WorkspaceProtocol
     return body()
   }
 
-  @Test func archiveA4HeaderBarrierSnapshotIsConsistentWhileSharedWriterCommits() async throws {
+  @Test(NativeDBResources()) func archiveA4HeaderBarrierSnapshotIsConsistentWhileSharedWriterCommits()
+    async throws
+  {
     try await Self.withFixture { f in
       let started = ContinuousClock.now
       let db = try #require(f.database)
@@ -1303,7 +1310,9 @@ import WorkspaceProtocol
     else { throw FixtureFailure.unsafeLog }
     return String(value.st_dev) + ":" + String(value.st_ino)
   }
-  @Test func archiveA5AtomicOverwriteKeepsOldFileOnlyBeforePublicationAndRefusesLinks() async throws {
+  @Test(NativeDBResources()) func archiveA5AtomicOverwriteKeepsOldFileOnlyBeforePublicationAndRefusesLinks()
+    async throws
+  {
     try await Self.withFixture { f in
       let db = try #require(f.database)
       let fm = FileManager.default, old = Data("Owner previous backup; retain until publication\n".utf8)
@@ -1377,7 +1386,8 @@ import WorkspaceProtocol
       return try settings(c)
     }
   }
-  @Test func archiveA6CommitFailureRollsBackApplicationSequenceAndMasksPrivateDiagnostics() async throws {
+  @Test(NativeDBResources())
+  func archiveA6CommitFailureRollsBackApplicationSequenceAndMasksPrivateDiagnostics() async throws {
     try await Self.withFixture { f in
       let document = try Self.document(f.raw), log = try AgentProtocolOwnedPostgresLog(f.endpoint)
       try await Self.withTarget(f, populated: true) { target in
@@ -1544,7 +1554,9 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func archiveA7BothWritersRefuseMalformed0010ButGenuineOldNineRemainsCapturable() async throws {
+  @Test(NativeDBResources()) func archiveA7BothWritersRefuseMalformed0010ButGenuineOldNineRemainsCapturable()
+    async throws
+  {
     try await Self.withFixture { f in
       let db = try #require(f.database)
       // Leaf-only test corruption: ledger0013 is kept; no CASCADE and no authority rows are dropped.

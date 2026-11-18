@@ -301,7 +301,7 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct SessionServiceTests {
+@Suite(NativeDBResources(), .serialized) struct SessionServiceTests {
   @Test func runsAWholeConversationOverTheSocket() async throws {
     let h = try await Harness.start(
       inspectionObservation: InspectionRequestObservation(caseID: .socketConversation))
@@ -549,7 +549,7 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct ClaudeSessionServiceTests {
+@Suite(NativeDBResources(), .serialized) struct ClaudeSessionServiceTests {
   @Test func inspectionModelsReachTheConnection() async throws {
     let h = try await Harness.start(
       inspectionObservation: InspectionRequestObservation(caseID: .claudeModels))
@@ -761,7 +761,7 @@ actor EventCollector {
 }
 
 /// A Claude thread beside folders of its environment: the fake's log shows what each turn handed it.
-@Suite(.serialized) struct ClaudeTurnOptionsTests {
+@Suite(NativeDBResources(), .serialized) struct ClaudeTurnOptionsTests {
   private struct Rig {
     let h: Harness
     let claude: Connection
@@ -882,7 +882,7 @@ actor EventCollector {
 
 /// `thread.start` from the Mac's own app, over the local socket: no environment is required, and the thread
 /// starts with the model, permission, and title it was given.
-@Suite(.serialized) struct LocalThreadStartTests {
+@Suite(NativeDBResources(), .serialized) struct LocalThreadStartTests {
   private func start(
     _ h: Harness, _ params: ThreadStart.Params, operationId: String = UUID().uuidString
   ) async throws -> ThreadStart.Result {
@@ -1038,7 +1038,7 @@ actor EventCollector {
 
 /// A Codex or Claude thread started with no folder: the coordinator makes one under `threadFoldersDir`,
 /// records it, and the thread has no environment.
-@Suite(.serialized) struct NoFolderStartTests {
+@Suite(NativeDBResources(), .serialized) struct NoFolderStartTests {
   private func start(
     _ h: Harness, _ params: ThreadStart.Params, operationId: String = UUID().uuidString
   ) async throws -> ThreadStart.Result {
@@ -1310,7 +1310,7 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct B4SessionServiceTests {
+@Suite(NativeDBResources(), .serialized) struct B4SessionServiceTests {
   @Test func runsCurrentConversationBesideUnchangedHistoricalCache() async throws {
     let witness = HistoricalFactoryWitness()
     let h = try await Harness.start(
@@ -1529,7 +1529,7 @@ actor EventCollector {
 
 // MARK: - M5
 
-@Suite(.serialized) struct ThreadOrganizationTests {
+@Suite(NativeDBResources(), .serialized) struct ThreadOrganizationTests {
   /// Spec A05: rename, pin, archive/unarchive, title search, and draft state survive a restart.
   @Test func organizationAndDraftsSurviveACoordinatorRestart() async throws {
     let h = try await Harness.start(
@@ -1630,7 +1630,7 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct ContinuityTests {
+@Suite(NativeDBResources(), .serialized) struct ContinuityTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
 
   /// A13 and A11: after a restart with the display cache gone, reconciliation rebuilds history from
@@ -1841,7 +1841,7 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct RecoveryTests {
+@Suite(NativeDBResources(), .serialized) struct RecoveryTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
 
   private func expectRefusal(
@@ -1940,7 +1940,7 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct FailureTests {
+@Suite(NativeDBResources(), .serialized) struct FailureTests {
   /// A15: an expired login during a turn is actionable: the turn fails with `auth_required`, the
   /// connection reports `required`, viewers get `connection.changed`, and nothing is re-sent.
   @Test func expiredLoginFlipsTheConnectionToAuthRequired() async throws {
@@ -1988,7 +1988,7 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct LifecycleTests {
+@Suite(NativeDBResources(), .serialized) struct LifecycleTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(120)) }
 
   /// Spec 10.3 Quit: local work is named and can be stopped; attached and remote runs are detached,
@@ -2065,7 +2065,7 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct RedactionTests {
+@Suite(NativeDBResources(), .serialized) struct RedactionTests {
   /// A16 and spec 12: runtime error text with credential shapes is masked before it reaches an event,
   /// a thread read, or `doctor`.
   @Test func runtimeErrorsAreRedactedBeforeTheyLeaveTheCoordinator() async throws {
@@ -2121,7 +2121,9 @@ actor EventCollector {
       restored.protocolRetiredAt == "retained-at" && restored.protocolRetiredReason == .agentProtocolCutover)
   }
 
-  @Test func startupReadsNativeCommandsWithoutInspectingHistoricalOrStagedProfiles() async throws {
+  @Test(NativeDBResources()) func startupReadsNativeCommandsWithoutInspectingHistoricalOrStagedProfiles()
+    async throws
+  {
     let h = try await Harness.start()
     var initialStopped = false
     do {
@@ -2229,7 +2231,7 @@ actor EventCollector {
 }
 
 /// An agent's plan or task list is one `taskList` row per turn, whichever runtime keeps it.
-@Suite(.serialized) struct TaskListSessionTests {
+@Suite(NativeDBResources(), .serialized) struct TaskListSessionTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
 
   private func lists(_ items: [DisplayItem]) -> [TaskList] {

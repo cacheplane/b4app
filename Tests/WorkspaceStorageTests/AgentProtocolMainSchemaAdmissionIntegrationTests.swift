@@ -6,7 +6,7 @@ import WorkspaceProtocol
 
 @testable import WorkspaceStorage
 
-@Suite(.serialized) struct AgentProtocolMainSchemaAdmissionIntegrationTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolMainSchemaAdmissionIntegrationTests {
   private typealias F = MainSchemaAdmissionFixture
 
   @Test func rawMainTenPendingOpenBacksUpOwnedContextBeforeProtocolMigration() throws {

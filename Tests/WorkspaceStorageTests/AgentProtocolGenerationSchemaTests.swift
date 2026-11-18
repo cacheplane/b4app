@@ -123,7 +123,7 @@ import WorkspaceProtocol
     #expect(failure.details == nil)
   }
 
-  @Test func segmentKeysSeparateGenerationLocalEpochAndNamespace() throws {
+  @Test(NativeDBResources()) func segmentKeysSeparateGenerationLocalEpochAndNamespace() throws {
     try Self.withFixture { f in
       try Self.seed(f, count: 16)
       try Self.seedOwner(f)
@@ -160,7 +160,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func subscriptionsRequireExactlyOneNativeOrLocalEpoch() throws {
+  @Test(NativeDBResources()) func subscriptionsRequireExactlyOneNativeOrLocalEpoch() throws {
     try Self.withFixture { f in
       try Self.seed(f, count: 16)
       try Self.seedOwner(f)
@@ -184,7 +184,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func oldThirteenRefusesBeforeBackupOnEveryPublicAdmission() throws {
+  @Test(NativeDBResources()) func oldThirteenRefusesBeforeBackupOnEveryPublicAdmission() throws {
     try Self.withFixture { f in
       try Self.seed(f, count: 12)
       try f.raw.execute(Self.oldThirteenSQL)
@@ -200,7 +200,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func oldPrivateFourteenAliasRefusesEvenWithNoProtocolRows() throws {
+  @Test(NativeDBResources()) func oldPrivateFourteenAliasRefusesEvenWithNoProtocolRows() throws {
     try Self.withFixture { f in
       try Self.seed(f, count: 13)
       try f.raw.execute(Self.oldThirteenSQL)
@@ -213,7 +213,7 @@ import WorkspaceProtocol
     #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(Data(lines.utf8)) }
   }
 
-  @Test func oldPrivateFifteenAliasRefusesEvenWhenEmpty() throws {
+  @Test(NativeDBResources()) func oldPrivateFifteenAliasRefusesEvenWhenEmpty() throws {
     try Self.withFixture { f in
       try Self.seed(f, count: 14)
       try f.raw.execute(Self.oldThirteenSQL)
@@ -226,7 +226,7 @@ import WorkspaceProtocol
     #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(Data(archive.utf8)) }
   }
 
-  @Test func oldGenerationShapeUnderCanonicalFourteenRefusesWithoutMutation() throws {
+  @Test(NativeDBResources()) func oldGenerationShapeUnderCanonicalFourteenRefusesWithoutMutation() throws {
     try Self.withFixture { f in
       try Self.seed(f, count: 16, oldThirteen: true)
       try Self.seedOwner(f)
@@ -235,10 +235,12 @@ import WorkspaceProtocol
     }
   }
 
-  @Test(arguments: [
-    "old-primary", "segment-type", "extra-typmod-column", "segment-null", "subscription-missing",
-    "subscription-type", "subscription-null",
-  ])
+  @Test(
+    NativeDBResources(),
+    arguments: [
+      "old-primary", "segment-type", "extra-typmod-column", "segment-null", "subscription-missing",
+      "subscription-type", "subscription-null",
+    ])
   func currentFourteenShapeDamageRefusesWithoutMutation(damage: String) throws {
     try Self.withFixture { f in
       try Self.seed(f, count: 16)
@@ -269,7 +271,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test(arguments: [0, 12, 13, 14, 15, 16])
+  @Test(NativeDBResources(), arguments: [0, 12, 13, 14, 15, 16])
   func freshPublishedTwelveThirteenAndCurrentReopensRemainValid(prefix: Int) throws {
     try Self.withFixture { f in
       if prefix > 0 { try Self.seed(f, count: prefix) }

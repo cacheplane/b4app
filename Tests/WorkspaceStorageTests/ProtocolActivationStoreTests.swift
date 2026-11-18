@@ -298,7 +298,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func prepareReadAndCommitPersistOnlyClosedDormantComparisonFacts() async throws {
+  @Test(NativeDBResources()) func prepareReadAndCommitPersistOnlyClosedDormantComparisonFacts() async throws {
     try await Self.withFixture { f in
       #expect(try Self.recordText(f) == nil)
       #expect(try f.database.readProtocolFact(expectedBinding: f.binding) == nil)
@@ -340,7 +340,9 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func everyStableBindingAndNativeMembershipMismatchRefusesWithoutMutation() async throws {
+  @Test(NativeDBResources()) func everyStableBindingAndNativeMembershipMismatchRefusesWithoutMutation()
+    async throws
+  {
     try await Self.withFixture { f in
       let snapshot = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       let before = try Self.state(f)
@@ -394,7 +396,9 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func snapshotsRetainActualDatabaseAndCannotRedeemOnAnotherOrClosedObject() async throws {
+  @Test(NativeDBResources()) func snapshotsRetainActualDatabaseAndCannotRedeemOnAnotherOrClosedObject()
+    async throws
+  {
     try await Self.withFixture { f in
       var original: WorkspaceDatabase? = try f.reopen()
       weak var weakOriginal = original
@@ -487,7 +491,9 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func concurrentInitializationAndCompareAndWriteUseOneNativeRevision() async throws {
+  @Test(NativeDBResources()) func concurrentInitializationAndCompareAndWriteUseOneNativeRevision()
+    async throws
+  {
     try await Self.withFixture { f in
       let (ready, called, initialized) = await Self.compete {
         try f.database.prepareProtocolVerification(expectedBinding: f.binding)
@@ -517,7 +523,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func reservedAndNulSettingsKeysRefuseBeforeReadOrValueEncoding() async throws {
+  @Test(NativeDBResources()) func reservedAndNulSettingsKeysRefuseBeforeReadOrValueEncoding() async throws {
     try await Self.withFixture { f in
       _ = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       let before = try Self.state(f)
@@ -554,7 +560,8 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func closedStoredRecordsRejectUnknownKeysNullOptionalsAndConflictingObservations() async throws {
+  @Test(NativeDBResources())
+  func closedStoredRecordsRejectUnknownKeysNullOptionalsAndConflictingObservations() async throws {
     try await Self.withFixture { f in
       let prepared = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       let observation = try Self.observation(f.binding)
@@ -633,7 +640,9 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func revisionTextPreservesBeyondDoublePrecisionAndOverflowRefusesEveryMutation() async throws {
+  @Test(NativeDBResources()) func revisionTextPreservesBeyondDoublePrecisionAndOverflowRefusesEveryMutation()
+    async throws
+  {
     try await Self.withFixture { f in
       _ = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       var value = try Self.nativeRecord(f)
@@ -667,7 +676,9 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func routineRefreshPreservesControlBytesButExplicitReplacementInvalidatesIt() async throws {
+  @Test(NativeDBResources()) func routineRefreshPreservesControlBytesButExplicitReplacementInvalidatesIt()
+    async throws
+  {
     try await Self.withFixture { f in
       let prepared = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       let observation = try Self.observation(f.binding)
@@ -706,7 +717,8 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func changedNativeTupleAndRepeatedClearRotateOnlyMembershipAndRejectOldSnapshots() async throws {
+  @Test(NativeDBResources())
+  func changedNativeTupleAndRepeatedClearRotateOnlyMembershipAndRejectOldSnapshots() async throws {
     try await Self.withFixture { f in
       var link = f.link
       for field in ["url", "deviceId", "joinedAt"] {
@@ -768,7 +780,9 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func actualDeferredCommitFailureIsSafeAndRollsBackNativeRecordAndOtherRows() async throws {
+  @Test(NativeDBResources()) func actualDeferredCommitFailureIsSafeAndRollsBackNativeRecordAndOtherRows()
+    async throws
+  {
     try await Self.withFixture { f in
       let prepared = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       let observed = try Self.observation(f.binding)
@@ -978,7 +992,7 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func factCommitLocksActualMembershipUntilCommit() async throws {
+  @Test(NativeDBResources()) func factCommitLocksActualMembershipUntilCommit() async throws {
     try await Self.withFixture { f in
       let prepared = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       let observation = try Self.observation(f.binding)
@@ -1168,7 +1182,9 @@ extension ProtocolActivationStoreTests {
     #expect(noMemberInEitherRendering); #expect(emptyMirror)
   }
 
-  @Test func captureBeforeFirstAwaitCreatesClosedInactiveEpochWithoutInventingOrg() async throws {
+  @Test(NativeDBResources()) func captureBeforeFirstAwaitCreatesClosedInactiveEpochWithoutInventingOrg()
+    async throws
+  {
     try await Self.withFixture { f in
       let before = try Self.state(f)
       Self.expectSafe {
@@ -1203,7 +1219,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func absentLinkCaptureMeansActualAbsenceAndBoundAccountMismatchCannotResetState() async throws {
+  @Test(NativeDBResources()) func absentLinkCaptureMeansActualAbsenceAndBoundAccountMismatchCannotResetState()
+    async throws
+  {
     try await Self.withFixture { f in
       _ = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       let bound = try Self.state(f)
@@ -1228,7 +1246,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func capturedBindAndCommitPreserveContextAndExactRecordChronology() async throws {
+  @Test(NativeDBResources()) func capturedBindAndCommitPreserveContextAndExactRecordChronology() async throws
+  {
     try await Self.withFixture { f in
       let first = try Self.capture(f)
       let inactive = try Self.expectRecord(f, revision: "0", binding: nil)
@@ -1259,7 +1278,7 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func oldDirectSnapshotsNeverAcquireContextThroughReadOrCommit() async throws {
+  @Test(NativeDBResources()) func oldDirectSnapshotsNeverAcquireContextThroughReadOrCommit() async throws {
     try await Self.withFixture { f in
       let prepared = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       let observed = try Self.observation(f.binding)
@@ -1290,7 +1309,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func capturedContextRefusesDifferentObjectNativeTupleAndRecordChanges() async throws {
+  @Test(NativeDBResources()) func capturedContextRefusesDifferentObjectNativeTupleAndRecordChanges()
+    async throws
+  {
     try await Self.withFixture { f in
       let snapshot = try Self.capture(f)
       let other = try f.reopen()
@@ -1350,7 +1371,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func firstAwaitCaptureCannotAdoptRestoreOrSameLookingExplicitReplacement() async throws {
+  @Test(NativeDBResources()) func firstAwaitCaptureCannotAdoptRestoreOrSameLookingExplicitReplacement()
+    async throws
+  {
     try await Self.withFixture { f in
       let beforeAwait = try Self.capture(f)
       try f.database.saveHubLink(f.link, membershipChange: .replace)
@@ -1384,7 +1407,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func negativeFenceClearsLatestRevisionOnlyInsideItsCapturedMembershipEpoch() async throws {
+  @Test(NativeDBResources()) func negativeFenceClearsLatestRevisionOnlyInsideItsCapturedMembershipEpoch()
+    async throws
+  {
     try await Self.withFixture { f in
       let bound = try Self.capturedBinding(f)
       let observed = try Self.observation(f.binding)
@@ -1422,7 +1447,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func capturedFenceDeferredCommitFailureRollsBackAndKeepsSafeError() async throws {
+  @Test(NativeDBResources()) func capturedFenceDeferredCommitFailureRollsBackAndKeepsSafeError() async throws
+  {
     try await Self.withFixture { f in
       let bound = try Self.capturedBinding(f)
       _ = try f.database.commitObservedProtocolFact(
@@ -1462,7 +1488,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func checkedPresentLinkPreservesCursorAndReturnsOnlyItsOwnTransitionContext() async throws {
+  @Test(NativeDBResources()) func checkedPresentLinkPreservesCursorAndReturnsOnlyItsOwnTransitionContext()
+    async throws
+  {
     try await Self.withFixture { f in
       try f.database.setHubCursor(7)
       let capture = try Self.capture(f)
@@ -1500,7 +1528,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func positiveWitnessClassifierUsesLiveColumnsWithoutReadingOpaqueUserJSON() async throws {
+  @Test(NativeDBResources()) func positiveWitnessClassifierUsesLiveColumnsWithoutReadingOpaqueUserJSON()
+    async throws
+  {
     try await Self.withFixture { f in
       try Self.seedLegacyWitnesses(f)
       try f.database.setSetting(
@@ -1542,7 +1572,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func everyPrivateProtocolTableIsAnIndependentRetainedPositiveWitness() async throws {
+  @Test(NativeDBResources()) func everyPrivateProtocolTableIsAnIndependentRetainedPositiveWitness()
+    async throws
+  {
     try await Self.withFixture { f in
       try Self.seedLegacyWitnesses(f)
       let inserts = [
@@ -1565,7 +1597,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func retainedRootImagesDistinguishMissingJsonNullAndOnlyLiteralProtocolValues() async throws {
+  @Test(NativeDBResources()) func retainedRootImagesDistinguishMissingJsonNullAndOnlyLiteralProtocolValues()
+    async throws
+  {
     try await Self.withFixture { f in
       try Self.seedLegacyWitnesses(f)
       var negatives = [
@@ -1596,7 +1630,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func retainedExplicitProtocolColumnClearsAndPrivateTableNamesRemainPositive() async throws {
+  @Test(NativeDBResources()) func retainedExplicitProtocolColumnClearsAndPrivateTableNamesRemainPositive()
+    async throws
+  {
     try await Self.withFixture { f in
       try Self.seedLegacyWitnesses(f)
       for column in Self.protocolColumns {
@@ -1631,7 +1667,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func actualInsertDeleteHistoryCannotBecomeLegacyWhenTheLiveProfileIsGone() async throws {
+  @Test(NativeDBResources()) func actualInsertDeleteHistoryCannotBecomeLegacyWhenTheLiveProfileIsGone()
+    async throws
+  {
     try await Self.withFixture { f in
       _ = try f.database.insertConnection(
         Connection(
@@ -1650,7 +1688,7 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func actualRetirementSetThenClearStillHasModernQueuedHistory() async throws {
+  @Test(NativeDBResources()) func actualRetirementSetThenClearStillHasModernQueuedHistory() async throws {
     try await Self.withFixture { f in
       try Self.seedLegacyWitnesses(f)
       try f.raw.execute(
@@ -1670,7 +1708,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func literalConnectionClockColumnsCountWithoutNewLegacyAncestryRules() async throws {
+  @Test(NativeDBResources()) func literalConnectionClockColumnsCountWithoutNewLegacyAncestryRules()
+    async throws
+  {
     try await Self.withFixture { f in
       try Self.seedLegacyWitnesses(f)
       for column in Self.protocolColumns {
@@ -1695,7 +1735,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func capturedBindIsACompareAndWriteAndCannotRebindAnExistingPrincipal() async throws {
+  @Test(NativeDBResources()) func capturedBindIsACompareAndWriteAndCannotRebindAnExistingPrincipal()
+    async throws
+  {
     try await Self.withFixture { f in
       let snapshot = try Self.capture(f)
       let (ready, called, outcomes) = await Self.compete {
@@ -1743,7 +1785,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func checkedAbsentLinkReturnsItsOwnNewContextInsteadOfRecapturingOtherState() async throws {
+  @Test(NativeDBResources()) func checkedAbsentLinkReturnsItsOwnNewContextInsteadOfRecapturingOtherState()
+    async throws
+  {
     try await Self.withFixture { f in
       try f.database.clearHubLink()
       let capture = try f.database.captureProtocolVerification(
@@ -1761,7 +1805,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func initialCaptureActualDeferredCommitFailureCannotLeaveAnUncommittedEpoch() async throws {
+  @Test(NativeDBResources()) func initialCaptureActualDeferredCommitFailureCannotLeaveAnUncommittedEpoch()
+    async throws
+  {
     try await Self.withFixture { f in
       let before = try Self.state(f)
       try f.raw.execute(
@@ -1794,7 +1840,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func capturedFenceRejectsDecreasedOrExhaustedChronologyWithoutChangingMembership() async throws {
+  @Test(NativeDBResources())
+  func capturedFenceRejectsDecreasedOrExhaustedChronologyWithoutChangingMembership() async throws {
     try await Self.withFixture { f in
       let bound = try Self.capturedBinding(f)
       _ = try f.database.commitObservedProtocolFact(
@@ -1950,7 +1997,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func checkedAbsentLinkNativeInsertRaceRefusesWithoutOverwritingCompetitor() async throws {
+  @Test(NativeDBResources()) func checkedAbsentLinkNativeInsertRaceRefusesWithoutOverwritingCompetitor()
+    async throws
+  {
     try await Self.withFixture { f in
       try f.database.clearHubLink()
       let snapshot = try f.database.captureProtocolVerification(
@@ -2002,7 +2051,8 @@ extension ProtocolActivationStoreTests {
       try f.raw.execute(cleanup); cleaned = true
     }
   }
-  @Test func captureRefusesMalformedClosedDestinationBeforeIssuingContext() async throws {
+  @Test(NativeDBResources()) func captureRefusesMalformedClosedDestinationBeforeIssuingContext() async throws
+  {
     try await Self.withFixture { f in
       _ = try Self.capture(f)
       let valid = try Self.nativeRecord(f)
@@ -2067,7 +2117,9 @@ extension ProtocolActivationStoreTests {
         peerProfile: .agentProtocol, agentId: "agent", authMode: ConnectionAuthMode.none))
   }
 
-  @Test func readOnlyValidationSeparatesLinkedLegacyAndAbsentProspectiveProof() async throws {
+  @Test(NativeDBResources()) func readOnlyValidationSeparatesLinkedLegacyAndAbsentProspectiveProof()
+    async throws
+  {
     try await Self.withFixture { f in
       let linked = try Self.capture(f)
       try Self.expectReadOnlyValidation(f, snapshot: linked, sync: false)
@@ -2092,7 +2144,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func modernInactiveCanFetchVerificationButCannotValidateOrdinarySync() async throws {
+  @Test(NativeDBResources()) func modernInactiveCanFetchVerificationButCannotValidateOrdinarySync()
+    async throws
+  {
     try await Self.withFixture { f in
       try Self.seedReadOnlyModernProfile(f)
       let inactive = try Self.capture(f)
@@ -2111,7 +2165,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func readOnlyValidatorsAllowInt64MaxAndSameTupleMetadataRefreshWithoutRewriting() async throws {
+  @Test(NativeDBResources()) func readOnlyValidatorsAllowInt64MaxAndSameTupleMetadataRefreshWithoutRewriting()
+    async throws
+  {
     try await Self.withFixture { f in
       try Self.seedReadOnlyModernProfile(f)
       let bound = try Self.capturedBinding(f)
@@ -2136,7 +2192,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func readOnlyValidatorsRejectEveryStalePositiveAndNegativeRevisionWithoutAdoption() async throws {
+  @Test(NativeDBResources())
+  func readOnlyValidatorsRejectEveryStalePositiveAndNegativeRevisionWithoutAdoption() async throws {
     try await Self.withFixture { f in
       try Self.seedReadOnlyModernProfile(f)
       let zero = try Self.capture(f)
@@ -2193,7 +2250,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func readOnlyValidatorsDoNotAdoptSameLookingReplaceClearOrSuccessfulRestore() async throws {
+  @Test(NativeDBResources()) func readOnlyValidatorsDoNotAdoptSameLookingReplaceClearOrSuccessfulRestore()
+    async throws
+  {
     try await Self.withFixture { f in
       let original = try Self.capture(f)
       try f.database.saveHubLink(f.link, membershipChange: .replace)
@@ -2219,7 +2278,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func readOnlyValidatorsRefuseContextlessDirectSnapshotsEvenWithMatchingHealthyRecord() async throws {
+  @Test(NativeDBResources())
+  func readOnlyValidatorsRefuseContextlessDirectSnapshotsEvenWithMatchingHealthyRecord() async throws {
     try await Self.withFixture { f in
       let direct = try f.database.prepareProtocolVerification(expectedBinding: f.binding)
       let directCommitted = try f.database.commitObservedProtocolFact(
@@ -2237,7 +2297,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func readOnlyValidatorsRequireTheirActualLiveDatabaseObjectNotItsName() async throws {
+  @Test(NativeDBResources()) func readOnlyValidatorsRequireTheirActualLiveDatabaseObjectNotItsName()
+    async throws
+  {
     try await Self.withFixture { f in
       let snapshot = try Self.capture(f)
       let other = try f.reopen()
@@ -2258,7 +2320,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func readOnlyValidatorsRefuseMalformedControlAndNativeMismatchWithReadOnlyRecovery() async throws {
+  @Test(NativeDBResources())
+  func readOnlyValidatorsRefuseMalformedControlAndNativeMismatchWithReadOnlyRecovery() async throws {
     try await Self.withFixture { f in
       let snapshot = try Self.capture(f)
       let valid = try Self.nativeRecord(f)
@@ -2350,7 +2413,9 @@ extension ProtocolActivationStoreTests {
       expectedSnapshot: prepared, observation: observation(f.binding))
   }
 
-  @Test func guardedMarkChangesOnlyAcceptedPrefixForLegacyAndHealthyModernStores() async throws {
+  @Test(NativeDBResources()) func guardedMarkChangesOnlyAcceptedPrefixForLegacyAndHealthyModernStores()
+    async throws
+  {
     try await Self.withFixture { f in
       let prefix = try Self.guardMarkPrefix(f)
       let inactive = try Self.capture(f)
@@ -2373,7 +2438,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedMarkNoOpStillRefusesModernInactiveAndSameRevisionStaleFacts() async throws {
+  @Test(NativeDBResources()) func guardedMarkNoOpStillRefusesModernInactiveAndSameRevisionStaleFacts()
+    async throws
+  {
     try await Self.withFixture { f in
       _ = try Self.guardMarkPrefix(f)
       try f.raw.execute("DELETE FROM public.changes")
@@ -2532,7 +2599,9 @@ extension ProtocolActivationStoreTests {
     #expect(onlyCommittedWriter)
     try expectRequirement(f, .protocolTwo)
   }
-  @Test func guardedMarkWaitsForParticipatingSharedWriterThenRefusesItsModernMarker() async throws {
+  @Test(NativeDBResources()) func guardedMarkWaitsForParticipatingSharedWriterThenRefusesItsModernMarker()
+    async throws
+  {
     try await Self.withFixture { f in
       let prefix = try Self.guardMarkPrefix(f)
       try await Self.expectGuardMarkWriterRace(f, through: prefix.through, snapshot: Self.capture(f))
@@ -2576,7 +2645,9 @@ extension ProtocolActivationStoreTests {
     }
     if let failure { throw failure }
   }
-  @Test func guardedMarkSelectsReadCommittedWhileOldMarkRetainsInheritedRepeatableRead() async throws {
+  @Test(NativeDBResources()) func guardedMarkSelectsReadCommittedWhileOldMarkRetainsInheritedRepeatableRead()
+    async throws
+  {
     try await Self.withFixture { original in
       let prefix = try Self.guardMarkPrefix(original)
       try original.raw.execute(
@@ -2622,7 +2693,8 @@ extension ProtocolActivationStoreTests {
       }
     }
   }
-  @Test func guardedMarkSeesPrecedingWriterUnderInheritedRepeatableReadWithoutRowConflict() async throws {
+  @Test(NativeDBResources())
+  func guardedMarkSeesPrecedingWriterUnderInheritedRepeatableReadWithoutRowConflict() async throws {
     try await Self.withFixture { original in
       let prefix = try Self.guardMarkPrefix(original)
       try await Self.withGuardMarkRepeatableRead(original) { f in
@@ -2631,7 +2703,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedMarkPostcheckRollsBackBodyMarkerAndSameTriggerHealthyControlSucceeds() async throws {
+  @Test(NativeDBResources())
+  func guardedMarkPostcheckRollsBackBodyMarkerAndSameTriggerHealthyControlSucceeds() async throws {
     try await Self.withFixture { f in
       let prefix = try Self.guardMarkPrefix(f)
       let inactive = try Self.capture(f)
@@ -2679,7 +2752,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedMarkActualDeferredCommitFailureIsSafeRollsBackAndRecovers() async throws {
+  @Test(NativeDBResources()) func guardedMarkActualDeferredCommitFailureIsSafeRollsBackAndRecovers()
+    async throws
+  {
     try await Self.withFixture { f in
       let prefix = try Self.guardMarkPrefix(f)
       let inactive = try Self.capture(f)
@@ -2867,7 +2942,9 @@ extension ProtocolActivationStoreTests {
     #expect(row?.text("n") == String(expected) && row?.text("called") == "true")
   }
 
-  @Test func guardedApplyPreservesLegacyAndHealthyModernMergeEmptyAndSkippedSemantics() async throws {
+  @Test(NativeDBResources()) func guardedApplyPreservesLegacyAndHealthyModernMergeEmptyAndSkippedSemantics()
+    async throws
+  {
     for modern in [false, true] {
       try await Self.withFixture { f in
         try Self.seedGuardApply(f)
@@ -2923,7 +3000,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedApplyRefusesStaleOrAbsentSnapshotsBeforeReceivedClockObservation() async throws {
+  @Test(NativeDBResources()) func guardedApplyRefusesStaleOrAbsentSnapshotsBeforeReceivedClockObservation()
+    async throws
+  {
     try await Self.withFixture { original in
       // This fresh actual object has a controlled wall, through the EXISTING initializer only.
       let controlled = try WorkspaceDatabase(
@@ -3030,7 +3109,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedApplyPostguardRollsBackWholeBatchAndCursorWhileSameEnabledCanarySucceedsHealthy()
+  @Test(NativeDBResources())
+  func guardedApplyPostguardRollsBackWholeBatchAndCursorWhileSameEnabledCanarySucceedsHealthy()
     async throws
   {
     try await Self.withFixture { f in
@@ -3103,7 +3183,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedApplySelectsReadCommittedWhileOrdinaryApplyRetainsInheritedRepeatableRead() async throws {
+  @Test(NativeDBResources())
+  func guardedApplySelectsReadCommittedWhileOrdinaryApplyRetainsInheritedRepeatableRead() async throws {
     try await Self.withFixture { original in
       try Self.seedGuardApply(original)
       try original.raw.execute(
@@ -3149,7 +3230,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedApplyActualDeferredCommitFailureRollsBackBatchCursorAndDurableClocksThenRecovers()
+  @Test(NativeDBResources())
+  func guardedApplyActualDeferredCommitFailureRollsBackBatchCursorAndDurableClocksThenRecovers()
     async throws
   {
     try await Self.withFixture { f in
@@ -3494,7 +3576,8 @@ extension ProtocolActivationStoreTests {
     #expect(exactReturn)
   }
 
-  @Test func guardedClaimPreservesLegacyAndHealthyEarlyReturnsAndReannouncesEveryNativeOwnedRow()
+  @Test(NativeDBResources())
+  func guardedClaimPreservesLegacyAndHealthyEarlyReturnsAndReannouncesEveryNativeOwnedRow()
     async throws
   {
     for modern in [false, true] {
@@ -3536,7 +3619,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedClaimEarlyZeroRunsPostguardAndStrictOriginalRecordComparisonBeforeCommit()
+  @Test(NativeDBResources())
+  func guardedClaimEarlyZeroRunsPostguardAndStrictOriginalRecordComparisonBeforeCommit()
     async throws
   {
     try await Self.withFixture { f in
@@ -3617,7 +3701,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedStatusesChangeOnlyExactFieldsAndPullNilActuallyAvoidsNonmatchingRowUpdates()
+  @Test(NativeDBResources())
+  func guardedStatusesChangeOnlyExactFieldsAndPullNilActuallyAvoidsNonmatchingRowUpdates()
     async throws
   {
     for modern in [false, true] {
@@ -3677,7 +3762,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedStatusesRefuseEmbeddedNulBeforeAnyNativeParameterOrPartialStatusUpdate()
+  @Test(NativeDBResources())
+  func guardedStatusesRefuseEmbeddedNulBeforeAnyNativeParameterOrPartialStatusUpdate()
     async throws
   {
     for modern in [false, true] {
@@ -3730,7 +3816,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedClaimAndBothStatusesRefuseAbsentContextlessStaleAndForeignObjectEvenAtNoOp()
+  @Test(NativeDBResources())
+  func guardedClaimAndBothStatusesRefuseAbsentContextlessStaleAndForeignObjectEvenAtNoOp()
     async throws
   {
     try await Self.withFixture { f in
@@ -3834,7 +3921,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedStatusSuccessfulRowCanariesAreRolledBackByPostguardAndSucceedWithSameHealthyTrigger()
+  @Test(NativeDBResources())
+  func guardedStatusSuccessfulRowCanariesAreRolledBackByPostguardAndSucceedWithSameHealthyTrigger()
     async throws
   {
     // Push, pull write, and pull clear EACH have their own fresh, prevalidated legacy fixture.
@@ -3900,7 +3988,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func guardedClaimRealAppendRollsBackAtPostguardAndActualDeferredCommitWithHonestSequenceAdvances()
+  @Test(NativeDBResources())
+  func guardedClaimRealAppendRollsBackAtPostguardAndActualDeferredCommitWithHonestSequenceAdvances()
     async throws
   {
     try await Self.withFixture { f in
@@ -4120,7 +4209,7 @@ extension ProtocolActivationStoreTests {
       expectedSnapshot: capturedBinding(f), observation: observation(f.binding))
   }
 
-  @Test func linkedReferenceRequiresCapturedPresentMembership() async throws {
+  @Test(NativeDBResources()) func linkedReferenceRequiresCapturedPresentMembership() async throws {
     try await Self.withFixture { f in
       let initiallyMissing = try Self.recordText(f) == nil
       try #require(initiallyMissing)
@@ -4155,7 +4244,7 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func tokenRefreshPreservesFactsButOnlyCurrentAnchorCompares() async throws {
+  @Test(NativeDBResources()) func tokenRefreshPreservesFactsButOnlyCurrentAnchorCompares() async throws {
     try await Self.withFixture { f in
       let original = try Self.healthyReferenceSnapshot(f)
       try Self.seedReadOnlyModernProfile(f)
@@ -4302,7 +4391,7 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func strictOriginalDatabaseRecordAndTupleRemainRequired() async throws {
+  @Test(NativeDBResources()) func strictOriginalDatabaseRecordAndTupleRemainRequired() async throws {
     try await Self.withFixture { f in
       let original = try Self.healthyReferenceSnapshot(f)
       let valid = try Self.nativeRecord(f)
@@ -4366,7 +4455,7 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func syncPurposeUsesWholeStoreEligibilityWhileStrictDoesNot() async throws {
+  @Test(NativeDBResources()) func syncPurposeUsesWholeStoreEligibilityWhileStrictDoesNot() async throws {
     try await Self.withFixture { f in
       let inactive = try Self.capture(f)
       let originalText = try Self.recordText(f).map { Data($0.utf8) }
@@ -4407,7 +4496,7 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func referenceComparisonNeverRequiresSecretPresence() async throws {
+  @Test(NativeDBResources()) func referenceComparisonNeverRequiresSecretPresence() async throws {
     try await Self.withFixture { f in
       let synthetic = "secret:ACTIVATION_UNSTORED_\(UUID().uuidString)"
       let parserValid = SecretRef(rawValue: synthetic) != nil
@@ -4565,7 +4654,7 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func oneNativeStatementViewCannotAssembleMixedReferenceState() async throws {
+  @Test(NativeDBResources()) func oneNativeStatementViewCannotAssembleMixedReferenceState() async throws {
     for method in [ReferenceComparison.strict, .sync] {
       try await Self.withFixture { f in
         let snapshot = try Self.capture(f)
@@ -4637,7 +4726,7 @@ extension ProtocolActivationStoreTests {
     // Native planner/view/barrier engineering is intentionally unqualified until managed execution.
   }
 
-  @Test func nativeSqlFailureIsFixedAndComparisonDoesNotWrite() async throws {
+  @Test(NativeDBResources()) func nativeSqlFailureIsFixedAndComparisonDoesNotWrite() async throws {
     try await Self.withFixture { f in
       let snapshot = try Self.capture(f)
       try f.raw.execute("ALTER TABLE public.settings RENAME TO reference_missing_settings")
@@ -4897,7 +4986,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceAllFiveCommitExactBodiesAcrossLegacyAndHealthyModern() async throws {
+  @Test(NativeDBResources()) func requiredReferenceAllFiveCommitExactBodiesAcrossLegacyAndHealthyModern()
+    async throws
+  {
     for route in RefEffect.allCases {
       try await Self.withFixture { f in
         let (input, snapshot) = try Self.prepareRefEffect(
@@ -4914,7 +5005,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceOrdinaryRefreshPreservesFactsAndAllFiveRefuseOriginalEvenAtNoOp() async throws {
+  @Test(NativeDBResources())
+  func requiredReferenceOrdinaryRefreshPreservesFactsAndAllFiveRefuseOriginalEvenAtNoOp() async throws {
     try await Self.withFixture { f in
       let (_, snapshot) = try Self.prepareRefEffect(f, route: .claimZero, modern: true)
       try f.raw.execute("UPDATE public.\"hubLink\" SET \"ownedAs\"=\"deviceId\" WHERE id=1")
@@ -4949,7 +5041,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferencePreRefusalDoesNotObserveReceivedHlcOrAllocateClaimLog() async throws {
+  @Test(NativeDBResources()) func requiredReferencePreRefusalDoesNotObserveReceivedHlcOrAllocateClaimLog()
+    async throws
+  {
     try await Self.withFixture { original in
       let controlled = try WorkspaceDatabase(
         endpoint: original.endpoint, binDir: original.endpoint.binDir!, createIfMissing: false,
@@ -4979,7 +5073,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceParserPreflightCorpusAndAllFiveSelectRequiredHelper() async throws {
+  @Test(NativeDBResources()) func requiredReferenceParserPreflightCorpusAndAllFiveSelectRequiredHelper()
+    async throws
+  {
     try await Self.withFixture { f in
       let snapshot = try Self.capture(f)
       try Self.installFinalEffectRowProbe(f)
@@ -5012,8 +5108,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceValidExpectedRefusesMalformedCurrentAndUnicodeBytesDifferBothWays() async throws
-  {
+  @Test(NativeDBResources())
+  func requiredReferenceValidExpectedRefusesMalformedCurrentAndUnicodeBytesDifferBothWays() async throws {
     try await Self.withFixture { f in
       let snapshot = try Self.capture(f)
       try Self.installFinalEffectRowProbe(f)
@@ -5084,7 +5180,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceRetainsActualObjectCapturedContextFullRecordTupleAndClosedRules() async throws {
+  @Test(NativeDBResources())
+  func requiredReferenceRetainsActualObjectCapturedContextFullRecordTupleAndClosedRules() async throws {
     try await Self.withFixture { f in
       let (_, snapshot) = try Self.prepareRefEffect(f, route: .push, modern: true)
       let input = RefEffectInput(route: .push, through: 0, ownedCount: 0)
@@ -5150,7 +5247,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceHealthyMaximumRevisionCommitsWithoutChronologyMutation() async throws {
+  @Test(NativeDBResources()) func requiredReferenceHealthyMaximumRevisionCommitsWithoutChronologyMutation()
+    async throws
+  {
     try await Self.withFixture { f in
       _ = try Self.prepareRefEffect(f, route: .push, modern: true)
       var record = try Self.nativeRecord(f); record["revision"] = String(Int64.max)
@@ -5288,7 +5387,8 @@ extension ProtocolActivationStoreTests {
       """)
   }
 
-  @Test func requiredReferenceSevenNaturalPostBodiesRollbackAndSameEnabledAtoAControlsCommit() async throws {
+  @Test(NativeDBResources())
+  func requiredReferenceSevenNaturalPostBodiesRollbackAndSameEnabledAtoAControlsCommit() async throws {
     for route in RefEffect.allCases {
       try await Self.withFixture { f in
         let (input, snapshot) = try Self.prepareRefEffect(f, route: route)
@@ -5393,7 +5493,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceAllFiveCoverKnownActualDeferredCommit23514AndSameInputRecovery() async throws {
+  @Test(NativeDBResources())
+  func requiredReferenceAllFiveCoverKnownActualDeferredCommit23514AndSameInputRecovery() async throws {
     for route in [RefEffect.mark, .apply, .claimAppend, .push, .pull] {
       try await Self.withFixture { f in
         let (input, snapshot) = try Self.prepareRefEffect(f, route: route)
@@ -5442,7 +5543,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceStatusesPreserveNilEmptyExactPrefixesAndSameEnabledUpdateProbe() async throws {
+  @Test(NativeDBResources())
+  func requiredReferenceStatusesPreserveNilEmptyExactPrefixesAndSameEnabledUpdateProbe() async throws {
     try await Self.withFixture { f in
       let (_, snapshot) = try Self.prepareRefEffect(f, route: .push)
       try Self.installFinalEffectRowProbe(f)
@@ -5519,7 +5621,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceNoWriteOwnedClaimExhaustedMarkEmptyAndSkippedApplyStillUseGuard() async throws {
+  @Test(NativeDBResources())
+  func requiredReferenceNoWriteOwnedClaimExhaustedMarkEmptyAndSkippedApplyStillUseGuard() async throws {
     try await Self.withFixture { f in
       let (input, snapshot) = try Self.prepareRefEffect(f, route: .claimAppend)
       try Self.installFinalEffectRowProbe(f)
@@ -5746,8 +5849,8 @@ extension ProtocolActivationStoreTests {
     return facts
   }
 
-  @Test func requiredReferenceFreshHelperOverridesRepeatableReadAndSeesPrecedingReferenceWriter() async throws
-  {
+  @Test(NativeDBResources())
+  func requiredReferenceFreshHelperOverridesRepeatableReadAndSeesPrecedingReferenceWriter() async throws {
     try await Self.withFixture { original in
       let (input, _) = try Self.prepareRefEffect(original, route: .mark)
       try original.raw.execute(
@@ -5938,7 +6041,8 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceLocksRetainCompetingReferenceWriterUntilActualCommitOrRollback() async throws {
+  @Test(NativeDBResources())
+  func requiredReferenceLocksRetainCompetingReferenceWriterUntilActualCommitOrRollback() async throws {
     for rollback in [false, true] {
       try await Self.withFixture { f in
         let (input, snapshot) = try Self.prepareRefEffect(f, route: .push)
@@ -6030,7 +6134,9 @@ extension ProtocolActivationStoreTests {
     }
   }
 
-  @Test func requiredReferenceValidExpectedActualSqlFaultIsFixedRedactedAndRollsBack() async throws {
+  @Test(NativeDBResources()) func requiredReferenceValidExpectedActualSqlFaultIsFixedRedactedAndRollsBack()
+    async throws
+  {
     try await Self.withFixture { f in
       let (input, snapshot) = try Self.prepareRefEffect(f, route: .push)
       try f.raw.execute(

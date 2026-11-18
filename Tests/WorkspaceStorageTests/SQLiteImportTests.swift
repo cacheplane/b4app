@@ -138,7 +138,7 @@ private enum SQLiteFixture {
   ]
 }
 
-@Suite struct SQLiteImportTests {
+@Suite(NativeDBResources()) struct SQLiteImportTests {
   @Test func importsEveryTableWithTypedValues() throws {
     let path = try SQLiteFixture.temporaryPath("workspace.sqlite")
     try SQLiteFixture.write(to: path)

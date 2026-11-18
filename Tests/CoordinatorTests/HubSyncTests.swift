@@ -360,7 +360,7 @@ private struct HubHarness {
   }
 }
 
-@Suite(.serialized) struct HubSyncTests {
+@Suite(NativeDBResources(), .serialized) struct HubSyncTests {
   @Test func connectionEnvironmentIdIsUploaded() async throws {
     let h = try await HubHarness.start()
     defer { Task { await h.close() } }

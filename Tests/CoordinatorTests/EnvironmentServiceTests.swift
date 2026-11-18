@@ -154,7 +154,7 @@ private struct EnvironmentHarness {
   }
 }
 
-@Suite(.serialized) struct EnvironmentServiceTests {
+@Suite(NativeDBResources(), .serialized) struct EnvironmentServiceTests {
   @Test func newThreadsShareAEnvironmentAcrossSpellings() async throws {
     let h = try await EnvironmentHarness.start(
       inspectionObservation: InspectionRequestObservation(caseID: .environmentSpellings))
@@ -662,7 +662,7 @@ private struct EnvironmentHarness {
 
 /// `connections.environmentId` (migration 0005): a local B4 connection belongs to the environment of its managed
 /// server's folder, and follows that folder when an environment edit moves it.
-@Suite(.serialized) struct ConnectionEnvironmentTests {
+@Suite(NativeDBResources(), .serialized) struct ConnectionEnvironmentTests {
   private func connect(_ h: ServerHarness, _ server: LocalServer) async throws -> Connection {
     try await h.client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),

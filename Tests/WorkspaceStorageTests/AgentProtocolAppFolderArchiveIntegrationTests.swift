@@ -310,7 +310,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test(arguments: Self.publishedCases)
+  @Test(NativeDBResources(), arguments: Self.publishedCases)
   private func genuinePublishedFoldersViewAndCommandsArchivesSurviveSixteenAndReopen(
     fixture: PublishedCase
   ) throws {
@@ -727,22 +727,24 @@ import WorkspaceProtocol
 
   /// A separate SQL15 BODY control on a canonical15 table. It does not admit a physical density
   /// column under a14 ledger and does not model15→16, which must never run this conversion again.
-  @Test(arguments: [
-    (
-      quiet: "tiny", density: "future-density" as String?, expectedQuiet: "shown",
-      expectedDensity: "future-density"
-    ),
-    (quiet: "small", density: "", expectedQuiet: "shown", expectedDensity: ""),
-    (quiet: "collapsed", density: "dense", expectedQuiet: "collapsed", expectedDensity: "dense"),
-    (quiet: "hidden", density: "normal", expectedQuiet: "hidden", expectedDensity: "normal"),
-    (quiet: "tiny", density: nil, expectedQuiet: "shown", expectedDensity: "dense"),
-    (quiet: "tiny", density: "normal", expectedQuiet: "shown", expectedDensity: "normal"),
-    (quiet: "small", density: "dense", expectedQuiet: "shown", expectedDensity: "dense"),
-    (
-      quiet: "future-quiet", density: "future-density", expectedQuiet: "future-quiet",
-      expectedDensity: "future-density"
-    ),
-  ])
+  @Test(
+    NativeDBResources(),
+    arguments: [
+      (
+        quiet: "tiny", density: "future-density" as String?, expectedQuiet: "shown",
+        expectedDensity: "future-density"
+      ),
+      (quiet: "small", density: "", expectedQuiet: "shown", expectedDensity: ""),
+      (quiet: "collapsed", density: "dense", expectedQuiet: "collapsed", expectedDensity: "dense"),
+      (quiet: "hidden", density: "normal", expectedQuiet: "hidden", expectedDensity: "normal"),
+      (quiet: "tiny", density: nil, expectedQuiet: "shown", expectedDensity: "dense"),
+      (quiet: "tiny", density: "normal", expectedQuiet: "shown", expectedDensity: "normal"),
+      (quiet: "small", density: "dense", expectedQuiet: "shown", expectedDensity: "dense"),
+      (
+        quiet: "future-quiet", density: "future-density", expectedQuiet: "future-quiet",
+        expectedDensity: "future-density"
+      ),
+    ])
   func publishedDensityBodyKeepsAnAlreadyStoredDensity(
     row: (quiet: String, density: String?, expectedQuiet: String, expectedDensity: String)
   ) throws {
@@ -813,7 +815,8 @@ import WorkspaceProtocol
       ).rows.first?.text("value") == sequence)
   }
 
-  @Test func everyEmptyOriginalPrefixRequiresItsLiteralLedgerAndPhysicalBoundary() throws {
+  @Test(NativeDBResources()) func everyEmptyOriginalPrefixRequiresItsLiteralLedgerAndPhysicalBoundary() throws
+  {
     for count in 8...16 {
       let endpoint = try AgentProtocolResourceFixture.endpoint()
       let raw = try PostgresConnection(
@@ -854,7 +857,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test(arguments: Self.publishedCases.filter { $0.prefix >= 13 })
+  @Test(NativeDBResources(), arguments: Self.publishedCases.filter { $0.prefix >= 13 })
   private func densityOracleRejectsWrongValuesLostQuietAndMissingOrExtraOriginalRows(
     fixture: PublishedCase
   ) throws {
@@ -924,7 +927,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func fixedPrimaryKeyLocatorIgnoresNestedAndQuotedIDText() throws {
+  @Test(NativeDBResources()) func fixedPrimaryKeyLocatorIgnoresNestedAndQuotedIDText() throws {
     let endpoint = try AgentProtocolResourceFixture.endpoint()
     let raw = try PostgresConnection(
       lib: LibPQ.load(binDir: endpoint.binDir!),
@@ -949,7 +952,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func preservationOracleRejectsOpaqueCorruptionAndPrematureCommands() throws {
+  @Test(NativeDBResources()) func preservationOracleRejectsOpaqueCorruptionAndPrematureCommands() throws {
     for prefix in [13, 14] {
       let endpoint = try AgentProtocolResourceFixture.endpoint()
       let raw = try PostgresConnection(
@@ -1068,7 +1071,7 @@ import WorkspaceProtocol
     else { throw AgentProtocolFoundationFixture.Failure.row }
   }
 
-  @Test func viewSettingsRestoreExceptionDoesNotAdmitUnrelatedSettings() throws {
+  @Test(NativeDBResources()) func viewSettingsRestoreExceptionDoesNotAdmitUnrelatedSettings() throws {
     let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "ap-view-empty-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])

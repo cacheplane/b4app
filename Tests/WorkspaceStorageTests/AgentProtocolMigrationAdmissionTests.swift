@@ -9,7 +9,7 @@ import WorkspaceProtocol
 
 /// Real storage-only admission tests. No account lifecycle, production migration bypass, application server,
 /// listener or runtime is introduced to reach the old schema; each method owns its PostgreSQL cluster.
-@Suite(.serialized) struct AgentProtocolMigrationAdmissionTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolMigrationAdmissionTests {
   private struct Fixture: Sendable {
     let endpoint: PostgresEndpoint
     let raw: PostgresConnection
@@ -138,6 +138,72 @@ import WorkspaceProtocol
     return signal()
   }
 
+  private struct HeldWindowResult: Sendable {
+    let started: Bool
+    let finishedWhileHeld: Bool
+  }
+
+  private struct HeldWindowState: Sendable {
+    var result: HeldWindowResult?
+    var continuation: CheckedContinuation<HeldWindowResult, Never>?
+  }
+
+  private static func observedOnMigrationThread(
+    until deadline: ContinuousClock.Instant, _ signal: @Sendable () -> Bool
+  ) -> Bool {
+    while !signal(), ContinuousClock.now < deadline {
+      Thread.sleep(forTimeInterval: 0.005)
+    }
+    return signal()
+  }
+
+  /// Closed labels and primitive scalars on one origin; receipts do not prove thread exit.
+  private final class AdmissionDrainOrdering: Sendable {
+    enum Phase: String, CaseIterable, Sendable {
+      case borrowerEntered, borrowerReturned, readyReturned
+      case ordinaryCloseEntered, ordinaryCloseReturned
+      case controllerEntered, drainerEntered, drainerReturned
+      case startedObserved, heldWindowReturned, releaseIssued, releaseReturned
+      case controllerReturned, operationJoinsReturned
+    }
+    private struct Stamp: Sendable {
+      let elapsedNanoseconds: UInt64
+      let ordinal: UInt16
+      let flag: Bool?
+    }
+    private struct State: Sendable {
+      var stamps: [Phase: Stamp] = [:]
+      var duplicate = false
+    }
+    private let origin = DispatchTime.now().uptimeNanoseconds
+    private let state = Mutex(State())
+
+    func record(_ phase: Phase, flag: Bool? = nil) {
+      state.withLock { state in
+        guard state.stamps[phase] == nil else { state.duplicate = true; return }
+        state.stamps[phase] = Stamp(
+          elapsedNanoseconds: DispatchTime.now().uptimeNanoseconds - origin,
+          ordinal: UInt16(state.stamps.count + 1), flag: flag)
+      }
+    }
+
+    func emitAfterOperationJoins() {
+      let snapshot = state.withLock { $0 }
+      for phase in Phase.allCases {
+        if let stamp = snapshot.stamps[phase] {
+          let flag = stamp.flag.map { $0 ? "true" : "false" } ?? "unknown"
+          print(
+            "A3_ADMISSION_ORDER phase=\(phase.rawValue) elapsedNanoseconds=\(stamp.elapsedNanoseconds) ordinal=\(stamp.ordinal) flag=\(flag) duplicate=\(snapshot.duplicate)"
+          )
+        } else {
+          print(
+            "A3_ADMISSION_ORDER phase=\(phase.rawValue) unavailable=missing flag=unknown duplicate=\(snapshot.duplicate)"
+          )
+        }
+      }
+    }
+  }
+
   private static func databasePoolAbsent(_ fixture: Fixture) -> Bool {
     (try? fixture.raw.execute(
       "SELECT 1 FROM pg_stat_activity WHERE datname = $1 AND application_name = 'b4app'",
@@ -224,11 +290,14 @@ import WorkspaceProtocol
         defer { try? db.close() }
         let before = try Self.snapshot(fixture.raw)
         let files = Self.backupFiles(fixture.endpoint)
+        let ordering = AdmissionDrainOrdering()
         let entered = Mutex(false), drainStarted = Mutex(false), finished = Mutex(false)
         let release = DispatchSemaphore(value: 0)
         let borrower = Task.detached {
           try await Self.onDedicatedMigrationThread {
+            defer { ordering.record(.borrowerReturned) }
             try db.read { _ in
+              ordering.record(.borrowerEntered)
               entered.withLock { $0 = true }
               guard release.wait(timeout: .now() + .seconds(8)) == .success else {
                 throw FixtureFailure.barrierTimeout
@@ -237,21 +306,64 @@ import WorkspaceProtocol
           }
         }
         let ready = await Self.observed { entered.withLock { $0 } }
+        ordering.record(.readyReturned, flag: ready)
         // Save a close failure, rather than throwing before release/join.
+        ordering.record(.ordinaryCloseEntered)
         let closed = Result { try db.close() }
+        ordering.record(.ordinaryCloseReturned)
+        let controllerState = Mutex(HeldWindowState())
+        let startedDeadline = ContinuousClock.now + .seconds(2)
+        // Start the native release controller before the drainer can begin its bounded wait.
+        let controller = Thread {
+          ordering.record(.controllerEntered)
+          let started = Self.observedOnMigrationThread(until: startedDeadline) {
+            drainStarted.withLock { $0 }
+          }
+          ordering.record(.startedObserved, flag: started)
+          let heldDeadline = ContinuousClock.now + .milliseconds(75)
+          let finishedWhileHeld = Self.observedOnMigrationThread(until: heldDeadline) {
+            finished.withLock { $0 }
+          }
+          ordering.record(.heldWindowReturned, flag: finishedWhileHeld)
+          ordering.record(.releaseIssued)
+          release.signal()
+          ordering.record(.releaseReturned)
+          let result = HeldWindowResult(started: started, finishedWhileHeld: finishedWhileHeld)
+          ordering.record(.controllerReturned)
+          controllerState.withLock { state in
+            state.result = result
+            state.continuation?.resume(returning: result)
+            state.continuation = nil
+          }
+        }
+        controller.start()
         let drainer = Task.detached {
           await Self.onDedicatedMigrationThread {
+            ordering.record(.drainerEntered)
             drainStarted.withLock { $0 = true }
             let result = db.closeForMigration(timeout: .seconds(2))
             finished.withLock { $0 = true }
+            ordering.record(.drainerReturned, flag: result)
             return result
           }
         }
-        let started = await Self.observed { drainStarted.withLock { $0 } }
-        let finishedWhileHeld = await Self.observed(within: .milliseconds(75)) { finished.withLock { $0 } }
-        release.signal()
+        let controlled: HeldWindowResult = await withCheckedContinuation { continuation in
+          controllerState.withLock { state in
+            if let result = state.result {
+              continuation.resume(returning: result)
+            } else {
+              state.continuation = continuation
+            }
+          }
+        }
+        let started = controlled.started
+        let finishedWhileHeld = controlled.finishedWhileHeld
         let borrowed = await borrower.result
         let drained = await drainer.value
+        // These are actual operation joins, without a kernel-thread-exit or quiescence claim.
+        withExtendedLifetime(controller) {}
+        ordering.record(.operationJoinsReturned)
+        ordering.emitAfterOperationJoins()
         _ = try closed.get()
         _ = try borrowed.get()
         #expect(ready && started)

@@ -10,7 +10,7 @@ import WorkspaceSync
 
 // Dormant component controls. Scripted HubAPI responses do not authenticate a request, and
 // cancellation/status receipts are not joins of production tasks whose handles are unavailable.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct AgentProtocolHubOwnerCarrierTests {
+@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(1))) struct AgentProtocolHubOwnerCarrierTests {
   @Test func actualCurrentLinkedScopeIssuesRedactedOriginalCarrier() async throws {
     try await OwnerFixture.withLinked { f in
       let origin = try await f.scope.hub.captureConfiguredClientOrigin()
@@ -1446,18 +1446,23 @@ private struct OwnerFixture: Sendable {
     linked: Bool, heldSecret: Bool, sameAPI: Bool,
     _ body: @Sendable (OwnerFixture) async throws -> Void
   ) async throws {
-    let f = try await start(linked: linked, heldSecret: heldSecret, sameAPI: sameAPI)
-    var failed = false
-    do { try await body(f) } catch {
-      failed = true
-      Issue.record("The owner-carrier control failed; private operation details were suppressed.")
+    let executor = NativeDBCaseExecutor()
+    defer { withExtendedLifetime(executor) {} }
+    try await withTaskExecutorPreference(executor) {
+      let f = try await start(
+        linked: linked, heldSecret: heldSecret, sameAPI: sameAPI, executorPreference: executor)
+      var failed = false
+      do { try await body(f) } catch {
+        failed = true
+        Issue.record("The owner-carrier control failed; private operation details were suppressed.")
+      }
+      await f.finish()
+      if failed { throw OwnerFixtureFailure.failed }
     }
-    await f.finish()
-    if failed { throw OwnerFixtureFailure.failed }
   }
 
   private static func start(
-    linked: Bool, heldSecret: Bool, sameAPI: Bool
+    linked: Bool, heldSecret: Bool, sameAPI: Bool, executorPreference: NativeDBCaseExecutor
   ) async throws
     -> OwnerFixture
   {
@@ -1561,7 +1566,7 @@ private struct OwnerFixture: Sendable {
       // Only this collector is made before actual startup. Registration is synchronous/nonthrowing.
       try ownerUncancelled()
       let receipts = access.receipts
-      let collector = Task {
+      let collector = Task(executorPreference: executorPreference) {
         startupDiagnostics.emitCollector(.taskEntered)
         receipts.markCollectorStarted()
         do {

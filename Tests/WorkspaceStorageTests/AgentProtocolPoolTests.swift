@@ -13,7 +13,7 @@ private final class PoolObservation: Sendable {
   let closeFinished = Mutex(false)
 }
 
-@Suite(.serialized) struct AgentProtocolPoolTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolPoolTests {
   // Suspend the retained Task while its synchronous gate runs outside the cooperative executor.
   private static func onDedicatedPoolThread<T: Sendable>(
     _ operation: @escaping @Sendable () -> T

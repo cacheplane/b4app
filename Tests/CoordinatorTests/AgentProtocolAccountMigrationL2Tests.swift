@@ -445,7 +445,7 @@ private struct L2AccountAPI: HubAPI {
   func endSession() async throws { try await fake().endSession() }
 }
 
-@Suite(.serialized) struct AgentProtocolAccountMigrationRetentionTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolAccountMigrationRetentionTests {
   @Test func explicitRetryMustRedrainHeldIdentity() async throws {
     let observation = L2Observation(.explicitRetry)
     let retryTiming = L2RetryTiming()
@@ -824,7 +824,7 @@ private final class L2LifetimeOwner: Sendable {
   }
 }
 
-@Suite(.serialized) struct AgentProtocolAccountMigrationControlTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolAccountMigrationControlTests {
   @Test func authHandlerVerifiesBeforeQuiescence() async throws {
     for rejects in [true, false] {
       let hub = CommandHub()
@@ -883,24 +883,26 @@ private final class L2LifetimeOwner: Sendable {
       observation.emitAfterFixtureCleanup()
       secondFixtureTiming.emitAfterCleanup()
     }
-    try await H.withFixture { fixture, cleanup in
+    let firstExecutor = H.AccountMigrationTestExecutor()
+    try await H.withFixture(migrationCloseTaskExecutor: firstExecutor) { fixture, cleanup in
       let writer = try H.connection(fixture.endpoint)
       let pid = try #require(writer.execute("SELECT pg_backend_pid() AS pid").rows.first?.text("pid"))
       try writer.execute("BEGIN")
       let rollback = cleanup.release { _ = try? writer.execute("ROLLBACK") }
       try writer.execute(
         "SELECT pg_advisory_xact_lock_shared($1::bigint)", [String(WorkspaceDatabase.remoteApplyLockKey)])
-      let run = H.begin(fixture, cleanup)
+      let run = H.begin(fixture, cleanup, executorPreference: firstExecutor)
+      let nativeDeadline = ContinuousClock.now + .seconds(3)
       guard
         await observation.observed(
           .callbacksMigrationLockObservation,
           {
-            await H.observed({
+            await H.observedNativeQuery(until: nativeDeadline) {
               (try? fixture.raw.execute(
                 "SELECT 1 FROM pg_stat_activity a JOIN pg_locks l ON a.pid=l.pid WHERE a.datname=$1 AND l.locktype='advisory' AND l.mode='ExclusiveLock' AND NOT l.granted AND $2::int=ANY(pg_blocking_pids(a.pid))",
                 [fixture.endpoint.database, pid]
               ).rows.count == 1) == true
-            })
+            }
           })
       else { throw H.SetupFailure.observationTimeout }
       #expect(fixture.manager.current == nil && L2.poolClosed(fixture.scope))

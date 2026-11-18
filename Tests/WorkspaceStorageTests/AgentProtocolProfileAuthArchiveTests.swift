@@ -5,7 +5,7 @@ import WorkspaceProtocol
 @testable import WorkspaceStorage
 
 /// Authentication metadata only. No secret values, adapter admission, owner assumption or network.
-@Suite(.serialized) struct AgentProtocolProfileAuthArchiveTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolProfileAuthArchiveTests {
   private static func profile(_ id: String, mode: ConnectionAuthMode?) -> Connection {
     Connection(
       id: id, kind: .agentProtocol, label: id,

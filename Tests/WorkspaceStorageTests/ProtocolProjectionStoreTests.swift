@@ -88,7 +88,9 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func nativeImagesCursorAndSafePresentationCommitTogetherWithoutNumberCoercion() throws {
+  @Test(NativeDBResources()) func nativeImagesCursorAndSafePresentationCommitTogetherWithoutNumberCoercion()
+    throws
+  {
     let db = try fixture(); defer { try? db.close() }
     let state = try prepare(db)
     let first = try db.applyProtocolProjection(
@@ -135,7 +137,9 @@ import WorkspaceProtocol
     let unchanged = try snapshot(db) == before; #expect(unchanged)
   }
 
-  @Test func localNilCursorUsesStrictTimestampCASWhenThePriorStampIsAheadOfTheClock() throws {
+  @Test(NativeDBResources()) func localNilCursorUsesStrictTimestampCASWhenThePriorStampIsAheadOfTheClock()
+    throws
+  {
     let db = try fixture(local: true); defer { try? db.close() }
     _ = try prepare(db, local: true)
     // A canonical future stamp forces the monotonic branch regardless of wall-clock resolution.
@@ -162,7 +166,7 @@ import WorkspaceProtocol
       again.revision == "2099-01-01T00:00:00.000002Z" && again.changedItemIds == committed.changedItemIds)
   }
 
-  @Test(arguments: [ProtocolProjectionStage.segments, .presentation, .cursor])
+  @Test(NativeDBResources(), arguments: [ProtocolProjectionStage.segments, .presentation, .cursor])
   func faultsRollBackPrivateImagesPresentationAndCursor(stage: ProtocolProjectionStage) throws {
     let db = try fixture(); defer { try? db.close() }
     let state = try prepare(db), before = try snapshot(db)
@@ -178,7 +182,7 @@ import WorkspaceProtocol
     let unchanged = try snapshot(db) == before; #expect(unchanged)
   }
 
-  @Test func deferredCommitFailureIsSanitizedAndRollsBackTheWholeProjection() throws {
+  @Test(NativeDBResources()) func deferredCommitFailureIsSanitizedAndRollsBackTheWholeProjection() throws {
     let db = try fixture(); defer { try? db.close() }
     let state = try prepare(db)
     try db.write { c in
@@ -208,7 +212,8 @@ import WorkspaceProtocol
     #expect(recovery.appliedSequence == 1)
   }
 
-  @Test func changedProfileCoverageEpochDeletedThreadAndForeignStoreRefuseWithoutMutation() throws {
+  @Test(NativeDBResources())
+  func changedProfileCoverageEpochDeletedThreadAndForeignStoreRefuseWithoutMutation() throws {
     let db = try fixture(); defer { try? db.close() }
     let state = try prepare(db)
     let owner = try db.protocolProjectionOwner(connectionId: "c", threadId: "t")
@@ -240,7 +245,7 @@ import WorkspaceProtocol
     expectSafeRefusal { _ = try db.protocolProjectionOwner(connectionId: "c", threadId: "t") }
   }
 
-  @Test func conflictingSegmentCorrelationAndMalformedJSONCannotAdvanceCursor() throws {
+  @Test(NativeDBResources()) func conflictingSegmentCorrelationAndMalformedJSONCannotAdvanceCursor() throws {
     let db = try fixture(); defer { try? db.close() }
     let state = try prepare(db)
     _ = try db.applyProtocolProjection(batch(state, seq: 1, segments: [segment()]))
@@ -260,7 +265,7 @@ import WorkspaceProtocol
     let unchanged = try snapshot(db) == before; #expect(unchanged)
   }
 
-  @Test func retainedGenerationAndNamespaceIdentitiesCannotAliasNewImages() throws {
+  @Test(NativeDBResources()) func retainedGenerationAndNamespaceIdentitiesCannotAliasNewImages() throws {
     let db = try fixture(); defer { try? db.close() }
     let original = try prepare(db)
     let first = try db.applyProtocolProjection(
@@ -292,7 +297,9 @@ import WorkspaceProtocol
     let unchanged = try snapshot(db) == before; #expect(unchanged)
   }
 
-  @Test func namespacePrefixesAndRootTokensUseExactUTF8RatherThanUnicodeEquivalence() throws {
+  @Test(NativeDBResources()) func namespacePrefixesAndRootTokensUseExactUTF8RatherThanUnicodeEquivalence()
+    throws
+  {
     let db = try fixture(); defer { try? db.close() }
     let owner = try db.protocolProjectionOwner(connectionId: "c", threadId: "t")
     let selected = ProtocolProjectionCoverage(
@@ -338,7 +345,8 @@ import WorkspaceProtocol
     #expect(nativeBytes == ["65cc81", "c3a9"])
   }
 
-  @Test func existingAuthorizedLinksSurviveWholeImageReplacementWithoutAcknowledgingATurn() throws {
+  @Test(NativeDBResources())
+  func existingAuthorizedLinksSurviveWholeImageReplacementWithoutAcknowledgingATurn() throws {
     let db = try fixture(); defer { try? db.close() }
     let initial = try prepare(db)
     let first = try db.applyProtocolProjection(batch(initial, seq: 1, segments: [segment()]))
@@ -370,7 +378,7 @@ import WorkspaceProtocol
     #expect(turn.status == .submitting && turn.submission == .prepared && turn.nativeTurnId == nil)
   }
 
-  @Test func invalidPriorTimestampRefusesInsteadOfInventingACASRevision() throws {
+  @Test(NativeDBResources()) func invalidPriorTimestampRefusesInsteadOfInventingACASRevision() throws {
     let db = try fixture(local: true); defer { try? db.close() }
     _ = try prepare(db, local: true)
     try db.write {
@@ -385,8 +393,8 @@ import WorkspaceProtocol
     let unchanged = try snapshot(db) == before; #expect(unchanged)
   }
 
-  @Test func continuationReferencesTheSameCanonicalMessageAndPreservesAnUnresolvedSegmentsTrustedTurn() throws
-  {
+  @Test(NativeDBResources())
+  func continuationReferencesTheSameCanonicalMessageAndPreservesAnUnresolvedSegmentsTrustedTurn() throws {
     let db = try fixture(); defer { try? db.close() }
     let initial = try prepare(db)
     let first = try db.applyProtocolProjection(batch(initial, seq: 1, segments: [segment()]))
@@ -449,7 +457,8 @@ import WorkspaceProtocol
     let unchanged = try snapshot(db) == before; #expect(unchanged)
   }
 
-  @Test func unknownContentBecomesKnownTextOnTheSameMessageButAnEstablishedRoleCannotChange() throws {
+  @Test(NativeDBResources())
+  func unknownContentBecomesKnownTextOnTheSameMessageButAnEstablishedRoleCannotChange() throws {
     let db = try fixture(); defer { try? db.close() }
     let initial = try prepare(db)
     let unknown = ProtocolProjectionSegment(

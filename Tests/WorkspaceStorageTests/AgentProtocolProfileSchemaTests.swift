@@ -7,7 +7,7 @@ import WorkspaceProtocol
 @testable import WorkspaceStorage
 
 /// Only real private PostgreSQL storage; no account, service, provider, listener or adapter starts.
-@Suite(.serialized) struct AgentProtocolProfileSchemaTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolProfileSchemaTests {
   private static let migration = "0016_agent_protocol"
   private static let profileColumns = [
     "peerProfile", "agentId", "authMode", "authHeaderName", "protocolRetiredAt", "protocolRetiredReason",

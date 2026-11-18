@@ -7,7 +7,7 @@ import WorkspaceProtocol
 @testable import WorkspaceStorage
 
 /// Existing storage admission/capture APIs only. No service, runtime, listener, hub or owner data.
-@Suite(.serialized) struct AgentProtocolPrivateBackupTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolPrivateBackupTests {
   private static let legacyDataTables = [
     "localServers", "projects", "projectFolders", "connections", "threads", "turns", "displayItems",
     "runtimeRequests", "drafts", "devices", "changes", "columnClocks", "settings", "usageReadings",

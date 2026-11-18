@@ -57,7 +57,7 @@ import WorkspaceStorage
     await transport.close()
   }
 
-  @Test func repeatedSocketServerCloseCompletesWithoutLateScheduling() async throws {
+  @Test(NativeDBResources()) func repeatedSocketServerCloseCompletesWithoutLateScheduling() async throws {
     let directory = try lifecycleDirectory()
     defer { try? FileManager.default.removeItem(atPath: directory) }
     var paths = PlatformPaths(runtimeDir: directory, dataDir: directory)

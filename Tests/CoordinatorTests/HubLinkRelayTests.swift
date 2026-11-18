@@ -309,7 +309,7 @@ private struct JoinedHarness {
 // MARK: - Tests
 
 @Suite(.serialized, .timeLimit(.minutes(2))) struct HubLinkRelayTests {
-  @Test func commandFromTheHubRunsAndReplies() async throws {
+  @Test(NativeDBResources()) func commandFromTheHubRunsAndReplies() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let thread = try await h.newThread(try await h.addCodex())
@@ -338,7 +338,7 @@ private struct JoinedHarness {
     #expect(try h.coordinator.database.turns(threadId: thread.id).map(\.outcome) == [.completed])
   }
 
-  @Test func relayedInterruptAndAnswerRunFromTheLink() async throws {
+  @Test(NativeDBResources()) func relayedInterruptAndAnswerRunFromTheLink() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let thread = try await h.newThread(try await h.addCodex())
@@ -402,7 +402,7 @@ private struct JoinedHarness {
     #expect(staleError?.code == ErrorCode.staleRuntimeRequest.rawValue)
   }
 
-  @Test func commandsDoNotHoldUpTheLink() async throws {
+  @Test(NativeDBResources()) func commandsDoNotHoldUpTheLink() async throws {
     let gate = TurnGate()
     let h = try await LinkHarness.start(adapterFactory: { connection, environment, version, secrets in
       GatedAdapter(
@@ -434,7 +434,7 @@ private struct JoinedHarness {
     #expect(error == nil)
   }
 
-  @Test func expiredOrUndatedCommandIsRefused() async throws {
+  @Test(NativeDBResources()) func expiredOrUndatedCommandIsRefused() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let thread = try await h.newThread(try await h.addCodex())
@@ -458,7 +458,7 @@ private struct JoinedHarness {
     #expect(try h.coordinator.database.turns(threadId: thread.id).isEmpty)
   }
 
-  @Test func onlyWatchedThreadsEventsAreSent() async throws {
+  @Test(NativeDBResources()) func onlyWatchedThreadsEventsAreSent() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -481,7 +481,7 @@ private struct JoinedHarness {
     #expect(next?.threadId == "t2")
   }
 
-  @Test func forwardedKindsOnly() async throws {
+  @Test(NativeDBResources()) func forwardedKindsOnly() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -504,7 +504,7 @@ private struct JoinedHarness {
     #expect(kinds == RelayLimits.forwardedEventKinds)
   }
 
-  @Test func oversizedEventIsSkipped() async throws {
+  @Test(NativeDBResources()) func oversizedEventIsSkipped() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -521,7 +521,7 @@ private struct JoinedHarness {
     #expect(sent?.payload["output"]?.stringValue?.hasPrefix("y") == true)
   }
 
-  @Test func newWatchFirstGetsTheTextSoFar() async throws {
+  @Test(NativeDBResources()) func newWatchFirstGetsTheTextSoFar() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -555,7 +555,7 @@ private struct JoinedHarness {
 
   /// Another client starts watching a thread already watched: the hub names it in `refresh`, and the
   /// Mac sends the text so far again, so that client does not start mid-reply.
-  @Test func refreshSendsTheCatchUpAgain() async throws {
+  @Test(NativeDBResources()) func refreshSendsTheCatchUpAgain() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -570,7 +570,7 @@ private struct JoinedHarness {
 
   /// A relink mid-reply sends the whole text so far again, marked `catchUp` so the phone (whose item is
   /// still open) resumes from it instead of appending it to what it has.
-  @Test func reconnectCatchesUpTheWatchedThreadsAgain() async throws {
+  @Test(NativeDBResources()) func reconnectCatchesUpTheWatchedThreadsAgain() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -592,7 +592,7 @@ private struct JoinedHarness {
     #expect(next?.payload["catchUp"] == nil)
   }
 
-  @Test func wakeReconnectsAtOnce() async throws {
+  @Test(NativeDBResources()) func wakeReconnectsAtOnce() async throws {
     let h = try await JoinedHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.join()
@@ -607,7 +607,7 @@ private struct JoinedHarness {
     await waitUntil("connected again") { (try? await h.coordinator.hub.status().link?.state) == .connected }
   }
 
-  @Test func pathChangeReconnectsAtOnce() async throws {
+  @Test(NativeDBResources()) func pathChangeReconnectsAtOnce() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -622,7 +622,7 @@ private struct JoinedHarness {
     #expect(!h.paths.started)
   }
 
-  @Test func unauthorizedStopsTheLink() async throws {
+  @Test(NativeDBResources()) func unauthorizedStopsTheLink() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     h.connection.refuseWith(status: 401)
@@ -639,7 +639,7 @@ private struct JoinedHarness {
     #expect(h.connection.openCount == 1)
   }
 
-  @Test func aRefusedPushStopsTheLink() async throws {
+  @Test(NativeDBResources()) func aRefusedPushStopsTheLink() async throws {
     let h = try await JoinedHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.join()
@@ -656,7 +656,7 @@ private struct JoinedHarness {
     await waitUntil("signed out") { await h.coordinator.accounts.status().state == .signedOut }
   }
 
-  @Test func statusReportsConnectedAndLastError() async throws {
+  @Test(NativeDBResources()) func statusReportsConnectedAndLastError() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     #expect(await h.link.status() == HubLinkStatus(state: .offline))
@@ -683,7 +683,7 @@ private struct JoinedHarness {
     #expect(await h.link.status().lastError == nil)
   }
 
-  @Test func leaveStopsTheLink() async throws {
+  @Test(NativeDBResources()) func leaveStopsTheLink() async throws {
     let h = try await JoinedHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.join()
@@ -697,7 +697,7 @@ private struct JoinedHarness {
   }
 
   /// Review Focus 1 at the link: the executor is given the hub's clock from `hello`, not the Mac's.
-  @Test func deadlineUsesTheHubClockAtTheLink() async throws {
+  @Test(NativeDBResources()) func deadlineUsesTheHubClockAtTheLink() async throws {
     let h = try await LinkHarness.start()
     do {
       let thread = try await h.newThread(try await h.addCodex())
@@ -746,7 +746,7 @@ private struct JoinedHarness {
     await h.close()
   }
 
-  @Test func diagnosticsShowTheRelayLink() async throws {
+  @Test(NativeDBResources()) func diagnosticsShowTheRelayLink() async throws {
     let h = try await JoinedHarness.start()
     defer { Task { await h.close() } }
     let notJoined = try await h.coordinator.diagnostics.read()

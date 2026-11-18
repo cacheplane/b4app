@@ -7,7 +7,7 @@ import WorkspaceProtocol
 
 /// Uses the existing database initializer and a real frozen pending migration to reproduce missing
 /// pre-DDL backup behavior. No new product backup/drain API is implemented to make these tests run.
-@Suite(.serialized) struct AgentProtocolBackupTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolBackupTests {
   private struct Fixture {
     var endpoint: PostgresEndpoint
     var raw: PostgresConnection

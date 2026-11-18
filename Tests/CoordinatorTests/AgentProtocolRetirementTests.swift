@@ -15,7 +15,7 @@ private final class RetirementFactoryCalls: Sendable {
 
 /// A throwing factory counts admission without opening any upstream socket or starting a runtime.
 /// The assertions concern which business actions are allowed, rather than a particular guard method.
-@Suite(.serialized) struct AgentProtocolRetirementTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolRetirementTests {
   private func setup(
     kind: ConnectionKind = .b4, cachedItem: Bool = true
   ) throws -> (

@@ -8,7 +8,7 @@ import WorkspaceSync
 @testable import Coordinator
 @testable import WorkspaceStorage
 
-@Suite(.serialized) struct AgentProtocolMigrationBackupPathTests {
+@Suite(NativeDBResources(), .serialized) struct AgentProtocolMigrationBackupPathTests {
   private static let fakeCredential = "A3_FAKE_ENDPOINT_VALUE_MUST_NOT_ENTER_ARCHIVE"
 
   private struct Snapshot: Sendable {

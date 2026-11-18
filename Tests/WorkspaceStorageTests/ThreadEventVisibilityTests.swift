@@ -41,7 +41,7 @@ private func onDedicatedThread<T: Sendable>(
   }
 }
 
-@Suite struct ThreadEventVisibilityTests {
+@Suite(NativeDBResources()) struct ThreadEventVisibilityTests {
   @Test func deletedAndMissingThreadsCannotPublish() throws {
     let database = try visibilityDatabase()
     defer { try? database.close() }

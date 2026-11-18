@@ -10,7 +10,7 @@ import WorkspaceSync
 
 // These are dormant memory controls. Real scope construction opens native stores; the counted
 // fake API is not authenticated transport evidence. A local attachment is not a native lease.
-@Suite(.serialized, .timeLimit(.minutes(1))) struct ScopeOwnerPublicationTests {
+@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(1))) struct ScopeOwnerPublicationTests {
   @Test func p2aA01OldOwnerSurvivesReservation() async throws {
     try await ScopeOwnerFixture.withFixture(linked: true) { f in
       let ordinary = try await f.ordinary()

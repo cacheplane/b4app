@@ -219,7 +219,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(.serialized) struct LocalServerRegistryTests {
+@Suite(NativeDBResources(), .serialized) struct LocalServerRegistryTests {
   @Test func addsAProjectAndInspectsItsRoutes() async throws {
     let h = try await ServerHarness.start(nodeProbeLabel: .addsAProjectAndInspectsItsRoutes)
     defer { h.emitNodeProbeObservations() }
@@ -303,7 +303,7 @@ struct ServerHarness {
 }
 
 /// Owned-server lifecycle against the fake project CLI.
-@Suite(.serialized) struct LocalServerLifecycleTests {
+@Suite(NativeDBResources(), .serialized) struct LocalServerLifecycleTests {
   /// The server's row once a `server.changed` event has moved it from the health it had in `server` to
   /// `health` (every change to a managed server is published). Events are ordered, so a match after
   /// the one that reported `server.health` is the change the caller waits for, not an older one.
@@ -579,7 +579,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(.serialized) struct LocalServerLogTests {
+@Suite(NativeDBResources(), .serialized) struct LocalServerLogTests {
   @Test func logsAreTailedRedactedAndFollowable() async throws {
     let h = try await ServerHarness.start(nodeProbeLabel: .logsAreTailedRedactedAndFollowable)
     defer { h.emitNodeProbeObservations() }
@@ -623,7 +623,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(.serialized) struct ManagedConnectionTests {
+@Suite(NativeDBResources(), .serialized) struct ManagedConnectionTests {
   private func connect(
     _ h: ServerHarness, _ server: LocalServer, route: String = "/chat#agent"
   ) async throws -> ConnectionAdd.Result {
@@ -832,7 +832,7 @@ struct ServerHarness {
 }
 
 /// Taking a project off the Mac (D-231).
-@Suite(.serialized) struct LocalServerRemoveTests {
+@Suite(NativeDBResources(), .serialized) struct LocalServerRemoveTests {
   private func connect(_ h: ServerHarness, _ server: LocalServer) async throws -> Connection {
     try await h.client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),

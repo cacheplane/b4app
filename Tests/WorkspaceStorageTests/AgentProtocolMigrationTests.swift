@@ -117,7 +117,9 @@ import WorkspaceProtocol
     return result
   }
 
-  @Test func additiveMigrationRetainsEveryLegacyFieldAndDoesNotEmitRetirementChanges() throws {
+  @Test(NativeDBResources()) func additiveMigrationRetainsEveryLegacyFieldAndDoesNotEmitRetirementChanges()
+    throws
+  {
     let (endpoint, before) = try oldFixture()
     defer { try? FileManager.default.removeItem(atPath: backupDirectory(endpoint)) }
     let db = try WorkspaceDatabase(
@@ -141,7 +143,7 @@ import WorkspaceProtocol
     #expect(try db.turn(id: "turn-old")?.submission == .unknown)
   }
 
-  @Test func oldArchiveRestoresItsHistoryAndCredentialReferencesExactly() throws {
+  @Test(NativeDBResources()) func oldArchiveRestoresItsHistoryAndCredentialReferencesExactly() throws {
     let (endpoint, _) = try oldFixture()
     defer { try? FileManager.default.removeItem(atPath: backupDirectory(endpoint)) }
     let source = try WorkspaceDatabase(
@@ -224,23 +226,23 @@ import WorkspaceProtocol
     #expect(try target.unsyncedChangeCount() == expectedChangeCount)
   }
 
-  @Test func archiveV1RestoresHistoricalDependencyOrderExactly() throws {
+  @Test(NativeDBResources()) func archiveV1RestoresHistoricalDependencyOrderExactly() throws {
     try assertHistoricalArchiveRestores(version: 1)
   }
 
-  @Test func archiveV2RestoresHistoricalDependencyOrderExactly() throws {
+  @Test(NativeDBResources()) func archiveV2RestoresHistoricalDependencyOrderExactly() throws {
     try assertHistoricalArchiveRestores(version: 2)
   }
 
-  @Test func archiveV3RestoresHistoricalDependencyOrderExactly() throws {
+  @Test(NativeDBResources()) func archiveV3RestoresHistoricalDependencyOrderExactly() throws {
     try assertHistoricalArchiveRestores(version: 3)
   }
 
-  @Test func archiveV3RestoresMainElevenEnvironmentAssociations() throws {
+  @Test(NativeDBResources()) func archiveV3RestoresMainElevenEnvironmentAssociations() throws {
     try assertHistoricalArchiveRestores(version: 3, environmentNames: true)
   }
 
-  @Test func archiveMalformedAndFutureInputPreservePopulatedTargetAtomically() throws {
+  @Test(NativeDBResources()) func archiveMalformedAndFutureInputPreservePopulatedTargetAtomically() throws {
     let (endpoint, _) = try oldFixture()
     defer { try? FileManager.default.removeItem(atPath: backupDirectory(endpoint)) }
     let target = try WorkspaceDatabase(
@@ -285,7 +287,7 @@ import WorkspaceProtocol
     return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
   }
 
-  @Test func freshProtocolProfileRoundTripsWithoutReusingTheHistoricalIdentity() throws {
+  @Test(NativeDBResources()) func freshProtocolProfileRoundTripsWithoutReusingTheHistoricalIdentity() throws {
     let (endpoint, _) = try oldFixture()
     defer { try? FileManager.default.removeItem(atPath: backupDirectory(endpoint)) }
     let db = try WorkspaceDatabase(
