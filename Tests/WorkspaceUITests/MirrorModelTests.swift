@@ -58,7 +58,9 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
   // MARK: - Live progress through the relay (M8c)
 
   /// The model over a mirror of the fixture, with a relay on a fake hub, and thread-1 open.
-  private func relayedModel() async throws -> (
+  private func relayedModel(
+    streams: MessageStreamStore = MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() })
+  ) async throws -> (
     WorkspaceModel, MirrorStore, MirrorTransport, FakeHubLinkSocket
   ) {
     let store = try MirrorStore.inMemory()
@@ -78,7 +80,7 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
     let transport = MirrorTransport(store: store, version: "0.2.0", relay: relay)
     let model = WorkspaceModel(
       transportProvider: { transport },
-      streams: MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() }))
+      streams: streams)
     model.connect()
     try #require(await model.settledLink() == .ready)
     await model.openThread(id: "thread-1")
@@ -352,6 +354,67 @@ private func fixtureAsStored(file: StaticString = #filePath) throws -> [StoredCh
         payload: ["delta": .string(text), "catchUp": true]))
   }
 
+  /// With paced reveal (the app's), a catch-up that does not start with what the phone shows arrives
+  /// as the clearing completion and the whole text back to back, while the old stream still drains.
+  /// The row draws only a prefix of the old text or of the new one, and ends at the new text.
+  @Test func aMismatchedCatchUpWhileTheStreamDrainsDrawsOnlyEitherText() async throws {
+    let tickers = TickerLog()
+    let (model, _, _, socket) = try await relayedModel(
+      streams: MessageStreamStore(pacing: .paced, makeTicker: { tickers.make() }))
+    socket.deliver(try itemEvent(.messageStarted, agent("")))
+    socket.deliver(delta("Hello there"))
+    try await waitUntil("streaming") { model.streams.stream(for: "native-9") != nil }
+    var drew: [String] = []
+    tickers.last?.fire(3)
+    drew.append(drawn(model) ?? "")
+
+    socket.deliver(catchUp("Howdy"))
+    socket.deliver(delta("!"))
+    // Waits on the relay, not on the reveal: each pass fires one frame and notes what is drawn.
+    for _ in 0..<2_000 where drawn(model) != "Howdy!" {
+      tickers.last?.fire()
+      drew.append(drawn(model) ?? "")
+      try await Task.sleep(for: .milliseconds(2))
+    }
+    #expect(drawn(model) == "Howdy!")
+    for text in drew {
+      #expect("Hello there".hasPrefix(text) || "Howdy!".hasPrefix(text), "drew \(text)")
+    }
+    await model.disconnect()
+  }
+
+  /// A turn that ends without its `turn.finished` reaching the model (a state change says it is
+  /// terminal) ends its streams: the stored text wins and nothing draws as live.
+  @Test func aTurnEndingWithoutTurnFinishedEndsItsStreams() async throws {
+    let (model, _, _, socket) = try await relayedModel()
+    socket.deliver(try itemEvent(.messageStarted, agent("")))
+    socket.deliver(delta("Hel"))
+    try await waitUntil("streamed") { live(model) == "Hel" }
+    var turn = try #require(model.detail?.turns.first { $0.id == "turn-2" })
+    turn.status = .terminal
+    socket.deliver(
+      .event(
+        AdapterEvent(
+          kind: .turnStateChanged, connectionId: "conn-1", threadId: "thread-1", turnId: "turn-2",
+          payload: ["turn": try JSONValue(encoding: turn)])))
+    try await waitUntil("stream ended") { model.streams.stream(for: "native-9") == nil }
+    #expect(drawn(model) == "")
+    await model.disconnect()
+  }
+
+  /// The same when the ended turn reaches the model only through sync (a re-read of the open thread).
+  @Test func aTurnEndingThroughSyncEndsItsStreams() async throws {
+    let (model, store, transport, socket) = try await relayedModel()
+    socket.deliver(try itemEvent(.messageStarted, agent("")))
+    socket.deliver(delta("Hel"))
+    try await waitUntil("streamed") { live(model) == "Hel" }
+    transport.publish(
+      try store.apply([change("turns", "turn-2", "update", column: "status", value: "terminal")]))
+    try await waitUntil("stream ended") { model.streams.stream(for: "native-9") == nil }
+    #expect(model.detail?.activeTurn == nil)
+    await model.disconnect()
+  }
+
   /// The Mac relinked mid-reply: its catch-up repeats what the phone already shows, so only the rest is
   /// added, and nothing when there is no rest.
   @Test func aCatchUpAfterAMacRelinkResumesTheText() async throws {
@@ -409,4 +472,16 @@ private func change(
   StoredChange(
     hubSeq: 1000, deviceId: "mac-1", deviceSeq: 1000, wall: 0, table: table, rowId: rowId, op: op,
     column: column, value: value, hlc: macClock.next().rawValue)
+}
+
+/// Makes a `ManualTicker` per stream and keeps them, so a test fires the newest stream's.
+@MainActor private final class TickerLog {
+  private(set) var made: [ManualTicker] = []
+  var last: ManualTicker? { made.last }
+
+  func make() -> ManualTicker {
+    let ticker = ManualTicker()
+    made.append(ticker)
+    return ticker
+  }
 }

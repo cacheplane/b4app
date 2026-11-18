@@ -1,4 +1,5 @@
 import StreamingMarkdown
+import Synchronization
 import Testing
 
 @testable import WorkspaceUI
@@ -181,20 +182,27 @@ import Testing
   }
 
   @Test func aStoppedDisplayTickerDoesNotTickAgain() async throws {
-    let ticker = DisplayTicker()
+    let frames = ManualFrames()
+    let ticker = DisplayTicker(frame: { try await frames.wait() })
     var ticks = 0
     ticker.onTick = { ticks += 1 }
     ticker.start()
-    try await Task.sleep(for: .milliseconds(100))
-    #expect(ticks > 0)
+    await frames.requested()
+    frames.release()
+    await frames.requested()  // the loop ticked and waits for the next frame
+    #expect(ticks == 1)
+
+    // The frame is released and the ticker stopped before the loop runs again: it ends untouched.
+    let loop = try #require(ticker.task)
+    frames.release()
     ticker.stop()
-    let atStop = ticks
-    try await Task.sleep(for: .milliseconds(100))
-    #expect(ticks == atStop)
+    await loop.value
+    #expect(ticks == 1 && frames.waiting == 0)
   }
 
   @Test func restartingADisplayTickerRunsOneLoop() async throws {
-    let ticker = DisplayTicker()
+    let frames = ManualFrames()
+    let ticker = DisplayTicker(frame: { try await frames.wait() })
     var ticks = 0
     ticker.onTick = { ticks += 1 }
     for _ in 0..<5 {
@@ -202,9 +210,69 @@ import Testing
       ticker.stop()
     }
     ticker.start()
-    try await Task.sleep(for: .milliseconds(300))
+    for frame in 1...3 {
+      await frames.requested()
+      #expect(frames.waiting == 1)  // one loop asks for frames; the stopped ones ended
+      frames.release()
+      await frames.requested()
+      #expect(ticks == frame)
+    }
     ticker.stop()
-    // One loop gives about 18 ticks in 300 ms; six loops would give about 108.
-    #expect(ticks < 40)
+  }
+}
+
+/// A `DisplayTicker` frame the test releases by hand. A cancelled wait throws, as `Task.sleep` does.
+private final class ManualFrames: Sendable {
+  private struct State {
+    var waiting: [Int: CheckedContinuation<Void, any Error>] = [:]
+    var next = 0
+    var watchers: [CheckedContinuation<Void, Never>] = []
+  }
+  private let state = Mutex(State())
+
+  /// The frames being waited for now.
+  var waiting: Int { state.withLock { $0.waiting.count } }
+
+  func wait() async throws {
+    let id = state.withLock { state in
+      state.next += 1
+      return state.next
+    }
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+        let watchers = state.withLock { state -> [CheckedContinuation<Void, Never>]? in
+          // Cancelled before it waited: `onCancel` found nothing to end.
+          if Task.isCancelled { return nil }
+          state.waiting[id] = continuation
+          defer { state.watchers = [] }
+          return state.watchers
+        }
+        guard let watchers else { return continuation.resume(throwing: CancellationError()) }
+        for watcher in watchers { watcher.resume() }
+      }
+    } onCancel: {
+      state.withLock { $0.waiting.removeValue(forKey: id) }?.resume(throwing: CancellationError())
+    }
+  }
+
+  /// Returns once a frame is being waited for.
+  func requested() async {
+    await withCheckedContinuation { (watcher: CheckedContinuation<Void, Never>) in
+      let now = state.withLock { state in
+        if !state.waiting.isEmpty { return true }
+        state.watchers.append(watcher)
+        return false
+      }
+      if now { watcher.resume() }
+    }
+  }
+
+  /// Ends every frame being waited for.
+  func release() {
+    let released = state.withLock { state in
+      defer { state.waiting = [:] }
+      return Array(state.waiting.values)
+    }
+    for continuation in released { continuation.resume() }
   }
 }

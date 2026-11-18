@@ -43,6 +43,44 @@ import WorkspaceProtocol
     #expect(store.stream(for: "m1")?.shown == "Hello there" && store.isStreaming("m1"))
   }
 
+  /// Fires `ticker` until it stops: the reveal has drained.
+  private func drain(_ ticker: ManualTicker) {
+    for _ in 0..<1_000 where ticker.running { ticker.fire() }
+    #expect(!ticker.running)
+  }
+
+  @Test func aDeltaWhileACompletedStreamDrainsOpensTheNextStream() {  // the phone's mismatch
+    let ticker = ManualTicker()
+    let store = MessageStreamStore(pacing: .paced, makeTicker: { ticker })
+    store.append("Hello there", to: "m1")
+    store.complete("m1", finalText: "")
+    store.append("Howdy", to: "m1")
+    #expect(store.isStreaming("m1"))
+    drain(ticker)
+    #expect(store.stream(for: "m1")?.shown == "Howdy")
+  }
+
+  @Test func aWholeTextDeltaWhileACompletedStreamDrainsIsNotReplayed() {
+    let ticker = ManualTicker()
+    let store = MessageStreamStore(pacing: .paced, makeTicker: { ticker })
+    store.append("Hello there", to: "m1")
+    store.complete("m1", finalText: "")
+    store.append("Hello there, friend", to: "m1")
+    #expect(store.stream(for: "m1")?.shown == "Hello there" && store.isStreaming("m1"))
+    drain(ticker)
+    #expect(store.stream(for: "m1")?.shown == "Hello there, friend")
+  }
+
+  @Test func resetRevealsNothingMore() {
+    let ticker = ManualTicker()
+    let store = MessageStreamStore(pacing: .paced, makeTicker: { ticker })
+    store.append("Hello there", to: "m1")
+    let stream = store.stream(for: "m1")
+    let revision = store.revision
+    store.reset()
+    #expect(stream?.shown == "" && store.revision == revision && !ticker.running)
+  }
+
   @Test func theStoredTextWinsOnceTheTurnFinishes() {
     store.append("Hello there", to: "m1")
     store.turnFinished()

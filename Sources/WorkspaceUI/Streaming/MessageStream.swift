@@ -47,6 +47,17 @@ public enum RevealPacing: Sendable { case paced, immediate }
     ticker.onTick = { [weak self] in self?.tick() }
   }
 
+  /// False once `complete` was called, while the backlog may still be draining: `append` then does
+  /// nothing.
+  var isAccepting: Bool { !completing }
+
+  /// Stops revealing without showing the rest: the stream is about to be dropped, so nothing more is
+  /// parsed or reported.
+  func discard() {
+    onReveal = nil
+    ticker.stop()
+  }
+
   func append(_ delta: String) {
     guard !completing, !delta.isEmpty else { return }
     received += delta

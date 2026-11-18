@@ -1587,6 +1587,8 @@ public final class WorkspaceModel {
       current.turns = read.turns
       current.items = read.items
       current.requests = read.requests
+      // No turn runs any more: a stream whose `turn.finished` never arrived does not stay live.
+      if current.activeTurn == nil { streams.turnFinished() }
       detail = current
       activeTurns[threadId] = read.turns.last { $0.status != .terminal }
       prunePendingSends()
@@ -1878,6 +1880,8 @@ public final class WorkspaceModel {
       if let itemId = event.nativeIds["itemId"], let delta = event.payload["delta"]?.stringValue {
         streams.append(delta, to: itemId)
       }
+      // For cost only: `detail` is unchanged, and not assigning it keeps a token from re-evaluating
+      // the transcript (no test can see this return go).
       return
     case .messageStarted, .messageCompleted, .toolStarted, .toolCompleted:
       if let item = try? event.payload["displayItem"]?.decode(DisplayItem.self) {
@@ -1888,7 +1892,8 @@ public final class WorkspaceModel {
       }
     case .turnAcknowledged, .turnStateChanged, .turnFinished:
       if let turn = try? event.payload["turn"]?.decode(Turn.self) { current.upsert(turn) }
-      if event.kind == .turnFinished { streams.turnFinished() }
+      // The turn's end, or a turn event that leaves no turn running (its `turn.finished` was lost).
+      if event.kind == .turnFinished || current.activeTurn == nil { streams.turnFinished() }
     case .runtimeRequestOpened:
       if let request = try? event.payload["runtimeRequest"]?.decode(RuntimeRequest.self),
         request.state == .pending, !current.requests.contains(where: { $0.id == request.id })

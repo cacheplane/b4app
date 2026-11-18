@@ -35,12 +35,17 @@ import WorkspaceProtocol
 
   func append(_ delta: String, to nativeItemId: String) {
     guard !delta.isEmpty else { return }
-    if let stream = streams[nativeItemId], stream.phase == .streaming {
-      stream.append(delta)
+    let previous = streams[nativeItemId]
+    if let previous, previous.isAccepting {
+      previous.append(delta)
       return
     }
+    // A completed stream may still be draining its backlog (the phone sends a gap's completion and
+    // the whole-text delta back to back): it shows the rest now, and the new stream starts from it.
+    if let previous, previous.phase == .streaming { previous.pacing = .immediate }
+    previous?.discard()
     let stream = MessageStream(
-      pacing: pacing, ticker: makeTicker(), revealedPrefix: streams[nativeItemId]?.shown ?? "")
+      pacing: pacing, ticker: makeTicker(), revealedPrefix: previous?.shown ?? "")
     stream.onReveal = { [weak self] in self?.revision += 1 }
     streams[nativeItemId] = stream
     stream.append(delta)
@@ -62,7 +67,7 @@ import WorkspaceProtocol
 
   /// Another thread, no thread, or another account.
   func reset() {
-    for stream in streams.values { stream.pacing = .immediate }
+    for stream in streams.values { stream.discard() }
     forgetAll()
   }
 

@@ -13,18 +13,29 @@ import Foundation
 /// Sixty ticks a second on the main actor while started. The loop holds the ticker weakly, so a
 /// ticker nothing else holds ends its loop, and `stop()` ends it at once.
 @MainActor final class DisplayTicker: RevealTicker {
+  /// Waits one frame; throws when the loop's task is cancelled. Injected so a test releases frames
+  /// by hand instead of waiting on the clock.
+  typealias Frame = @Sendable () async throws -> Void
+
   var onTick: (@MainActor () -> Void)?
-  private var task: Task<Void, Never>?
+  /// The running loop; open to the module so a test can await its end.
+  private(set) var task: Task<Void, Never>?
   /// Names the live loop: a loop that is not the current generation ends without ticking.
   private var generation = 0
+  private let frame: Frame
+
+  init(frame: @escaping Frame = { try await Task.sleep(for: .seconds(1.0 / 60.0)) }) {
+    self.frame = frame
+  }
 
   func start() {
     guard task == nil else { return }
     generation += 1
     let mine = generation
+    let frame = frame
     task = Task { [weak self] in
       while !Task.isCancelled {
-        do { try await Task.sleep(for: .seconds(1.0 / 60.0)) } catch { return }
+        do { try await frame() } catch { return }
         guard !Task.isCancelled, let self, self.generation == mine, self.task != nil else { return }
         self.onTick?()
       }
