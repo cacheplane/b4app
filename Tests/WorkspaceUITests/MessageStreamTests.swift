@@ -129,4 +129,82 @@ import Testing
     #expect(weakStream == nil)
     ticker.stop()
   }
+
+  @Test func aLaterDeltaThatExtendsARevealedGraphemeIsRevealed() {
+    let ticker = ManualTicker()
+    let stream = MessageStream(pacing: .paced, ticker: ticker)
+    stream.append("e")
+    while ticker.running { ticker.fire() }
+    #expect(stream.shown == "e")
+    stream.append("\u{301}")
+    while ticker.running { ticker.fire() }
+    #expect(stream.shown == "e\u{301}")
+    stream.complete(finalText: "e\u{301}")
+    #expect(stream.phase == .complete)
+    #expect(stream.document == MarkdownParser.parse("e\u{301}"))
+  }
+
+  @Test func aSplitEmojiSequenceIsCompletedByALaterDelta() {
+    let ticker = ManualTicker()
+    let stream = MessageStream(pacing: .paced, ticker: ticker)
+    let family = "👨‍👩‍👧‍👦"
+    let scalars = Array(family.unicodeScalars)
+    stream.append(String(String.UnicodeScalarView(scalars.prefix(1))))
+    while ticker.running { ticker.fire() }
+    stream.append(String(String.UnicodeScalarView(scalars.dropFirst(1))))
+    while ticker.running { ticker.fire() }
+    #expect(stream.shown == family)
+    stream.complete(finalText: family)
+    #expect(stream.document == MarkdownParser.parse(family))
+  }
+
+  @Test func completingRightAfterAnExtensionDrainsAndFinishesOnce() {
+    let ticker = ManualTicker()
+    let stream = MessageStream(pacing: .paced, ticker: ticker)
+    stream.append("caf")
+    stream.append("e")
+    ticker.fire(4)
+    stream.append("\u{301}")
+    stream.complete(finalText: "cafe\u{301} au lait")
+    ticker.fire(9)
+    #expect(stream.shown == "cafe\u{301} au lait" && stream.phase == .complete && !ticker.running)
+    #expect(stream.document == MarkdownParser.parse("cafe\u{301} au lait"))
+  }
+
+  @Test func aCompletionWithNoDeltaHonoursTheRevealedPrefix() {
+    let ticker = ManualTicker()
+    let stream = MessageStream(pacing: .paced, ticker: ticker, revealedPrefix: "Hello")
+    stream.complete(finalText: "Hello there")
+    #expect(stream.shown == "Hello")
+    ticker.fire(9)
+    #expect(stream.shown == "Hello there" && stream.phase == .complete)
+  }
+
+  @Test func aStoppedDisplayTickerDoesNotTickAgain() async throws {
+    let ticker = DisplayTicker()
+    var ticks = 0
+    ticker.onTick = { ticks += 1 }
+    ticker.start()
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(ticks > 0)
+    ticker.stop()
+    let atStop = ticks
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(ticks == atStop)
+  }
+
+  @Test func restartingADisplayTickerRunsOneLoop() async throws {
+    let ticker = DisplayTicker()
+    var ticks = 0
+    ticker.onTick = { ticks += 1 }
+    for _ in 0..<5 {
+      ticker.start()
+      ticker.stop()
+    }
+    ticker.start()
+    try await Task.sleep(for: .milliseconds(300))
+    ticker.stop()
+    // One loop gives about 18 ticks in 300 ms; six loops would give about 108.
+    #expect(ticks < 40)
+  }
 }

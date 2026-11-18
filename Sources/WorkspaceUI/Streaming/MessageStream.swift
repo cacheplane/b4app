@@ -23,6 +23,7 @@ enum RevealPacing: Sendable { case paced, immediate }
     didSet {
       guard pacing == .immediate, oldValue != .immediate else { return }
       revealAll()
+      backlogChars = 0
       settle()
     }
   }
@@ -35,6 +36,9 @@ enum RevealPacing: Sendable { case paced, immediate }
   /// The least step a tick takes, raised when `complete` is called so the backlog drains in time.
   @ObservationIgnored private var minimumStep = 1
   @ObservationIgnored private var completing = false
+  /// The Characters not yet shown, counted when text arrives and reduced by each tick, so a tick
+  /// does not walk the backlog.
+  @ObservationIgnored private var backlogChars = 0
 
   init(pacing: RevealPacing, ticker: any RevealTicker, revealedPrefix: String = "") {
     self.pacing = pacing
@@ -46,11 +50,9 @@ enum RevealPacing: Sendable { case paced, immediate }
   func append(_ delta: String) {
     guard !completing, !delta.isEmpty else { return }
     received += delta
-    if let prefix = revealedPrefix {
-      revealedPrefix = nil
-      reveal(upTo: replayedLength(of: prefix))
-    }
+    applyPrefix()
     if pacing == .immediate { revealAll() }
+    recount()
     settle()
   }
 
@@ -65,8 +67,10 @@ enum RevealPacing: Sendable { case paced, immediate }
     } else {
       replace(with: finalText)
     }
+    applyPrefix()
     if pacing == .immediate { revealAll() }
-    minimumStep = max(minimumStep, (backlogCount + 8) / 9)
+    recount()
+    minimumStep = max(minimumStep, (backlogChars + 8) / 9)
     settle()
   }
 
@@ -76,18 +80,25 @@ enum RevealPacing: Sendable { case paced, immediate }
     received.utf8.index(received.utf8.startIndex, offsetBy: revealed)
   }
 
-  private var backlogCount: Int { received[backlogStart...].count }
+  private func recount() { backlogChars = received[backlogStart...].count }
+
+  private func applyPrefix() {
+    guard let prefix = revealedPrefix, !received.isEmpty else { return }
+    revealedPrefix = nil
+    reveal(upTo: replayedLength(of: prefix))
+  }
 
   private func tick() {
-    let backlog = backlogCount
-    guard backlog > 0 else {
+    guard revealed < received.utf8.count else {
       settle()
       return
     }
-    let step = max(minimumStep, (backlog + 11) / 12)
+    if backlogChars == 0 { recount() }
+    let step = min(backlogChars, max(minimumStep, (backlogChars + 11) / 12))
     let start = backlogStart
     let end = received.index(start, offsetBy: step, limitedBy: received.endIndex) ?? received.endIndex
     reveal(upTo: received.utf8.distance(from: received.utf8.startIndex, to: end))
+    backlogChars -= step
     settle()
   }
 
@@ -113,6 +124,7 @@ enum RevealPacing: Sendable { case paced, immediate }
     parser.push(text)
     revealed = text.utf8.count
     shown = text
+    backlogChars = 0
     document = parser.document
     onReveal?()
   }

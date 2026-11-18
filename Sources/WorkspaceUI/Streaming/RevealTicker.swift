@@ -15,13 +15,17 @@ import Foundation
 @MainActor final class DisplayTicker: RevealTicker {
   var onTick: (@MainActor () -> Void)?
   private var task: Task<Void, Never>?
+  /// Names the live loop: a loop that is not the current generation ends without ticking.
+  private var generation = 0
 
   func start() {
     guard task == nil else { return }
+    generation += 1
+    let mine = generation
     task = Task { [weak self] in
       while !Task.isCancelled {
         do { try await Task.sleep(for: .seconds(1.0 / 60.0)) } catch { return }
-        guard let self else { return }
+        guard !Task.isCancelled, let self, self.generation == mine, self.task != nil else { return }
         self.onTick?()
       }
     }
