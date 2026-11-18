@@ -88,15 +88,19 @@
     private func row(_ item: DisplayItem) -> TranscriptRow { TranscriptRow(item: item, streams: streams) }
 
     private func line(
-      counted: Int = 4, failed: Int = 0, running: Bool = false, name: String? = nil
-    ) -> DenseTranscript.StepsLine {
-      DenseTranscript.StepsLine(
-        group: "t1", folded: [], counted: counted, failed: failed, declined: 0, running: running,
-        waiting: false, runningName: name)
+      counted: Int = 4, failed: Int = 0, state: DenseTranscript.ActivityLine.State = .ended,
+      name: String? = nil, folded: Int = 1, duration: Int? = nil
+    ) -> DenseTranscript.ActivityLine {
+      DenseTranscript.ActivityLine(
+        group: "t1",
+        folded: (0..<folded).map {
+          item("f\($0)", role: .assistant, type: "reasoning")
+        }, counted: counted, failed: failed, declined: 0, state: state, runningName: name,
+        startedAt: state == .ended ? nil : Timestamp.now(), duration: duration)
     }
 
-    private func lineRow(_ line: DenseTranscript.StepsLine, open: Bool = false) -> StepsLineRow {
-      StepsLineRow(line: line, open: open, toggle: {})
+    private func lineRow(_ line: DenseTranscript.ActivityLine, open: Bool = false) -> ActivityLineRow {
+      ActivityLineRow(line: line, open: open, toggle: {})
     }
 
     // MARK: the one transcript
@@ -155,32 +159,74 @@
 
     @Test func theLineReadsAsOneElement() {
       #expect(lineRow(line(counted: 4, failed: 1)).label == "4 steps, 1 failed, Show")
+      #expect(lineRow(line(counted: 4, failed: 1, duration: 72)).label == "4 steps, 1 failed, 1m 12s, Show")
       #expect(lineRow(line(counted: 0)).label == "Show working")
-      #expect(lineRow(line(running: true, name: "swift test")).label == "swift test, Show")
+      #expect(lineRow(line(counted: 0, folded: 0)).label == "")
+      #expect(lineRow(line(state: .running, name: "swift test")).label == "swift test, Show")
+      #expect(lineRow(line(state: .running, name: nil, folded: 0)).label == "Working")
       #expect(lineRow(line(counted: 4), open: true).label == "4 steps, Hide")
     }
 
-    @Test func aLongRunningNameKeepsTheLineOneLineHigh() {
-      let long = String(repeating: "x", count: DenseTranscript.nameLimit)
-      let cut = lineRow(line(running: true, name: long))
-      let plain = lineRow(line(running: true, name: nil))
-      #expect(height(cut, width: 320) == height(plain, width: 320))
+    /// A running turn's line is one row high at a phone's width, whatever its step is called.
+    @Test func aLongRunningNameKeepsTheLineOneRowHigh() {
+      let long = String(repeating: "x", count: 200)
+      let cut = lineRow(line(state: .running, name: long))
+      let plain = height(lineRow(line(state: .running, name: nil)), width: 320)
+      #expect(plain >= LLA.Metrics.row)
+      #expect(height(cut, width: 320) == plain)
+      #expect(height(lineRow(line(state: .stopping, folded: 0)), width: 320) == plain)
       // The action word is part of the label whatever the name's length.
       #expect(cut.label.hasSuffix(", Show"))
     }
 
     @Test func onlyTheFailedCountIsInDanger() {
-      typealias Segment = StepsLineRow.Segment
-      let both = DenseTranscript.StepsLine(
-        group: "t1", folded: [], counted: 4, failed: 1, declined: 1, running: false, waiting: false,
-        runningName: nil)
+      typealias Segment = ActivityLineRow.Segment
+      var both = line(counted: 4, failed: 1)
+      both.declined = 1
       #expect(
         lineRow(both).segments == [
           Segment(text: "4 steps", tone: .muted), Segment(text: ", ", tone: .muted),
           Segment(text: "1 failed", tone: .danger), Segment(text: ", ", tone: .muted),
           Segment(text: "1 declined", tone: .muted),
         ])
+      both.duration = 72
+      #expect(
+        lineRow(both).segments.suffix(2) == [
+          Segment(text: " · ", tone: .muted), Segment(text: "1m 12s", tone: .muted),
+        ])
       #expect(lineRow(line(counted: 0)).segments.isEmpty)
+    }
+
+    /// Only a line that has not ended draws a clock.
+    @Test func onlyALineThatHasNotEndedTicks() {
+      for state: DenseTranscript.ActivityLine.State in [.running, .waiting, .stopping] {
+        #expect(ActivityLineRow.ticks(line(state: state)), "\(state)")
+      }
+      #expect(!ActivityLineRow.ticks(line(duration: 72)))
+    }
+
+    /// The clock counts from the turn's start, once a second, and is the only thing that moves.
+    @Test func theClockCountsAndTheProjectionDoesNot() async throws {
+      let began = Timestamp.string(from: Date().addingTimeInterval(-42))
+      let running = Turn(
+        id: "t1", threadId: "clock-th", operationId: "op-t1", status: .running, createdAt: began)
+      // A thread of its own: the projection counter is by thread, and other suites use "th".
+      var first = fiveItems()[0]
+      first.threadId = "clock-th"
+      let window = SnapshotWindow(
+        rootView: TranscriptContent(
+          detail: detail([first], turns: [running], thread: "clock-th"), streams: streams,
+          folds: TranscriptFolds()
+        )
+        .frame(width: 720, height: 400),
+        size: CGSize(width: 720, height: 400))
+      defer { window.close() }
+      window.host.layoutSubtreeIfNeeded()
+      let before = DenseTranscript.projections(of: "clock-th")
+      #expect(before > 0)
+      try await Task.sleep(for: .seconds(1.3))
+      window.host.layoutSubtreeIfNeeded()
+      #expect(DenseTranscript.projections(of: "clock-th") == before)
     }
 
     @Test func stackedTheActionWordWraps() {
@@ -192,12 +238,10 @@
       #expect(stacked(width: 40) > stacked(width: 400))
 
       // A line with every part wraps as one text: the count is not squeezed by the parts after it.
-      let both = lineRow(
-        DenseTranscript.StepsLine(
-          group: "t1", folded: [], counted: 4, failed: 1, declined: 1, running: false, waiting: false,
-          runningName: nil)
-      )
-      .environment(\.dynamicTypeSize, .accessibility5)
+      var every = line(counted: 4, failed: 1)
+      every.declined = 1
+      let both = lineRow(every)
+        .environment(\.dynamicTypeSize, .accessibility5)
       let oneLine = height(
         Text("Show").font(LLAFont.small).environment(\.dynamicTypeSize, .accessibility5), width: 320)
       // macOS does not scale the type with `dynamicTypeSize`, so 320 pt holds the whole line here; 100 pt

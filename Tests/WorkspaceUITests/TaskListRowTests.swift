@@ -42,14 +42,14 @@ import WorkspaceProtocol
     }
     return nil
   }
-  private func line(_ entries: [DenseTranscript.Entry]) -> DenseTranscript.StepsLine? {
+  private func line(_ entries: [DenseTranscript.Entry]) -> DenseTranscript.ActivityLine? {
     for case .line(let line) in entries { return line }
     return nil
   }
 
   // MARK: dense
 
-  @Test func aRunningTurnShowsItsListAfterTheStepsLine() throws {
+  @Test func aRunningTurnShowsItsListAfterItsLine() throws {
     let result = dense([user("u1"), command("k1"), list([.completed, .inProgress])], turn(.running, nil))
     #expect(ids(result) == ["u1", "steps-t1", "p1"])
     #expect(try #require(line(result)).counted == 1)
@@ -65,19 +65,15 @@ import WorkspaceProtocol
     #expect(ids(dense(items, turn(), open: ["t1"])) == ["u1", "steps-t1", "k1", "p1", "m1"])
   }
 
-  /// The list says the turn is working; the running line would say it twice.
-  @Test func aRunningTurnWithOnlyAListDrawsTheListAlone() {
-    #expect(ids(dense([user("u1"), list([.inProgress, .pending])], turn(.running, nil))) == ["u1", "p1"])
-  }
-
-  /// A list with no step in progress does not say the turn is working, so the running line does.
-  @Test func aRunningTurnWhoseListHasNoStepInProgressSaysItIsWorking() {
+  /// A running turn always has its line, whatever its list says: the list follows it.
+  @Test func aRunningTurnsListFollowsItsLine() {
     let running = turn(.running, nil)
-    #expect(ids(dense([user("u1"), list([.pending, .pending])], running)) == ["u1", "running-t1", "p1"])
+    #expect(ids(dense([user("u1"), list([.inProgress, .pending])], running)) == ["u1", "steps-t1", "p1"])
+    #expect(ids(dense([user("u1"), list([.pending, .pending])], running)) == ["u1", "steps-t1", "p1"])
     #expect(
-      ids(dense([user("u1"), list([.completed, .completed])], running)) == ["u1", "running-t1", "p1"])
-    // A message beside the list is the turn's own word, as it is without a list.
-    #expect(ids(dense([user("u1"), list([.pending]), message("m1")], running)) == ["u1", "p1", "m1"])
+      ids(dense([user("u1"), list([.completed, .completed])], running)) == ["u1", "steps-t1", "p1"])
+    #expect(
+      ids(dense([user("u1"), list([.pending]), message("m1")], running)) == ["u1", "steps-t1", "p1", "m1"])
   }
 
   @Test func aListIsNotACountedStep() {
@@ -88,7 +84,7 @@ import WorkspaceProtocol
   @Test func anEmptyListIsNotDrawn() {
     let items = [user("u1"), list([]), message("m1")]
     #expect(ids(dense(items, turn(), open: ["t1"])) == ["u1", "m1"])
-    #expect(ids(dense([user("u1"), list([])], turn(.running, nil))) == ["u1", "running-t1"])
+    #expect(ids(dense([user("u1"), list([])], turn(.running, nil))) == ["u1", "steps-t1"])
   }
 
   @Test(arguments: [TurnOutcome.completed, .cancelled, .failed])

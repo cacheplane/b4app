@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import WorkspaceProtocol
 
@@ -7,6 +8,9 @@ import WorkspaceProtocol
 @Suite struct DenseTranscriptTests {
   // MARK: fixtures
 
+  /// When every fixture turn and item was made: an ended turn of them took "1s".
+  private static let began = "2026-11-18T10:00:00.000Z"
+
   private func item(
     _ id: String, turn: String? = "t1", role: DisplayItemRole, type: String, status: String? = nil,
     payload: [String: JSONValue] = [:]
@@ -15,7 +19,7 @@ import WorkspaceProtocol
     if let status { members["status"] = .string(status) }
     return DisplayItem(
       id: id, threadId: "th", turnId: turn, role: role, type: type, payload: .object(members), sequence: 0,
-      provenance: .live)
+      provenance: .live, createdAt: Self.began)
   }
 
   private func user(_ id: String, turn: String? = "t1") -> DisplayItem {
@@ -67,13 +71,16 @@ import WorkspaceProtocol
   private func turn(
     _ id: String = "t1", _ status: TurnStatus = .terminal, _ outcome: TurnOutcome? = .completed
   ) -> Turn {
-    Turn(id: id, threadId: "th", operationId: "op-\(id)", status: status, outcome: outcome)
+    Turn(
+      id: id, threadId: "th", operationId: "op-\(id)", status: status, outcome: outcome,
+      createdAt: Self.began, updatedAt: Self.began)
   }
 
   private func ids(_ entries: [DenseTranscript.Entry]) -> [String] { entries.map(\.id) }
 
-  private func line(_ entries: [DenseTranscript.Entry], _ group: String = "t1") -> DenseTranscript.StepsLine?
-  {
+  private func line(
+    _ entries: [DenseTranscript.Entry], _ group: String = "t1"
+  ) -> DenseTranscript.ActivityLine? {
     for case .line(let line) in entries where line.group == group { return line }
     return nil
   }
@@ -100,7 +107,7 @@ import WorkspaceProtocol
     #expect(steps.failedText == "1 failed")
     #expect(steps.declinedText == nil)
     #expect(steps.action(open: false) == "Show")
-    #expect(steps.spoken(open: false) == "4 steps, 1 failed, Show")
+    #expect(steps.spoken(open: false) == "4 steps, 1 failed, 1s, Show")
     #expect(steps.folded.map(\.id) == ["r1", "c1", "c2", "c3", "a1", "k1"])
   }
 
@@ -120,7 +127,7 @@ import WorkspaceProtocol
     #expect(steps.failed == 1)
     #expect(steps.declined == 1)
     #expect(steps.declinedText == "1 declined")
-    #expect(steps.spoken(open: false) == "4 steps, 1 failed, 1 declined, Show")
+    #expect(steps.spoken(open: false) == "4 steps, 1 failed, 1 declined, 1s, Show")
   }
 
   @Test func planAndCapabilityItemsAreNotSteps() throws {
@@ -202,7 +209,7 @@ import WorkspaceProtocol
     let stopped = turn("t1", .terminal, .cancelled)
     let closed = try #require(line(entries(items, turns: [stopped])))
     #expect(closed.counted == 2)
-    #expect(!closed.running)
+    #expect(closed.state == .ended)
     #expect(closed.text == "2 steps")
     let opened = entries(items, turns: [stopped], open: ["t1"])
     let second = opened.compactMap { entry -> DisplayItem? in
@@ -222,7 +229,7 @@ import WorkspaceProtocol
     ]
     let running = turn("t1", .running, nil)
     let both = try #require(line(entries(items, turns: [running])))
-    #expect(both.running)
+    #expect(both.state == .running)
     #expect(both.text == "Read: Package.swift")
     let first = try #require(line(entries(Array(items.dropLast()), turns: [running])))
     #expect(first.text == "swift test")
@@ -282,7 +289,7 @@ import WorkspaceProtocol
     let result = entries(
       [user("u1"), tool("k1", status: "inProgress")], turns: [turn("t1", .waitingForUser, nil)])
     let steps = try #require(line(result))
-    #expect(steps.waiting)
+    #expect(steps.state == .waiting)
     #expect(steps.text == "Waiting for you")
   }
 
@@ -291,7 +298,7 @@ import WorkspaceProtocol
       [user("u1"), tool("k1", status: "inProgress")], turns: [turn("t1", .reconciling, nil)],
       open: ["t1"])
     let steps = try #require(line(result))
-    #expect(!steps.running)
+    #expect(steps.state == .ended)
     #expect(steps.text == "1 step")
     // Its open step is neither in progress nor stopped: nothing says which.
     #expect(steps.folded.first?.payload["status"] == .string("unknown"))
@@ -315,12 +322,11 @@ import WorkspaceProtocol
     #expect(try #require(line(result)).folded.map(\.id) == ["m1", "k1", "m2", "k2"])
   }
 
-  /// No steps line: there is nothing to show or hide. Before the first item the running line stands
-  /// in its place (D-239).
-  @Test func aRunningTurnWithNothingYetHasNoStepsLine() {
+  /// A running turn always has its line, whatever it has: nothing yet, or only a reply.
+  @Test func aRunningTurnAlwaysHasItsLine() {
     let running = turn("t1", .running, nil)
-    #expect(ids(entries([user("u1")], turns: [running])) == ["u1", "running-t1"])
-    #expect(ids(entries([user("u1"), message("m1")], turns: [running])) == ["u1", "m1"])
+    #expect(ids(entries([user("u1")], turns: [running])) == ["u1", "steps-t1"])
+    #expect(ids(entries([user("u1"), message("m1")], turns: [running])) == ["u1", "steps-t1", "m1"])
   }
 
   // MARK: grouping
@@ -382,7 +388,7 @@ import WorkspaceProtocol
       ],
       turns: [])
     let steps = try #require(line(result, "ghost"))
-    #expect(!steps.running)
+    #expect(steps.state == .ended)
     #expect(!ids(result).contains("note-ghost"))
   }
 
@@ -429,81 +435,120 @@ import WorkspaceProtocol
     #expect(DenseTranscript.title(of: item("z", role: .tool, type: "somethingNew")) == "somethingNew")
   }
 
-  // MARK: the running line with nothing to fold (D-239)
+  // MARK: the line of a running turn
 
-  /// Between a send and the first item a dense turn has nothing to fold, so no steps line: it draws
-  /// the running line. Once there is something to fold or a reply to read, the steps line and the
-  /// reply say what is happening, as before.
-  @Test func aRunningTurnWithNothingYetSaysWorking() {
-    let waiting = DenseTranscript.entries(items: [user("u1")], turns: [turn("t1", .running, nil)], open: [])
-    #expect(ids(waiting) == ["u1", "running-t1"])
-    guard case .running(let line)? = waiting.last else {
-      Issue.record("no running line")
-      return
+  /// Every running status has the line, marked or not, and no other turn has a running one.
+  @Test(arguments: [TurnStatus.submitting, .running, .waitingForUser, .stopping])
+  func everyRunningStatusHasAWorkingLine(_ status: TurnStatus) throws {
+    let nothing = entries([user("u1")], turns: [turn("t1", status, nil)])
+    #expect(ids(nothing) == ["u1", "steps-t1"])
+    let bare = try #require(line(nothing))
+    #expect(!bare.canOpen)
+    #expect(bare.action(open: false) == nil)
+    #expect(bare.startedAt == turn("t1").createdAt)
+    let stepping = try #require(
+      line(
+        entries(
+          [user("u1"), command("c1", status: "inProgress", command: "swift test")],
+          turns: [turn("t1", status, nil)])))
+    #expect(stepping.canOpen)
+    #expect(stepping.action(open: false) == "Show")
+    switch status {
+    case .waitingForUser: #expect(stepping.text == "Waiting for you" && !stepping.marked)
+    case .stopping: #expect(stepping.text == "Stopping" && stepping.marked)
+    default: #expect(stepping.text == "swift test" && stepping.marked)
     }
-    #expect(line.text == "Working")
-
-    let stepping = DenseTranscript.entries(
-      items: numbered([user("u1"), command("c1", status: "inProgress", command: "swift test")]),
-      turns: [turn("t1", .running, nil)], open: [])
-    #expect(ids(stepping) == ["u1", "steps-t1"])
-    let replying = DenseTranscript.entries(
-      items: numbered([user("u1"), message("m1")]), turns: [turn("t1", .running, nil)], open: [])
-    #expect(ids(replying) == ["u1", "m1"])
-    let ended = DenseTranscript.entries(items: [user("u1")], turns: [turn("t1")], open: [])
-    #expect(ids(ended) == ["u1"])
   }
 
-  @Test func aDenseTurnWaitingWithNothingFoldedSaysSo() {
-    let entries = DenseTranscript.entries(
-      items: [user("u1")], turns: [turn("t1", .waitingForUser, nil)], open: [])
-    guard case .running(let line)? = entries.last else {
-      Issue.record("no running line")
-      return
+  /// A running turn with no items at all (begun on another device, its message not here yet) has its
+  /// line, after everything, where a turn's note stands when it has no items.
+  @Test func aRunningTurnWithNoItemsHasItsLine() throws {
+    let result = entries([user("u1"), message("m1")], turns: [turn("t1"), turn("t2", .running, nil)])
+    #expect(ids(result) == ["u1", "m1", "steps-t2"])
+    let bare = try #require(line(result, "t2"))
+    #expect(bare.text == "Working")
+    #expect(bare.marked)
+    #expect(!bare.canOpen)
+  }
+
+  @Test func theLineByTurnStatusAndItems() throws {
+    let created = "2026-11-18T10:00:00.000Z"
+    func at(_ item: DisplayItem, seconds: Int) -> DisplayItem {
+      var copy = item
+      copy.createdAt = Timestamp.string(
+        from: Timestamp.date(from: created)!.addingTimeInterval(TimeInterval(seconds)))
+      return copy
     }
-    #expect(line.text == "Waiting for you")
+    func make(_ status: TurnStatus, _ outcome: TurnOutcome?) -> Turn {
+      Turn(
+        id: "t1", threadId: "th", operationId: "op", status: status, outcome: outcome, createdAt: created,
+        updatedAt: "2026-11-18T10:09:00.000Z")
+    }
+    // A submitted turn.
+    let submitted = try #require(line(entries([], turns: [make(.submitting, nil)])))
+    #expect(submitted.text == "Working" && submitted.marked && !submitted.canOpen)
+    #expect(submitted.startedAt == created && submitted.duration == nil)
+    // A streaming reply alone: the line, then the message.
+    let streaming = entries([user("u1"), message("m1")], turns: [make(.running, nil)])
+    #expect(ids(streaming) == ["u1", "steps-t1", "m1"])
+    #expect(try #require(line(streaming)).text == "Working")
+    // Waiting, stopping.
+    let waiting = try #require(
+      line(entries([user("u1"), tool("k1", status: "inProgress")], turns: [make(.waitingForUser, nil)])))
+    #expect(waiting.text == "Waiting for you" && !waiting.marked)
+    let stopping = try #require(
+      line(entries([user("u1"), tool("k1", status: "inProgress")], turns: [make(.stopping, nil)])))
+    #expect(stopping.text == "Stopping" && stopping.marked)
+    // Ended: 6 steps, 1 failed, 72 s from the first to the last item.
+    var items = [user("u1")] + (1...5).map { command("c\($0)") } + [command("c6", status: "failed")]
+    items.append(message("a1"))
+    items[items.count - 1] = at(items[items.count - 1], seconds: 72)
+    let ended = try #require(line(entries(items, turns: [make(.terminal, .completed)])))
+    #expect(ended.text == "6 steps" && ended.failedText == "1 failed")
+    #expect(ended.durationText == "1m 12s" && ended.state == .ended && ended.startedAt == nil)
+    #expect(!ended.marked)
+    #expect(ended.spoken(open: false) == "6 steps, 1 failed, 1m 12s, Show")
+    // An item's `endedAt` is the end when it is later than every `createdAt`.
+    var late = items
+    late[1] = item(
+      "c1", role: .tool, type: "commandExecution", status: "completed",
+      payload: ["command": .string("ls"), "endedAt": .string("2026-11-18T10:03:00.000Z")])
+    #expect(
+      try #require(line(entries(late, turns: [make(.terminal, .completed)]))).durationText == "3m")
+    // Only an answer: no line.
+    #expect(line(entries([user("u1"), message("a1")], turns: [make(.terminal, .completed)])) == nil)
+    // An unknown outcome has the ended words and no duration.
+    let unknown = try #require(line(entries(items, turns: [make(.reconciling, nil)])))
+    #expect(unknown.text == "6 steps" && unknown.durationText == nil && unknown.state == .ended)
+    // A history group has a count and no duration.
+    let history = try #require(
+      line(
+        entries([user("u1", turn: nil), tool("k1", turn: nil), message("a1", turn: nil)], turns: []), "h-u1"))
+    #expect(history.text == "1 step" && history.durationText == nil)
+    // Reasoning only: no words, a "Show working" action and no duration.
+    let thought = try #require(
+      line(entries([user("u1"), reasoning("r1"), message("a1")], turns: [make(.terminal, .completed)])))
+    #expect(thought.text == nil && thought.durationText == nil)
+    #expect(thought.action(open: false) == "Show working")
+    #expect(thought.action(open: true) == "Hide working")
   }
 
-  /// A turn that is running says so in whichever form has room: a line with nothing to fold, the steps line
-  /// otherwise. Each running status does; none of the others does.
-  @Test(arguments: [TurnStatus.submitting, .running, .stopping])
-  func everyRunningStatusEndsInALineThatSaysWorking(_ status: TurnStatus) throws {
-    let nothing = DenseTranscript.entries(items: [user("u1")], turns: [turn("t1", status, nil)], open: [])
-    #expect(ids(nothing) == ["u1", "running-t1"])
-    #expect(running(nothing).map(\.text) == ["Working"])
-    let stepping = entries(
-      [user("u1"), command("c1", status: "inProgress", command: "swift test")],
-      turns: [turn("t1", status, nil)])
-    let steps = try #require(line(stepping))
-    #expect(steps.running)
-    #expect(steps.text == "swift test")
-    #expect(running(stepping).isEmpty)
-  }
-
-  /// An ended turn, one whose outcome is unknown, and history have no running line and no running steps line.
-  @Test func onlyARunningTurnHasARunningLine() {
+  /// An ended turn has no running line and no mark, whatever its steps say.
+  @Test func anEndedTurnHasNoClockOrMark() {
     let ended = [
       turn("t1"), turn("t1", .terminal, .failed), turn("t1", .terminal, .cancelled),
       turn("t1", .reconciling, nil),
     ]
     for turn in ended {
-      for items in [[user("u1")], [user("u1"), tool("k1", status: "inProgress")]] {
-        let result = entries(items, turns: [turn])
-        #expect(running(result).isEmpty, "\(turn.status) \(String(describing: turn.outcome))")
-        #expect(line(result)?.running != true)
-      }
+      let result = entries([user("u1"), tool("k1", status: "inProgress")], turns: [turn])
+      let steps = line(result)
+      #expect(steps?.state == .ended, "\(turn.status)")
+      #expect(steps?.marked == false)
+      #expect(steps?.startedAt == nil)
     }
+    #expect(line(entries([user("u1")], turns: [turn()])) == nil)
     let history = entries([user("u1", turn: nil), tool("k1", turn: nil, status: "inProgress")], turns: [])
-    #expect(running(history).isEmpty)
-    #expect(line(history, "h-u1")?.running == false)
-  }
-
-  /// A running turn with no items at all (begun on another device) draws nothing yet: the dense
-  /// projection groups items, and only a failed or stopped turn's note stands without one. Pinned as it
-  /// is, not as the old normal density had it (a line at the end).
-  @Test func aRunningTurnWithNoItemsDrawsNothingYet() {
-    let result = entries([user("u1"), message("m1")], turns: [turn("t1"), turn("t2", .running, nil)])
-    #expect(ids(result) == ["u1", "m1"])
+    #expect(line(history, "h-u1")?.state == .ended)
   }
 
   // MARK: settling an ended turn's open steps
@@ -579,10 +624,6 @@ import WorkspaceProtocol
     #expect(DenseTranscript.statusLabel("declined") == "Declined")
     #expect(DenseTranscript.statusLabel("unknown") == "Unknown")
     #expect(DenseTranscript.statusLabel("somethingNew") == "somethingNew")
-  }
-
-  private func running(_ entries: [DenseTranscript.Entry]) -> [DenseTranscript.RunningLine] {
-    entries.compactMap { if case .running(let line) = $0 { line } else { nil } }
   }
 
   // MARK: the window of latest rows

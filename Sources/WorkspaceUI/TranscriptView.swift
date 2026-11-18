@@ -253,14 +253,12 @@ struct TranscriptContent: View {
         TranscriptRow(item: item, streams: streams)
           .id(item.id)
       case .line(let line):
-        StepsLineRow(line: line, open: folds.open.contains(line.group)) {
+        ActivityLineRow(line: line, open: folds.open.contains(line.group)) {
           folds.toggle(line.group)
         }
         .id(entry.id)
       case .note(let turn):
         TurnNoteRow(turn: turn).id(entry.id)
-      case .running(let line):
-        RunningLineRow(line: line).id(entry.id)
       }
     }
     if let pending {
@@ -279,44 +277,68 @@ struct TranscriptContent: View {
   }
 }
 
-/// A turn's line: what the turn did, or is doing, and the word that shows or hides it. One muted line,
-/// cut at its tail; at accessibility sizes it wraps under the action word.
-struct StepsLineRow: View {
-  let line: DenseTranscript.StepsLine
+/// A turn's line: the working mark while it runs, what the turn did or is doing, the time it took or
+/// has taken, and the word that shows or hides its work. One muted line, cut at its tail; at
+/// accessibility sizes it stacks. A line with nothing to open is read as its words and is not a control.
+struct ActivityLineRow: View {
+  let line: DenseTranscript.ActivityLine
   let open: Bool
   let toggle: () -> Void
   @Environment(\.dynamicTypeSize) private var typeSize
 
-  /// The line read as one element: "4 steps, 1 failed, Show".
+  /// The line read as one element: "4 steps, 1 failed, 1m 12s, Show".
   var label: String { line.spoken(open: open) }
 
+  /// Whether the row draws a clock: only a line that has not ended does, and it is the only part of the
+  /// row that reads the time.
+  static func ticks(_ line: DenseTranscript.ActivityLine) -> Bool { line.startedAt != nil }
+
   var body: some View {
-    Button {
-      withAnimation(.none) { toggle() }
-    } label: {
-      let stacked = typeSize.isAccessibilitySize
-      let layout =
-        stacked
-        ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
-        : AnyLayout(HStackLayout(spacing: LLA.Space.xs))
-      layout {
+    Group {
+      if line.canOpen {
+        Button {
+          withAnimation(.none) { toggle() }
+        } label: {
+          content
+        }
+        .buttonStyle(.plain)
+      } else {
+        content
+      }
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(label)
+    .accessibilityIdentifier("activity-line")
+    .accessibilityAddTraits(line.canOpen ? .isButton : [])
+  }
+
+  private var content: some View {
+    let stacked = typeSize.isAccessibilitySize
+    let layout =
+      stacked
+      ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
+      : AnyLayout(HStackLayout(spacing: LLA.Space.xs))
+    return layout {
+      if stacked {
+        HStack(alignment: .top, spacing: LLA.Space.s) {
+          if line.marked { ThreadMark(state: .working) }
+          if !segments.isEmpty { parts }
+        }
+      } else {
+        if line.marked { ThreadMark(state: .working) }
         if !segments.isEmpty { parts }
-        // A running step's name is free text ("swift test"), so a dot keeps the action word from
-        // reading as its last word. It is part of the action's text, not a view of its own: a third
-        // view in the row kept a lazy stack from settling when the transcript had one.
-        // Stacked, the action word has the row's width to itself and wraps rather than overrun it.
-        Text(segments.isEmpty || stacked ? line.action(open: open) : "· \(line.action(open: open))")
+      }
+      if let start = line.startedAt { ActivityClock(start: start).fixedSize() }
+      if let action = line.action(open: open) {
+        Text(action)
           .foregroundStyle(LLA.Color.muted)
           .lineLimit(stacked ? nil : 1)
           .fixedSize(horizontal: !stacked, vertical: true)
       }
-      .font(LLAFont.small)
-      .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row, alignment: .leading)
-      .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel(label)
-    .accessibilityIdentifier("steps-line")
+    .font(LLAFont.small)
+    .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row, alignment: .leading)
+    .contentShape(Rectangle())
   }
 
   /// A run of the line drawn in one colour.
@@ -327,7 +349,8 @@ struct StepsLineRow: View {
   }
 
   /// The text, "N failed" (danger, and only it) and "N declined", with a muted ", " between the parts
-  /// that are present. The action word is not part of it.
+  /// that are present, then an ended line's duration after " · ". The action word and the clock are not
+  /// part of it.
   var segments: [Segment] {
     var segments: [Segment] = []
     func add(_ text: String?, _ tone: Segment.Tone) {
@@ -338,6 +361,10 @@ struct StepsLineRow: View {
     add(line.text, .muted)
     add(line.failedText, .danger)
     add(line.declinedText, .muted)
+    if let duration = line.durationText {
+      segments.append(Segment(text: " · ", tone: .muted))
+      segments.append(Segment(text: duration, tone: .muted))
+    }
     return segments
   }
 
@@ -361,6 +388,22 @@ struct StepsLineRow: View {
           }
         }
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+}
+
+/// The time since a turn began, once a second. It is the only view that reads the time: the row, the
+/// transcript and the projection around it are not drawn again for a tick.
+struct ActivityClock: View {
+  let start: String
+
+  var body: some View {
+    TimelineView(.periodic(from: .now, by: 1)) { context in
+      Text(ActivityTime.clock(ActivityTime.seconds(since: start, now: context.date)))
+        .monospacedDigit()
+        .foregroundStyle(LLA.Color.muted)
+        .lineLimit(1)
     }
   }
 }
@@ -614,28 +657,6 @@ struct CollapsibleCard<Content: View>: View {
     case "inProgress": return .accent
     default: return .muted
     }
-  }
-}
-
-/// What a running turn is doing (D-239): the working mark and one muted line, cut at its tail, the
-/// height of a steps line. A turn waiting for an answer has the words alone: the request below it is
-/// what asks. It is read as its text and is not a control.
-struct RunningLineRow: View {
-  let line: DenseTranscript.RunningLine
-
-  var body: some View {
-    HStack(spacing: LLA.Space.s) {
-      if !line.waiting { ThreadMark(state: .working).accessibilityHidden(true) }
-      Text(line.text)
-        .font(LLAFont.small)
-        .foregroundStyle(LLA.Color.muted)
-        .lineLimit(1)
-        .truncationMode(.tail)
-    }
-    .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row, alignment: .leading)
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(line.text)
-    .accessibilityIdentifier("running-line")
   }
 }
 

@@ -54,9 +54,13 @@ import WorkspaceProtocol
           return "\(DenseTranscript.title(of: item)) [\(status)]"
         case .system: return "system: \(item.type)"
         }
-      case .line(let line): return "line: \(line.spoken(open: open.contains(line.group)))"
+      case .line(let line):
+        // The duration is left out: the scenarios' rows are made now, so it would be the test's own speed.
+        let words = [
+          line.text, line.failedText, line.declinedText, line.action(open: open.contains(line.group)),
+        ]
+        return "line: \(words.compactMap { $0 }.joined(separator: ", "))"
       case .note(let turn): return "note: \(TurnNoteRow(turn: turn).text)"
-      case .running(let line): return "running: \(line.text)"
       }
     }
   }

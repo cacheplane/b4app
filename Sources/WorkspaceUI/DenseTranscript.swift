@@ -11,35 +11,28 @@ enum DenseTranscript {
     /// Drawn by `TranscriptRow`.
     case item(DisplayItem)
     /// The turn's line.
-    case line(StepsLine)
+    case line(ActivityLine)
     /// "Turn failed.", "Turn stopped." or, with no outcome recorded, "Turn ended."
     case note(Turn)
-    /// What a running turn is doing, where no steps line says it.
-    case running(RunningLine)
 
     var id: String {
       switch self {
       case .item(let item): return item.id
       case .line(let line): return "steps-\(line.group)"
       case .note(let turn): return "note-\(turn.id)"
-      case .running(let line): return "running-\(line.turn)"
       }
     }
   }
 
-  /// A running turn's line (D-239): where the turn has nothing to fold and no reply yet. It is not a control.
-  struct RunningLine: Equatable, Sendable {
-    var turn: String
-    /// The turn's status is waiting_for_user.
-    var waiting: Bool
-    /// The newest in-progress counted step's name.
-    var name: String?
+  /// A turn's line: what it did, or is doing, how long, and the word that shows or hides its work. A
+  /// running turn always has one; an ended turn has one when something folds.
+  struct ActivityLine: Equatable, Sendable {
+    enum State: Equatable, Sendable {
+      case running, waiting, stopping
+      /// Ended, of unknown outcome, or a history group.
+      case ended
+    }
 
-    /// "Waiting for you", else the name, else "Working": the words a dense steps line draws.
-    var text: String { waiting ? "Waiting for you" : name ?? "Working" }
-  }
-
-  struct StepsLine: Equatable, Sendable {
     /// The turn id, or "h-<user item id>" for a history group.
     var group: String
     /// What the closed line hides, in sequence order.
@@ -50,35 +43,53 @@ enum DenseTranscript {
     var failed: Int
     /// Counted steps whose status is "declined".
     var declined: Int
-    var running: Bool
-    /// Running, and the turn's status is waiting_for_user.
-    var waiting: Bool
+    var state: State
     /// Running only: the newest in-progress counted step's name.
     var runningName: String?
+    /// The turn's `createdAt` while it has not ended: the clock counts from it.
+    var startedAt: String?
+    /// Seconds, once the turn has ended and its end is known.
+    var duration: Int?
 
-    /// Running: "Waiting for you", else the name, else "Working".
+    /// Waiting: "Waiting for you"; stopping: "Stopping"; running: the name, else "Working".
     /// Ended: "4 steps" / "1 step", or nil when nothing is counted.
     var text: String? {
-      if running {
-        if waiting { return "Waiting for you" }
-        return runningName ?? "Working"
+      switch state {
+      case .waiting: return "Waiting for you"
+      case .stopping: return "Stopping"
+      case .running: return runningName ?? "Working"
+      case .ended:
+        guard counted > 0 else { return nil }
+        return counted == 1 ? "1 step" : "\(counted) steps"
       }
-      guard counted > 0 else { return nil }
-      return counted == 1 ? "1 step" : "\(counted) steps"
     }
 
     var failedText: String? { failed > 0 ? "\(failed) failed" : nil }
     var declinedText: String? { declined > 0 ? "\(declined) declined" : nil }
 
-    /// "Show" / "Hide"; "Show working" / "Hide working" when `text` is nil.
-    func action(open: Bool) -> String {
+    /// The turn's duration, written after an ended line's count.
+    var durationText: String? {
+      guard state == .ended, counted > 0, let duration else { return nil }
+      return ActivityTime.duration(duration)
+    }
+
+    /// There is something to show.
+    var canOpen: Bool { !folded.isEmpty }
+
+    /// The working mark is drawn: the turn is running or stopping, not waiting for the owner.
+    var marked: Bool { state == .running || state == .stopping }
+
+    /// "Show" / "Hide"; "Show working" / "Hide working" when `text` is nil; nil when nothing folds.
+    func action(open: Bool) -> String? {
+      guard canOpen else { return nil }
       let verb = open ? "Hide" : "Show"
       return text == nil ? "\(verb) working" : verb
     }
 
-    /// text, failedText, declinedText and the action, joined by ", ".
+    /// text, failedText, declinedText, durationText and the action, joined by ", ".
     func spoken(open: Bool) -> String {
-      [text, failedText, declinedText, action(open: open)].compactMap { $0 }.joined(separator: ", ")
+      [text, failedText, declinedText, durationText, action(open: open)].compactMap { $0 }
+        .joined(separator: ", ")
     }
   }
 
@@ -187,8 +198,13 @@ enum DenseTranscript {
     }
 
     let drawn = Set(groupOrder)
-    for turn in turns where !drawn.contains(turn.id) && hasNote(turn) {
-      result.append(.note(turn))
+    // A turn with no items here: a running one (begun on another device, its message not here yet)
+    // has its line from the moment it exists; a failed or stopped one, its note.
+    for turn in turns where !drawn.contains(turn.id) {
+      if runningStatuses.contains(turn.status) {
+        result.append(.line(activityLine(key: turn.id, folded: [], turn: turn, items: [])))
+      }
+      if hasNote(turn) { result.append(.note(turn)) }
     }
     return result
   }
@@ -247,19 +263,6 @@ enum DenseTranscript {
 
   private static let runningStatuses: Set<TurnStatus> = [.submitting, .running, .waitingForUser, .stopping]
 
-  /// The line of a turn that is running, named from its items; nil for any other turn.
-  private static func runningLine(of turn: Turn, items: [DisplayItem]) -> RunningLine? {
-    guard runningStatuses.contains(turn.status) else { return nil }
-    return RunningLine(
-      turn: turn.id, waiting: turn.status == .waitingForUser,
-      name: runningName(of: items.filter(isCountedStep)))
-  }
-
-  private static func hasStepInProgress(_ item: DisplayItem) -> Bool {
-    item.type == TaskList.itemType
-      && TaskList(payload: item.payload)?.steps.contains { $0.status == .inProgress } == true
-  }
-
   private static func hasNote(_ turn: Turn) -> Bool {
     turn.status == .terminal && turn.outcome != .completed
   }
@@ -294,27 +297,49 @@ enum DenseTranscript {
     let folded = rest.filter { !shownIds.contains($0.id) }
 
     var entries: [Entry] = users.map(Entry.item)
-    if !folded.isEmpty {
-      let steps = folded.filter(isCountedStep)
-      entries.append(
-        .line(
-          StepsLine(
-            group: key, folded: folded, counted: steps.count,
-            failed: steps.filter { $0.payload["status"]?.stringValue == "failed" }.count,
-            declined: steps.filter { $0.payload["status"]?.stringValue == "declined" }.count,
-            running: running, waiting: running && turn?.status == .waitingForUser,
-            runningName: running ? runningName(of: steps) : nil)))
-    }
-    // Nothing to fold and nothing drawn that says the turn is working: between the send and the turn's
-    // first item, or a plan alone with no step in progress (D-246). A plan with one says it itself.
-    let saysWorking = visible.contains { isMessage($0) || hasStepInProgress($0) }
-    if folded.isEmpty, !saysWorking, let turn, let line = runningLine(of: turn, items: []) {
-      entries.append(.running(line))
+    // A running turn always has its line: it is the one place that says the turn is working. An ended
+    // one has it when something folds.
+    if running || !folded.isEmpty {
+      entries.append(.line(activityLine(key: key, folded: folded, turn: turn, items: items)))
     }
     entries += (isOpen && !folded.isEmpty ? rest : visible).map(Entry.item)
     entries += systems.map(Entry.item)
     if let turn, hasNote(turn) { entries.append(.note(turn)) }
     return entries
+  }
+
+  /// The line of one group. `items` are all the group's items, as stored: they say when the turn ended.
+  private static func activityLine(
+    key: String, folded: [DisplayItem], turn: Turn?, items: [DisplayItem]
+  ) -> ActivityLine {
+    let steps = folded.filter(isCountedStep)
+    let state: ActivityLine.State
+    switch turn?.status {
+    case .submitting?, .running?: state = .running
+    case .waitingForUser?: state = .waiting
+    case .stopping?: state = .stopping
+    default: state = .ended
+    }
+    return ActivityLine(
+      group: key, folded: folded, counted: steps.count,
+      failed: steps.filter { $0.payload["status"]?.stringValue == "failed" }.count,
+      declined: steps.filter { $0.payload["status"]?.stringValue == "declined" }.count,
+      state: state, runningName: state == .running ? runningName(of: steps) : nil,
+      startedAt: state == .ended ? nil : turn?.createdAt,
+      duration: state == .ended ? duration(of: turn, items: items) : nil)
+  }
+
+  /// How long a terminal turn took: from its `createdAt` to the latest of its items' `endedAt` (else
+  /// `createdAt`). `updatedAt` is not the end: `updateTurn` sets it on every change, and an event that
+  /// arrives after the turn finished still changes the row. A turn with no item, or one that is not
+  /// terminal (its outcome unknown), or a history group has no duration.
+  private static func duration(of turn: Turn?, items: [DisplayItem]) -> Int? {
+    guard let turn, turn.status == .terminal else { return nil }
+    let ends = items.map { $0.payload["endedAt"]?.stringValue ?? $0.createdAt }
+    guard !ends.isEmpty else { return nil }
+    let seconds = ends.compactMap { ActivityTime.seconds(from: turn.createdAt, to: $0) }
+    guard seconds.count == ends.count, let latest = seconds.max() else { return nil }
+    return max(latest, 0)
   }
 
   /// The newest in-progress step's name: B4's label, else the card's title (a B4 call whose input is
