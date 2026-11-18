@@ -270,7 +270,7 @@ private struct Rig {
     #expect(await rig.collector.deltas(turnId: "turn-1") == "Part one. Part two.")
     let turns = try await rig.server.get("/threads/\(ref.nativeSessionId)/turns")
     #expect(B4Protocol.turnList(turns)?.count == 1)
-    #expect(rig.server.process.recentStderr().contains("GET /threads/\(ref.nativeSessionId)/runs/stream"))
+    #expect(await rig.server.stderrContains("GET /threads/\(ref.nativeSessionId)/runs/stream"))
     await rig.stop()
   }
 

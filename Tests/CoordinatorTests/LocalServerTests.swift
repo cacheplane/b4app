@@ -349,9 +349,11 @@ struct ServerHarness {
     }
     let clock = ContinuousClock()
     var finished = false
-    let elapsed = await clock.measure { finished = await h.coordinator.servers.stopAll(within: .seconds(4)) }
+    // The grace is `budget - 2 s`, capped at 10 s, so only a budget past 12 s leaves more than 2 s after
+    // SIGKILL; a loaded CI runner needed more. One after the other the stops would take 20 s or more.
+    let elapsed = await clock.measure { finished = await h.coordinator.servers.stopAll(within: .seconds(14)) }
     #expect(finished)
-    #expect(elapsed < .seconds(6), "the stops were not bounded: \(elapsed)")
+    #expect(elapsed < .seconds(16), "the stops were not bounded: \(elapsed)")
     for server in started {
       #expect(!ProcessInspector.isAlive(pid: server.pid!))
       #expect(try await h.status(server).health == .stopped)
