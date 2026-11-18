@@ -583,8 +583,10 @@ extension DenseTranscript {
       guard case .agent = row.kind, open.contains(row.id) else { return [.step(row)] }
       var result: [Entry] = [.step(row)]
       for child in children { result += entries(for: child, turn: turn, depth: depth + 1) }
-      // Its result, or, with none, whatever else the call recorded.
-      if shows(ToolEvidence.detail(of: row.item)) { result.append(.output(row)) }
+      // Its result; with none, what else the call recorded, only when it has no children to show: a
+      // sub-agent's prompt is never drawn under its steps.
+      let detail = ToolEvidence.detail(of: row.item)
+      if detail.output != .none || (children.isEmpty && shows(detail)) { result.append(.output(row)) }
       return result
     }
   }

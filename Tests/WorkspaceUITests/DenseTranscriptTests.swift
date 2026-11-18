@@ -776,13 +776,25 @@ import WorkspaceProtocol
     #expect(call.mark == .done)
 
     let opened = entries(oneAgent(running: false), turns: [turn()], open: ["t1", "k1"])
-    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "c2", "m1", "output-k1", "c3"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "c2", "m1", "c3"])
     let children = rows(opened).filter { ["c1", "c2", "m1"].contains($0.id) }
     #expect(children.map(\.kind) == [.step, .step, .message])
     #expect(children.allSatisfy { $0.depth == 2 })
     #expect(try #require(row("c3", in: opened)).depth == 1)
     // An agent's row is only ever drawn inside its turn's opened rows.
     #expect(ids(entries(oneAgent(running: false), turns: [turn()], open: ["k1"])) == ["u1", "steps-t1"])
+  }
+
+  /// An agent with children and no output yet draws its children alone: its prompt is never drawn
+  /// under them.
+  @Test func anAgentWithChildrenAndNoOutputHasNoOutputEntry() {
+    let opened = entries(oneAgent(running: true), turns: [turn("t1", .running, nil)], open: ["t1", "k1"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "c2", "m1", "c3"])
+    #expect(
+      !opened.contains {
+        if case .output = $0 { return true }
+        return false
+      })
   }
 
   @Test func anOpenedAgentsOwnOutputComesAfterItsChildren() {
@@ -818,7 +830,7 @@ import WorkspaceProtocol
       native(command("a2"), parent: "k1"), native(command("b2"), parent: "k2"),
     ]
     let opened = entries(items, turns: [turn()], open: ["t1", "k1", "k2"])
-    #expect(ids(opened) == ["u1", "steps-t1", "k1", "a1", "a2", "output-k1", "k2", "b1", "b2", "output-k2"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "a1", "a2", "k2", "b1", "b2"])
   }
 
   @Test func aChildWhoseParentIsNotHereStandsWhereItIsUntilItArrives() throws {
@@ -830,7 +842,7 @@ import WorkspaceProtocol
 
     let arrived = [orphan[0], orphan[1], agent("k1"), orphan[2], orphan[3]]
     let under = entries(arrived, turns: [turn()], open: ["t1", "k1"])
-    #expect(ids(under) == ["u1", "steps-t1", "c0", "k1", "c1", "output-k1", "a1"])
+    #expect(ids(under) == ["u1", "steps-t1", "c0", "k1", "c1", "a1"])
     #expect(try #require(row("c1", in: under)).depth == 2)
     #expect(try #require(line(under)).counted == 2)
   }
@@ -842,7 +854,7 @@ import WorkspaceProtocol
     ]
     let turns = [turn("t1", .running, nil), turn("t2")]
     let opened = entries(items, turns: turns, open: ["t1", "k1"])
-    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "output-k1", "u2"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "u2"])
     let child = try #require(row("c1", in: opened))
     #expect(child.depth == 2)
     #expect(child.mark == .running)
@@ -854,11 +866,7 @@ import WorkspaceProtocol
       + (2...5).map { agent("k\($0)", parent: "k\($0 - 1)") }
       + [native(command("c5"), parent: "k5")]
     let opened = entries(items, turns: [turn()], open: ["t1", "k1", "k2", "k3", "k4", "k5"])
-    #expect(
-      ids(opened) == [
-        "u1", "steps-t1", "k1", "k2", "k3", "k4", "k5", "c5", "output-k5", "output-k4", "output-k3",
-        "output-k2", "output-k1",
-      ])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "k2", "k3", "k4", "k5", "c5"])
     #expect(rows(opened).map(\.depth) == [1, 2, 3, 4, 4, 4])
     #expect(rows(opened).dropLast().allSatisfy { $0.kind == .agent(steps: 1) })
   }
@@ -942,7 +950,7 @@ import WorkspaceProtocol
       native(command("c1"), parent: "k1"),
     ]
     let opened = entries(items, turns: [turn()], open: ["t1", "k1", "k2", "k3"])
-    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "output-k1", "k2", "output-k2", "k3", "output-k3"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "k2", "output-k2", "k3", "output-k3"])
     #expect(rows(opened).map(\.depth) == [1, 2, 1, 1])
   }
 
