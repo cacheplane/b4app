@@ -12,11 +12,14 @@ public struct MarkdownParser: Sendable {
   public mutating func push(_ text: String) {
     // "\r\n" is one Character in Swift, so line endings are made "\n" before lines are cut. A "\r" at
     // the end of the buffer stays in it, so a "\r\n" split across two pushes is still one ending.
-    buffer = (buffer + text).replacingOccurrences(of: "\r\n", with: "\n")
-    while let newline = buffer.firstIndex(of: "\n") {
-      consume(buffer[..<newline])
-      buffer = String(buffer[buffer.index(after: newline)...])
+    let all = (buffer + text).replacingOccurrences(of: "\r\n", with: "\n")
+    // Walk an index over the text; only the last, partial line is copied, once, after the loop.
+    var start = all.startIndex
+    while let newline = all[start...].firstIndex(of: "\n") {
+      consume(all[start..<newline])
+      start = all.index(after: newline)
     }
+    buffer = String(all[start...])
   }
 
   /// Hands the unfinished line over as a last line and closes everything.

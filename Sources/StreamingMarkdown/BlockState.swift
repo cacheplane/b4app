@@ -1,9 +1,11 @@
 /// The top-level block the parser has open: the lines it holds so far and what ends it.
+///
+/// The open block's storage is plain stored properties that `accept` mutates in place. Never pull
+/// the storage out of an enum payload into a local `var` to append to it: the enum still holds the
+/// array, so the append copies the whole array on every line. Container states should do the same.
 struct BlockState: Equatable, Sendable {
   private enum Open: Equatable, Sendable {
-    case none
-    case paragraph([ParagraphLine])
-    case fence(LineScanner.FenceOpening, [String])
+    case none, paragraph, fence
   }
 
   private struct ParagraphLine: Equatable, Sendable {
@@ -14,18 +16,23 @@ struct BlockState: Equatable, Sendable {
   }
 
   private var open = Open.none
-
-  var isOpen: Bool { open != .none }
+  private var paragraphLines: [ParagraphLine] = []
+  private var fence: LineScanner.FenceOpening?
+  /// The open fence's code, kept joined as lines arrive so a read does not join them again.
+  private var fenceText = ""
+  private var fenceHasLines = false
 
   /// Takes one complete line. Returns the blocks the line finished, in order.
   mutating func accept(_ line: Substring) -> [MarkdownBlock.Kind] {
-    if case .fence(let opening, var lines) = open {
-      if LineScanner.closesFence(line, opening) {
-        open = .none
-        return [.code(language: opening.language, text: lines.joined(separator: "\n"), closed: true)]
+    if open == .fence, let fence {
+      if LineScanner.closesFence(line, fence) {
+        let kind = MarkdownBlock.Kind.code(language: fence.language, text: fenceText, closed: true)
+        reset()
+        return [kind]
       }
-      lines.append(String(line))
-      open = .fence(opening, lines)
+      if fenceHasLines { fenceText += "\n" }
+      fenceText += line
+      fenceHasLines = true
       return []
     }
     if LineScanner.isBlank(line) { return close() }
@@ -35,19 +42,18 @@ struct BlockState: Equatable, Sendable {
     }
     if let opening = LineScanner.fenceOpening(line) {
       let finished = close()
-      open = .fence(opening, [])
+      open = .fence
+      fence = opening
       return finished
     }
-    var lines: [ParagraphLine] = []
-    if case .paragraph(let held) = open { lines = held }
-    lines.append(Self.paragraphLine(line))
-    open = .paragraph(lines)
+    open = .paragraph
+    paragraphLines.append(Self.paragraphLine(line))
     return []
   }
 
   /// Ends the open block, if any.
   mutating func close() -> [MarkdownBlock.Kind] {
-    defer { open = .none }
+    defer { reset() }
     return current().map { [$0] } ?? []
   }
 
@@ -56,10 +62,11 @@ struct BlockState: Equatable, Sendable {
     switch open {
     case .none:
       return nil
-    case .paragraph(let lines):
+    case .paragraph:
+      // Rebuilt on every read: a paragraph is short, so this stays cheap.
       var text = ""
-      for (index, line) in lines.enumerated() {
-        if index == lines.count - 1 {
+      for (index, line) in paragraphLines.enumerated() {
+        if index == paragraphLines.count - 1 {
           text += line.text
         } else if let hard = line.hardText {
           text += hard + "\n"
@@ -68,9 +75,17 @@ struct BlockState: Equatable, Sendable {
         }
       }
       return .paragraph(text)
-    case .fence(let opening, let lines):
-      return .code(language: opening.language, text: lines.joined(separator: "\n"), closed: false)
+    case .fence:
+      return .code(language: fence?.language, text: fenceText, closed: false)
     }
+  }
+
+  private mutating func reset() {
+    open = .none
+    paragraphLines = []
+    fence = nil
+    fenceText = ""
+    fenceHasLines = false
   }
 
   private static func paragraphLine(_ line: Substring) -> ParagraphLine {
