@@ -473,16 +473,10 @@ import WorkspaceProtocol
 
   @Test func theLineByTurnStatusAndItems() throws {
     let created = "2026-11-18T10:00:00.000Z"
-    func at(_ item: DisplayItem, seconds: Int) -> DisplayItem {
-      var copy = item
-      copy.createdAt = Timestamp.string(
-        from: Timestamp.date(from: created)!.addingTimeInterval(TimeInterval(seconds)))
-      return copy
-    }
     func make(_ status: TurnStatus, _ outcome: TurnOutcome?) -> Turn {
       Turn(
         id: "t1", threadId: "th", operationId: "op", status: status, outcome: outcome, createdAt: created,
-        updatedAt: "2026-11-18T10:09:00.000Z")
+        updatedAt: "2026-11-18T10:01:12.000Z")
     }
     // A submitted turn.
     let submitted = try #require(line(entries([], turns: [make(.submitting, nil)])))
@@ -499,22 +493,21 @@ import WorkspaceProtocol
     let stopping = try #require(
       line(entries([user("u1"), tool("k1", status: "inProgress")], turns: [make(.stopping, nil)])))
     #expect(stopping.text == "Stopping" && stopping.marked)
-    // Ended: 6 steps, 1 failed, 72 s from the first to the last item.
+    // Ended: 6 steps, 1 failed, 72 s from `createdAt` to `updatedAt`.
     var items = [user("u1")] + (1...5).map { command("c\($0)") } + [command("c6", status: "failed")]
     items.append(message("a1"))
-    items[items.count - 1] = at(items[items.count - 1], seconds: 72)
     let ended = try #require(line(entries(items, turns: [make(.terminal, .completed)])))
     #expect(ended.text == "6 steps" && ended.failedText == "1 failed")
     #expect(ended.durationText == "1m 12s" && ended.state == .ended && ended.startedAt == nil)
     #expect(!ended.marked)
     #expect(ended.spoken(open: false) == "6 steps, 1 failed, 1m 12s, Show")
-    // An item's `endedAt` is the end when it is later than every `createdAt`.
-    var late = items
-    late[1] = item(
-      "c1", role: .tool, type: "commandExecution", status: "completed",
-      payload: ["command": .string("ls"), "endedAt": .string("2026-11-18T10:03:00.000Z")])
-    #expect(
-      try #require(line(entries(late, turns: [make(.terminal, .completed)]))).durationText == "3m")
+    // Never negative, and none when a time does not parse.
+    var backwards = make(.terminal, .completed)
+    backwards.updatedAt = "2026-11-17T10:00:00.000Z"
+    #expect(try #require(line(entries(items, turns: [backwards]))).durationText == "1s")
+    var garbled = make(.terminal, .completed)
+    garbled.updatedAt = "yesterday"
+    #expect(try #require(line(entries(items, turns: [garbled]))).durationText == nil)
     // Only an answer: no line.
     #expect(line(entries([user("u1"), message("a1")], turns: [make(.terminal, .completed)])) == nil)
     // An unknown outcome has the ended words and no duration.

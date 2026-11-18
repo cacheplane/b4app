@@ -1312,7 +1312,9 @@ public actor SessionService {
       case .connectionChanged:
         try await environmentConnectionChanged(raw)
       case .turnAcknowledged:
-        if let turn, let thread {
+        // A late acknowledgement of a turn that ended changes nothing, and `updateTurn` would still move
+        // `updatedAt`, which is when the turn ended (the line's duration reads it).
+        if let turn, let thread, turn.status != .terminal {
           let updated = try db.updateTurn(id: turn.id) {
             if $0.nativeTurnId == nil { $0.nativeTurnId = raw.nativeIds["turnId"] }
             if $0.status == .submitting {

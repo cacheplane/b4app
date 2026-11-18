@@ -21,6 +21,14 @@ import WorkspaceProtocol
     for (seconds, words) in cases { #expect(ActivityTime.duration(seconds) == words, "\(seconds)") }
   }
 
+  @Test func theClockSpoken() {
+    let cases: [(Int, String)] = [
+      (0, "0 seconds"), (1, "1 second"), (42, "42 seconds"), (60, "1 minute"), (75, "1 minute 15 seconds"),
+      (120, "2 minutes"), (3_600, "1 hour"), (3_725, "1 hour 2 minutes 5 seconds"), (-4, "0 seconds"),
+    ]
+    for (seconds, words) in cases { #expect(ActivityTime.words(seconds) == words, "\(seconds)") }
+  }
+
   @Test func secondsBetweenTwoTimestamps() {
     #expect(ActivityTime.seconds(from: "2026-11-18T10:00:00.000Z", to: "2026-11-18T10:01:12.000Z") == 72)
     #expect(ActivityTime.seconds(from: "2026-11-18T10:00:00.000Z", to: "2026-11-18T10:00:01.900Z") == 1)

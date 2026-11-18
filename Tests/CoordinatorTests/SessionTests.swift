@@ -210,6 +210,41 @@ private struct SlowRespondAdapter: AgentAdapter {
   func dispose() async { await inner.dispose() }
 }
 
+/// A real adapter (the fake Codex runtime) that also delivers the events a test hands it.
+private struct InjectingAdapter: AgentAdapter {
+  let inner: any AgentAdapter
+  let injected: AsyncStream<AdapterEvent>
+  var kind: ConnectionKind { inner.kind }
+  func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
+  func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
+    try await inner.createSession(input)
+  }
+  func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot {
+    try await inner.loadSession(ref)
+  }
+  func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
+    try await inner.sendTurn(ref, input: input)
+  }
+  func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
+    try await inner.interrupt(ref, turn: turn)
+  }
+  func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
+    try await inner.respond(ref, response: response)
+  }
+  func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
+    try await inner.reconcile(ref, turn: turn)
+  }
+  func events() -> AsyncStream<AdapterEvent> {
+    let (merged, continuation) = AsyncStream<AdapterEvent>.makeStream()
+    let pumps = [inner.events(), injected].map { stream in
+      Task { for await event in stream { continuation.yield(event) } }
+    }
+    continuation.onTermination = { _ in pumps.forEach { $0.cancel() } }
+    return merged
+  }
+  func dispose() async { await inner.dispose() }
+}
+
 actor EventCollector {
   private(set) var events: [EventEnvelope] = []
   /// Suspended `until` calls, resumed by the next event (or a deadline).
@@ -299,6 +334,37 @@ actor EventCollector {
     #expect(read.requests.isEmpty)
     let listed = try await h.client.request(ThreadList.self, ThreadList.Params())
     #expect(listed.threads.map(\.id) == [thread.id])
+    await h.stop()
+  }
+
+  /// `updatedAt` is when a terminal turn ended (the transcript's duration reads it), so a late
+  /// acknowledgement of an ended turn does not move it.
+  @Test func aLateAcknowledgementLeavesAnEndedTurnAlone() async throws {
+    let (injected, deliver) = AsyncStream<AdapterEvent>.makeStream()
+    let h = try await Harness.start(adapterFactory: { connection, environment, version, secrets in
+      InjectingAdapter(
+        inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
+        injected: injected)
+    })
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "hello there")
+    _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let ended = try #require(try await h.read(thread).turns.first)
+    #expect(ended.status == .terminal)
+    let nativeTurnId = try #require(ended.nativeTurnId)
+
+    // The event is published once the coordinator has handled it, so the turn is read after that.
+    let acknowledged = await h.events.events.filter { $0.event.kind == .turnAcknowledged }.count
+    deliver.yield(
+      AdapterEvent(
+        kind: .turnAcknowledged, connectionId: connection.id,
+        nativeIds: ["threadId": thread.nativeThreadId, "turnId": nativeTurnId]))
+    _ = try #require(
+      await h.events.until { seen in seen.filter { $0.kind == .turnAcknowledged }.count > acknowledged })
+    let after = try #require(try await h.read(thread).turns.first)
+    #expect(after.updatedAt == ended.updatedAt)
+    #expect(after.status == .terminal)
     await h.stop()
   }
 

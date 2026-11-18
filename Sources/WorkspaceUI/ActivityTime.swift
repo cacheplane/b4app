@@ -23,6 +23,17 @@ enum ActivityTime {
     return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
   }
 
+  /// The clock as it is spoken: "42 seconds", "1 minute 15 seconds", "1 hour 2 minutes 5 seconds".
+  static func words(_ seconds: Int) -> String {
+    let total = max(seconds, 0)
+    func part(_ count: Int, _ unit: String) -> String? {
+      count == 0 ? nil : "\(count) \(unit)\(count == 1 ? "" : "s")"
+    }
+    let parts = [part(total / 3_600, "hour"), part(total % 3_600 / 60, "minute"), part(total % 60, "second")]
+      .compactMap { $0 }
+    return parts.isEmpty ? "0 seconds" : parts.joined(separator: " ")
+  }
+
   /// Whole seconds from one timestamp to another; nil when either does not parse.
   static func seconds(from start: String, to end: String) -> Int? {
     guard let start = Timestamp.date(from: start), let end = Timestamp.date(from: end) else { return nil }

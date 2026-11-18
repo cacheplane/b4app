@@ -306,10 +306,10 @@ struct ActivityLineRow: View {
         content
       }
     }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(label)
+    // The row's children are its words and its clock, so the clock speaks the time it shows: nothing
+    // outside the clock's `TimelineView` reads it.
+    .accessibilityElement(children: .combine)
     .accessibilityIdentifier("activity-line")
-    .accessibilityAddTraits(line.canOpen ? .isButton : [])
   }
 
   private var content: some View {
@@ -321,14 +321,14 @@ struct ActivityLineRow: View {
     return layout {
       if stacked {
         HStack(alignment: .top, spacing: LLA.Space.s) {
-          if line.marked { ThreadMark(state: .working) }
+          if line.marked { ThreadMark(state: .working).accessibilityHidden(true) }
           if !segments.isEmpty { parts }
         }
       } else {
-        if line.marked { ThreadMark(state: .working) }
+        if line.marked { ThreadMark(state: .working).accessibilityHidden(true) }
         if !segments.isEmpty { parts }
       }
-      if let start = line.startedAt { ActivityClock(start: start).fixedSize() }
+      if Self.ticks(line), let start = line.startedAt { ActivityClock(start: start).fixedSize() }
       if let action = line.action(open: open) {
         Text(action)
           .foregroundStyle(LLA.Color.muted)
@@ -378,6 +378,7 @@ struct ActivityLineRow: View {
     if typeSize.isAccessibilitySize {
       segments.dropFirst().reduce(styled(segments[0])) { Text("\($0)\(styled($1))") }
         .fixedSize(horizontal: false, vertical: true)
+        .accessibilityLabel(spokenWords)
     } else {
       HStack(spacing: 0) {
         ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
@@ -389,7 +390,15 @@ struct ActivityLineRow: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(spokenWords)
     }
+  }
+
+  /// The line's words, as the screen reader has them ahead of the clock and the action.
+  private var spokenWords: String {
+    [line.text, line.failedText, line.declinedText, line.durationText].compactMap { $0 }
+      .joined(separator: ", ")
   }
 }
 
@@ -400,10 +409,12 @@ struct ActivityClock: View {
 
   var body: some View {
     TimelineView(.periodic(from: .now, by: 1)) { context in
-      Text(ActivityTime.clock(ActivityTime.seconds(since: start, now: context.date)))
+      let seconds = ActivityTime.seconds(since: start, now: context.date)
+      Text(ActivityTime.clock(seconds))
         .monospacedDigit()
         .foregroundStyle(LLA.Color.muted)
         .lineLimit(1)
+        .accessibilityLabel(ActivityTime.words(seconds))
     }
   }
 }

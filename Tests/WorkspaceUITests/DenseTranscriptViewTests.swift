@@ -197,6 +197,22 @@
       #expect(lineRow(line(counted: 0)).segments.isEmpty)
     }
 
+    /// A running line says how long it has run, in words, ahead of its action: the clock speaks it.
+    @Test func aRunningLineSpeaksItsElapsedTime() throws {
+      var running = line(state: .running, name: "swift test")
+      running.startedAt = Timestamp.string(from: Date().addingTimeInterval(-75))
+      let screen = HostedScreen(lineRow(running), size: CGSize(width: 400, height: 60))
+      defer { screen.close() }
+      let heard = screen.elements.compactMap(\.label)
+      #expect(
+        heard.contains("swift test, 1 minute 15 seconds, Show")
+          || heard.contains("swift test, 1 minute 16 seconds, Show"), "\(heard)")
+      // An ended line has no clock to speak.
+      let done = HostedScreen(lineRow(line(duration: 72)), size: CGSize(width: 400, height: 60))
+      defer { done.close() }
+      #expect(!done.elements.compactMap(\.label).contains { $0.hasSuffix("seconds") })
+    }
+
     /// Only a line that has not ended draws a clock.
     @Test func onlyALineThatHasNotEndedTicks() {
       for state: DenseTranscript.ActivityLine.State in [.running, .waiting, .stopping] {
@@ -213,19 +229,20 @@
       // A thread of its own: the projection counter is by thread, and other suites use "th".
       var first = fiveItems()[0]
       first.threadId = "clock-th"
-      let window = SnapshotWindow(
-        rootView: TranscriptContent(
+      let screen = HostedScreen(
+        TranscriptContent(
           detail: detail([first], turns: [running], thread: "clock-th"), streams: streams,
-          folds: TranscriptFolds()
-        )
-        .frame(width: 720, height: 400),
+          folds: TranscriptFolds()),
         size: CGSize(width: 720, height: 400))
-      defer { window.close() }
-      window.host.layoutSubtreeIfNeeded()
+      defer { screen.close() }
       let before = DenseTranscript.projections(of: "clock-th")
       #expect(before > 0)
+      // The running line draws its clock: 42 s since the turn began, spoken in words.
+      #expect(
+        screen.elements.compactMap(\.label).contains {
+          $0.hasPrefix("Working, 4") && $0.hasSuffix(" seconds")
+        })
       try await Task.sleep(for: .seconds(1.3))
-      window.host.layoutSubtreeIfNeeded()
       #expect(DenseTranscript.projections(of: "clock-th") == before)
     }
 

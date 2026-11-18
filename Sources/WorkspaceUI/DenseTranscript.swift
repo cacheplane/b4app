@@ -202,7 +202,7 @@ enum DenseTranscript {
     // has its line from the moment it exists; a failed or stopped one, its note.
     for turn in turns where !drawn.contains(turn.id) {
       if runningStatuses.contains(turn.status) {
-        result.append(.line(activityLine(key: turn.id, folded: [], turn: turn, items: [])))
+        result.append(.line(activityLine(key: turn.id, folded: [], turn: turn)))
       }
       if hasNote(turn) { result.append(.note(turn)) }
     }
@@ -300,7 +300,7 @@ enum DenseTranscript {
     // A running turn always has its line: it is the one place that says the turn is working. An ended
     // one has it when something folds.
     if running || !folded.isEmpty {
-      entries.append(.line(activityLine(key: key, folded: folded, turn: turn, items: items)))
+      entries.append(.line(activityLine(key: key, folded: folded, turn: turn)))
     }
     entries += (isOpen && !folded.isEmpty ? rest : visible).map(Entry.item)
     entries += systems.map(Entry.item)
@@ -308,10 +308,8 @@ enum DenseTranscript {
     return entries
   }
 
-  /// The line of one group. `items` are all the group's items, as stored: they say when the turn ended.
-  private static func activityLine(
-    key: String, folded: [DisplayItem], turn: Turn?, items: [DisplayItem]
-  ) -> ActivityLine {
+  /// The line of one group.
+  private static func activityLine(key: String, folded: [DisplayItem], turn: Turn?) -> ActivityLine {
     let steps = folded.filter(isCountedStep)
     let state: ActivityLine.State
     switch turn?.status {
@@ -326,20 +324,17 @@ enum DenseTranscript {
       declined: steps.filter { $0.payload["status"]?.stringValue == "declined" }.count,
       state: state, runningName: state == .running ? runningName(of: steps) : nil,
       startedAt: state == .ended ? nil : turn?.createdAt,
-      duration: state == .ended ? duration(of: turn, items: items) : nil)
+      duration: state == .ended ? duration(of: turn) : nil)
   }
 
-  /// How long a terminal turn took: from its `createdAt` to the latest of its items' `endedAt` (else
-  /// `createdAt`). `updatedAt` is not the end: `updateTurn` sets it on every change, and an event that
-  /// arrives after the turn finished still changes the row. A turn with no item, or one that is not
-  /// terminal (its outcome unknown), or a history group has no duration.
-  private static func duration(of turn: Turn?, items: [DisplayItem]) -> Int? {
-    guard let turn, turn.status == .terminal else { return nil }
-    let ends = items.map { $0.payload["endedAt"]?.stringValue ?? $0.createdAt }
-    guard !ends.isEmpty else { return nil }
-    let seconds = ends.compactMap { ActivityTime.seconds(from: turn.createdAt, to: $0) }
-    guard seconds.count == ends.count, let latest = seconds.max() else { return nil }
-    return max(latest, 0)
+  /// How long a terminal turn took: `updatedAt` less `createdAt`. `updatedAt` is when the turn ended
+  /// because `SessionService` does not touch a terminal turn but for a second `turnFinished`, the one way
+  /// a duration reads long. A turn whose outcome is unknown, or a history group, has none.
+  private static func duration(of turn: Turn?) -> Int? {
+    guard let turn, turn.status == .terminal,
+      let seconds = ActivityTime.seconds(from: turn.createdAt, to: turn.updatedAt)
+    else { return nil }
+    return max(seconds, 0)
   }
 
   /// The newest in-progress step's name: B4's label, else the card's title (a B4 call whose input is
