@@ -46,5 +46,5 @@ On an Apple M1 Max, with other work running on the machine. Every number below w
 - Any live runtime session: no Codex, Claude Code or B4 reply was streamed through this code. The phone's relay-gap handling is tested with the sequences the design reads from `MirrorTransport`, not over a real relay.
 - An iPhone on hardware, and the iOS app at all beyond its build: the phone-width captures are the macOS view.
 - VoiceOver: the task marks' "Done" and "Not done", headings as headers, and tables were not heard. Dynamic Type at accessibility sizes was not looked at.
-- CI: nothing has been pushed, so the new third process of CI's Test step (`B4APP_TIMING=1 swift test --skip-build --filter ParserTimingTests`) has not run on a runner.
+- CI: when these runs were made nothing had been pushed, so the new third process of CI's Test step (`B4APP_TIMING=1 swift test --skip-build --filter ParserTimingTests`) has not run on a runner.
 - Left open from the final review: settled replies are parsed on the main thread and the parse cache is dropped on every thread switch (0.115 s for 150 rows of 6 KB, `-O`, the reviewer's measurement); `DisplayTicker` is not frame-aligned (a display link is to be considered during live tuning); and the other minor items the review marked "stay deferred".
