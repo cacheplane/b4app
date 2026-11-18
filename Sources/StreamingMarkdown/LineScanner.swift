@@ -67,9 +67,16 @@ enum LineScanner {
 
   /// The text without whitespace at either end.
   static func trimmed(_ text: Substring) -> Substring {
-    var result = text.drop { $0.isWhitespace }
-    while let last = result.last, last.isWhitespace { result = result.dropLast() }
-    return result
+    let result = text.drop { $0.isWhitespace }
+    // An end index walked back over the trailing whitespace: `dropLast()` on a Substring counts
+    // from the start, so a loop of it walks the whole text once per character dropped.
+    var end = result.endIndex
+    while end > result.startIndex {
+      let before = result.index(before: end)
+      guard result[before].isWhitespace else { break }
+      end = before
+    }
+    return result[..<end]
   }
 
   // MARK: Containers

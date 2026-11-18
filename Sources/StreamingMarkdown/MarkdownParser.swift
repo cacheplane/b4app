@@ -1,5 +1,3 @@
-import Foundation
-
 /// An append-only markdown block parser: text arrives in pieces through `push`, and `document` is
 /// the blocks so far. A block that a later line cannot change is committed and keeps its value.
 public struct MarkdownParser: Sendable {
@@ -19,16 +17,22 @@ public struct MarkdownParser: Sendable {
       advanceInlineScan()
       return
     }
-    // "\r\n" is one Character in Swift, so line endings are made "\n" before lines are cut. A "\r" at
-    // the end of the buffer stays in it, so a "\r\n" split across two pushes is still one ending.
-    let all = (buffer + text).replacingOccurrences(of: "\r\n", with: "\n")
-    // Walk an index over the text; only the last, partial line is copied, once, after the loop.
-    var start = all.startIndex
-    while let newline = all[start...].firstIndex(of: "\n") {
-      consume(all[start..<newline])
-      start = all.index(after: newline)
+    // Lines are cut at each "\n" byte, and one "\r" before it is dropped. "\r\n" is one Character
+    // in Swift, so the cut works on UTF-8 rather than Characters; both bytes are ASCII, so every
+    // cut falls between scalars. A "\r" at the end of the buffer stays in it, so a "\r\n" split
+    // across two pushes is still one ending.
+    let all = buffer + text
+    let bytes = all.utf8
+    var start = bytes.startIndex
+    while let newline = bytes[start...].firstIndex(of: UInt8(ascii: "\n")) {
+      var end = newline
+      if end > start, bytes[bytes.index(before: end)] == UInt8(ascii: "\r") {
+        end = bytes.index(before: end)
+      }
+      consume(Substring(String(decoding: bytes[start..<end], as: UTF8.self)))
+      start = bytes.index(after: newline)
     }
-    buffer = String(all[start...])
+    buffer = String(decoding: bytes[start...], as: UTF8.self)
     advanceInlineScan()
   }
 

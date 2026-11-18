@@ -17,7 +17,8 @@ enum InlineProjection {
   /// Each emphasis opener is pushed and popped once. A backtick run opens a code span at once when
   /// a non-space follows it (the span's text is the same whether or not a closer comes); when a
   /// space follows, it is text unless a closer comes, so the scan notes where it was (a candidate)
-  /// and goes back there if the closer arrives. A link destination is skipped until its `)`.
+  /// and goes back there if the closer arrives. A link destination is skipped until its `)`, unless
+  /// whitespace in it is followed by something other than a title, when it is text after all.
   struct Scan: Equatable, Sendable {
     private struct Opener: Equatable, Sendable {
       let mark: UInt8
@@ -43,8 +44,10 @@ enum InlineProjection {
       case text
       /// Inside a code span opened by a run of `length` backticks at input index `start`.
       case code(length: Int, start: Int)
-      /// After `](`: the destination of the link whose `]` is at input index `close`.
-      case destination(Bracket, close: Int)
+      /// After `](`: the destination of the link whose `]` is at input index `close`. `kept` once
+      /// whitespace has been passed because a title or `)` followed it, or the destination is in
+      /// `<>`: later whitespace no longer abandons the link.
+      case destination(Bracket, close: Int, kept: Bool)
     }
 
     /// A backtick run followed by a space, read as text: if a run of the same length comes, the
@@ -158,7 +161,7 @@ enum InlineProjection {
       case .closeBracket:
         guard hasNext || atEnd else { return false }
         if hasNext, input[index + 1] == .openParen, let bracket = decided.brackets.popLast() {
-          mode = .destination(bracket, close: index)
+          mode = .destination(bracket, close: index, kept: false)
           position += 2
         } else {
           if !decided.brackets.isEmpty { decided.brackets.removeLast() }
@@ -188,11 +191,42 @@ enum InlineProjection {
         position = end
         return true
       }
-      if length == nil, byte == .closeParen, case .destination(_, let close) = mode {
-        decided.out += input[close...index]
-        mode = .text
+      if length == nil, case .destination(let bracket, let close, let kept) = mode {
+        if byte == .closeParen {
+          decided.out += input[close...index]
+          mode = .text
+        } else if byte.isSpace, !kept {
+          return destinationSpace(at: index, bracket: bracket, close: close, atEnd: atEnd)
+        }
       }
       position += 1
+      return true
+    }
+
+    /// Whitespace in a link destination. A title opener (`"`, `'`, `(`) or the `)` after it keeps
+    /// the link pending, and so does a destination in `<>`, which may hold spaces. Anything else
+    /// means the `](` was not a link: the destination is abandoned and the text from the `]` on is
+    /// shown as written. Returns false when the whitespace runs to the end and more may come.
+    private mutating func destinationSpace(
+      at index: Int, bracket: Bracket, close: Int, atEnd: Bool
+    ) -> Bool {
+      var next = index
+      while next < input.count, input[next].isSpace { next += 1 }
+      let angled = close + 2 < index && input[close + 2] == .lessThan
+      if next == input.count {
+        guard atEnd else { return false }
+        position = next
+        return true
+      }
+      if angled || [.doubleQuote, .singleQuote, .openParen, .closeParen].contains(input[next]) {
+        // The title is skipped as the destination is, up to the `)`.
+        mode = .destination(bracket, close: close, kept: true)
+        position = next
+        return true
+      }
+      decided.out += input[close..<index]
+      mode = .text
+      position = index
       return true
     }
 
@@ -280,7 +314,7 @@ enum InlineProjection {
       case .code(let length, let start):
         out += input[start...]
         closers += [UInt8](repeating: .backtick, count: length)
-      case .destination(let bracket, _):
+      case .destination(let bracket, _, _):
         // A link whose destination is still arriving shows its text only.
         out.removeSubrange(bracket.start..<(bracket.start + (bracket.image ? 2 : 1)))
       }
@@ -344,6 +378,9 @@ extension UInt8 {
   fileprivate static let closeBracket = UInt8(ascii: "]")
   fileprivate static let openParen = UInt8(ascii: "(")
   fileprivate static let closeParen = UInt8(ascii: ")")
+  fileprivate static let lessThan = UInt8(ascii: "<")
+  fileprivate static let doubleQuote = UInt8(ascii: "\"")
+  fileprivate static let singleQuote = UInt8(ascii: "'")
 
   fileprivate var isSpace: Bool { self == 0x20 || self == 0x09 || self == 0x0A || self == 0x0D }
 

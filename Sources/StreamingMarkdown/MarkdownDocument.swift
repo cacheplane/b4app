@@ -17,7 +17,7 @@ public struct MarkdownBlock: Equatable, Sendable, Identifiable {
     self.kind = kind
   }
 
-  public indirect enum Kind: Equatable, Sendable {
+  public enum Kind: Equatable, Sendable {
     /// The paragraph's inline source.
     case paragraph(String)
     /// `level` is 1...6.
