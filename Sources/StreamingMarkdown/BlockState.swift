@@ -77,9 +77,11 @@ struct BlockState: Equatable, Sendable {
       return drain()
     }
     let depth = containers[..<matched].count { !$0.kind.isList }
-    var listAbove: LineScanner.ListMarker?
-    if matched > 0, case .list(let marker, _) = containers[matched - 1].kind { listAbove = marker }
-    let (openings, content) = openings(in: rest, room: Self.maxDepth - depth, listAbove: listAbove)
+    // Only a paragraph whose containers all continue on this line can be interrupted; one in a
+    // container the line left is closing anyway (or the line is lazy text when nothing opens).
+    let interrupting = leaf == .paragraph && matched == containers.count
+    let (openings, content) = Self.openings(
+      in: rest, room: Self.maxDepth - depth, interruptingParagraph: interrupting)
     if matched < containers.count, leaf == .paragraph, openings.isEmpty, !LineScanner.isBlank(content.text),
       !LineScanner.startsLeafBlock(content.text)
     {
@@ -142,10 +144,11 @@ struct BlockState: Equatable, Sendable {
   }
 
   /// The quotes and items that start the text, at most `room` of them, and the text after them.
-  /// A first item that would start a new list interrupts an open paragraph only when it has text
-  /// and, if ordered, starts at 1.
-  private func openings(
-    in text: LineScanner.Rest, room: Int, listAbove: LineScanner.ListMarker?
+  /// When the line would interrupt an open paragraph, a first item does so only when it has text
+  /// and, if ordered, starts at 1 (the paragraph's container is never a list, so the item would
+  /// start a new one).
+  private static func openings(
+    in text: LineScanner.Rest, room: Int, interruptingParagraph: Bool
   ) -> (
     [Opening], LineScanner.Rest
   ) {
@@ -156,7 +159,7 @@ struct BlockState: Equatable, Sendable {
         openings.append(.quote)
         rest = content
       } else if let item = LineScanner.itemOpening(rest) {
-        if openings.isEmpty, leaf == .paragraph, item.marker != listAbove,
+        if openings.isEmpty, interruptingParagraph,
           item.start != 1 || LineScanner.isBlank(item.content.text)
         {
           break

@@ -20,22 +20,15 @@ import Testing
     #expect(midStream("# hea") == "")
   }
   @Test func aLongFencePushedLineByLineStaysFast() {
-    var parser = MarkdownParser()
-    parser.push("```\n")
-    let clock = ContinuousClock()
-    let elapsed = clock.measure {
-      for index in 0..<5000 {
-        parser.push("line \(index)\n")
-        _ = parser.document
-      }
-    }
-    #expect(elapsed < .seconds(2))
+    let filler = String(repeating: "x", count: 300)
+    var (linear, parser) = staysLinear("```\n", lines: 2000) { "line \($0) \(filler)\n" }
+    #expect(linear)
     parser.finish()
     guard case .code(_, let text, let closed) = parser.document.blocks[0].kind else {
       Issue.record("not code")
       return
     }
     #expect(!closed)
-    #expect(text.split(separator: "\n").count == 5000)
+    #expect(text.split(separator: "\n").count == 8000)
   }
 }

@@ -48,6 +48,12 @@ import Testing
   @Test func aParagraphThenAQuoteAreSiblings() {  // cacheplane's `a\n> q` bug
     #expect(parsed("a\n> q") == "p \"a\"\nquote\n  p \"q\"")
   }
+  @Test func aMarkerAfterAContainerItDoesNotContinueIsNotHeldByTheInterruptRule() {
+    #expect(parsed("- a\n2. b") == "list ul\n  item\n    p \"a\"\nlist ol 2\n  item\n    p \"b\"")
+    #expect(parsed("> a\n2. b") == "quote\n  p \"a\"\nlist ol 2\n  item\n    p \"b\"")
+    #expect(parsed("- a\n*") == "list ul\n  item\n    p \"a\"\nlist ul\n  item")
+    #expect(parsed("a\n2. b") == "p \"a 2. b\"")
+  }
   @Test func aQuoteInsideAnItem() {
     #expect(parsed("- a\n  > q") == "list ul\n  item\n    p \"a\"\n    quote\n      p \"q\"")
   }
@@ -98,16 +104,9 @@ import Testing
       outline(parser.document) == "list ul\n  item\n    p \"a\"\n    list ul\n      item\n        p \"b\"")
   }
   @Test func aLongFenceInsideAListItemStaysFast() {
-    var parser = MarkdownParser()
-    parser.push("- Run:\n\n  ```\n")
-    let clock = ContinuousClock()
-    let elapsed = clock.measure {
-      for index in 0..<5000 {
-        parser.push("  line \(index)\n")
-        _ = parser.document
-      }
-    }
-    #expect(elapsed < .seconds(2))
+    let filler = String(repeating: "x", count: 300)
+    var (linear, parser) = staysLinear("- Run:\n\n  ```\n", lines: 2000) { "  line \($0) \(filler)\n" }
+    #expect(linear)
     parser.finish()
     guard case .list(let list) = parser.document.blocks[0].kind,
       case .code(_, let text, let closed) = list.items[0].blocks[1].kind
@@ -116,7 +115,7 @@ import Testing
       return
     }
     #expect(!closed)
-    #expect(text.split(separator: "\n").count == 5000)
-    #expect(text.hasPrefix("line 0\n"))
+    #expect(text.split(separator: "\n").count == 8000)
+    #expect(text.hasPrefix("line 0 x"))
   }
 }
