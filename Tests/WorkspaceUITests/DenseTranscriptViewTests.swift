@@ -130,7 +130,8 @@
         VStack(alignment: .leading, spacing: 0) {
           lineRow(line(), open: true)
           ForEach(items[1...3]) { item in
-            StepRowView(row: DenseTranscript.stepRow(item), streams: streams, open: false, toggle: {})
+            StepRowView(
+              row: DenseTranscript.stepRow(item, in: .terminal), streams: streams, open: false, toggle: {})
           }
         }
         row(items[4])
@@ -560,6 +561,23 @@
         try await settle()
       }
 
+      /// The accessibility frames, in screen coordinates (y grows upward), of the elements under the
+      /// transcript that `match` picks. The tree is read with the enhanced interface on, as a screen reader
+      /// has it, and the setting is put back.
+      func frames(_ match: (HostedScreen.Element) -> Bool) -> [CGRect] {
+        let enhanced = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        let old = NSApplication.shared.accessibilityAttributeValue(enhanced)
+        NSApplication.shared.accessibilitySetValue(true, forAttribute: enhanced)
+        defer { NSApplication.shared.accessibilitySetValue(old ?? false, forAttribute: enhanced) }
+        var found: [CGRect] = []
+        func walk(_ element: HostedScreen.Element) {
+          if match(element), let frame = element.frame { found.append(frame) }
+          element.children.forEach(walk)
+        }
+        walk(HostedScreen.Element(object: root))
+        return found
+      }
+
       /// Written when the transcript was a lazy stack, whose end moved as it was reached; kept as it is.
       func scrollToEnd() async throws {
         try await settle()
@@ -610,6 +628,11 @@
       #expect(!view.folds.holds)
       let origin = view.origin
       let closed = view.documentHeight
+      func pressed() -> [CGRect] {
+        view.frames { $0.identifier == "step-row" && ($0.label ?? "").hasSuffix("--filter s10-2") }
+      }
+      let before = try #require(pressed().first, "the pressed row is not in view")
+      #expect(view.frames { $0.identifier == "step-output" }.isEmpty)
 
       view.folds.toggle("s10-2")
       #expect(view.folds.holds)
@@ -617,6 +640,14 @@
       try await view.settle()
       #expect(abs(view.origin - origin) <= 0.5, "moved by \(view.origin - origin)")
       #expect(view.folds.open == ["t10", "s10-2"])
+      // The row's own top edge (maxY: screen coordinates grow upward) is where it was, and the output
+      // stands under the row's bottom edge.
+      let after = try #require(pressed().first, "the pressed row is gone from view")
+      #expect(abs(after.maxY - before.maxY) <= 0.5, "the row moved by \(after.maxY - before.maxY)")
+      let output = try #require(view.frames { $0.identifier == "step-output" }.first, "no output drawn")
+      #expect(
+        output.maxY <= after.minY + 0.5,
+        "the output's top \(output.maxY) is above the row's bottom \(after.minY)")
     }
 
     @Test func aStreamDoesNotMoveAnOpenedTurn() async throws {

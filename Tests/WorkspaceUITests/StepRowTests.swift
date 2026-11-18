@@ -112,6 +112,40 @@ import WorkspaceProtocol
     }
   }
 
+  /// A turn waiting for the user moves nothing: its open step is still, with no clock.
+  @Test func aWaitingTurnsOpenStepWaitsWithNoClock() throws {
+    let entries = DenseTranscript.entries(
+      items: everyKind, turns: [turn(.waitingForUser, nil)], open: ["t1"])
+    let open = try #require(rows(entries).first { $0.id == "c3" })
+    #expect(open.mark == .waiting)
+    #expect(open.startedAt == nil)
+    #expect(open.state == "Waiting")
+    #expect(open.spoken == "Waiting, swift test")
+    #expect(!rows(entries).contains { $0.mark == .running || $0.startedAt != nil })
+  }
+
+  /// A stopping turn's line is marked, and so is its open step, which keeps its clock.
+  @Test func aStoppingTurnsOpenStepStillRuns() throws {
+    let entries = DenseTranscript.entries(items: everyKind, turns: [turn(.stopping, nil)], open: ["t1"])
+    let open = try #require(rows(entries).first { $0.id == "c3" })
+    #expect(open.mark == .running)
+    #expect(open.startedAt == Self.began)
+    #expect(open.spoken == "Running, swift test")
+  }
+
+  /// Any other working row is a step row with no time, even while it runs.
+  @Test func anUncountedRunningItemHasNoClock() throws {
+    let items = numbered([
+      item("u1", role: .user, type: "userMessage"),
+      item("x1", role: .tool, type: "somethingNew", status: "inProgress"),
+    ])
+    let entries = DenseTranscript.entries(items: items, turns: [turn(.running, nil)], open: ["t1"])
+    let other = try #require(rows(entries).first)
+    #expect(other.kind == .other)
+    #expect(other.mark == .running)
+    #expect(other.startedAt == nil)
+  }
+
   @Test func theRowIsSpokenAsStateTitleAndTime() throws {
     let entries = DenseTranscript.entries(items: everyKind, turns: [turn()], open: ["t1"])
     var steps = rows(entries)
@@ -129,16 +163,18 @@ import WorkspaceProtocol
     let bare = item(
       "c1", role: .tool, type: "commandExecution", status: "completed",
       payload: ["command": "ls", "cwd": "/work"])
-    #expect(!DenseTranscript.stepRow(bare).opens)
+    #expect(!DenseTranscript.stepRow(bare, in: .terminal).opens)
     var output = bare
     output.payload = ["command": "ls", "cwd": "/work", "aggregatedOutput": "a\nb", "status": "completed"]
-    #expect(DenseTranscript.stepRow(output).opens)
+    #expect(DenseTranscript.stepRow(output, in: .terminal).opens)
     // Anything else keeps its raw payload to show.
-    #expect(DenseTranscript.stepRow(item("x", role: .tool, type: "somethingNew")).opens)
+    #expect(DenseTranscript.stepRow(item("x", role: .tool, type: "somethingNew"), in: .terminal).opens)
     // A thought opens to its text, and has nothing to open without one.
     #expect(
-      DenseTranscript.stepRow(item("r", role: .assistant, type: "reasoning", payload: ["text": "Hm."])).opens)
-    #expect(!DenseTranscript.stepRow(item("r", role: .assistant, type: "reasoning")).opens)
+      DenseTranscript.stepRow(
+        item("r", role: .assistant, type: "reasoning", payload: ["text": "Hm."]), in: .terminal
+      ).opens)
+    #expect(!DenseTranscript.stepRow(item("r", role: .assistant, type: "reasoning"), in: .terminal).opens)
   }
 
   /// D-223's turnless items before the first group: work is a step row (no line stands above it) and
@@ -160,7 +196,7 @@ import WorkspaceProtocol
 
   /// No tool or reasoning item is ever drawn by `TranscriptRow`, open or closed, running or not.
   @Test func workIsNeverAnItem() {
-    for status in [TurnStatus.terminal, .running, .reconciling] {
+    for status in [TurnStatus.terminal, .running, .waitingForUser, .reconciling] {
       for open: Set<String> in [[], ["t1"]] {
         let entries = DenseTranscript.entries(items: everyKind, turns: [turn(status, nil)], open: open)
         for case .item(let item) in entries {
@@ -231,7 +267,7 @@ import WorkspaceProtocol
         DisplayItem(
           id: "c1", threadId: "th", turnId: "t1", role: .tool, type: "commandExecution",
           payload: ["command": .string(command), "status": .string(status), "aggregatedOutput": "ok"],
-          sequence: 1, provenance: .live))
+          sequence: 1, provenance: .live), in: .running)
     }
 
     private func height<V: View>(_ view: V, width: CGFloat) -> CGFloat {
@@ -277,6 +313,29 @@ import WorkspaceProtocol
       defer { screen.close() }
       let heard = screen.elements.compactMap(\.label)
       #expect(heard.contains("Failed, swift build"), "\(heard)")
+    }
+
+    /// A row that opens is a button whose value says whether it is open; one that does not is no button.
+    @Test func anOpenableRowIsAButtonWithItsState() throws {
+      func element(_ row: DenseTranscript.StepRow, open: Bool) -> (NSAccessibility.Role?, String?, String?) {
+        let screen = HostedScreen(VStack { view(row, open: open) }, size: CGSize(width: 400, height: 200))
+        defer { screen.close() }
+        let found = screen.element("step-row")
+        return (found?.role, found?.value, found?.label)
+      }
+      let row = command("swift build")
+      let closed = element(row, open: false)
+      #expect(closed.0 == .button, "\(String(describing: closed))")
+      #expect(closed.1 == "Collapsed", "\(String(describing: closed))")
+      #expect(closed.2 == "Completed, swift build", "\(String(describing: closed))")
+      let opened = element(row, open: true)
+      #expect(opened.0 == .button, "\(String(describing: opened))")
+      #expect(opened.1 == "Expanded", "\(String(describing: opened))")
+      var bare = row
+      bare.opens = false
+      let still = element(bare, open: false)
+      #expect(still.0 != nil && still.0 != .button, "\(String(describing: still))")
+      #expect(still.1 != "Collapsed" && still.1 != "Expanded", "\(String(describing: still))")
     }
 
     /// A running step's clock speaks its time after the title.

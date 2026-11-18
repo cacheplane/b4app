@@ -130,13 +130,15 @@ struct StepRowView: View {
     }
   }
 
-  /// A check when done, the working mark while running, a danger cross when failed, a dash when
+  /// A check when done, the working mark while running, an open circle while waiting, a danger cross when failed, a dash when
   /// declined or left unfinished; nothing otherwise, in the same box so the titles line up.
   @ViewBuilder private var mark: some View {
     Group {
       switch row.mark {
       case .done: symbol("checkmark", LLA.Color.muted)
       case .running: ThreadMark(state: .working)
+      // Still while the turn waits for the user: the open circle of a plan's pending step.
+      case .waiting: Circle().strokeBorder(LLA.Color.muted, lineWidth: 1).frame(width: 8, height: 8)
       case .failed: symbol("xmark", LLA.Color.danger)
       case .declined, .unfinished: symbol("minus", LLA.Color.muted)
       case .none: Color.clear
@@ -200,5 +202,7 @@ struct StepOutput: View {
         }
       }
     }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("step-output")
   }
 }

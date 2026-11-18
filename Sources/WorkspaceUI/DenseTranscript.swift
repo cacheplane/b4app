@@ -183,7 +183,7 @@ enum DenseTranscript {
     for (item, key) in zip(ordered, groupKeys(ordered)) {
       guard let key else {
         // No line stands above it, so its work is a row of its own; a turnless step never runs.
-        layoutOrder.append(isWork(item) ? .step(stepRow(settled(item, in: nil))) : .item(item))
+        layoutOrder.append(isWork(item) ? .step(stepRow(settled(item, in: nil), in: nil)) : .item(item))
         continue
       }
       if members[key] == nil {
@@ -308,7 +308,7 @@ enum DenseTranscript {
     }
     if isOpen && !folded.isEmpty {
       // Opened, the work is drawn row by row where it stands; what the closed group shows is unchanged.
-      entries += rest.map { shownIds.contains($0.id) ? .item($0) : .step(stepRow($0)) }
+      entries += rest.map { shownIds.contains($0.id) ? .item($0) : .step(stepRow($0, in: turn?.status)) }
     } else {
       entries += visible.map(Entry.item)
     }
@@ -424,7 +424,11 @@ extension DenseTranscript {
       case other
     }
 
-    enum Mark: Equatable, Sendable { case done, running, failed, declined, unfinished, none }
+    enum Mark: Equatable, Sendable {
+      case done, running, failed, declined, unfinished, none
+      /// In progress in a turn waiting for the user: still, with no clock, as the turn's line is.
+      case waiting
+    }
 
     /// Settled: a step of a turn that is no longer running never reads as in progress.
     var item: DisplayItem
@@ -433,7 +437,7 @@ extension DenseTranscript {
     var kind: Kind
     var mark: Mark
     var title: String
-    /// A running step's `createdAt`: its clock counts from it.
+    /// A running step's `createdAt`: its clock counts from it. Only a counted step or an agent has one.
     var startedAt: String?
     /// Seconds, once the step's end is known.
     var duration: Int?
@@ -442,8 +446,9 @@ extension DenseTranscript {
 
     var id: String { item.id }
 
-    /// The state in words, for a row that has a status: "Running", "Completed", "Unfinished".
+    /// The state in words, for a row that has a status: "Running", "Waiting", "Completed", "Unfinished".
     var state: String? {
+      if mark == .waiting { return "Waiting" }
       switch kind {
       case .step, .agent, .other: return item.payload["status"]?.stringValue.map(DenseTranscript.statusLabel)
       case .thought, .message, .plan: return nil
@@ -462,8 +467,8 @@ extension DenseTranscript {
     item.role == .tool || (item.role == .assistant && item.type != "agentMessage")
   }
 
-  /// The row of one settled item.
-  static func stepRow(_ item: DisplayItem, depth: Int = 1) -> StepRow {
+  /// The row of one settled item of a turn in `status` (nil: no turn, or one the list does not know).
+  static func stepRow(_ item: DisplayItem, in status: TurnStatus?, depth: Int = 1) -> StepRow {
     let kind: StepRow.Kind
     if item.role == .assistant {
       kind = item.type == "agentMessage" ? .message : .thought
@@ -476,7 +481,7 @@ extension DenseTranscript {
     switch (kind, item.payload["status"]?.stringValue) {
     case (.thought, _), (.message, _), (.plan, _): mark = .none
     case (_, "completed"?): mark = .done
-    case (_, "inProgress"?): mark = .running
+    case (_, "inProgress"?): mark = status == .waitingForUser ? .waiting : .running
     case (_, "failed"?): mark = .failed
     case (_, "declined"?): mark = .declined
     case (_, "stopped"?), (_, "unknown"?): mark = .unfinished
@@ -503,7 +508,7 @@ extension DenseTranscript {
     }
     return StepRow(
       item: item, depth: min(max(depth, 1), 4), kind: kind, mark: mark, title: title,
-      startedAt: mark == .running ? item.createdAt : nil, duration: nil, opens: opens)
+      startedAt: mark == .running && kind != .other ? item.createdAt : nil, duration: nil, opens: opens)
   }
 
   /// A reasoning item's text: its text, else its summary, else its content, one part a line.
