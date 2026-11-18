@@ -11,7 +11,8 @@
   /// layout that follows, in a thread of 150 rows. A guard against a gross regression, not a frame-time
   /// measurement of the running app. `B4APP_TIMING_DIR=<dir>` also writes the numbers to
   /// `<dir>/streaming-tick.json`.
-  @Suite(.serialized) @MainActor struct StreamingTickTimingTests {
+  @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["B4APP_TIMING"] != nil)) @MainActor
+  struct StreamingTickTimingTests {
     @Test func aTickOfAPacedRevealInALongThreadIsCheap() async throws {
       let thread = "timing-\(UUID().uuidString)"
       var turns: [Turn] = []
