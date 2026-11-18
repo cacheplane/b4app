@@ -65,7 +65,7 @@ Severity is S4 (integrity or control), S3 (misleads or blocks a core task), S2 (
 | 8 | "Allow for session" is offered where the runtime treats it as once (Claude Code always, B4 when the prompt says so) | Read from the adapters; D-018 chose it | S2 | Open; D-018 would change |
 | 9 | Nothing is announced to VoiceOver: no request, failure or completion announcement exists | Read: no announcement call in `WorkspaceUI` | S2 | Open |
 | 10 | Plans and task lists have no presentation of their own; Codex plan updates and command output deltas are dropped | Read from the adapters | S2 | Plans and task lists: D-243. Command output deltas: open |
-| 11 | Claude Code sub-agent frames lose their parent | Risk; no fixture sends them | S2 if sent | Open |
+| 11 | Claude Code sub-agent frames lose their parent | Risk; no fixture sends them; a live recording on 2.1.282 (2026-11-18) showed every sub-agent frame carries `parent_tool_use_id` | S2 if sent | D-255: items name the call in `parentNativeItemId` and the transcript draws them under it. A sub-agent's own text and thinking frames, a nested one, two at once and a backgrounded one were not recorded |
 | 12 | A Claude Code reconcile can add a second copy of each text row (live and history ids differ) | Risk when written; since reproduced in a coordinator test, behind a second defect that marked the thread missing | S3 | D-238 |
 | 13 | A turn that ends with no outcome draws "Turn failed." | Read | S1 | Fixed (D-251) |
 | 14 | The Mac's approval buttons come back between the reply and the resolved event; the coordinator refuses the second answer | Read; the refusal is fixture-tested | S1 | Fixed (D-253) |
