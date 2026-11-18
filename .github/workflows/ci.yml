@@ -352,17 +352,17 @@ jobs:
     if: always()
     permissions: {}
     steps:
-      - name: Every shard passed
+      - name: The layout job passed
         env:
           APPLE: ${{ needs.scope.outputs.apple }}
-          SHARDS: ${{ needs.ios-layout.result }}
+          LAYOUT: ${{ needs.ios-layout.result }}
         run: |
-          echo "scope: apple=$APPLE; iOS layout job: $SHARDS"
-          if [ "$APPLE" = false ] && [ "$SHARDS" = skipped ]; then
+          echo "scope: apple=$APPLE; iOS layout job: $LAYOUT"
+          if [ "$APPLE" = false ] && [ "$LAYOUT" = skipped ]; then
             echo "This change touches nothing the layout tests read."
             exit 0
           fi
-          test "$SHARDS" = success
+          test "$LAYOUT" = success
 
   macos-smoke:
     name: macOS recovery smoke tests
