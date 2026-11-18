@@ -837,6 +837,42 @@ actor EventCollector {
     try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == again.id }
     await h.stop()
   }
+
+  /// The fake replays a turn recorded on Claude Code 2.1.282 in which one `Agent` call ran two tools:
+  /// each child row is stored once and names the call, after the turn and after a reconcile (history
+  /// holds the parent's lines only, so the children are live rows no snapshot names).
+  @Test func aSubAgentsStepsAreRowsThatNameTheCall() async throws {
+    let call = "toolu_01MYgoiNaRXENvWnkmFHm6m3"
+    let children = ["toolu_01AYqQZFiYBu9gBzJMaJ4JqG", "toolu_01TUgdc6SEEu9HLJuG6paxPJ"]
+    let h = try await Harness.start()
+    let thread = try await h.newThread(try await h.addClaude())
+    let turn = try await h.send(thread, "run a subagent")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+
+    func check(_ items: [DisplayItem]) {
+      #expect(items.filter { $0.type == "toolUse" }.count == 3)
+      #expect(items.filter { $0.nativeItemId == call }.count == 1)
+      #expect(items.first { $0.nativeItemId == call }?.payload["parentNativeItemId"] == nil)
+      for child in children {
+        let rows = items.filter { $0.nativeItemId == child }
+        #expect(rows.count == 1)
+        #expect(rows.first?.payload["parentNativeItemId"]?.stringValue == call)
+        #expect(rows.first?.payload["status"]?.stringValue == "completed")
+      }
+      #expect(
+        !items.contains {
+          $0.type == "userMessage" && $0.payload["text"]?.stringValue?.hasPrefix("In the directory") == true
+        })
+    }
+    let items = try await h.read(thread).items
+    check(items)
+    let merged = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    check(merged.items)
+    #expect(merged.items.map(\.id).sorted() == items.map(\.id).sorted())
+    await h.stop()
+  }
 }
 
 /// A Claude thread beside folders of its environment: the fake's log shows what each turn handed it.
