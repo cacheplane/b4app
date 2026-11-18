@@ -275,10 +275,13 @@ struct AgentProtocolOwnedPostgresLogTests {
     let offset = try log.offset()
     let initiallyEmpty = try log.tail(offset).isEmpty
     #expect(initiallyEmpty)
-    async let observation = log.observed(marker, after: offset)
+    let timing = OwnedLogWitnessTiming()
+    timing.issued()
+    async let observation = log.observed(marker, after: offset, observation: timing)
     try await Task.sleep(for: .milliseconds(30))
     let suffix = "owned appended witness\n" + marker + "\n"
     try scratch.append(suffix, to: path)
+    timing.appendReturned()
     let witnessed = try await observation
     #expect(witnessed)
     let exact = try log.tail(offset) == suffix

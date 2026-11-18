@@ -10,12 +10,16 @@ import WorkspaceProtocol
 
 @Suite(.serialized, .timeLimit(.minutes(3))) struct OwnedCloseConcurrencyTests {
   @Test func concurrentServerClosersAwaitTheAcceptOwnerAndSharedCleanup() async throws {
+    let timing = NativeTimingBoundary(.serverClosers)
+    timing.record(.harnessIssued)
     let h = try await Harness.start()
+    timing.record(.harnessReturned)
     let log = CloseProbe<String>()
     let ownerHeld = CloseGate()
     let ownerRelease = CloseGate()
     let server: SocketServer
     do {
+      timing.record(.serverStartIssued)
       server = try await SocketServer.start(
         socketPath: h.coordinator.paths.runtimeDir + "/concurrent", router: h.coordinator.router,
         eventLog: h.coordinator.eventLog,
@@ -23,41 +27,72 @@ import WorkspaceProtocol
           switch event {
           case .acceptFinished:
             log.record("acceptFinished")
+            timing.record(.acceptFinished)
             ownerHeld.release()
             await ownerRelease.wait()
-          case .existingCompletion: log.record("existingCompletion")
-          case .cleanupStarted: log.record("cleanupStarted")
+          case .existingCompletion:
+            log.record("existingCompletion")
+            timing.record(.existingCompletion)
+          case .cleanupStarted:
+            log.record("cleanupStarted")
+            timing.record(.cleanupStarted)
           case .cleanupFinished:
             log.record("cleanupFinished")
+            timing.record(.cleanupFinished)
             if Task.isCancelled { log.record("cleanupCancelled") }
-          case .groupShutdownStarted: log.record("groupShutdownStarted")
+          case .groupShutdownStarted:
+            log.record("groupShutdownStarted")
+            timing.record(.groupShutdownStarted)
           default: break
           }
         })
+      timing.record(.serverStartReturned)
     } catch {
+      timing.record(.harnessStopIssued)
       await h.stop()
+      timing.record(.harnessStopReturned)
       throw error
     }
+    timing.record(.closeIssued)
     let first = Task {
+      timing.record(.closeTaskEntered)
       await server.close()
       log.record("returned:first")
+      timing.record(.closeReturned)
     }
+    timing.record(.gateWaitIssued)
     await ownerHeld.wait()
+    timing.record(.gateWaitReturned)
+    timing.record(.secondCloseIssued)
     let second = Task {
+      timing.record(.secondCloseTaskEntered)
       await server.close()
       log.record("returned:second")
+      timing.record(.secondCloseReturned)
     }
+    timing.record(.secondGateWaitIssued)
     _ = await log.wait { $0 == "existingCompletion" }
+    timing.record(.secondGateWaitReturned)
     first.cancel()
+    timing.record(.firstCancelled)
     #expect(!server.invocationSnapshot.accepting)
     #expect(!log.events.contains("groupShutdownStarted"))
     ownerRelease.release()
+    timing.record(.gateReleased)
+    timing.record(.closeJoinIssued)
     await first.value
+    timing.record(.closeJoinReturned)
+    timing.record(.secondCloseJoinIssued)
     await second.value
+    timing.record(.secondCloseJoinReturned)
+    timing.record(.finalCloseIssued)
     await server.close()
+    timing.record(.finalCloseReturned)
     log.record("returned:third")
     expectSharedCleanup(log.events)
+    timing.record(.harnessStopIssued)
     await h.stop()
+    timing.record(.harnessStopReturned)
   }
 
   /// Revises v3's unrun accept-cancellation control to the graceful source-finish/drain contract.

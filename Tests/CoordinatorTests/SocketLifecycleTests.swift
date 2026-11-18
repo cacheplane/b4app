@@ -185,6 +185,7 @@ private struct RawLifecyclePeer {
 
 @Suite(.serialized, .timeLimit(.minutes(3))) struct UnixOwnedCloseConcurrencyTests {
   @Test func concurrentTransportClosersJoinTheReaderDespiteCallerCancellation() async throws {
+    let timing = NativeTimingBoundary(.transportClosers)
     let directory = try lifecycleDirectory()
     defer { try? FileManager.default.removeItem(atPath: directory) }
     var peer = try RawLifecyclePeer(path: directory + "/s")
@@ -192,35 +193,70 @@ private struct RawLifecyclePeer {
     let log = CloseProbe<String>()
     let readerHeld = CloseGate()
     let readerRelease = CloseGate()
+    timing.record(.connectIssued)
     let transport = try await UnixSocketTransport.connect(
       path: peer.path, timeout: .seconds(3),
       lifecycleObserver: { event in
         log.record(transportEventName(event))
+        switch event {
+        case .readerFinished: timing.record(.readerFinished)
+        case .existingCompletion: timing.record(.existingCompletion)
+        case .cleanupStarted: timing.record(.cleanupStarted)
+        case .cleanupFinished: timing.record(.cleanupFinished)
+        case .groupShutdownStarted: timing.record(.groupShutdownStarted)
+        default: break
+        }
         if event == .cleanupFinished, Task.isCancelled { log.record("cleanupCancelled") }
         if event == .readerFinished {
           readerHeld.release()
           await readerRelease.wait()
         }
       }, sendSettlementObserver: { log.record(transportEventName($0)) })
-    do { try peer.acceptOnce() } catch {
-      readerRelease.release(); peer.finish(); await transport.close(); throw error
+    timing.record(.connectReturned)
+    timing.record(.acceptIssued)
+    do { try peer.acceptOnce(); timing.record(.acceptReturned) } catch {
+      readerRelease.release()
+      timing.record(.cleanupGateReleased)
+      peer.finish()
+      timing.record(.cleanupCloseIssued)
+      await transport.close()
+      timing.record(.cleanupCloseReturned)
+      throw error
     }
+    timing.record(.closeIssued)
     let first = Task {
+      timing.record(.closeTaskEntered)
       await transport.close()
       log.record("returned:first")
+      timing.record(.closeReturned)
     }
+    timing.record(.gateWaitIssued)
     await readerHeld.wait()
+    timing.record(.gateWaitReturned)
+    timing.record(.secondCloseIssued)
     let second = Task {
+      timing.record(.secondCloseTaskEntered)
       await transport.close()
       log.record("returned:second")
+      timing.record(.secondCloseReturned)
     }
+    timing.record(.secondGateWaitIssued)
     _ = await log.wait { $0 == "existingCompletion" }
+    timing.record(.secondGateWaitReturned)
     first.cancel()
+    timing.record(.firstCancelled)
     #expect(!log.events.contains("groupShutdownStarted"))
     readerRelease.release()
+    timing.record(.gateReleased)
+    timing.record(.closeJoinIssued)
     await first.value
+    timing.record(.closeJoinReturned)
+    timing.record(.secondCloseJoinIssued)
     await second.value
+    timing.record(.secondCloseJoinReturned)
+    timing.record(.finalCloseIssued)
     await transport.close()
+    timing.record(.finalCloseReturned)
     log.record("returned:third")
     expectSharedCleanup(log.events)
   }

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import WorkspacePlatform
 
 /// Test-only reader for the exact log/socket pair selected by EphemeralPostgres.
@@ -134,12 +135,88 @@ struct AgentProtocolOwnedPostgresLog: Sendable {
     } catch { throw Failure.unsafeLog }
   }
 
-  func observed(_ marker: String, after start: UInt64) async throws -> Bool {
+  func observed(
+    _ marker: String, after start: UInt64, observation: OwnedLogWitnessTiming? = nil
+  ) async throws -> Bool {
     let deadline = ContinuousClock.now + .seconds(2)
+    observation?.started(deadline: deadline)
+    defer { observation?.returned() }
     repeat {
-      if try tail(start).contains(marker) { return true }
+      observation?.readStarted()
+      let matched = try tail(start).contains(marker)
+      observation?.readReturned()
+      if matched { return true }
       do { try await Task.sleep(for: .milliseconds(10)) } catch { throw Failure.unsafeLog }
     } while ContinuousClock.now < deadline
     return false
+  }
+}
+
+/// One positive scratch witness only. Reads update bounded scalars; no per-poll output.
+final class OwnedLogWitnessTiming: Sendable {
+  enum Stage: String, Hashable, Sendable { case issued, observerStarted, appendReturned, observerReturned }
+  private struct State {
+    var emitted: Set<Stage> = []
+    var deadline: UInt64?
+    var firstReadStarted: UInt64?
+    var lastReadStarted: UInt64?
+    var lastReadReturned: UInt64?
+    var readCount: UInt16 = 0
+    var countSaturated = false
+  }
+  private let origin = ContinuousClock.now
+  private let state = Mutex(State())
+  private let dropped = Atomic<Bool>(false)
+
+  private func elapsed(_ instant: ContinuousClock.Instant = ContinuousClock.now) -> UInt64 {
+    InspectionObservation.elapsedNanoseconds(origin.duration(to: instant))
+  }
+  func issued() { emit(.issued) }
+  func appendReturned() { emit(.appendReturned) }
+  func started(deadline: ContinuousClock.Instant) {
+    let value = elapsed(deadline)
+    if state.withLockIfAvailable({
+      $0.deadline = value; return true
+    }) == nil {
+      dropped.store(true, ordering: .relaxed)
+    }
+    emit(.observerStarted)
+  }
+  func readStarted() {
+    let value = elapsed()
+    if state.withLockIfAvailable({ state in
+      if state.firstReadStarted == nil { state.firstReadStarted = value }
+      state.lastReadStarted = value
+      if state.readCount < 4096 { state.readCount += 1 } else { state.countSaturated = true }
+      return true
+    }) == nil {
+      dropped.store(true, ordering: .relaxed)
+    }
+  }
+  func readReturned() {
+    let value = elapsed()
+    if state.withLockIfAvailable({
+      $0.lastReadReturned = value; return true
+    }) == nil {
+      dropped.store(true, ordering: .relaxed)
+    }
+  }
+  func returned() { emit(.observerReturned) }
+  private func emit(_ stage: Stage) {
+    let value = elapsed()
+    let snapshot = state.withLockIfAvailable { state -> State? in
+      guard state.emitted.insert(stage).inserted else { return nil }
+      return state
+    }
+    guard let available = snapshot else { dropped.store(true, ordering: .relaxed); return }
+    guard let sample = available else { return }
+    let deadline = sample.deadline.map { String($0) } ?? "unavailable"
+    let first = sample.firstReadStarted.map { String($0) } ?? "unavailable"
+    let last = sample.lastReadStarted.map { String($0) } ?? "unavailable"
+    let returned = sample.lastReadReturned.map { String($0) } ?? "unavailable"
+    let drop = dropped.load(ordering: .relaxed)
+    print(
+      "OWNED_LOG_TIMING role=positiveScratch stage=\(stage.rawValue) elapsedNanoseconds=\(value) deadlineNanoseconds=\(deadline) firstReadStartedNanoseconds=\(first) lastReadStartedNanoseconds=\(last) lastReadReturnedNanoseconds=\(returned) readCount=\(sample.readCount) countSaturated=\(sample.countSaturated) partial=true joined=false lateCallbacks=unknown contentionDropAdvisory=\(drop)"
+    )
   }
 }

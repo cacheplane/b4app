@@ -229,6 +229,7 @@ final class L1FactoryCalls: Sendable {
   struct Run: Sendable {
     let task: Task<Result<AccountStatus.Result, any Error>, Never>
     let state: L1RunState
+    let timing: NativeTimingBoundary?
   }
 
   /// Held synchronous leases must not occupy Swift's cooperative executor while their
@@ -761,33 +762,42 @@ final class L1FactoryCalls: Sendable {
     if let failure { throw failure }
   }
 
-  static func begin(_ fixture: Fixture, _ cleanup: L1Cleanup, session: AuthSession? = nil) -> Run {
-    begin(fixture, cleanup, session: session, trace: nil)
+  static func begin(
+    _ fixture: Fixture, _ cleanup: L1Cleanup, session: AuthSession? = nil,
+    timing: NativeTimingBoundary? = nil
+  ) -> Run {
+    begin(fixture, cleanup, session: session, trace: nil, timing: timing)
   }
 
   private static func begin(
-    _ fixture: Fixture, _ cleanup: L1Cleanup, session: AuthSession? = nil, trace: L1PhaseTrace?
+    _ fixture: Fixture, _ cleanup: L1Cleanup, session: AuthSession? = nil, trace: L1PhaseTrace?,
+    timing: NativeTimingBoundary? = nil
   ) -> Run {
     let state = L1RunState()
     let answer = session ?? Self.session()
+    timing?.record(.issued)
     let task = Task {
+      timing?.record(.taskEntered)
       trace?.record(.taskEntered)
       defer {
         state.finished.withLock { $0 = true }
         trace?.record(.finished)
+        timing?.record(.finished)
       }
       do {
         trace?.record(.signInCallIssued)
         let value = try await fixture.manager.signIn(session: answer, hubURL: fixture.hubURL)
         trace?.record(.signInReturned, flag: true)
+        timing?.record(.operationReturned, flag: true)
         return Result<AccountStatus.Result, any Error>.success(value)
       } catch {
         trace?.record(.signInReturned, flag: false)
+        timing?.record(.operationReturned, flag: false)
         return .failure(error)
       }
     }
     cleanup.join { _ = await task.value }
-    return Run(task: task, state: state)
+    return Run(task: task, state: state, timing: timing)
   }
 
   static func completed(_ run: Run) async throws -> Result<AccountStatus.Result, any Error> {
@@ -827,8 +837,10 @@ final class L1FactoryCalls: Sendable {
     _ run: Run, trace: L1PhaseTrace?
   ) async throws -> Result<AccountStatus.Result, any Error> {
     trace?.record(.completionObservationEntered)
+    run.timing?.record(.observerEntered)
     let finished = await observed(within: .seconds(15), { run.state.finished.withLock { $0 } })
     trace?.record(.completionObservationReturned, flag: finished)
+    run.timing?.record(.observerReturned, flag: finished)
     guard finished else { throw SetupFailure.observationTimeout }
     return await run.task.value
   }
@@ -1206,6 +1218,6 @@ extension AgentProtocolAccountMigrationTests {
       _ = await task.value
       await executor.drainSubmittedJobs()
     }
-    return Run(task: task, state: state)
+    return Run(task: task, state: state, timing: nil)
   }
 }

@@ -22,6 +22,8 @@ final class InspectionObservation: Sendable {
       }
     }
   }
+  enum ReturnShape: String, Sendable { case notSampled, returned, nilValue, threw }
+  enum ErrorShape: String, Sendable { case notSampled, none, workspace, other }
   struct Record: Sendable {
     let phase: Phase
     let kind: Kind
@@ -30,6 +32,14 @@ final class InspectionObservation: Sendable {
     let callOrdinal: UInt16?
     let elapsedNanoseconds: UInt64
     let threw: Bool
+    let returnShape: ReturnShape
+    let status: ConnectionStatus?
+    let authStatus: AuthStatus?
+    let errorShape: ErrorShape
+    let errorCode: ErrorCode?
+    let hasFiveHour: Bool?
+    let hasWeekly: Bool?
+    let hasPlanType: Bool?
   }
   enum Availability: String, Sendable { case available, lockUnavailable, alreadyAttempted }
   struct Snapshot: Sendable {
@@ -53,8 +63,14 @@ final class InspectionObservation: Sendable {
       for record in records {
         let adapter = record.adapterOrdinal.map { String($0) } ?? "unavailable"
         let call = record.callOrdinal.map { String($0) } ?? "unavailable"
+        let status = record.status?.rawValue ?? "unavailable"
+        let auth = record.authStatus?.rawValue ?? "unavailable"
+        let code = record.errorCode?.rawValue ?? "unavailable"
+        let fiveHour = record.hasFiveHour.map { String($0) } ?? "unavailable"
+        let weekly = record.hasWeekly.map { String($0) } ?? "unavailable"
+        let plan = record.hasPlanType.map { String($0) } ?? "unavailable"
         lines.append(
-          "phase=\(record.phase.rawValue) kind=\(record.kind.rawValue) harness=\(record.harnessOrdinal) adapter=\(adapter) call=\(call) elapsedNanoseconds=\(record.elapsedNanoseconds) threw=\(record.threw)"
+          "phase=\(record.phase.rawValue) kind=\(record.kind.rawValue) harness=\(record.harnessOrdinal) adapter=\(adapter) call=\(call) elapsedNanoseconds=\(record.elapsedNanoseconds) threw=\(record.threw) returnShape=\(record.returnShape.rawValue) status=\(status) authStatus=\(auth) errorShape=\(record.errorShape.rawValue) errorCode=\(code) hasFiveHour=\(fiveHour) hasWeekly=\(weekly) hasPlanType=\(plan)"
         )
       }
       return lines.joined(separator: "\n")
@@ -121,12 +137,17 @@ final class InspectionObservation: Sendable {
 
   func record(
     _ phase: Phase, kind: Kind, adapterOrdinal: UInt16? = nil, callOrdinal: UInt16? = nil,
-    threw: Bool = false
+    threw: Bool = false, returnShape: ReturnShape = .notSampled,
+    status: ConnectionStatus? = nil, authStatus: AuthStatus? = nil,
+    errorShape: ErrorShape = .notSampled, errorCode: ErrorCode? = nil,
+    hasFiveHour: Bool? = nil, hasWeekly: Bool? = nil, hasPlanType: Bool? = nil
   ) {
     let record = Record(
       phase: phase, kind: kind, harnessOrdinal: 1,
       adapterOrdinal: Self.bounded(adapterOrdinal), callOrdinal: Self.bounded(callOrdinal),
-      elapsedNanoseconds: Self.elapsedNanoseconds(origin.duration(to: clock.now)), threw: threw)
+      elapsedNanoseconds: Self.elapsedNanoseconds(origin.duration(to: clock.now)), threw: threw,
+      returnShape: returnShape, status: status, authStatus: authStatus, errorShape: errorShape,
+      errorCode: errorCode, hasFiveHour: hasFiveHour, hasWeekly: hasWeekly, hasPlanType: hasPlanType)
     let acquired =
       state.withLockIfAvailable { protected in
         if protected.count < Self.capacity {
@@ -229,11 +250,16 @@ private struct InspectionForwarding: Sendable {
     observation.record(.inspectionIssued, kind: kind, adapterOrdinal: adapter, callOrdinal: call)
     do {
       let result = try await inner.inspectConnection()
-      observation.record(.inspectionReturned, kind: kind, adapterOrdinal: adapter, callOrdinal: call)
+      observation.record(
+        .inspectionReturned, kind: kind, adapterOrdinal: adapter, callOrdinal: call,
+        returnShape: .returned, status: result.status, authStatus: result.authStatus,
+        errorShape: result.error == nil ? .none : .workspace, errorCode: result.error?.code)
       return result
     } catch {
       observation.record(
-        .inspectionReturned, kind: kind, adapterOrdinal: adapter, callOrdinal: call, threw: true)
+        .inspectionReturned, kind: kind, adapterOrdinal: adapter, callOrdinal: call, threw: true,
+        returnShape: .threw, errorShape: error is WorkspaceError ? .workspace : .other,
+        errorCode: (error as? WorkspaceError)?.code)
       throw error
     }
   }
@@ -242,10 +268,17 @@ private struct InspectionForwarding: Sendable {
     observation.record(.usageIssued, kind: kind, adapterOrdinal: adapter, callOrdinal: call)
     do {
       let result = try await usage.readUsage()
-      observation.record(.usageReturned, kind: kind, adapterOrdinal: adapter, callOrdinal: call)
+      observation.record(
+        .usageReturned, kind: kind, adapterOrdinal: adapter, callOrdinal: call,
+        returnShape: result == nil ? .nilValue : .returned, errorShape: .none,
+        hasFiveHour: result.map { $0.fiveHour != nil }, hasWeekly: result.map { $0.weekly != nil },
+        hasPlanType: result.map { $0.planType != nil })
       return result
     } catch {
-      observation.record(.usageReturned, kind: kind, adapterOrdinal: adapter, callOrdinal: call, threw: true)
+      observation.record(
+        .usageReturned, kind: kind, adapterOrdinal: adapter, callOrdinal: call, threw: true,
+        returnShape: .threw, errorShape: error is WorkspaceError ? .workspace : .other,
+        errorCode: (error as? WorkspaceError)?.code)
       throw error
     }
   }
@@ -306,4 +339,78 @@ private struct InspectionBothAdapter: InspectionAdapterForwarding, LoginCapable,
   let usage: any UsageReporting
   func startLogin() async throws -> LoginStart { try await login.startLogin() }
   func readUsage() async throws -> UsageReading? { try await forwarding.readUsage(usage) }
+}
+
+/// Test-only first-observed boundaries, never evidence that every child reached that stage.
+/// A missing sample is unknown, never proof of missing work.
+/// Diagnostic state never waits for its lock; loss is advisory and never retried.
+/// Finite synchronous reporting runs after unlocking and may perturb scheduling.
+final class NativeTimingBoundary: Sendable {
+  enum Role: String, Sendable {
+    case a3CurrentFirstSignIn, mainTen, bufferedChildren, transportClosers, serverClosers, preservedTurn
+  }
+  enum CaseOrdinal: UInt8, Sendable { case first = 1, second = 2, third = 3 }
+  enum Stage: String, CaseIterable, Hashable, Sendable {
+    case issued, taskEntered, operationReturned, finished, observerEntered, observerReturned
+    case clusterInitIssued, clusterInitReturned, clusterStatusIssued, clusterStatusReturned
+    case clusterStartIssued, clusterStartReturned, clusterReadyReturned, bodyEntered, bodyReturned
+    case fixtureIssued, fixtureReturned, signInIssued, signInTaskEntered, signInReturned
+    case secretGateWaitIssued, secretGateWaitReturned, admissionChecksIssued, admissionChecksReturned
+    case secretGateReleased, signInJoinIssued, signInJoinReturned
+    case pushIssued, pushTaskEntered, pushReturned, pushGateWaitIssued, pushGateWaitReturned
+    case claimChecksIssued, claimChecksReturned, pushGateReleased, pushJoinIssued, pushJoinReturned
+    case acknowledgementChecksReturned, firstShutdownIssued, firstShutdownReturned
+    case firstDrainReturned, reopenIssued, reopenStartIssued, reopenStartReturned
+    case reopenChecksIssued, reopenChecksReturned, secondShutdownIssued, secondShutdownReturned
+    case secondDrainReturned, bodyThrew, cleanupIssued, cleanupReturned, clusterFinishIssued
+    case clusterFinishReturned, clusterFinishThrew
+    case cleanupSignInJoinIssued, cleanupSignInJoinReturned, cleanupPushJoinIssued, cleanupPushJoinReturned
+    case finishStatusIssued, finishStatusRunning, clientsDrainIssued, clientsDrainReturned
+    case clientsDrainThrew, ownedStopIssued, ownedStopReturned, pathsRemoveIssued, pathsRemoveReturned
+    case harnessIssued, harnessReturned, serverStartIssued, serverStartReturned
+    case connectIssued, connectReturned, secondConnectIssued, secondConnectReturned
+    case acceptIssued, acceptReturned, readerFinished, acceptFinished, existingCompletion
+    case cleanupStarted, cleanupFinished, groupShutdownStarted, sourceFinished, listenerClosed
+    case initialized, connectionDequeued, connectionFinished, handlerAdmitted, handlerFinished
+    case gateWaitIssued, gateWaitReturned, secondGateWaitIssued, secondGateWaitReturned
+    case closeIssued, closeTaskEntered, closeReturned, secondCloseIssued, secondCloseTaskEntered
+    case secondCloseReturned, firstCancelled, gateReleased, closeJoinIssued, closeJoinReturned
+    case secondCloseJoinIssued, secondCloseJoinReturned, finalCloseIssued, finalCloseReturned
+    case cleanupGateReleased, cleanupCloseIssued, cleanupCloseReturned, peersCloseIssued
+    case peersCloseReturned, harnessStopIssued, harnessStopReturned
+    case connectionAddIssued, connectionAddReturned, threadIssued, threadReturned
+    case requestIssued, requestTaskEntered, requestReturned, acceptanceWaitIssued, acceptanceWaitReturned
+    case admissionWaitIssued, admissionWaitReturned, acknowledgementReleased
+    case requestJoinIssued, requestJoinReturned, handlerWaitIssued, handlerWaitReturned
+    case viewerCloseIssued, viewerCloseReturned, connectionWaitIssued, connectionWaitReturned
+    case readIssued, readReturned, retryIssued, retryReturned, completeIssued, completeReturned
+    case eventWaitIssued, eventWaitReturned, cleanupRequestJoinIssued, cleanupRequestJoinReturned
+    case cleanupViewerCloseIssued, cleanupViewerCloseReturned
+    case cleanupServerCloseIssued, cleanupServerCloseReturned
+  }
+  private let role: Role
+  private let ordinal: CaseOrdinal
+  private let origin = ContinuousClock.now
+  private let seen = Mutex<Set<Stage>>([])
+  private let contentionDrop = Atomic<Bool>(false)
+
+  init(_ role: Role, caseOrdinal: CaseOrdinal = .first) {
+    self.role = role
+    ordinal = caseOrdinal
+  }
+
+  func record(_ stage: Stage, flag: Bool? = nil) {
+    // Sample before acquiring diagnostic state. Printing occurs after unlocking.
+    let elapsed = InspectionObservation.elapsedNanoseconds(origin.duration(to: ContinuousClock.now))
+    guard let inserted = seen.withLockIfAvailable({ $0.insert(stage).inserted }) else {
+      contentionDrop.store(true, ordering: .relaxed)
+      return
+    }
+    guard inserted else { return }
+    let flagLabel = flag.map { String($0) } ?? "unavailable"
+    let drop = contentionDrop.load(ordering: .relaxed)
+    print(
+      "NATIVE_TIMING role=\(role.rawValue) caseOrdinal=\(ordinal.rawValue) stage=\(stage.rawValue) elapsedNanoseconds=\(elapsed) flag=\(flagLabel) partial=true joined=false lateCallbacks=unknown contentionDropAdvisory=\(drop)"
+    )
+  }
 }

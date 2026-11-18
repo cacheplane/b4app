@@ -500,6 +500,7 @@ private struct L2AccountAPI: HubAPI {
 
   @Test func retainedDrainStillRequiredWhenPreflightCurrent() async throws {
     let observation = L2Observation(.retainedCurrent)
+    let timing = NativeTimingBoundary(.a3CurrentFirstSignIn)
     defer { observation.emitAfterFixtureCleanup() }
     try await H.withFixture { fixture, cleanup in
       let lease = L2Lease.hold(fixture.scope.database, cleanup: cleanup)
@@ -507,7 +508,7 @@ private struct L2AccountAPI: HubAPI {
       #expect(
         H.refused(
           (try await observation.call(.currentFirstSignInCompletion) {
-            try await H.completed(H.begin(fixture, cleanup))
+            try await H.completed(H.begin(fixture, cleanup, timing: timing))
           }), code: .endpointUnavailable))
       try await L2.snapshotUnchanged(fixture)
       let current = try L2.externalUpgrade(fixture)

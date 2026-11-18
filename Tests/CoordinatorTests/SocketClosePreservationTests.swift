@@ -10,40 +10,74 @@ import WorkspaceProtocol
 @Suite(.serialized, .timeLimit(.minutes(3))) struct SocketClosePreservationTests {
   @Test(arguments: ["peer-before-ack", "local-before-ack", "peer-after-ack"])
   func acceptedTurnSurvivesViewerDisconnectBeforeAcknowledgement(_ ordering: String) async throws {
+    let timing = NativeTimingBoundary(
+      .preservedTurn,
+      caseOrdinal: ordering == "peer-before-ack" ? .first : ordering == "local-before-ack" ? .second : .third)
     let control = AcknowledgementControl()
     let inspectionObservation: InspectionRequestObservation? =
       ordering == "peer-before-ack"
       ? InspectionRequestObservation(caseID: .historicalSocketPeerBeforeAck) : nil
+    timing.record(.harnessIssued)
     let h = try await Harness.start(
       adapterFactory: { connection, environment, version, secrets in
         GatedAcknowledgementAdapter(
           inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
           connectionID: connection.id, control: control)
       }, inspectionObservation: inspectionObservation)
+    timing.record(.harnessReturned)
     var server: SocketServer?
     var viewer: WorkspaceClient?
     var request: Task<TurnSend.Result, any Error>?
     do {
+      timing.record(.connectionAddIssued)
       let connection = try await h.addCodex()
+      timing.record(.connectionAddReturned)
+      timing.record(.threadIssued)
       let thread = try await h.newThread(connection)
+      timing.record(.threadReturned)
       let scope = try h.coordinator.accounts.scope()
       let scopeBefore = scope.admittedWorkCount
       let observations = SocketObservations()
+      timing.record(.serverStartIssued)
       let observed = try await SocketServer.start(
         socketPath: h.coordinator.paths.runtimeDir + "/held", router: h.coordinator.router,
-        eventLog: h.coordinator.eventLog, lifecycleObserver: { await observations.record($0) })
+        eventLog: h.coordinator.eventLog,
+        lifecycleObserver: { event in
+          await observations.record(event)
+          switch event {
+          case .connectionDequeued: timing.record(.connectionDequeued)
+          case .connectionFinished: timing.record(.connectionFinished)
+          case .handlerAdmitted: timing.record(.handlerAdmitted)
+          case .handlerFinished: timing.record(.handlerFinished)
+          case .acceptFinished: timing.record(.acceptFinished)
+          case .groupShutdownStarted: timing.record(.groupShutdownStarted)
+          case .cleanupStarted: timing.record(.cleanupStarted)
+          case .cleanupFinished: timing.record(.cleanupFinished)
+          default: break
+          }
+        })
+      timing.record(.serverStartReturned)
       server = observed
+      timing.record(.connectIssued)
       let client = try await UnixSocketTransport.client(path: observed.socketPath)
+      timing.record(.connectReturned)
       viewer = client
       let operationID = "held-viewer-operation"
+      timing.record(.requestIssued)
       let sending = Task {
-        try await client.request(
+        timing.record(.requestTaskEntered)
+        defer { timing.record(.requestReturned) }
+        return try await client.request(
           TurnSend.self, TurnSend.Params(threadId: thread.id, text: "held native acceptance"),
           options: RequestOptions(operationId: operationID, timeout: .seconds(60)))
       }
       request = sending
+      timing.record(.acceptanceWaitIssued)
       await control.accepted.wait()
+      timing.record(.acceptanceWaitReturned)
+      timing.record(.admissionWaitIssued)
       let admission = await observations.admission()
+      timing.record(.admissionWaitReturned)
       #expect(observed.invocationSnapshot.tokens.contains(admission.token))
       #expect(scope.admittedWorkCount == scopeBefore + 1)
       let prepared = try #require(try h.coordinator.database.turn(operationId: operationID))
@@ -53,15 +87,26 @@ import WorkspaceProtocol
 
       if ordering == "peer-after-ack" {
         control.acknowledge.release()
+        timing.record(.acknowledgementReleased)
+        timing.record(.requestJoinIssued)
         _ = try await sending.value
+        timing.record(.requestJoinReturned)
+        timing.record(.handlerWaitIssued)
         await observations.finished(token: admission.token)
+        timing.record(.handlerWaitReturned)
       }
       if ordering == "local-before-ack" {
+        timing.record(.closeIssued)
         await observed.close()
+        timing.record(.closeReturned)
       } else {
+        timing.record(.viewerCloseIssued)
         await client.close()
+        timing.record(.viewerCloseReturned)
       }
+      timing.record(.connectionWaitIssued)
       await observations.connectionFinished(admission.connectionID)
+      timing.record(.connectionWaitReturned)
       #expect(control.counts.cancelled == 0)
       #expect(control.counts.interrupted == 0)
       #expect(control.counts.disposed == 0)
@@ -71,14 +116,21 @@ import WorkspaceProtocol
         #expect(await observations.hasFinished(token: admission.token) == false)
         #expect(try h.coordinator.database.turn(id: prepared.id)?.status == .submitting)
         control.acknowledge.release()
+        timing.record(.acknowledgementReleased)
+        timing.record(.handlerWaitIssued)
         await observations.finished(token: admission.token)
+        timing.record(.handlerWaitReturned)
         #expect(await observations.responseDropped(token: admission.token) == true)
       }
       #expect(!observed.invocationSnapshot.tokens.contains(admission.token))
       #expect(scope.admittedWorkCount == scopeBefore)
       // Closing the old socket owner/group must not cancel or join the admitted Router handler.
+      timing.record(.finalCloseIssued)
       await observed.close()
+      timing.record(.finalCloseReturned)
+      timing.record(.readIssued)
       let read = try await h.read(thread)
+      timing.record(.readReturned)
       #expect(read.turns.count == 1)
       let running = try #require(read.turns.first)
       #expect(running.id == prepared.id)
@@ -87,32 +139,72 @@ import WorkspaceProtocol
       #expect(running.status == .running)
       #expect(running.submission == .acknowledged)
       #expect(running.outcome == nil)
+      timing.record(.retryIssued)
       let retried = try await h.send(thread, "held native acceptance", operationId: operationID)
+      timing.record(.retryReturned)
       #expect(retried.id == running.id)
       #expect(control.counts.sent == 1)
       #expect(control.operationIDs == [operationID])
+      timing.record(.completeIssued)
       try control.complete()
+      timing.record(.completeReturned)
+      timing.record(.eventWaitIssued)
       _ = try await h.events.waitFor {
         $0.kind == .turnFinished && $0.turnId == running.id
           && $0.payload["outcome"]?.stringValue == "completed"
       }
+      timing.record(.eventWaitReturned)
       #expect(try await h.read(thread).turns.first?.outcome == .completed)
       #expect(control.counts.cancelled == 0)
       #expect(control.counts.interrupted == 0)
       #expect(control.counts.disposed == 0)
     } catch {
       control.acknowledge.release()
-      if let viewer { await viewer.close() }
-      if let server { await server.close() }
-      if let request { _ = await request.result }
+      timing.record(.cleanupGateReleased)
+      timing.record(.cleanupCloseIssued)
+      if let viewer {
+        timing.record(.cleanupViewerCloseIssued)
+        await viewer.close()
+        timing.record(.cleanupViewerCloseReturned)
+      }
+      if let server {
+        timing.record(.cleanupServerCloseIssued)
+        await server.close()
+        timing.record(.cleanupServerCloseReturned)
+      }
+      timing.record(.cleanupCloseReturned)
+      if let request {
+        timing.record(.cleanupRequestJoinIssued)
+        _ = await request.result
+        timing.record(.cleanupRequestJoinReturned)
+      }
+      timing.record(.harnessStopIssued)
       await h.stop()
+      timing.record(.harnessStopReturned)
       throw error
     }
     control.acknowledge.release()
-    if let viewer { await viewer.close() }
-    if let server { await server.close() }
-    if let request { _ = await request.result }
+    timing.record(.cleanupGateReleased)
+    timing.record(.cleanupCloseIssued)
+    if let viewer {
+      timing.record(.cleanupViewerCloseIssued)
+      await viewer.close()
+      timing.record(.cleanupViewerCloseReturned)
+    }
+    if let server {
+      timing.record(.cleanupServerCloseIssued)
+      await server.close()
+      timing.record(.cleanupServerCloseReturned)
+    }
+    timing.record(.cleanupCloseReturned)
+    if let request {
+      timing.record(.cleanupRequestJoinIssued)
+      _ = await request.result
+      timing.record(.cleanupRequestJoinReturned)
+    }
+    timing.record(.harnessStopIssued)
     await h.stop()
+    timing.record(.harnessStopReturned)
   }
 
   @Test func serverWaitsForItsAcceptOwnerBeforeGroupShutdown() async throws {

@@ -724,11 +724,15 @@ private final class OwnerStartupDiagnostics: Sendable {
     case observationGuardEntered, baselineDrainEntered, baselineDrainReturned, originCaptureEntered
     case originCaptureReturned, baselineAssertReturned
   }
+  enum CollectorStage: String, Hashable, Sendable {
+    case taskEntered, nextSocketReturned, returnReceiptMarked
+  }
   enum Role: String, Sendable { case unjoined, linked, heldSecret, sharedAPI, heldSecretSharedAPI }
   static let maximumRecords = Stage.allCases.count
   private static let ordinals = Mutex(0)
   private let role: Role
   private let ordinal: Int
+  private let childOrigin = ContinuousClock.now
 
   init(linked: Bool, heldSecret: Bool, sameAPI: Bool) {
     role =
@@ -747,6 +751,7 @@ private final class OwnerStartupDiagnostics: Sendable {
     var deadline: ContinuousClock.Instant?
     var observationDeadline: ContinuousClock.Instant?
     var emitted: Set<Stage> = []
+    var emittedCollector: Set<CollectorStage> = []
   }
   private let state = Mutex(State())
 
@@ -754,6 +759,28 @@ private final class OwnerStartupDiagnostics: Sendable {
   func beginObservation(deadline: ContinuousClock.Instant) {
     state.withLock { $0.observationDeadline = deadline }
   }
+  /// Actual collector work only. Captures this primitive-only observer, never owners or secrets.
+  func emitCollector(_ stage: CollectorStage, succeeded: Bool? = nil) {
+    let now = ContinuousClock.now
+    let sample = state.withLockIfAvailable { state in
+      (state.emittedCollector.insert(stage).inserted, state.deadline, state.observationDeadline)
+    }
+    guard ordinal > 0, let sample, sample.0 else { return }
+    let elapsed =
+      sample.1.map {
+        String(OwnerDiagnosticBounds.milliseconds(($0 - .seconds(10)).duration(to: now)))
+      } ?? "unavailable"
+    let observationElapsed =
+      sample.2.map {
+        String(OwnerDiagnosticBounds.milliseconds(($0 - .seconds(10)).duration(to: now)))
+      } ?? "unavailable"
+    let childElapsed = InspectionObservation.elapsedNanoseconds(childOrigin.duration(to: now))
+    let success = succeeded.map { String($0) } ?? "unavailable"
+    print(
+      "A5_COLLECTOR_CHILD role=\(role.rawValue) fixture=\(ordinal) stage=\(stage.rawValue) elapsedNanoseconds=\(childElapsed) elapsedMillis=\(elapsed) observationElapsedMillis=\(observationElapsed) succeeded=\(success) partial=true joined=false lateCallbacks=unknown hubStopInternal=unavailable"
+    )
+  }
+
   func emit(
     _ stage: Stage, secrets: OwnerSecrets, links: FakeHubLinkConnection, access: OwnerAccessLedger
   ) {
@@ -1535,13 +1562,18 @@ private struct OwnerFixture: Sendable {
       try ownerUncancelled()
       let receipts = access.receipts
       let collector = Task {
+        startupDiagnostics.emitCollector(.taskEntered)
         receipts.markCollectorStarted()
         do {
           let socket = try await links.nextSocket()
+          startupDiagnostics.emitCollector(.nextSocketReturned, succeeded: true)
           receipts.markCollectorReturned(success: true)
+          startupDiagnostics.emitCollector(.returnReceiptMarked, succeeded: true)
           return socket
         } catch {
+          startupDiagnostics.emitCollector(.nextSocketReturned, succeeded: false)
           receipts.markCollectorReturned(success: false)
+          startupDiagnostics.emitCollector(.returnReceiptMarked, succeeded: false)
           throw OwnerFixtureFailure.failed
         }
       }

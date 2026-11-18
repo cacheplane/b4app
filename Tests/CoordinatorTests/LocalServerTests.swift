@@ -16,6 +16,7 @@ enum ServerNodeProbeLabel: String, Sendable {
   case startsToReadyInSourceModeAndIsIdempotent
   case logsAreTailedRedactedAndFollowable
   case managedConnectionRefusesWhileStopped
+  case removingRefusesWhileATurnIsRunningUnlessForced
   case localB4ThreadsUseTheServerEnvironmentAndRemoteHaveNone
 }
 
@@ -907,7 +908,10 @@ struct ServerHarness {
 
   @Test func removingRefusesWhileATurnIsRunningUnlessForced() async throws {
     let witness = HistoricalFactoryWitness()
-    let h = try await ServerHarness.start(adapterFactory: witness.makeFactory())
+    let h = try await ServerHarness.start(
+      nodeProbeLabel: .removingRefusesWhileATurnIsRunningUnlessForced,
+      adapterFactory: witness.makeFactory())
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let server = try await h.start(try await h.add(try h.project()))
     let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
