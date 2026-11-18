@@ -86,28 +86,25 @@ import Testing
     whole.finish()
     #expect(pieces.document == whole.document)
   }
-  @Test func aLongFencePushedInPiecesWithoutReadsStaysFast() {
+  @Test func aLongFencePushedInPiecesWithoutReadsKeepsEveryLine() {
     // Many pushes per line, so most leave an unfinished line in the fence.
     let token = String(repeating: "x", count: 400)
-    var (linear, parser) = staysLinear("```\n", lines: 1500, reading: false) {
+    let parser = streamedAndFinished("```\n", pieces: 1600, reading: false) {
       $0 % 8 == 7 ? "\(token)\n" : "\(token) "
     }
-    #expect(linear)
-    parser.finish()
     guard case .code(_, let text, _) = parser.document.blocks[0].kind else {
       Issue.record("not code")
       return
     }
-    #expect(text.split(separator: "\n").count == 750)
+    #expect(text.split(separator: "\n").count == 200)
   }
-  @Test func oneLongLineStreamedWithReadsStaysFast() {
+  @Test func oneLongLineStreamedWithReadsIsOneParagraph() {
     let plain = String(repeating: "abcd efg", count: 8)
-    let markup = "see **bold** and `code` [l](u) _it_ ~~x~~ a*b " + String(repeating: "z", count: 19)
+    let markup =
+      "see **bold** and `code` [l](u) _it_ ~~x~~ a * b * c " + String(repeating: "z", count: 11) + " "
     for piece in [plain, markup] {
-      // 390 pieces of 64 characters is about 25,000 characters; the long run is about 100,000.
-      let (linear, parser) = staysLinear("", lines: 390) { _ in piece }
-      #expect(linear, "for \(piece.debugDescription)")
-      #expect(parser.document.blocks.count == 1)
+      let parser = streamedAndFinished("", pieces: 390) { _ in piece }
+      #expect(parser.document.blocks.count == 1, "for \(piece.debugDescription)")
     }
   }
   @Test func readingTheDocumentDoesNotChangeTheParser() {

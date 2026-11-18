@@ -19,16 +19,14 @@ import Testing
     #expect(midStream("```\nlet a\nlet") == "code - open \"let a\\nlet\"")
     #expect(midStream("# hea") == "h1 \"hea\"")
   }
-  @Test func aLongFencePushedLineByLineStaysFast() {
+  @Test func aLongFencePushedLineByLineStaysOpenCode() {
     let filler = String(repeating: "x", count: 300)
-    var (linear, parser) = staysLinear("```\n", lines: 2000) { "line \($0) \(filler)\n" }
-    #expect(linear)
-    parser.finish()
+    let parser = streamedAndFinished("```\n", pieces: 2000) { "line \($0) \(filler)\n" }
     guard case .code(_, let text, let closed) = parser.document.blocks[0].kind else {
       Issue.record("not code")
       return
     }
     #expect(!closed)
-    #expect(text.split(separator: "\n").count == 8000)
+    #expect(text.split(separator: "\n").count == 2000)
   }
 }

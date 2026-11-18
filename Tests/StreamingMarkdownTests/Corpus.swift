@@ -30,7 +30,18 @@ func corpus() -> [(name: String, text: String)] {
   }
 }
 
-func corpusText(_ name: String) -> String { corpus().first { $0.name == name }?.text ?? "" }
+struct MissingCorpusFile: Error, CustomStringConvertible {
+  let name: String
+  var description: String { "no corpus file \(name)" }
+}
+
+/// The text of one corpus document; throws when there is none of that name.
+func corpusText(_ name: String) throws -> String {
+  guard let text = corpus().first(where: { $0.name == name })?.text else {
+    throw MissingCorpusFile(name: name)
+  }
+  return text
+}
 
 /// `text` cut into pieces of 1...`maxSize` characters.
 func randomChunks(_ text: String, maxSize: Int, using rng: inout SplitMix64) -> [String] {

@@ -10,8 +10,8 @@ private let names = corpus().map(\.name)
     #expect(corpus().allSatisfy { !$0.text.isEmpty })
   }
 
-  @Test(arguments: names) func everyTwoWaySplitEndsInTheSameDocument(name: String) {
-    let text = corpusText(name)
+  @Test(arguments: names) func everyTwoWaySplitEndsInTheSameDocument(name: String) throws {
+    let text = try corpusText(name)
     let expected = MarkdownParser.parse(text)
     var cut = text.startIndex
     while true {
@@ -26,9 +26,9 @@ private let names = corpus().map(\.name)
     }
   }
 
-  @Test(arguments: names) func everyTwoWayScalarSplitEndsInTheSameDocument(name: String) {
+  @Test(arguments: names) func everyTwoWayScalarSplitEndsInTheSameDocument(name: String) throws {
     // Cuts on unicode-scalar offsets, so a cut can fall between the "\r" and "\n" of one Character.
-    let scalars = corpusText(name).unicodeScalars
+    let scalars = try corpusText(name).unicodeScalars
     let expected = MarkdownParser.parse(String(scalars))
     var cut = scalars.startIndex
     while true {
@@ -77,16 +77,16 @@ private let names = corpus().map(\.name)
     #expect(outline(expected) == "p \"a b\"")
   }
 
-  @Test(arguments: names) func oneCharacterAtATimeEndsInTheSameDocument(name: String) {
-    let text = corpusText(name)
+  @Test(arguments: names) func oneCharacterAtATimeEndsInTheSameDocument(name: String) throws {
+    let text = try corpusText(name)
     var parser = MarkdownParser()
     for character in text { parser.push(String(character)) }
     parser.finish()
     #expect(parser.document == MarkdownParser.parse(text))
   }
 
-  @Test(arguments: names) func seededRandomSplitsEndInTheSameDocument(name: String) {
-    let text = corpusText(name)
+  @Test(arguments: names) func seededRandomSplitsEndInTheSameDocument(name: String) throws {
+    let text = try corpusText(name)
     let expected = MarkdownParser.parse(text)
     var rng = SplitMix64(seed: stableSeed(name))
     for round in 0..<200 {
@@ -97,8 +97,8 @@ private let names = corpus().map(\.name)
     }
   }
 
-  @Test(arguments: names) func everyPrefixProjectsTheSameHoweverItArrived(name: String) {
-    let text = corpusText(name)
+  @Test(arguments: names) func everyPrefixProjectsTheSameHoweverItArrived(name: String) throws {
+    let text = try corpusText(name)
     var stepped = MarkdownParser()
     var prefix = ""
     for character in text {
@@ -111,8 +111,8 @@ private let names = corpus().map(\.name)
     }
   }
 
-  @Test(arguments: names) func aCommittedBlockNeverChanges(name: String) {
-    let text = corpusText(name)
+  @Test(arguments: names) func aCommittedBlockNeverChanges(name: String) throws {
+    let text = try corpusText(name)
     let final = MarkdownParser.parse(text).blocks
     var parser = MarkdownParser()
     var count = 0

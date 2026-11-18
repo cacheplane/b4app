@@ -49,3 +49,18 @@ private func append(_ blocks: [MarkdownBlock], depth: Int, to lines: inout [Stri
     }
   }
 }
+
+/// Pushes `prefix`, then `count` pieces, reading `document` after each push when `reading`, then
+/// finishes. The parser's cost on long input is `ParserTimingTests`' to check; this is its content.
+func streamedAndFinished(
+  _ prefix: String, pieces count: Int, reading: Bool = true, piece: (Int) -> String
+) -> MarkdownParser {
+  var parser = MarkdownParser()
+  parser.push(prefix)
+  for index in 0..<count {
+    parser.push(piece(index))
+    if reading { _ = parser.document }
+  }
+  parser.finish()
+  return parser
+}

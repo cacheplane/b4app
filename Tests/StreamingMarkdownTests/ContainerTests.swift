@@ -103,11 +103,9 @@ import Testing
     #expect(
       outline(parser.document) == "list ul\n  item\n    p \"a\"\n    list ul\n      item\n        p \"b\"")
   }
-  @Test func aLongFenceInsideAListItemStaysFast() {
+  @Test func aLongFenceInsideAListItemStaysOpenCode() {
     let filler = String(repeating: "x", count: 300)
-    var (linear, parser) = staysLinear("- Run:\n\n  ```\n", lines: 2000) { "  line \($0) \(filler)\n" }
-    #expect(linear)
-    parser.finish()
+    let parser = streamedAndFinished("- Run:\n\n  ```\n", pieces: 2000) { "  line \($0) \(filler)\n" }
     guard case .list(let list) = parser.document.blocks[0].kind,
       case .code(_, let text, let closed) = list.items[0].blocks[1].kind
     else {
@@ -115,7 +113,7 @@ import Testing
       return
     }
     #expect(!closed)
-    #expect(text.split(separator: "\n").count == 8000)
+    #expect(text.split(separator: "\n").count == 2000)
     #expect(text.hasPrefix("line 0 x"))
   }
 }
