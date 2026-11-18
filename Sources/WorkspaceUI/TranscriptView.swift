@@ -97,16 +97,19 @@ struct TranscriptView: View {
   var pendingStatus: String? = nil
   /// Dense draws each turn as the message, one line for the work, and the answer.
   var dense = false
+  /// How many messages the reader has sent in this thread from this app (`WorkspaceModel.ownSends`).
+  var sent = 0
   @State private var folds: TranscriptFolds
 
   init(
     detail: ThreadDetail, pending: PendingSend? = nil, pendingStatus: String? = nil, dense: Bool = false,
-    folds: TranscriptFolds = TranscriptFolds()
+    sent: Int = 0, folds: TranscriptFolds = TranscriptFolds()
   ) {
     self.detail = detail
     self.pending = pending
     self.pendingStatus = pendingStatus
     self.dense = dense
+    self.sent = sent
     _folds = State(initialValue: folds)
   }
 
@@ -161,13 +164,11 @@ struct TranscriptView: View {
       .onChange(of: detail.liveText) { _, _ in follow(proxy) }
       // Normal density has no lines to hold open, so a switch lets go and normal scrolls as it always has.
       .onChange(of: dense) { _, _ in folds.reset() }
-      // The reader sent something: back to the end, as today.
-      .onChange(of: pending?.id) { _, _ in
-        folds.release()
-        proxy.scrollTo("bottom", anchor: .bottom)
-      }
-      .onChange(of: detail.turns.count) { old, new in
-        guard new > old, folds.holds else { return }
+      // The reader sent something: back to the end. Nothing else that adds a turn does this: a turn
+      // started from another device, or by the CLI, leaves a reader who scrolled back where they are,
+      // with "Jump to latest" to go to it (D-254).
+      .onChange(of: sent) { old, new in
+        guard new > old else { return }
         folds.release()
         proxy.scrollTo("bottom", anchor: .bottom)
       }
