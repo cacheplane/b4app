@@ -67,7 +67,7 @@ Severity is S4 (integrity or control), S3 (misleads or blocks a core task), S2 (
 | 10 | Plans and task lists have no presentation of their own; Codex plan updates and command output deltas are dropped | Read from the adapters | S2 | Plans and task lists: D-243. Command output deltas: open |
 | 11 | Claude Code sub-agent frames lose their parent | Risk; no fixture sends them | S2 if sent | Open |
 | 12 | A Claude Code reconcile can add a second copy of each text row (live and history ids differ) | Risk when written; since reproduced in a coordinator test, behind a second defect that marked the thread missing | S3 | D-238 |
-| 13 | A turn that ends with no outcome draws "Turn failed." | Read | S1 | Open |
+| 13 | A turn that ends with no outcome draws "Turn failed." | Read | S1 | Fixed (D-251) |
 | 14 | The Mac's approval buttons come back between the reply and the resolved event; the coordinator refuses the second answer | Read; the refusal is fixture-tested | S1 | Fixed (D-253) |
 | 15 | A new turn started from another device takes a reader who scrolled back to the end, as a local send does | Read (D-223 call 7) | S1 | Open |
 | 16 | A Codex request the adapter declines automatically resolves without a thread id, so its row can stay pending until Codex resolves it | Risk | S2 | Open |
