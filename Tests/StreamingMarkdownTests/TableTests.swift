@@ -1,5 +1,6 @@
-import StreamingMarkdown
 import Testing
+
+@testable import StreamingMarkdown
 
 @Suite struct TableTests {
   private func parsed(_ text: String) -> String { outline(MarkdownParser.parse(text)) }
@@ -66,24 +67,45 @@ import Testing
   }
   @Test func aLongLineOfBacktickRunsStaysLinear() {
     // Runs of increasing length with pipes between: none has a matching closer.
-    func line(_ size: Int) -> Substring {
+    func line(_ size: Int) -> String {
       var text = ""
+      var count = 0
       var length = 1
-      while text.count < size {
+      while count < size {
         text += String(repeating: "`", count: length) + "|"
+        count += length + 1
         length += 1
       }
-      return Substring(text)
+      return text
     }
+    let short = line(100_000)
+    let long = line(400_000)
     let clock = ContinuousClock()
-    func time(_ size: Int) -> Duration {
+    func time(_ text: String) -> Duration {
       var best = Duration.seconds(1000)
       for _ in 0..<3 {
-        best = min(best, clock.measure { _ = MarkdownParser.parse(String(line(size))) })
+        best = min(best, clock.measure { _ = MarkdownParser.parse(text) })
       }
       return best
     }
-    #expect(time(400_000) < time(100_000) * 8)
-    #expect(time(400_000) < .seconds(5))
+    let shortTime = time(short)
+    let longTime = time(long)
+    #expect(longTime < shortTime * 6)
+    #expect(longTime < .seconds(5))
+  }
+  @Test func aRowReportsHowManyCellsAPipeClosed() {
+    #expect(LineScanner.tableRow("|a|b").cells == ["a", "b"])
+    #expect(LineScanner.tableRow("|a|b").closedCount == 1)
+    #expect(LineScanner.tableRow("|a|b|").closedCount == 2)
+    #expect(LineScanner.tableRow("a|b").closedCount == 1)
+    #expect(LineScanner.tableRow("a|b|").closedCount == 2)
+    #expect(LineScanner.tableRow("|a").closedCount == 0)
+    let plain = LineScanner.tableRow("plain")
+    #expect(plain.cells == ["plain"] && plain.closedCount == 0 && !plain.splits)
+  }
+  @Test func fitPadsAndCuts() {
+    #expect(LineScanner.fit(["1"], to: 3) == ["1", "", ""])
+    #expect(LineScanner.fit(["1", "2", "3"], to: 2) == ["1", "2"])
+    #expect(LineScanner.fit(["1", "2"], to: 2) == ["1", "2"])
   }
 }
