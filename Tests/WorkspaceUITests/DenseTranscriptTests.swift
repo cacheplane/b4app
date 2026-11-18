@@ -463,4 +463,169 @@ import WorkspaceProtocol
     }
     #expect(line.text == "Waiting for you")
   }
+
+  /// A turn that is running says so in whichever form has room: a line with nothing to fold, the steps line
+  /// otherwise. Each running status does; none of the others does.
+  @Test(arguments: [TurnStatus.submitting, .running, .stopping])
+  func everyRunningStatusEndsInALineThatSaysWorking(_ status: TurnStatus) throws {
+    let nothing = DenseTranscript.entries(items: [user("u1")], turns: [turn("t1", status, nil)], open: [])
+    #expect(ids(nothing) == ["u1", "running-t1"])
+    #expect(running(nothing).map(\.text) == ["Working"])
+    let stepping = entries(
+      [user("u1"), command("c1", status: "inProgress", command: "swift test")],
+      turns: [turn("t1", status, nil)])
+    let steps = try #require(line(stepping))
+    #expect(steps.running)
+    #expect(steps.text == "swift test")
+    #expect(running(stepping).isEmpty)
+  }
+
+  /// An ended turn, one whose outcome is unknown, and history have no running line and no running steps line.
+  @Test func onlyARunningTurnHasARunningLine() {
+    let ended = [
+      turn("t1"), turn("t1", .terminal, .failed), turn("t1", .terminal, .cancelled),
+      turn("t1", .reconciling, nil),
+    ]
+    for turn in ended {
+      for items in [[user("u1")], [user("u1"), tool("k1", status: "inProgress")]] {
+        let result = entries(items, turns: [turn])
+        #expect(running(result).isEmpty, "\(turn.status) \(String(describing: turn.outcome))")
+        #expect(line(result)?.running != true)
+      }
+    }
+    let history = entries([user("u1", turn: nil), tool("k1", turn: nil, status: "inProgress")], turns: [])
+    #expect(running(history).isEmpty)
+    #expect(line(history, "h-u1")?.running == false)
+  }
+
+  /// A running turn with no items at all (begun on another device) draws nothing yet: the dense
+  /// projection groups items, and only a failed or stopped turn's note stands without one. Pinned as it
+  /// is, not as the old normal density had it (a line at the end).
+  @Test func aRunningTurnWithNoItemsDrawsNothingYet() {
+    let result = entries([user("u1"), message("m1")], turns: [turn("t1"), turn("t2", .running, nil)])
+    #expect(ids(result) == ["u1", "m1"])
+  }
+
+  // MARK: settling an ended turn's open steps
+
+  private func status(_ id: String, in entries: [DenseTranscript.Entry]) -> String? {
+    for case .item(let item) in entries where item.id == id { return item.payload["status"]?.stringValue }
+    return nil
+  }
+
+  @Test func aFailedOrCompletedTurnsOpenStepIsUnfinishedToo() {
+    for outcome in [TurnOutcome.failed, .completed] {
+      let result = entries(
+        [user("u1"), tool("k1", status: "inProgress")], turns: [turn("t1", .terminal, outcome)],
+        open: ["t1"])
+      #expect(status("k1", in: result) == "stopped", "\(outcome)")
+    }
+    #expect(DenseTranscript.statusLabel("stopped") == "Unfinished")
+  }
+
+  @Test(arguments: [TurnStatus.submitting, .running, .waitingForUser, .stopping])
+  func aRunningTurnsOpenStepStaysInProgress(_ running: TurnStatus) {
+    let result = entries(
+      [user("u1"), tool("k1", status: "inProgress")], turns: [turn("t1", running, nil)], open: ["t1"])
+    #expect(status("k1", in: result) == "inProgress")
+  }
+
+  @Test func failedAndDeclinedStepsKeepTheirOutcome() {
+    let result = entries(
+      [user("u1"), tool("k1", status: "failed"), tool("k2", status: "declined")],
+      turns: [turn("t1", .terminal, .failed)], open: ["t1"])
+    #expect(status("k1", in: result) == "failed")
+    #expect(status("k2", in: result) == "declined")
+  }
+
+  /// F13: history rows have no turn. A step the history left open is not drawn as running; one that
+  /// follows a running turn's items is.
+  @Test func historyStepsSettleByTheGroupTheyFollow() {
+    let history = entries(
+      [user("u1", turn: nil), tool("k1", turn: nil, status: "inProgress")], turns: [], open: ["h-u1"])
+    #expect(status("k1", in: history) == "stopped")
+    let live = entries(
+      [user("u1"), tool("k1", turn: nil, status: "inProgress")], turns: [turn("t1", .running, nil)],
+      open: ["t1"])
+    #expect(status("k1", in: live) == "inProgress")
+  }
+
+  @Test func theStoredItemIsUntouchedAndOnlyToolsSettle() {
+    let open = tool("k1", status: "inProgress")
+    let thought = item("r1", role: .assistant, type: "reasoning", status: "inProgress")
+    let result = entries(
+      [user("u1"), open, thought], turns: [turn("t1", .terminal, .cancelled)], open: ["t1"])
+    #expect(open.payload["status"] == .string("inProgress"))
+    #expect(status("r1", in: result) == "inProgress")
+  }
+
+  /// The note stands after its own turn, not after the thread.
+  @Test func aTurnsNoteFollowsItsTurn() {
+    let items = [
+      user("u1"), tool("k1", status: "inProgress"),
+      user("u2", turn: "t2"), tool("k2", turn: "t2"), message("m2", turn: "t2"),
+      user("u3", turn: "t3"), tool("k3", turn: "t3", status: "failed"),
+    ]
+    let turns = [turn("t1", .terminal, .cancelled), turn("t2"), turn("t3", .terminal, .failed)]
+    #expect(
+      ids(entries(items, turns: turns))
+        == ["u1", "steps-t1", "note-t1", "u2", "steps-t2", "m2", "u3", "steps-t3", "note-t3"])
+  }
+
+  @Test func theBadgeWordsAreWordsAndUnknownStatusesAreShownAsTheyAre() {
+    #expect(DenseTranscript.statusLabel("inProgress") == "In progress")
+    #expect(DenseTranscript.statusLabel("completed") == "Completed")
+    #expect(DenseTranscript.statusLabel("failed") == "Failed")
+    #expect(DenseTranscript.statusLabel("declined") == "Declined")
+    #expect(DenseTranscript.statusLabel("unknown") == "Unknown")
+    #expect(DenseTranscript.statusLabel("somethingNew") == "somethingNew")
+  }
+
+  private func running(_ entries: [DenseTranscript.Entry]) -> [DenseTranscript.RunningLine] {
+    entries.compactMap { if case .running(let line) = $0 { line } else { nil } }
+  }
+
+  // MARK: the window of latest rows
+
+  private func rows(_ count: Int, usersAt users: Set<Int> = []) -> [DenseTranscript.Entry] {
+    (0..<count).map { index in
+      .item(users.contains(index) ? user("e\(index)") : message("e\(index)"))
+    }
+  }
+
+  @Test func aThreadWithinAPageIsDrawnWhole() {
+    let all = rows(DenseTranscript.page)
+    #expect(DenseTranscript.window(all, shown: DenseTranscript.page) == .init(hidden: 0, entries: all))
+    #expect(DenseTranscript.window([], shown: DenseTranscript.page) == .init(hidden: 0, entries: []))
+  }
+
+  @Test func aLongerThreadDrawsItsLatestPage() {
+    let all = rows(400)
+    let window = DenseTranscript.window(all, shown: DenseTranscript.page)
+    #expect(window.hidden == 250)
+    #expect(window.entries.map(\.id) == all.suffix(150).map(\.id))
+    // A page more.
+    #expect(DenseTranscript.window(all, shown: 2 * DenseTranscript.page).hidden == 100)
+    #expect(DenseTranscript.window(all, shown: 3 * DenseTranscript.page).hidden == 0)
+  }
+
+  /// The cut moves back to a user's message that stands just before it, and no further than that.
+  @Test func theWindowBeginsAtANearbyUserMessage() {
+    let near = DenseTranscript.window(rows(400, usersAt: [100, 240]), shown: DenseTranscript.page)
+    #expect(near.hidden == 240)
+    #expect(near.entries.first?.id == "e240")
+    let onTheCut = DenseTranscript.window(rows(400, usersAt: [250]), shown: DenseTranscript.page)
+    #expect(onTheCut.hidden == 250)
+    let far = DenseTranscript.window(rows(400, usersAt: [100]), shown: DenseTranscript.page)
+    #expect(far.hidden == 250)
+  }
+
+  /// Nothing is dropped or drawn twice: what is hidden and what is drawn make the thread.
+  @Test func hiddenAndDrawnMakeTheWholeThread() {
+    let all = rows(1_000, usersAt: Set(stride(from: 0, to: 1_000, by: 7)))
+    for pages in 1...8 {
+      let window = DenseTranscript.window(all, shown: pages * DenseTranscript.page)
+      #expect(all.prefix(window.hidden).map(\.id) + window.entries.map(\.id) == all.map(\.id))
+    }
+  }
 }
