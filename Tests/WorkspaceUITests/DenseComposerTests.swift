@@ -302,6 +302,13 @@
       window.host.layoutSubtreeIfNeeded()
     }
 
+    /// A layout pass, after a press.
+    func layout() {
+      window.host.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+      window.host.layoutSubtreeIfNeeded()
+    }
+
     func close() {
       window.close()
       guard !closed else { return }

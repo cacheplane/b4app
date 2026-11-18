@@ -213,6 +213,24 @@ import WorkspaceProtocol
     #expect(DenseTranscript.entries(items: items, turns: [turn()], open: ["t1", "gone", "c1"]) == plain)
   }
 
+  // MARK: the output block
+
+  @Test func theOutputBlockCutsAtTwentyLines() {
+    func text(_ n: Int) -> String { (1...n).map { "line \($0)" }.joined(separator: "\n") }
+    let few = StepOutputBlock.lines(of: text(3))
+    #expect(few.shown.count == 3 && few.total == 3 && few.control == nil)
+    let exact = StepOutputBlock.lines(of: text(20))
+    #expect(exact.shown.count == 20 && exact.control == nil)
+    let many = StepOutputBlock.lines(of: text(21))
+    #expect(many.shown == (1...20).map { "line \($0)" })
+    #expect(many.total == 21 && many.control == "Show all 21 lines")
+    // A trailing newline ends a line; it is not one.
+    let trailing = StepOutputBlock.lines(of: text(20) + "\n")
+    #expect(trailing.total == 20 && trailing.control == nil)
+    let empty = StepOutputBlock.lines(of: "")
+    #expect(empty.shown == [""] && empty.total == 1 && empty.control == nil)
+  }
+
   // MARK: the window
 
   /// An opened turn of 400 steps: the window is the latest page, every entry in it stands on its own,
@@ -392,6 +410,103 @@ import WorkspaceProtocol
       }
       #expect(drawn(["t1", "gone"]) == drawn(["t1"]))
       #expect(drawn(["t1"]) > drawn([]))
+    }
+    // MARK: the output block
+
+    private func output(_ text: String, input: JSONValue? = nil) -> DenseTranscript.StepRow {
+      var payload: [String: JSONValue] = [
+        "command": "cat out", "status": "completed", "aggregatedOutput": .string(text),
+      ]
+      if let input { payload["input"] = input }
+      return DenseTranscript.stepRow(
+        DisplayItem(
+          id: "c1", threadId: "th", turnId: "t1", role: .tool, type: "commandExecution",
+          payload: .object(payload),
+          sequence: 1, provenance: .live), in: .terminal)
+    }
+
+    private func screen(_ row: DenseTranscript.StepRow, width: CGFloat) -> HostedScreen {
+      HostedScreen(
+        VStack(spacing: 0) {
+          view(row, open: true)
+          Spacer(minLength: 0)
+        }, size: CGSize(width: width, height: 900))
+    }
+
+    /// The text starts at the block's padding, not centred in it.
+    @Test func theOutputTextStartsAtTheBlocksLeadingEdgeOnTheMac() throws {
+      let screen = screen(output("short\nlines\nhere"), width: 720)
+      defer { screen.close() }
+      let block = try #require(screen.frame("step-output"), "no output drawn")
+      let text = try #require(
+        screen.elements.first { ($0.label ?? "").hasPrefix("short") }?.frame, "no text drawn")
+      #expect(text.minX - block.minX <= LLA.Space.m + 1, "text at \(text.minX), block at \(block.minX)")
+      #expect(text.minX - block.minX >= 0)
+    }
+
+    @Test func aLongLineDoesNotWidenTheRowOnAPhone() throws {
+      let screen = screen(output(String(repeating: "x", count: 200)), width: 390)
+      defer { screen.close() }
+      let block = try #require(screen.frame("step-output"), "no output drawn")
+      let row = try #require(screen.frame("step-row"))
+      #expect(block.width <= 390 + 0.5, "\(block)")
+      #expect(block.maxX <= row.maxX + 0.5, "\(block) \(row)")
+    }
+
+    @Test func anAgentsOutputIsItsResultAlone() throws {
+      let agent = DenseTranscript.stepRow(
+        DisplayItem(
+          id: "k1", threadId: "th", turnId: "t1", role: .tool, type: "toolUse",
+          payload: [
+            "name": "Agent", "status": "completed", "output": "Three files.",
+            "input": ["description": "Count Swift files in src", "prompt": "Count them."],
+          ], sequence: 1, provenance: .live), in: .terminal)
+      let screen = HostedScreen(AgentOutputRow(row: agent), size: CGSize(width: 400, height: 200))
+      defer { screen.close() }
+      let heard = screen.elements.compactMap(\.label)
+      #expect(heard.contains { $0.contains("Three files.") }, "\(heard)")
+      #expect(!heard.contains("Input") && !heard.contains("Output"), "\(heard)")
+      #expect(!heard.contains { $0.contains("Count them.") }, "\(heard)")
+    }
+
+    @Test func anAgentWithNoTextSaysSo() {
+      let agent = DenseTranscript.stepRow(
+        DisplayItem(
+          id: "k1", threadId: "th", turnId: "t1", role: .tool, type: "toolUse",
+          payload: ["name": "Agent", "status": "completed", "output": "", "input": ["prompt": "Go."]],
+          sequence: 1, provenance: .live), in: .terminal)
+      let screen = HostedScreen(AgentOutputRow(row: agent), size: CGSize(width: 400, height: 200))
+      defer { screen.close() }
+      let heard = screen.elements.compactMap(\.label)
+      #expect(heard.contains("No text output."), "\(heard)")
+      #expect(!heard.contains("Input"), "\(heard)")
+    }
+
+    /// Twenty-five lines draw twenty and a button; pressing it draws all of them, and pressing again
+    /// draws twenty. The row above stays where it was.
+    @Test func theShowAllControlTogglesWithoutMovingTheRow() throws {
+      let text = (1...25).map { "line \($0)" }.joined(separator: "\n")
+      let screen = screen(output(text), width: 600)
+      defer { screen.close() }
+      func button(_ label: String) -> HostedScreen.Element? {
+        screen.elements.first { $0.role == .button && $0.label == label }
+      }
+      func press(_ element: HostedScreen.Element?) throws {
+        let element = try #require(element, "no control")
+        _ = element.object.accessibilityPerformPress?()
+        screen.layout()
+      }
+      let top = try #require(screen.frame("step-row")).maxY
+      let short = try #require(screen.frame("step-output")).height
+      try press(button("Show all 25 lines"))
+      #expect(button("Show all 25 lines") == nil)
+      let tall = try #require(screen.frame("step-output")).height
+      #expect(tall > short)
+      #expect(abs(try #require(screen.frame("step-row")).maxY - top) <= 0.5)
+      try press(button("Show fewer lines"))
+      #expect(try #require(screen.frame("step-output")).height == short)
+      #expect(button("Show all 25 lines") != nil)
+      #expect(abs(try #require(screen.frame("step-row")).maxY - top) <= 0.5)
     }
   }
 #endif

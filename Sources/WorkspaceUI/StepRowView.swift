@@ -168,7 +168,7 @@ struct AgentOutputRow: View {
   let row: DenseTranscript.StepRow
 
   var body: some View {
-    StepOutput(detail: ToolEvidence.detail(of: row.item))
+    StepOutput(detail: ToolEvidence.detail(of: row.item), resultOnly: true)
       .padding(.leading, LLA.Metrics.mark + LLA.Space.s)
       .padding(.vertical, LLA.Space.s)
       .stepIndent(row.depth)
@@ -195,44 +195,131 @@ extension View {
 }
 
 /// What an opened step draws: its working directory, input, output, exit code, changes and diffs, or
-/// its payload when none of those was recorded.
+/// its payload when none of those was recorded. `resultOnly` draws the output text alone (or the words
+/// for none): an agent's own output, whose input is already its row's title.
 struct StepOutput: View {
   let detail: ToolEvidence.Detail
+  var resultOnly = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: LLA.Space.s) {
-      if let cwd = detail.cwd {
-        Text(cwd).llaCodeMuted()
-      }
-      if let input = detail.input {
-        Text("Input").llaCaption()
-        LLACodeBlock(input)
-      }
-      switch detail.output {
-      case .none: EmptyView()
-      // A result with no text is still a result; say so rather than draw nothing.
-      case .empty: Text("No text output.").llaSmallMuted()
-      case .text(let output):
-        if detail.input != nil { Text("Output").llaCaption() }
-        LLACodeBlock(output)
-      }
-      if let exitCode = detail.exitCode {
-        Text("Exit code \(exitCode)").llaSmallMuted()
-      }
-      ForEach(Array(detail.changes.enumerated()), id: \.offset) { _, change in
-        Text(change.path).font(LLAFont.mono(12, weight: .semibold)).foregroundStyle(LLA.Color.ink)
-        if let diff = change.diff {
-          LLACodeBlock(diff)
-        }
-      }
-      if let raw = detail.raw {
-        Text(raw).llaCodeMuted().textSelection(.enabled)
-        if detail.rawCut {
-          Text("Cut at \(ToolEvidence.rawLimit) characters.").llaSmallMuted()
-        }
+      if resultOnly {
+        result
+      } else {
+        full
       }
     }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("step-output")
+  }
+
+  @ViewBuilder private var result: some View {
+    switch detail.output {
+    case .text(let output): StepOutputBlock(text: output)
+    case .empty, .none: Text("No text output.").llaSmallMuted()
+    }
+  }
+
+  @ViewBuilder private var full: some View {
+    if let cwd = detail.cwd {
+      Text(cwd).llaCodeMuted()
+    }
+    if let input = detail.input {
+      Text("Input").llaCaption()
+      StepOutputBlock(text: input)
+    }
+    switch detail.output {
+    case .none: EmptyView()
+    // A result with no text is still a result; say so rather than draw nothing.
+    case .empty: Text("No text output.").llaSmallMuted()
+    case .text(let output):
+      if detail.input != nil { Text("Output").llaCaption() }
+      StepOutputBlock(text: output)
+    }
+    if let exitCode = detail.exitCode {
+      Text("Exit code \(exitCode)").llaSmallMuted()
+    }
+    ForEach(Array(detail.changes.enumerated()), id: \.offset) { _, change in
+      Text(change.path).font(LLAFont.mono(12, weight: .semibold)).foregroundStyle(LLA.Color.ink)
+      if let diff = change.diff {
+        StepOutputBlock(text: diff)
+      }
+    }
+    if let raw = detail.raw {
+      Text(raw).llaCodeMuted().textSelection(.enabled)
+      if detail.rawCut {
+        Text("Cut at \(ToolEvidence.rawLimit) characters.").llaSmallMuted()
+      }
+    }
+  }
+}
+
+/// A step's text, quiet: small code type on the raised surface, leading-aligned, a long line scrolling
+/// sideways inside the block. Past `limit` lines the rest waits behind a link-style control.
+struct StepOutputBlock: View {
+  let text: String
+  @State private var showAll = false
+  @State private var memo = Memo()
+
+  static let limit = 20
+
+  /// The text cut at `limit` lines: what is drawn, how many lines there are, and the control's words when
+  /// some are left out. A trailing newline ends a line and does not start one.
+  struct Cut: Equatable {
+    var shown: [String]
+    var total: Int
+    var control: String?
+  }
+
+  static func lines(of text: String, limit: Int = limit) -> Cut {
+    var all = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+    if all.count > 1, all.last == "" { all.removeLast() }
+    guard all.count > limit else { return Cut(shown: all, total: all.count, control: nil) }
+    return Cut(shown: Array(all.prefix(limit)), total: all.count, control: "Show all \(all.count) lines")
+  }
+
+  /// The count of one text, kept across the parent's body evaluations.
+  private final class Memo {
+    var text: String?
+    var cut = Cut(shown: [], total: 0, control: nil)
+    func cut(of text: String) -> Cut {
+      if self.text != text {
+        self.text = text
+        cut = StepOutputBlock.lines(of: text)
+      }
+      return cut
+    }
+  }
+
+  var body: some View {
+    let cut = memo.cut(of: text)
+    let hidden = cut.control != nil && !showAll
+    VStack(alignment: .leading, spacing: LLA.Space.xs) {
+      ScrollView(.horizontal) {
+        Text(hidden ? cut.shown.joined(separator: "\n") : text)
+          .font(LLAFont.codeSmall)
+          .foregroundStyle(LLA.Color.ink)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: true, vertical: true)
+          .padding(.horizontal, LLA.Space.m)
+          .padding(.vertical, LLA.Space.s)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .background(
+        RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous).fill(LLA.Color.surfaceRaised)
+      )
+      .clipShape(RoundedRectangle(cornerRadius: LLA.Radius.input, style: .continuous))
+      if cut.control != nil {
+        Button {
+          showAll.toggle()
+        } label: {
+          Text(showAll ? "Show fewer lines" : (cut.control ?? ""))
+            .font(LLAFont.small)
+            .foregroundStyle(LLA.Color.muted)
+            .underline()
+        }
+        .buttonStyle(.plain)
+      }
+    }
   }
 }
