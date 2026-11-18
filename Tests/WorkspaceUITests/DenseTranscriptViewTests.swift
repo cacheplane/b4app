@@ -141,6 +141,17 @@
       #expect(history == withTurn)
     }
 
+    /// A turn that ended with no outcome recorded (a synced status ahead of its outcome, or an
+    /// outcome this build does not know) did not fail as far as anyone knows, and is not drawn as one.
+    @Test func aTurnThatEndedWithNoOutcomeIsNotDrawnAsFailed() {
+      let ended = TurnNoteRow(turn: turn(.terminal, nil))
+      #expect(ended.text == "Turn ended.")
+      #expect(!ended.isFailure)
+      #expect(TurnNoteRow(turn: turn(.terminal, .failed)).isFailure)
+      #expect(TurnNoteRow(turn: turn(.terminal, .cancelled)).text == "Turn stopped.")
+      #expect(!TurnNoteRow(turn: turn(.terminal, .cancelled)).isFailure)
+    }
+
     @Test func aFailedTurnsNoteIsDrawnAtBothDensities() {
       let items = Array(fiveItems().prefix(1))
       #expect(TurnNoteRow(turn: turn(.terminal, .failed)).text == "Turn failed.")

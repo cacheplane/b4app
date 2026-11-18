@@ -673,14 +673,24 @@ struct RunningLineRow: View {
   }
 }
 
+/// How a turn that did not complete ended. Only a recorded failure is drawn as one: a turn that is
+/// terminal with no outcome (its status synced ahead of its outcome, or an outcome this build does
+/// not know) says only that it ended, as the list and the hub's notifications already read it.
 struct TurnNoteRow: View {
   let turn: Turn
 
-  var text: String { turn.outcome == .cancelled ? "Turn stopped." : "Turn failed." }
+  var text: String {
+    switch turn.outcome {
+    case .failed: "Turn failed."
+    case .cancelled: "Turn stopped."
+    case .completed, nil: "Turn ended."
+    }
+  }
+  var isFailure: Bool { turn.outcome == .failed }
 
   var body: some View {
     Text(text)
       .font(LLAFont.caption)
-      .foregroundStyle(turn.outcome == .cancelled ? LLA.Color.muted : LLA.Color.danger)
+      .foregroundStyle(isFailure ? LLA.Color.danger : LLA.Color.muted)
   }
 }
