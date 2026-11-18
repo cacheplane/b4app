@@ -183,6 +183,13 @@ public enum CodexProtocol {
     for key in keys {
       if let value = params[key], !value.isNull { out[key] = value }
     }
+    // `acceptForSession` is real on Codex's approvals: later matching prompts in the session are not
+    // asked. The card offers the wider allow only where a request says so (D-248).
+    switch method {
+    case .commandApproval, .fileChangeApproval, .legacyExecApproval, .legacyPatchApproval:
+      out[AllowScope.payloadKey] = .string(AllowScope.session.rawValue)
+    default: break
+    }
     return .object(out)
   }
 

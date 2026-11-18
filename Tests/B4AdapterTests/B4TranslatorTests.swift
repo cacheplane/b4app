@@ -286,6 +286,8 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(opened.payload["request"]?["grant"]?.stringValue == "g1")
     #expect(opened.payload["request"]?["toolCallId"]?.stringValue == "call_9")
     #expect(opened.payload["request"]?["allowAlways"]?.boolValue == true)
+    // B4 keeps an "always" itself, past the session.
+    #expect(AllowScope(requestPayload: opened.payload) == .always)
     #expect(events[4].payload["status"]?.stringValue == "waiting_for_user")
     #expect(translator.phase == .parked)
     #expect(translator.isActive)
@@ -299,6 +301,23 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(events.map(\.kind) == [.messageStarted, .messageDelta, .messageCompleted, .turnFinished])
     #expect(events[0].nativeIds["itemId"] == "turn-1:m2")
     #expect(translator.phase == .finished(.completed))
+  }
+
+  /// `{ tool, allowAlways: false }` in a route's `tools.approve`: every call asks, so no wider allow.
+  @Test func aPromptThatAsksEveryTimeOffersNoWiderAllow() throws {
+    var translator = B4TurnTranslator(connectionId: "c1", threadId: "thr_1", turnId: "turn-1", generation: 1)
+    let raw: JSONValue = [
+      "interruptId": "perm_1", "type": "permission-request", "kind": "tool", "allowAlways": false,
+      "detail": ["toolName": "fileFlightPlan"],
+    ]
+    let events = translator.translate(
+      .interrupt(
+        interruptId: "perm_1", type: "permission-request", kind: "tool",
+        detail: ["toolName": "fileFlightPlan"],
+        grant: nil, raw: raw))
+    let opened = try #require(events.first { $0.kind == .runtimeRequestOpened })
+    #expect(opened.payload["request"]?["allowAlways"]?.boolValue == false)
+    #expect(AllowScope(requestPayload: opened.payload) == nil)
   }
 
   @Test func failedAndCancelledOutcomesAreTerminal() {
@@ -473,7 +492,7 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(B4Protocol.error(status: 400, body: body("bad"), operation: "resume").code == .protocolInvalid)
   }
 
-  @Test func buildsExactResumeBodies() {
+  @Test func buildsExactResumeBodies() throws {
     #expect(
       B4Protocol.resumeBody(route: "/chat#agent", interruptId: "perm_1", decision: .once, grant: "g")
         == [
@@ -483,9 +502,11 @@ private let completedOutput: JSONValue = ["messages": [["role": "assistant", "co
     #expect(
       B4Protocol.resumeBody(route: "/chat#agent", interruptId: "perm_1", decision: .cancelled, grant: nil)
         == ["resume": [["interruptId": "perm_1", "status": "cancelled"]], "route": "/chat#agent"])
-    #expect(B4Protocol.resumeDecision(.allowAlways, allowAlways: true) == .always)
-    #expect(B4Protocol.resumeDecision(.allowAlways, allowAlways: false) == .once)
-    #expect(B4Protocol.resumeDecision(.deny, allowAlways: true) == .deny)
+    #expect(try B4Protocol.resumeDecision(.allowAlways, allowAlways: true) == .always)
+    #expect(try B4Protocol.resumeDecision(.allowOnce, allowAlways: false) == .once)
+    #expect(try B4Protocol.resumeDecision(.deny, allowAlways: true) == .deny)
+    // A prompt that asks every time has no "always": refused, never narrowed to once.
+    #expect(throws: WorkspaceError.self) { try B4Protocol.resumeDecision(.allowAlways, allowAlways: false) }
     #expect(
       B4Protocol.runBody(route: "/chat#agent", text: "hi")
         == ["route": "/chat#agent", "input": ["messages": [["role": "user", "content": "hi"]]]])

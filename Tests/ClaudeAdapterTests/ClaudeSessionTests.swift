@@ -175,6 +175,27 @@ func values(of flag: String, in argv: [String]) -> [String] {
     await rig.adapter.dispose()
   }
 
+  /// Claude Code has no wider allow here: the request offers none, and one sent anyway is refused,
+  /// not sent as a plain allow (D-248, amending D-018). The request can still be answered.
+  @Test func aWiderAllowOnAToolPermissionIsRefused() async throws {
+    let rig = try Rig()
+    let ref = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
+    _ = try await rig.turn(ref, "use a tool")
+    let opened = try await rig.collector.waitFor { $0.kind == .runtimeRequestOpened }
+    #expect(AllowScope(requestPayload: opened.payload) == nil)
+    let requestRef = RuntimeRequestRef(
+      nativeRequestId: opened.nativeIds["requestId"]!, kind: .toolPermission,
+      adapterGeneration: opened.adapterGeneration)
+    let refused = await #expect(throws: WorkspaceError.self) {
+      try await rig.adapter.respond(requestRef, response: .decision(.allowAlways))
+    }
+    #expect(refused?.code == .unsupportedCapability)
+    try await rig.adapter.respond(requestRef, response: .decision(.allowOnce))
+    let finished = try await rig.collector.waitFor { $0.kind == .turnFinished }
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    await rig.adapter.dispose()
+  }
+
   @Test func answersAToolPermissionOnceAndPairsTheResult() async throws {
     let rig = try Rig()
     let ref = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
