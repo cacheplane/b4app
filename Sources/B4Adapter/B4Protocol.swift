@@ -43,12 +43,17 @@ public enum B4Protocol {
     case once, always, deny, cancelled
   }
 
-  /// Map the app's decision to B4's. `allow_always` becomes `once` when the prompt said
-  /// `allowAlways: false` (D-021).
-  public static func resumeDecision(_ decision: RuntimeDecision, allowAlways: Bool) -> ResumeDecision {
+  /// Map the app's decision to B4's (D-021). A prompt that said `allowAlways: false` has no "always":
+  /// the request offers none, and one sent anyway is refused, not narrowed to `once` (D-248).
+  public static func resumeDecision(_ decision: RuntimeDecision, allowAlways: Bool) throws -> ResumeDecision {
     switch decision {
     case .allowOnce: return .once
-    case .allowAlways: return allowAlways ? .always : .once
+    case .allowAlways:
+      guard allowAlways else {
+        throw WorkspaceError(
+          .unsupportedCapability, "This B4 prompt asks on every call; it can be allowed once or denied.")
+      }
+      return .always
     case .deny: return .deny
     }
   }

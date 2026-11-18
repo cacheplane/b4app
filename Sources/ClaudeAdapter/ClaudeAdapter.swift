@@ -422,7 +422,12 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
         decision: .deny(message: reason, interrupt: false))
     case ("can_use_tool", let tool, .decision(let decision)) where tool != "AskUserQuestion":
       switch decision {
-      case .allowOnce, .allowAlways:
+      case .allowAlways:
+        // Claude Code applies a plain allow once. The request offers no wider allow, and one sent
+        // anyway is refused, not sent as that plain allow (D-248, amending D-018).
+        throw WorkspaceError(
+          .unsupportedCapability, "Claude Code allows this tool use once; it has no wider allow here.")
+      case .allowOnce:
         line = try ClaudeStream.permissionResponse(
           requestId: ref.nativeRequestId, toolUseId: pending.toolUseId,
           decision: .allow(updatedInput: pending.input))
