@@ -4,11 +4,11 @@ import WorkspaceProtocol
   import Synchronization
 #endif
 
-/// What a thread draws at dense density, in order. No SwiftUI: the views only draw it, so the Mac and
+/// What a thread draws, in order. No SwiftUI: the views only draw it, so the Mac and
 /// the phone read a thread the same way.
 enum DenseTranscript {
   enum Entry: Equatable, Identifiable, Sendable {
-    /// Drawn by `TranscriptRow`, as at normal density.
+    /// Drawn by `TranscriptRow`.
     case item(DisplayItem)
     /// The turn's line.
     case line(StepsLine)
@@ -27,8 +27,7 @@ enum DenseTranscript {
     }
   }
 
-  /// A running turn's line (D-239): at normal density after the turn's last item, and at dense where
-  /// the turn has nothing to fold and no reply yet. It is not a control.
+  /// A running turn's line (D-239): where the turn has nothing to fold and no reply yet. It is not a control.
   struct RunningLine: Equatable, Sendable {
     var turn: String
     /// The turn's status is waiting_for_user.
@@ -139,7 +138,7 @@ enum DenseTranscript {
   }
 
   #if DEBUG
-    /// Calls of `entries` and `plain` by thread id, for the test that a streamed token does not run
+    /// Calls of `entries` by thread id, for the test that a streamed token does not run
     /// the grouping again. Keyed by thread so tests running beside it do not move its count.
     private static let projectionCalls = Mutex<[String: Int]>([:])
 
@@ -190,40 +189,6 @@ enum DenseTranscript {
     let drawn = Set(groupOrder)
     for turn in turns where !drawn.contains(turn.id) && hasNote(turn) {
       result.append(.note(turn))
-    }
-    return result
-  }
-
-  /// Normal density: every item in the order given, a step of an ended turn settled as at dense, and
-  /// each turn's note, or a running turn's line, after that turn's last item (a turn with no items:
-  /// after everything).
-  static func plain(items stored: [DisplayItem], turns: [Turn]) -> [Entry] {
-    #if DEBUG
-      countProjection(stored)
-    #endif
-    let items = drawn(stored)
-    let known = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-    let keys = groupKeys(items)
-    var last: [String: Int] = [:]
-    for (index, key) in keys.enumerated() {
-      if let key { last[key] = index }
-    }
-    var result: [Entry] = []
-    for (index, item) in items.enumerated() {
-      guard let key = keys[index] else {
-        result.append(.item(item))
-        continue
-      }
-      result.append(.item(settled(item, in: known[key])))
-      guard last[key] == index, let turn = known[key] else { continue }
-      if hasNote(turn) { result.append(.note(turn)) }
-      if let line = runningLine(of: turn, items: zip(items, keys).filter { $0.1 == key }.map(\.0)) {
-        result.append(.running(line))
-      }
-    }
-    for turn in turns where last[turn.id] == nil {
-      if hasNote(turn) { result.append(.note(turn)) }
-      if let line = runningLine(of: turn, items: []) { result.append(.running(line)) }
     }
     return result
   }

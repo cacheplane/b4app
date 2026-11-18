@@ -98,20 +98,17 @@ struct TranscriptView: View {
   /// turn's own message arrives (M8c). Always nil on the Mac.
   var pending: PendingSend? = nil
   var pendingStatus: String? = nil
-  /// Dense draws each turn as the message, one line for the work, and the answer.
-  var dense = false
   @State private var folds: TranscriptFolds
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   init(
     detail: ThreadDetail, streams: MessageStreamStore, pending: PendingSend? = nil,
-    pendingStatus: String? = nil, dense: Bool = false, folds: TranscriptFolds = TranscriptFolds()
+    pendingStatus: String? = nil, folds: TranscriptFolds = TranscriptFolds()
   ) {
     self.detail = detail
     self.streams = streams
     self.pending = pending
     self.pendingStatus = pendingStatus
-    self.dense = dense
     _folds = State(initialValue: folds)
   }
 
@@ -119,7 +116,7 @@ struct TranscriptView: View {
     ScrollViewReader { proxy in
       ScrollView {
         TranscriptContent(
-          detail: detail, streams: streams, pending: pending, pendingStatus: pendingStatus, dense: dense,
+          detail: detail, streams: streams, pending: pending, pendingStatus: pendingStatus,
           folds: folds
         )
         .background { StreamFollower(streams: streams) { follow(proxy) } }
@@ -171,8 +168,6 @@ struct TranscriptView: View {
       .onDisappear { streams.transcriptDisappeared() }
       .onChange(of: detail.items.count) { _, _ in follow(proxy) }
       .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in follow(proxy) }
-      // Normal density has no lines to hold open, so a switch lets go and normal scrolls as it always has.
-      .onChange(of: dense) { _, _ in folds.reset() }
       // The reader sent something: back to the end, as today.
       .onChange(of: pending?.id) { _, _ in
         folds.release()
@@ -220,7 +215,6 @@ struct TranscriptContent: View {
   let streams: MessageStreamStore
   var pending: PendingSend? = nil
   var pendingStatus: String? = nil
-  var dense = false
   let folds: TranscriptFolds
   var body: some View {
     // Not a lazy stack. A lazy stack sizes rows it has not laid out by estimate, and with the bottom
@@ -234,13 +228,10 @@ struct TranscriptContent: View {
       .frame(maxWidth: .infinity)
   }
 
-  /// Dense folds each turn's work into a line; normal draws every item. Both settle an ended turn's
-  /// open steps and put its note with it.
+  /// Each turn's work folds into a line, an ended turn's open steps settle, and its note goes with it.
   private var window: DenseTranscript.Window {
     DenseTranscript.window(
-      dense
-        ? DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open)
-        : DenseTranscript.plain(items: detail.items, turns: detail.turns),
+      DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open),
       shown: folds.shown)
   }
 

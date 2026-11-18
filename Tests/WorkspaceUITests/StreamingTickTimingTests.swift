@@ -46,7 +46,7 @@
       let ticker = ManualTicker()
       let streams = MessageStreamStore(pacing: .paced, makeTicker: { ticker })
       let window = SnapshotWindow(
-        rootView: TranscriptView(detail: detail, streams: streams, dense: false).frame(
+        rootView: TranscriptView(detail: detail, streams: streams).frame(
           width: 720, height: 480),
         untitled: true, size: CGSize(width: 720, height: 480))
       defer { window.window.close() }

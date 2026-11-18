@@ -5,7 +5,7 @@ import WorkspaceProtocol
 @testable import WorkspaceUI
 
 /// Scripted threads with a ledger written beside them, by hand: which invocations exist, what each
-/// one's recorded outcome is, and what a reader must see at each density, closed and open. The
+/// one's recorded outcome is, and what a reader must see, closed and open. The
 /// ledger is the oracle; the transcript's own words are only compared with it. Scenario ids (F03,
 /// F10, ...) are the families in `docs/research/2026-11-14-agent-chat-hill-climb.md`.
 @Suite struct TranscriptCorpusTests {
@@ -25,8 +25,6 @@ import WorkspaceProtocol
     var turns: [Turn]
     var live: [String: String] = [:]
     var invocations: [Invocation]
-    /// Normal density, top to bottom.
-    var normal: [String]
     /// Dense, every turn closed.
     var dense: [String]
   }
@@ -63,10 +61,6 @@ import WorkspaceProtocol
     }
   }
 
-  private func normal(_ scenario: Scenario) -> [String] {
-    drawn(DenseTranscript.plain(items: scenario.items, turns: scenario.turns), live: scenario.live)
-  }
-
   private func dense(_ scenario: Scenario, open: Set<String> = []) -> [String] {
     drawn(
       DenseTranscript.entries(items: scenario.items, turns: scenario.turns, open: open), live: scenario.live,
@@ -75,24 +69,24 @@ import WorkspaceProtocol
 
   /// The ledger's checks, the same for every scenario.
   private func check(_ scenario: Scenario) {
-    #expect(normal(scenario) == scenario.normal, "\(scenario.name): normal density")
-    #expect(dense(scenario) == scenario.dense, "\(scenario.name): dense, closed")
-    // Every invocation is drawn exactly once with its recorded outcome: at normal density, and at
-    // dense with every turn open. Nothing is merged, dropped or doubled.
+    #expect(dense(scenario) == scenario.dense, "\(scenario.name): closed")
+    // Every invocation is drawn exactly once with its recorded outcome, with every turn open. Nothing
+    // is merged, dropped or doubled.
     let groups = Set(
       scenario.turns.map(\.id) + scenario.items.compactMap(\.turnId) + scenario.items.map { "h-\($0.id)" })
-    for (density, rows) in [("normal", normal(scenario)), ("dense, open", dense(scenario, open: groups))] {
+    do {
+      let rows = dense(scenario, open: groups)
       for invocation in scenario.invocations {
         let expected = "\(invocation.title) [\(invocation.outcome)]"
         #expect(
           rows.filter { $0 == expected }.count == 1,
-          "\(scenario.name), \(density): \(invocation.id) should be drawn once as \(expected)")
+          "\(scenario.name), open: \(invocation.id) should be drawn once as \(expected)")
       }
       let toolRows = rows.filter { $0.hasSuffix("]") }
-      #expect(toolRows.count == scenario.invocations.count, "\(scenario.name), \(density): tool rows")
+      #expect(toolRows.count == scenario.invocations.count, "\(scenario.name), open: tool rows")
       // Opening a turn hides nothing a closed one showed, except the line's own word.
       let replies = scenario.dense.filter { $0.hasPrefix("reply:") || $0.hasPrefix("note:") }
-      for row in replies { #expect(rows.contains(row), "\(scenario.name), \(density): lost \(row)") }
+      for row in replies { #expect(rows.contains(row), "\(scenario.name), open: lost \(row)") }
     }
   }
 
@@ -150,10 +144,6 @@ import WorkspaceProtocol
           Invocation(id: "k2", title: "swift test", outcome: "In progress"),
           Invocation(id: "k3", title: "swift test --filter Sync", outcome: "In progress"),
         ],
-        normal: [
-          "user: Run the tests on both targets.", "swift test [Completed]", "swift test [In progress]",
-          "swift test --filter Sync [In progress]", "running: swift test --filter Sync",
-        ],
         // The running line names the newest open step; it gives no count while the turn runs.
         dense: ["user: Run the tests on both targets.", "line: swift test --filter Sync, Show"]))
   }
@@ -176,10 +166,6 @@ import WorkspaceProtocol
           Invocation(id: "k1", title: "migrate status", outcome: "Completed"),
           Invocation(id: "k2", title: "migrate up", outcome: "Failed"),
           Invocation(id: "k3", title: "migrate up", outcome: "Completed"),
-        ],
-        normal: [
-          "user: Migrate staging.", "migrate status [Completed]", "migrate up [Failed]", "note: Turn failed.",
-          "user: Try again.", "migrate up [Completed]", "reply: The migration is applied.",
         ],
         dense: [
           "user: Migrate staging.", "line: 2 steps, 1 failed, Show", "note: Turn failed.", "user: Try again.",
@@ -204,14 +190,10 @@ import WorkspaceProtocol
           Invocation(id: "k1", title: "swift build", outcome: "Completed"),
           Invocation(id: "k2", title: "swift test", outcome: "Unfinished"),
         ],
-        normal: [
-          "user: Run everything.", "reply: Starting with the build.", "swift build [Completed]",
-          "swift test [Unfinished]", "note: Turn stopped.",
-        ],
         dense: ["user: Run everything.", "line: 2 steps, Show", "note: Turn stopped."]))
   }
 
-  /// A plan with a step under way when Stop was pressed. The step is unfinished at both densities,
+  /// A plan with a step under way when Stop was pressed. The step is unfinished, open or closed,
   /// never running and never done, and the plan is not a step of the turn.
   @Test func aStoppedTurnsPlanNeverShowsARunningStep() {
     let plan = TaskList(steps: [
@@ -231,11 +213,6 @@ import WorkspaceProtocol
         Invocation(id: "k1", title: "swift build", outcome: "Completed"),
         Invocation(id: "k2", title: "swift test", outcome: "Unfinished"),
       ],
-      normal: [
-        "user: Run everything.",
-        "plan: Plan · 1 of 3: Build (done); Test (unfinished); Ship (not started)",
-        "swift build [Completed]", "swift test [Unfinished]", "note: Turn stopped.",
-      ],
       dense: ["user: Run everything.", "line: 2 steps, Show", "note: Turn stopped."])
     check(scenario)
     #expect(
@@ -254,7 +231,6 @@ import WorkspaceProtocol
         ]),
         turns: [turn("t1", .reconciling, nil)],
         invocations: [Invocation(id: "k1", title: "deploy --env staging", outcome: "Unknown")],
-        normal: ["user: Deploy.", "deploy --env staging [Unknown]"],
         dense: ["user: Deploy.", "line: 1 step, Show"]))
   }
 
@@ -274,10 +250,6 @@ import WorkspaceProtocol
         invocations: [
           Invocation(id: "x1", title: "plan_update", outcome: "Completed"),
           Invocation(id: "x2", title: "git log", outcome: "somethingNew"),
-        ],
-        normal: [
-          "user: What changed?", "plan_update [Completed]", "git log [somethingNew]",
-          "system: contextCompaction", "reply: Two commits.",
         ],
         // The capability item is working, not a step: one step is counted.
         dense: [
@@ -306,12 +278,6 @@ import WorkspaceProtocol
         Invocation(id: "k1", title: "swift test --filter SyncTests", outcome: "Failed"),
         Invocation(id: "k2", title: "File change (1 file)", outcome: "Completed"),
         Invocation(id: "k3", title: "swift test --filter SyncTests", outcome: "Completed"),
-      ],
-      normal: [
-        "user: Fix the failing sync test.", "reply: I will reproduce it first.",
-        "swift test --filter SyncTests [Failed]", "File change (1 file) [Completed]",
-        "swift test --filter SyncTests [Completed]",
-        "reply: The sync test passes now; the retry was missing.",
       ],
       dense: [
         "user: Fix the failing sync test.", "line: 3 steps, 1 failed, Show",
@@ -362,23 +328,17 @@ import WorkspaceProtocol
         Invocation(id: "k1", title: "rm -rf .build", outcome: "Declined"),
         Invocation(id: "k2", title: "swift build", outcome: "Unfinished"),
       ],
-      normal: [
-        "user: Clean and rebuild.", "rm -rf .build [Declined]", "swift build [Unfinished]",
-        "note: Turn stopped.",
-        "user: Just build.", "swift build [In progress]", "swift build [In progress]",
-        "reply: Building:\n\n\(fence)bash\nswift build", "running: swift build",
-      ],
       dense: [
         "user: Clean and rebuild.", "line: 2 steps, 1 declined, Show", "note: Turn stopped.",
         "user: Just build.",
         "line: swift build, Show", "reply: Building:\n\n\(fence)bash\nswift build",
       ])
-    #expect(normal(scenario) == scenario.normal)
     #expect(dense(scenario) == scenario.dense)
     // The two open steps of the running turn are two rows, and the stopped turn's open step is not
     // one of them.
-    #expect(normal(scenario).filter { $0 == "swift build [In progress]" }.count == 2)
-    #expect(normal(scenario).filter { $0 == "swift build [Unfinished]" }.count == 1)
+    let opened = dense(scenario, open: ["t1", "t2"])
+    #expect(opened.filter { $0 == "swift build [In progress]" }.count == 2)
+    #expect(opened.filter { $0 == "swift build [Unfinished]" }.count == 1)
     // The streaming reply's block is open: code, no Copy yet.
     var parser = MarkdownParser()
     parser.push(scenario.live["n2"] ?? "")
@@ -405,11 +365,6 @@ import WorkspaceProtocol
       invocations: [
         Invocation(id: "c1", title: "search: relay", outcome: "Unfinished"),
         Invocation(id: "c2", title: "search: relay", outcome: "Completed"),
-      ],
-      normal: [
-        "user: Search the docs.", "search: relay [Unfinished]", "user: Search again.",
-        "search: relay [Completed]",
-        "reply: Nothing matched.",
       ],
       dense: [
         "user: Search the docs.", "line: 1 step, Show", "user: Search again.", "line: 1 step, Show",

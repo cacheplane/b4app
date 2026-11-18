@@ -3,7 +3,7 @@ import WorkspaceProtocol
 
 @testable import WorkspaceUI
 
-/// What a thread draws at dense density, decided without SwiftUI.
+/// What a thread draws, decided without SwiftUI.
 @Suite struct DenseTranscriptTests {
   // MARK: fixtures
 

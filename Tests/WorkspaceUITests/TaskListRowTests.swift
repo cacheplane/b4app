@@ -3,7 +3,7 @@ import WorkspaceProtocol
 
 @testable import WorkspaceUI
 
-/// A turn's plan or task list: where each density puts it, how an ended turn settles it, and what the
+/// A turn's plan or task list: where it goes, how an ended turn settles it, and what the
 /// row says. Decided without SwiftUI.
 @Suite struct TaskListRowTests {
   private func item(
@@ -85,18 +85,8 @@ import WorkspaceProtocol
     #expect(DenseTranscript.title(of: list([.pending])) == "Plan")
   }
 
-  // MARK: normal
-
-  @Test func aListStandsWhereItWasWritten() {
-    let items = [user("u1"), list([.completed, .pending]), command("k1"), message("m1")]
-    #expect(ids(DenseTranscript.plain(items: items, turns: [turn()])) == ["u1", "p1", "k1", "m1"])
-  }
-
-  // MARK: both
-
-  @Test func anEmptyListIsNotDrawnAtEitherDensity() {
+  @Test func anEmptyListIsNotDrawn() {
     let items = [user("u1"), list([]), message("m1")]
-    #expect(ids(DenseTranscript.plain(items: items, turns: [turn()])) == ["u1", "m1"])
     #expect(ids(dense(items, turn(), open: ["t1"])) == ["u1", "m1"])
     #expect(ids(dense([user("u1"), list([])], turn(.running, nil))) == ["u1", "running-t1"])
   }
@@ -105,18 +95,17 @@ import WorkspaceProtocol
   func aStepInProgressWhenTheTurnEndedIsUnfinished(_ outcome: TurnOutcome) {
     let items = [user("u1"), list([.completed, .inProgress, .pending])]
     let ended = turn(.terminal, outcome)
-    #expect(marks(in: DenseTranscript.plain(items: items, turns: [ended])) == [.done, .unfinished, .pending])
     #expect(marks(in: dense(items, ended, open: ["t1"])) == [.done, .unfinished, .pending])
   }
 
   @Test func aStepInProgressWhileReconcilingIsUnknown() {
     let items = [user("u1"), list([.inProgress])]
-    #expect(marks(in: DenseTranscript.plain(items: items, turns: [turn(.reconciling, nil)])) == [.unknown])
+    #expect(marks(in: dense(items, turn(.reconciling, nil), open: ["t1"])) == [.unknown])
   }
 
   @Test func aRunningTurnLeavesAStepInProgress() {
     let items = [user("u1"), list([.inProgress])]
-    #expect(marks(in: DenseTranscript.plain(items: items, turns: [turn(.running, nil)])) == [.running])
+    #expect(marks(in: dense(items, turn(.running, nil), open: ["t1"])) == [.running])
   }
 
   // MARK: the row

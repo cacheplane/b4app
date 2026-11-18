@@ -762,7 +762,7 @@ private final class BackgroundWindow: NSWindow {
     }
   }
 
-  // MARK: a dense thread
+  // MARK: a thread
 
   private func scripted(
     _ id: String, turn: String? = "t1", _ role: DisplayItemRole, _ type: String,
@@ -822,15 +822,15 @@ private final class BackgroundWindow: NSWindow {
     return Scripted(detail: result, live: live)
   }
 
-  private func transcript(_ scripted: Scripted, dense: Bool = true, open: Set<String> = []) -> some View {
+  private func transcript(_ scripted: Scripted, open: Set<String> = []) -> some View {
     let streams = MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() })
     for (native, text) in scripted.live { streams.append(text, to: native) }
     return TranscriptView(
-      detail: scripted.detail, streams: streams, dense: dense, folds: TranscriptFolds(open: open))
+      detail: scripted.detail, streams: streams, folds: TranscriptFolds(open: open))
   }
 
-  /// A thread at dense density, from scripted details: closed, open, failed, running, waiting, only
-  /// working, and a history; and the first one at normal density for comparison.
+  /// A thread from scripted details: closed, open, failed, running, waiting, only working, and a
+  /// history.
   @Test func denseThreads() async throws {
     let size = CGSize(width: 720, height: 560)
     let finished = detail([
@@ -844,7 +844,6 @@ private final class BackgroundWindow: NSWindow {
     ])
     try await render("dense-thread-closed", size: size) { transcript(finished) }
     try await render("dense-thread-open", size: size) { transcript(finished, open: ["t1"]) }
-    try await render("thread-normal", size: size) { transcript(finished, dense: false) }
 
     let failed = detail(
       [
@@ -864,10 +863,8 @@ private final class BackgroundWindow: NSWindow {
       ], .running, nil,
       live: ["n2": "Two tests dominate the time, both waiting on the same lock."])
     try await render("dense-thread-running", size: size) { transcript(running) }
-    // D-239: the running line at normal density, and at both densities before the first item.
-    try await render("thread-normal-running", size: size) { transcript(running, dense: false) }
+    // D-239: the running line before the first item.
     let sent = detail([ask("u1", "Run the tests on both targets.")], .running, nil)
-    try await render("thread-normal-sent", size: size) { transcript(sent, dense: false) }
     try await render("dense-thread-sent", size: size) { transcript(sent) }
 
     // A turn's plan: one row, its marks changing in place; an ended turn settles the open step.
@@ -887,13 +884,7 @@ private final class BackgroundWindow: NSWindow {
       plan([.completed, .completed, .inProgress, .pending], explanation: "The mapping is in; tests next."),
       step("c1", "swift test --filter CodexEventsTests", status: "inProgress"),
     ]
-    try await render("thread-normal-plan", size: size) {
-      transcript(detail(planning, .running, nil), dense: false)
-    }
     try await render("dense-thread-plan-running", size: size) { transcript(detail(planning, .running, nil)) }
-    try await render("thread-normal-plan-stopped", size: size) {
-      transcript(detail(planning, .terminal, .cancelled), dense: false)
-    }
 
     let waiting = detail(
       [
@@ -918,8 +909,7 @@ private final class BackgroundWindow: NSWindow {
       ], turns: [])
     try await render("dense-thread-history", size: size) { transcript(history) }
 
-    // A turn the user stopped with a step still open, then a turn that completed: at normal density
-    // the open step and the stopped turn's note, and the same thread at dense.
+    // A turn the user stopped with a step still open, then a turn that completed.
     let stopped = detail(
       [
         ask("u1", "Run the whole suite."),
@@ -933,30 +923,10 @@ private final class BackgroundWindow: NSWindow {
         Turn(id: "t1", threadId: "th", operationId: "op1", status: .terminal, outcome: .cancelled),
         Turn(id: "t2", threadId: "th", operationId: "op2", status: .terminal, outcome: .completed),
       ])
-    try await render("thread-normal-stopped", size: size) { transcript(stopped, dense: false) }
     try await render("dense-thread-stopped", size: size) { transcript(stopped, open: ["t1"]) }
-
-    // A reply with prose, a fenced block and a block still open as it streams.
-    let fence = "```"
-    let code = detail(
-      [
-        ask("u1", "How do I run one suite?"),
-        message(
-          "a1",
-          "Filter by the suite's name:\n\n\(fence)bash\nswift test --filter SyncTests\n\(fence)\n\nThe filter is a regular expression, so `Sync.*` matches too."
-        ),
-        ask("u2", "And the package manifest?", turn: "t2"),
-        message("a2", "", turn: "t2", native: "n2"),
-      ],
-      turns: [
-        Turn(id: "t1", threadId: "th", operationId: "op1", status: .terminal, outcome: .completed),
-        Turn(id: "t2", threadId: "th", operationId: "op2", status: .running),
-      ],
-      live: ["n2": "It declares the targets:\n\n\(fence)swift\nlet package = Package(\n  name: \"b4app\","])
-    try await render("thread-code-reply", size: size) { transcript(code, dense: false) }
   }
 
-  /// A finished reply using every block kind the parser makes, at both densities, in the Mac's column
+  /// A finished reply using every block kind the parser makes, in the Mac's column
   /// and at a phone's width (the macOS view at 390 pt, not the iOS app).
   @Test func markdownReply() async throws {
     let reply = detail([
@@ -968,9 +938,6 @@ private final class BackgroundWindow: NSWindow {
     for (place, size) in [
       ("mac", CGSize(width: 720, height: 740)), ("phone", CGSize(width: 390, height: 840)),
     ] {
-      try await render("transcript-markdown-\(place)-normal", size: size, window: window) {
-        transcript(reply, dense: false)
-      }
       try await render("transcript-markdown-\(place)-dense", size: size, window: window) { transcript(reply) }
     }
   }
