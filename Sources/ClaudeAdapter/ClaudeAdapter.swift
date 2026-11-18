@@ -175,7 +175,11 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
     // The task list lives for the session and the tracker does not: a session started again reads the
     // list back from its transcript, so a later update finds the tasks an earlier process made. The
     // read and the fold run off this actor, so its other sessions are not held meanwhile (D-246).
-    let seeded = resume ? await Self.seededTasks(sessionId: id, under: projectsDirectory) : nil
+    // Only a history read or a new session learns the projects folder from Claude Code, and a
+    // coordinator started again sends a turn before either: then it is where Claude Code keeps it
+    // by default (D-247).
+    let transcripts = projectsDirectory ?? Self.projectsRoot(environment: environment)
+    let seeded = resume ? await Self.seededTasks(sessionId: id, under: transcripts) : nil
     // A dispose while this session was starting owns the adapter now: the process does not outlive it.
     if disposed {
       await session.close()
@@ -480,9 +484,8 @@ public actor ClaudeAdapter: AgentAdapter, LoginCapable, CommandListing {
 
   /// The task list a session's transcript holds, read and folded off the adapter's actor; nil when
   /// there is no transcript to read.
-  nonisolated static func seededTasks(sessionId: String, under root: String?) async -> ClaudeTaskFold? {
-    guard let root else { return nil }
-    return await Task.detached(priority: .userInitiated) { () -> ClaudeTaskFold? in
+  nonisolated static func seededTasks(sessionId: String, under root: String) async -> ClaudeTaskFold? {
+    await Task.detached(priority: .userInitiated) { () -> ClaudeTaskFold? in
       guard let file = transcript(sessionId: sessionId, under: root),
         let text = try? String(contentsOfFile: file, encoding: .utf8)
       else { return nil }
