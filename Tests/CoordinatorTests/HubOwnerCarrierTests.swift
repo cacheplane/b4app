@@ -1913,37 +1913,47 @@ private struct OwnerFixture: Sendable {
   }
 
   static func expiredCarrier() async throws -> OwnerExpiredCarrier {
-    let f = try await start(linked: true, heldSecret: false, sameAPI: false)
-    do {
-      let origin = try await f.scope.hub.captureConfiguredClientOrigin()
-      let ordinary = try await f.makeOrdinary()
-      let finalPush = try await f.manager.beginDormantHubCleanup(original: ordinary)
-      let result = OwnerExpiredCarrier(
-        ordinary: ordinary, finalPush: finalPush, manager: OwnerWeak(f.manager), scope: OwnerWeak(f.scope),
-        slot: OwnerWeak(f.slot), database: OwnerWeak(f.database), token: OwnerWeak(origin.token),
-        api: f.api.weakAPI, observer: f.api)
-      await f.finish()
-      return result
-    } catch {
-      await f.finish()
-      Issue.record("The retained-carrier lexical fixture failed; private details were suppressed.")
-      throw OwnerFixtureFailure.failed
+    let executor = NativeDBCaseExecutor()
+    defer { withExtendedLifetime(executor) {} }
+    return try await withTaskExecutorPreference(executor) {
+      let f = try await start(
+        linked: true, heldSecret: false, sameAPI: false, executorPreference: executor)
+      do {
+        let origin = try await f.scope.hub.captureConfiguredClientOrigin()
+        let ordinary = try await f.makeOrdinary()
+        let finalPush = try await f.manager.beginDormantHubCleanup(original: ordinary)
+        let result = OwnerExpiredCarrier(
+          ordinary: ordinary, finalPush: finalPush, manager: OwnerWeak(f.manager), scope: OwnerWeak(f.scope),
+          slot: OwnerWeak(f.slot), database: OwnerWeak(f.database), token: OwnerWeak(origin.token),
+          api: f.api.weakAPI, observer: f.api)
+        await f.finish()
+        return result
+      } catch {
+        await f.finish()
+        Issue.record("The retained-carrier lexical fixture failed; private details were suppressed.")
+        throw OwnerFixtureFailure.failed
+      }
     }
   }
 
   static func slotLifetime() async throws -> OwnerSlotLifetime {
-    let f = try await start(linked: true, heldSecret: false, sameAPI: false)
-    // No Active/OwnerFixture/cleanup-array/scope/origin/carrier leaves this helper.
-    await f.scope.sessions.shutdown()
-    await f.scope.servers.shutdown()
-    await f.access.finishStoppedNormal()
-    f.cleanup.releaseHolds()
-    await f.cleanup.joinAll()
-    f.cleanup.disarmResources()
-    return OwnerSlotLifetime(
-      manager: f.manager, slot: f.slot, database: f.database, registry: f.registry,
-      events: f.events, endpoint: f.endpoint, root: f.root,
-      scope: OwnerWeak(f.scope), api: f.api.weakAPI, observer: f.api)
+    let executor = NativeDBCaseExecutor()
+    defer { withExtendedLifetime(executor) {} }
+    return try await withTaskExecutorPreference(executor) {
+      let f = try await start(
+        linked: true, heldSecret: false, sameAPI: false, executorPreference: executor)
+      // No Active/OwnerFixture/cleanup-array/scope/origin/carrier leaves this helper.
+      await f.scope.sessions.shutdown()
+      await f.scope.servers.shutdown()
+      await f.access.finishStoppedNormal()
+      f.cleanup.releaseHolds()
+      await f.cleanup.joinAll()
+      f.cleanup.disarmResources()
+      return OwnerSlotLifetime(
+        manager: f.manager, slot: f.slot, database: f.database, registry: f.registry,
+        events: f.events, endpoint: f.endpoint, root: f.root,
+        scope: OwnerWeak(f.scope), api: f.api.weakAPI, observer: f.api)
+    }
   }
 }
 
