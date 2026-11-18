@@ -8,7 +8,7 @@ enum DenseTranscript {
     case item(DisplayItem)
     /// The turn's line.
     case line(StepsLine)
-    /// "Turn failed." / "Turn stopped."
+    /// "Turn failed.", "Turn stopped." or, with no outcome recorded, "Turn ended."
     case note(Turn)
     /// What a running turn is doing, where no steps line says it.
     case running(RunningLine)
