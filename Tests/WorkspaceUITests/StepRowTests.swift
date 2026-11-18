@@ -307,6 +307,25 @@ import WorkspaceProtocol
       #expect(height(view(bare, open: true), width: 600) == height(view(bare), width: 600))
     }
 
+    /// An agent's row is one line opened or not: its children and its result are rows of their own, the
+    /// result an `AgentOutputRow` after the children. Its "Show" is not spoken: the button's value is.
+    @Test func anAgentRowDrawsItsResultApart() {
+      let agent = DenseTranscript.stepRow(
+        DisplayItem(
+          id: "k1", threadId: "th", turnId: "t1", role: .tool, type: "toolUse",
+          payload: [
+            "name": "Agent", "status": "completed", "output": "Three files.",
+            "input": ["description": "Count Swift files in src"],
+          ], sequence: 1, provenance: .live), in: .terminal)
+      #expect(agent.kind == .agent(steps: 0) && agent.opens)
+      #expect(height(view(agent, open: true), width: 600) == height(view(agent), width: 600))
+      #expect(height(AgentOutputRow(row: agent), width: 600) > 0)
+      let screen = HostedScreen(VStack { view(agent) }, size: CGSize(width: 400, height: 80))
+      defer { screen.close() }
+      #expect(screen.label("step-row") == "Completed, Agent: Count Swift files in src")
+      #expect(screen.value("step-row") == "Collapsed")
+    }
+
     @Test func theRowIsOneElementSpokenStateFirst() {
       let screen = HostedScreen(
         VStack { view(command("swift build", status: "failed")) }, size: CGSize(width: 400, height: 80))

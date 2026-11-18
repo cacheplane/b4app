@@ -285,6 +285,8 @@ struct TranscriptContent: View {
       .id(entry.id)
     case .note(let turn):
       TurnNoteRow(turn: turn).id(entry.id)
+    case .output(let row):
+      AgentOutputRow(row: row).id(entry.id)
     }
   }
 }

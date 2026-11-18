@@ -16,6 +16,8 @@ enum DenseTranscript {
     case step(StepRow)
     /// "Turn failed.", "Turn stopped." or, with no outcome recorded, "Turn ended."
     case note(Turn)
+    /// An opened agent's own result, after its children: the call's output, drawn as a step's is.
+    case output(StepRow)
 
     var id: String {
       switch self {
@@ -23,6 +25,7 @@ enum DenseTranscript {
       case .line(let line): return "steps-\(line.group)"
       case .step(let row): return row.id
       case .note(let turn): return "note-\(turn.id)"
+      case .output(let row): return "output-\(row.id)"
       }
     }
   }
@@ -164,8 +167,8 @@ enum DenseTranscript {
     }
   #endif
 
-  /// `open` holds the groups whose lines are open, and the ids of the step rows that are open, which
-  /// the projection does not read.
+  /// `open` holds the groups whose lines are open and the ids of the step rows that are open; an agent's
+  /// row draws its children only while its id is there.
   static func entries(items: [DisplayItem], turns: [Turn], open: Set<String>) -> [Entry] {
     #if DEBUG
       countProjection(items)
@@ -174,16 +177,25 @@ enum DenseTranscript {
     let ordered = drawn(items).enumerated().sorted {
       ($0.element.sequence, $0.offset) < ($1.element.sequence, $1.offset)
     }.map(\.element)
+    // A sub-agent's items stand under the call that started it, never at their turn's level: from here
+    // on the groups, their answers, counts and running names see only the top level.
+    let tree = Tree(ordered)
+    let topLevel = ordered.filter { !tree.isChild($0) }
+    let rows = Rows(tree: tree, open: open)
 
     // One pass: each item goes to a group. A turn's items are gathered where its first stands, and a
     // turnless item joins the group of the item before it; before any group it is drawn as it is.
     var groupOrder: [String] = []
     var members: [String: [DisplayItem]] = [:]
     var layoutOrder: [Entry?] = []  // a plain item, or nil where the next group goes
-    for (item, key) in zip(ordered, groupKeys(ordered)) {
+    for (item, key) in zip(topLevel, groupKeys(topLevel)) {
       guard let key else {
         // No line stands above it, so its work is a row of its own; a turnless step never runs.
-        layoutOrder.append(isWork(item) ? .step(stepRow(settled(item, in: nil), in: nil)) : .item(item))
+        if isWork(item) {
+          layoutOrder += rows.entries(for: item, turn: nil).map(Optional.some)
+        } else {
+          layoutOrder.append(.item(item))
+        }
         continue
       }
       if members[key] == nil {
@@ -198,7 +210,8 @@ enum DenseTranscript {
       if let slot {
         result.append(slot)
       } else if let key = nextGroup.next() {
-        result += layout(key: key, items: members[key] ?? [], turn: known[key], isOpen: open.contains(key))
+        result += layout(
+          key: key, items: members[key] ?? [], turn: known[key], isOpen: open.contains(key), rows: rows)
       }
     }
 
@@ -207,7 +220,7 @@ enum DenseTranscript {
     // has its line from the moment it exists; a failed or stopped one, its note.
     for turn in turns where !drawn.contains(turn.id) {
       if runningStatuses.contains(turn.status) {
-        result.append(.line(activityLine(key: turn.id, folded: [], turn: turn)))
+        result.append(.line(activityLine(key: turn.id, folded: [], turn: turn, tree: tree)))
       }
       if hasNote(turn) { result.append(.note(turn)) }
     }
@@ -272,7 +285,9 @@ enum DenseTranscript {
   }
 
   /// One group: the user's messages, the line, what the turn shows, its system items, its note.
-  private static func layout(key: String, items: [DisplayItem], turn: Turn?, isOpen: Bool) -> [Entry] {
+  private static func layout(
+    key: String, items: [DisplayItem], turn: Turn?, isOpen: Bool, rows: Rows
+  ) -> [Entry] {
     let running = turn.map { runningStatuses.contains($0.status) } ?? false
     let shown = items.map { settled($0, in: turn) }
 
@@ -304,11 +319,13 @@ enum DenseTranscript {
     // A running turn always has its line: it is the one place that says the turn is working. An ended
     // one has it when something folds.
     if running || !folded.isEmpty {
-      entries.append(.line(activityLine(key: key, folded: folded, turn: turn)))
+      entries.append(.line(activityLine(key: key, folded: folded, turn: turn, tree: rows.tree)))
     }
     if isOpen && !folded.isEmpty {
       // Opened, the work is drawn row by row where it stands; what the closed group shows is unchanged.
-      entries += rest.map { shownIds.contains($0.id) ? .item($0) : .step(stepRow($0, in: turn?.status)) }
+      entries += rest.flatMap { item in
+        shownIds.contains(item.id) ? [.item(item)] : rows.entries(for: item, turn: turn)
+      }
     } else {
       entries += visible.map(Entry.item)
     }
@@ -318,7 +335,9 @@ enum DenseTranscript {
   }
 
   /// The line of one group.
-  private static func activityLine(key: String, folded: [DisplayItem], turn: Turn?) -> ActivityLine {
+  private static func activityLine(
+    key: String, folded: [DisplayItem], turn: Turn?, tree: Tree
+  ) -> ActivityLine {
     let steps = folded.filter(isCountedStep)
     let state: ActivityLine.State
     switch turn?.status {
@@ -331,7 +350,7 @@ enum DenseTranscript {
       group: key, folded: folded, counted: steps.count,
       failed: steps.filter { $0.payload["status"]?.stringValue == "failed" }.count,
       declined: steps.filter { $0.payload["status"]?.stringValue == "declined" }.count,
-      state: state, runningName: state == .running ? runningName(of: steps) : nil,
+      state: state, runningName: state == .running ? runningName(of: steps, tree: tree) : nil,
       startedAt: state == .ended ? nil : turn?.createdAt,
       duration: state == .ended ? duration(of: turn) : nil)
   }
@@ -346,9 +365,9 @@ enum DenseTranscript {
     return max(seconds, 0)
   }
 
-  /// The newest in-progress step's name: B4's label, else the step's title (a B4 call whose input is
-  /// not a string: its name alone); first line, trimmed, cut.
-  private static func runningName(of steps: [DisplayItem]) -> String? {
+  /// The newest in-progress step's name: B4's label, else an agent's title, else the step's title (a B4
+  /// call whose input is not a string: its name alone); first line, trimmed, cut.
+  private static func runningName(of steps: [DisplayItem], tree: Tree) -> String? {
     guard let step = steps.last(where: { $0.payload["status"]?.stringValue == "inProgress" }) else {
       return nil
     }
@@ -356,6 +375,8 @@ enum DenseTranscript {
     let source: String
     if let label, !label.isEmpty {
       source = label
+    } else if isAgent(step, children: tree.children(of: step)) {
+      source = agentTitle(of: step)
     } else if step.type == "toolCall", let input = step.payload["input"], !input.isNull,
       input.stringValue == nil
     {
@@ -467,10 +488,102 @@ extension DenseTranscript {
     item.role == .tool || (item.role == .assistant && item.type != "agentMessage")
   }
 
+  /// A call that starts a sub-agent: Claude Code's `Task` (`Agent` since 2.1) and Codex's
+  /// `collabAgentToolCall`.
+  private static func startsAgent(_ item: DisplayItem) -> Bool {
+    switch item.type {
+    case "collabAgentToolCall": return true
+    case "toolUse": return ["Task", "Agent"].contains(item.payload["name"]?.stringValue)
+    default: return false
+    }
+  }
+
+  /// An item drawn as a sub-agent's row: one with children, or a call that starts a sub-agent.
+  static func isAgent(_ item: DisplayItem, children: [DisplayItem]) -> Bool {
+    !children.isEmpty || startsAgent(item)
+  }
+
+  /// "Agent: <the call's input.description>", or "Agent" without one.
+  static func agentTitle(of item: DisplayItem) -> String {
+    let description =
+      item.payload["input"]?["description"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+      ?? ""
+    return description.isEmpty ? "Agent" : "Agent: \(description)"
+  }
+
+  /// The call recorded a result: an agent's report, drawn after its children.
+  private static func hasOutput(_ item: DisplayItem) -> Bool {
+    ToolEvidence.detail(of: item).output != .none
+  }
+
+  /// Which items a sub-agent made, in a thread: an item whose `parentNativeItemId` names another item's
+  /// `nativeItemId` is that item's child. Made once a projection. An item whose parents lead back to
+  /// itself (a malformed field) is no child, so every child is reached from a top-level item.
+  struct Tree {
+    /// By the parent's item id, in sequence order.
+    private var byParent: [String: [DisplayItem]] = [:]
+    private var childIds: Set<String> = []
+
+    /// `ordered`: the thread's items in sequence order.
+    init(_ ordered: [DisplayItem]) {
+      var byNative: [String: DisplayItem] = [:]
+      for item in ordered {
+        if let native = item.nativeItemId, byNative[native] == nil { byNative[native] = item }
+      }
+      guard !byNative.isEmpty else { return }
+      func named(by item: DisplayItem) -> DisplayItem? {
+        item.payload["parentNativeItemId"]?.stringValue.flatMap { byNative[$0] }
+      }
+      for item in ordered {
+        guard let parent = named(by: item) else { continue }
+        // Up the parents until one has none, one is seen twice, or the item itself comes back.
+        var seen: Set<String> = []
+        var ancestor: DisplayItem? = parent
+        var cycles = false
+        while let current = ancestor, seen.insert(current.id).inserted {
+          if current.id == item.id {
+            cycles = true
+            break
+          }
+          ancestor = named(by: current)
+        }
+        guard !cycles else { continue }
+        byParent[parent.id, default: []].append(item)
+        childIds.insert(item.id)
+      }
+    }
+
+    func isChild(_ item: DisplayItem) -> Bool { childIds.contains(item.id) }
+    func children(of item: DisplayItem) -> [DisplayItem] { byParent[item.id] ?? [] }
+  }
+
+  /// Makes a work item's rows: its own and, while it is an agent whose id is open, its children's one
+  /// level in, each made the same way, then the agent's own result.
+  struct Rows {
+    let tree: Tree
+    let open: Set<String>
+
+    /// A child settles with the turn of the row it stands under, whatever turn it names.
+    func entries(for item: DisplayItem, turn: Turn?, depth: Int = 1) -> [Entry] {
+      let children = tree.children(of: item)
+      let row = stepRow(settled(item, in: turn), in: turn?.status, depth: depth, children: children)
+      guard case .agent = row.kind, open.contains(row.id) else { return [.step(row)] }
+      var result: [Entry] = [.step(row)]
+      for child in children { result += entries(for: child, turn: turn, depth: depth + 1) }
+      if hasOutput(row.item) { result.append(.output(row)) }
+      return result
+    }
+  }
+
   /// The row of one settled item of a turn in `status` (nil: no turn, or one the list does not know).
-  static func stepRow(_ item: DisplayItem, in status: TurnStatus?, depth: Int = 1) -> StepRow {
+  /// `children`: the items a sub-agent it started made.
+  static func stepRow(
+    _ item: DisplayItem, in status: TurnStatus?, depth: Int = 1, children: [DisplayItem] = []
+  ) -> StepRow {
     let kind: StepRow.Kind
-    if item.role == .assistant {
+    if isAgent(item, children: children) {
+      kind = .agent(steps: children.filter(isCountedStep).count)
+    } else if item.role == .assistant {
       kind = item.type == "agentMessage" ? .message : .thought
     } else if item.type == TaskList.itemType {
       kind = .plan
@@ -499,7 +612,11 @@ extension DenseTranscript {
     case .plan:
       title = DenseTranscript.title(of: item)
       opens = false
-    case .step, .agent, .other:
+    case .agent(let steps):
+      let count = steps == 0 ? "" : steps == 1 ? " · 1 step" : " · \(steps) steps"
+      title = agentTitle(of: item) + count
+      opens = !children.isEmpty || hasOutput(item)
+    case .step, .other:
       title = DenseTranscript.title(of: item)
       let detail = ToolEvidence.detail(of: item)
       opens =
@@ -534,14 +651,20 @@ extension DenseTranscript {
     return item.payload["content"]?.arrayValue?.compactMap(\.stringValue).joined(separator: "\n") ?? ""
   }
 
-  /// The entries in runs drawn as one child of the column: a step row joins the line or step row
-  /// before it, so an opened turn's rows stand close under its line. Every entry is in one run, in order.
+  /// The entries in runs drawn as one child of the column: a step row or an agent's result joins the
+  /// line, step row or result before it, so an opened turn's rows stand close under its line. Every
+  /// entry is in one run, in order.
   static func runs(_ entries: [Entry]) -> [[Entry]] {
     var runs: [[Entry]] = []
     for entry in entries {
-      if case .step = entry, let last = runs.last?.last {
+      let joins: Bool
+      switch entry {
+      case .step, .output: joins = true
+      case .item, .line, .note: joins = false
+      }
+      if joins, let last = runs.last?.last {
         switch last {
-        case .line, .step:
+        case .line, .step, .output:
           runs[runs.count - 1].append(entry)
           continue
         case .item, .note: break

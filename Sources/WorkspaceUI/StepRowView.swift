@@ -16,20 +16,7 @@ struct StepRowView: View {
   static let ruleGap: CGFloat = 14
 
   var body: some View {
-    content
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.leading, CGFloat(row.depth) * Self.level)
-      // The rules run the row's whole height, so the rows of a run draw one unbroken line per level.
-      .background(alignment: .leading) {
-        HStack(spacing: 0) {
-          ForEach(0..<row.depth, id: \.self) { _ in
-            Rectangle().fill(LLA.Color.rule).frame(width: 1)
-              .padding(.leading, Self.ruleInset)
-              .padding(.trailing, Self.ruleGap)
-          }
-        }
-        .accessibilityHidden(true)
-      }
+    content.stepIndent(row.depth)
   }
 
   /// The width of one level: the inset, the rule and the gap.
@@ -44,7 +31,10 @@ struct StepRowView: View {
       if let display = TaskListDisplay(item: row.item) {
         TaskListRow(display: display).padding(.vertical, LLA.Space.s)
       }
-    case .step, .agent, .thought, .other:
+    case .agent:
+      // Opened, its children are drawn under it as rows of their own, then its result (`AgentOutputRow`).
+      header
+    case .step, .thought, .other:
       VStack(alignment: .leading, spacing: 0) {
         header
         if open && row.opens {
@@ -90,6 +80,14 @@ struct StepRowView: View {
       }
       .frame(maxWidth: stacked ? nil : .infinity, alignment: .leading)
       time
+      if case .agent = row.kind, row.opens {
+        // The button's value says whether it is open, so the word is not spoken.
+        Text(open ? "Hide" : "Show")
+          .font(LLAFont.small)
+          .foregroundStyle(LLA.Color.muted)
+          .fixedSize()
+          .accessibilityHidden(true)
+      }
     }
     .padding(.vertical, LLA.Space.xs)
     .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row, alignment: .leading)
@@ -161,6 +159,38 @@ struct StepRowView: View {
     } else {
       StepOutput(detail: ToolEvidence.detail(of: row.item))
     }
+  }
+}
+
+/// An opened agent's own result, after its children: drawn as a step's output is, under the agent's row
+/// and at its level.
+struct AgentOutputRow: View {
+  let row: DenseTranscript.StepRow
+
+  var body: some View {
+    StepOutput(detail: ToolEvidence.detail(of: row.item))
+      .padding(.leading, LLA.Metrics.mark + LLA.Space.s)
+      .padding(.vertical, LLA.Space.s)
+      .stepIndent(row.depth)
+  }
+}
+
+extension View {
+  /// Indents a step row's content `depth` levels, each under its thin rule. The rules run the row's whole
+  /// height, so the rows of a run draw one unbroken line per level.
+  fileprivate func stepIndent(_ depth: Int) -> some View {
+    frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.leading, CGFloat(depth) * StepRowView.level)
+      .background(alignment: .leading) {
+        HStack(spacing: 0) {
+          ForEach(0..<depth, id: \.self) { _ in
+            Rectangle().fill(LLA.Color.rule).frame(width: 1)
+              .padding(.leading, StepRowView.ruleInset)
+              .padding(.trailing, StepRowView.ruleGap)
+          }
+        }
+        .accessibilityHidden(true)
+      }
   }
 }
 

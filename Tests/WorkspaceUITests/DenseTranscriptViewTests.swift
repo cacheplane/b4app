@@ -650,6 +650,66 @@
         "the output's top \(output.maxY) is above the row's bottom \(after.minY)")
     }
 
+    /// Twelve ended turns whose tenth turn's second step is a sub-agent's call with two children and
+    /// its own result.
+    private func twelveTurnsWithAnAgent() -> ThreadDetail {
+      var detail = twelveTurns()
+      guard let index = detail.items.firstIndex(where: { $0.id == "s10-2" }) else { return detail }
+      detail.items[index] = item(
+        "s10-2", turn: "t10", role: .tool, type: "toolUse", sequence: 102, native: "n-s10-2",
+        payload: [
+          "name": "Agent", "status": "completed", "output": "Three files.",
+          "input": ["description": "Count Swift files in src", "prompt": "Count them."],
+        ])
+      for (offset, id) in ["c10-1", "c10-2"].enumerated() {
+        detail.items.append(
+          item(
+            id, turn: "t10", role: .tool, type: "commandExecution", sequence: 106 + offset,
+            payload: [
+              "command": .string("ls --filter \(id)"), "status": "completed",
+              "parentNativeItemId": "n-s10-2",
+            ]))
+      }
+      return detail
+    }
+
+    /// Opening a sub-agent inside an opened turn holds the view like any step, leaves its row where it
+    /// was, and draws its children one level further in than its own row, then its own result.
+    @Test func openingAnAgentIndentsItsChildrenOneLevel() async throws {
+      let view = try Hosted(twelveTurnsWithAnAgent())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      view.folds.toggle("t10")
+      try await view.settle()
+      view.folds.release()
+      let origin = view.origin
+      let closed = view.documentHeight
+      func rows(_ suffix: String) -> [CGRect] {
+        view.frames { $0.identifier == "step-row" && ($0.label ?? "").hasSuffix(suffix) }
+      }
+      let before = try #require(
+        rows("Count Swift files in src · 2 steps").first, "the agent row is not in view")
+      #expect(rows("--filter c10-1").isEmpty)
+
+      view.folds.toggle("s10-2")
+      #expect(view.folds.holds)
+      try await view.until("the agent's steps are drawn") { view.documentHeight > closed + 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5, "moved by \(view.origin - origin)")
+      let agent = try #require(rows("Count Swift files in src · 2 steps").first, "the agent row is gone")
+      #expect(abs(agent.maxY - before.maxY) <= 0.5, "the row moved by \(agent.maxY - before.maxY)")
+      let first = try #require(rows("--filter c10-1").first, "the first child is not drawn")
+      let last = try #require(rows("--filter c10-2").first, "the second child is not drawn")
+      #expect(abs(first.minX - agent.minX - StepRowView.level) <= 0.5, "\(first.minX) \(agent.minX)")
+      #expect(abs(last.minX - first.minX) <= 0.5)
+      // The children stand under the agent's row, and its own result under the last of them.
+      #expect(first.maxY <= agent.minY + 0.5)
+      let output = try #require(view.frames { $0.identifier == "step-output" }.first, "no result drawn")
+      #expect(
+        output.maxY <= last.minY + 0.5, "the result's top \(output.maxY), the child's bottom \(last.minY)")
+    }
+
     @Test func aStreamDoesNotMoveAnOpenedTurn() async throws {
       let view = try Hosted(twelveAndARunningTurn(), live: Self.starting)
       defer { view.close() }

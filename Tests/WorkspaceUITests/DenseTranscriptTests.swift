@@ -410,7 +410,7 @@ import WorkspaceProtocol
       switch entry {
       case .item(let item): return item.id
       case .step(let row): return row.id
-      case .line, .note: return nil
+      case .line, .note, .output: return nil
       }
     }
     #expect(drawn.sorted() == items.map(\.id).sorted())
@@ -698,6 +698,229 @@ import WorkspaceProtocol
 
   @Test func aDurationIsNeverNegative() {
     #expect(ended(endedAt: "2026-11-18T09:59:00.000Z").duration == 0)
+  }
+
+  // MARK: sub-agents
+
+  /// `item` with the native id `n-<id>` and, given one, the native id of the call that started it.
+  private func native(_ item: DisplayItem, parent: String? = nil) -> DisplayItem {
+    var copy = item
+    copy.nativeItemId = "n-\(item.id)"
+    if let parent, case .object(var members) = copy.payload {
+      members["parentNativeItemId"] = .string("n-\(parent)")
+      copy.payload = .object(members)
+    }
+    return copy
+  }
+
+  /// A sub-agent's call: Claude Code's `Task` (or `Agent`) tool use, with its description.
+  private func agent(
+    _ id: String, turn: String? = "t1", status: String = "completed", name: String = "Task",
+    description: String? = "find the slow query", output: JSONValue? = nil, parent: String? = nil
+  ) -> DisplayItem {
+    var input: [String: JSONValue] = ["prompt": "Look."]
+    if let description { input["description"] = .string(description) }
+    var payload: [String: JSONValue] = ["name": .string(name), "input": .object(input)]
+    if let output { payload["output"] = output }
+    return native(
+      item(id, turn: turn, role: .tool, type: "toolUse", status: status, payload: payload), parent: parent)
+  }
+
+  private func rows(_ entries: [DenseTranscript.Entry]) -> [DenseTranscript.StepRow] {
+    entries.compactMap { entry in
+      if case .step(let row) = entry { return row }
+      return nil
+    }
+  }
+
+  private func row(_ id: String, in entries: [DenseTranscript.Entry]) -> DenseTranscript.StepRow? {
+    rows(entries).first { $0.id == id }
+  }
+
+  /// The call, its three children (two tools and the sub-agent's message), and a command of the turn's
+  /// own; the sub-agent's message comes last, where a turn's answer stands.
+  private func oneAgent(running: Bool) -> [DisplayItem] {
+    [
+      user("u1"), agent("k1", status: running ? "inProgress" : "completed"),
+      native(command("c1"), parent: "k1"),
+      native(toolUse("c2", status: running ? "inProgress" : "completed", path: "Store.swift"), parent: "k1"),
+      command("c3", command: "swift test"),
+      native(message("m1", text: "The slow query is in Store.swift."), parent: "k1"),
+    ]
+  }
+
+  @Test func aRunningSubAgentIsNamedAndItsChildrenStayInside() throws {
+    let running = entries(oneAgent(running: true), turns: [turn("t1", .running, nil)])
+    let steps = try #require(line(running))
+    #expect(steps.text == "Agent: find the slow query")
+    #expect(steps.counted == 2)
+    #expect(ids(running) == ["u1", "steps-t1"])
+
+    let ended = entries(oneAgent(running: false), turns: [turn()])
+    let done = try #require(line(ended))
+    #expect(done.text == "2 steps")
+    #expect(done.folded.map(\.id) == ["k1", "c3"])
+    // The sub-agent's message is not the turn's answer, and no child stands at the turn's level.
+    #expect(ids(ended) == ["u1", "steps-t1"])
+    #expect(
+      ids(entries(oneAgent(running: false), turns: [turn()], open: ["t1"])) == ["u1", "steps-t1", "k1", "c3"])
+  }
+
+  @Test func anAgentRowOpensToItsChildrenOneLevelIn() throws {
+    let closed = entries(oneAgent(running: false), turns: [turn()], open: ["t1"])
+    let call = try #require(row("k1", in: closed))
+    #expect(call.kind == .agent(steps: 2))
+    #expect(call.depth == 1)
+    #expect(call.opens)
+    #expect(call.title == "Agent: find the slow query · 2 steps")
+    #expect(call.mark == .done)
+
+    let opened = entries(oneAgent(running: false), turns: [turn()], open: ["t1", "k1"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "c2", "m1", "c3"])
+    let children = rows(opened).filter { ["c1", "c2", "m1"].contains($0.id) }
+    #expect(children.map(\.kind) == [.step, .step, .message])
+    #expect(children.allSatisfy { $0.depth == 2 })
+    #expect(try #require(row("c3", in: opened)).depth == 1)
+    // An agent's row is only ever drawn inside its turn's opened rows.
+    #expect(ids(entries(oneAgent(running: false), turns: [turn()], open: ["k1"])) == ["u1", "steps-t1"])
+  }
+
+  @Test func anOpenedAgentsOwnOutputComesAfterItsChildren() {
+    var items = oneAgent(running: false)
+    items[1] = agent("k1", output: "Store.swift, line 40.")
+    let opened = entries(items, turns: [turn()], open: ["t1", "k1"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "c2", "m1", "output-k1", "c3"])
+    guard case .output(let call)? = opened.first(where: { $0.id == "output-k1" }) else {
+      Issue.record("no output entry")
+      return
+    }
+    #expect(call.id == "k1")
+    // The result stands close among the turn's rows, as they do under the line.
+    #expect(
+      DenseTranscript.runs(opened).map { $0.map(\.id) } == [
+        ["u1"], ["steps-t1", "k1", "c1", "c2", "m1", "output-k1", "c3"],
+      ])
+    // Closed, the output is not drawn.
+    #expect(!ids(entries(items, turns: [turn()], open: ["t1"])).contains("output-k1"))
+  }
+
+  @Test func oneChildIsOneStep() throws {
+    let items = [user("u1"), agent("k1"), native(command("c1"), parent: "k1")]
+    let call = try #require(row("k1", in: entries(items, turns: [turn()], open: ["t1"])))
+    #expect(call.title == "Agent: find the slow query · 1 step")
+    #expect(call.kind == .agent(steps: 1))
+  }
+
+  @Test func interleavedChildrenStandUnderTheirOwnAgents() {
+    let items = [
+      user("u1"), agent("k1"), agent("k2", description: "read the logs"),
+      native(command("a1"), parent: "k1"), native(command("b1"), parent: "k2"),
+      native(command("a2"), parent: "k1"), native(command("b2"), parent: "k2"),
+    ]
+    let opened = entries(items, turns: [turn()], open: ["t1", "k1", "k2"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "a1", "a2", "k2", "b1", "b2"])
+  }
+
+  @Test func aChildWhoseParentIsNotHereStandsWhereItIsUntilItArrives() throws {
+    let orphan = [user("u1"), command("c0"), native(command("c1"), parent: "k1"), message("a1")]
+    let alone = entries(orphan, turns: [turn()], open: ["t1"])
+    #expect(ids(alone) == ["u1", "steps-t1", "c0", "c1", "a1"])
+    #expect(try #require(row("c1", in: alone)).depth == 1)
+    #expect(try #require(line(alone)).counted == 2)
+
+    let arrived = [orphan[0], orphan[1], agent("k1"), orphan[2], orphan[3]]
+    let under = entries(arrived, turns: [turn()], open: ["t1", "k1"])
+    #expect(ids(under) == ["u1", "steps-t1", "c0", "k1", "c1", "a1"])
+    #expect(try #require(row("c1", in: under)).depth == 2)
+    #expect(try #require(line(under)).counted == 2)
+  }
+
+  @Test func aChildOfAnotherTurnStandsUnderItsParentAndSettlesWithIt() throws {
+    let items = [
+      user("u1"), agent("k1", status: "inProgress"), user("u2", turn: "t2"),
+      native(command("c1", turn: "t2", status: "inProgress"), parent: "k1"),
+    ]
+    let turns = [turn("t1", .running, nil), turn("t2")]
+    let opened = entries(items, turns: turns, open: ["t1", "k1"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "u2"])
+    let child = try #require(row("c1", in: opened))
+    #expect(child.depth == 2)
+    #expect(child.mark == .running)
+  }
+
+  @Test func subAgentsNestToFourLevels() {
+    let items =
+      [user("u1"), agent("k1")]
+      + (2...5).map { agent("k\($0)", parent: "k\($0 - 1)") }
+      + [native(command("c5"), parent: "k5")]
+    let opened = entries(items, turns: [turn()], open: ["t1", "k1", "k2", "k3", "k4", "k5"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "k2", "k3", "k4", "k5", "c5"])
+    #expect(rows(opened).map(\.depth) == [1, 2, 3, 4, 4, 4])
+    #expect(rows(opened).dropLast().allSatisfy { $0.kind == .agent(steps: 1) })
+  }
+
+  @Test func aCallThatStartsAnAgentIsAnAgentRowWithoutChildren() {
+    let collab = item("x1", role: .tool, type: "collabAgentToolCall", status: "completed")
+    let collabRow = DenseTranscript.stepRow(collab, in: .terminal)
+    #expect(collabRow.kind == .agent(steps: 0))
+    #expect(collabRow.title == "Agent")
+    #expect(!collabRow.opens)
+    for name in ["Task", "Agent"] {
+      let childless = DenseTranscript.stepRow(agent("k1", name: name), in: .terminal)
+      #expect(childless.kind == .agent(steps: 0))
+      #expect(childless.title == "Agent: find the slow query")
+      #expect(!childless.opens)
+      let answered = DenseTranscript.stepRow(agent("k1", name: name, output: "Done."), in: .terminal)
+      #expect(answered.opens)
+    }
+    #expect(DenseTranscript.stepRow(agent("k1", description: nil), in: .terminal).title == "Agent")
+  }
+
+  @Test func aFailedChildIsNotTheTurnsFailure() throws {
+    let items = [
+      user("u1"), agent("k1"), native(command("c1", status: "failed"), parent: "k1"), message("a1"),
+    ]
+    let result = entries(items, turns: [turn()], open: ["t1", "k1"])
+    let steps = try #require(line(result))
+    #expect(steps.counted == 1)
+    #expect(steps.failed == 0)
+    #expect(try #require(row("k1", in: result)).mark == .done)
+    #expect(try #require(row("c1", in: result)).mark == .failed)
+  }
+
+  /// A malformed field: an item its own parent, or two items each other's. Each is drawn at its turn's
+  /// level; an item under one of them is still under it.
+  @Test func aParentCycleIsTopLevel() {
+    let items = [
+      user("u1"), agent("k1", parent: "k2"), agent("k2", parent: "k1"), agent("k3", parent: "k3"),
+      native(command("c1"), parent: "k1"),
+    ]
+    let opened = entries(items, turns: [turn()], open: ["t1", "k1", "k2", "k3"])
+    #expect(ids(opened) == ["u1", "steps-t1", "k1", "c1", "k2", "k3"])
+    #expect(rows(opened).map(\.depth) == [1, 2, 1, 1])
+  }
+
+  /// The running line names an agent as its row is titled, cut as any name is.
+  @Test func aRunningAgentsNameIsCut() throws {
+    let long = String(repeating: "a", count: 200)
+    let result = entries(
+      [user("u1"), agent("k1", status: "inProgress", description: long)], turns: [turn("t1", .running, nil)])
+    let name = try #require(line(result)?.text)
+    #expect(name.count == DenseTranscript.nameLimit)
+    #expect(name.hasPrefix("Agent: aaa") && name.hasSuffix("…"))
+  }
+
+  @Test func everyChildIsDrawnOnceWhenEverythingIsOpen() {
+    let items = oneAgent(running: false) + [message("a1")]
+    let opened = entries(items, turns: [turn()], open: ["t1", "k1"])
+    let drawn = opened.compactMap { entry -> String? in
+      switch entry {
+      case .item(let item): return item.id
+      case .step(let row): return row.id
+      case .line, .note, .output: return nil
+      }
+    }
+    #expect(drawn.sorted() == items.map(\.id).sorted())
   }
 
   @Test func onlyAStepOrAnAgentShowsATime() {

@@ -68,6 +68,7 @@ import WorkspaceProtocol
         ]
         return "line: \(words.compactMap { $0 }.joined(separator: ", "))"
       case .note(let turn): return "note: \(TurnNoteRow(turn: turn).text)"
+      case .output(let row): return "result: \(row.title)"
       }
     }
   }
