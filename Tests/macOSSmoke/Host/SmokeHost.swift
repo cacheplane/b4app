@@ -145,8 +145,15 @@ import WorkspaceStorage
           (1...120).map { "Earlier line \($0) of the reading fixture." }.joined(separator: "\n")
         ))
     } else if mode == "long" {
-      // More replies than the transcript draws at once, so "Show earlier" stands above them.
-      texts += (1...200).map { (.assistant, "agentMessage", "Earlier reply \($0) of the reading fixture.") }
+      // More rows than the transcript draws at once, so "Show earlier" stands above them. Each reply
+      // answers a message of its own: replies that follow one message are one activity line (D-255).
+      texts = (1...100).flatMap {
+        [
+          (DisplayItemRole.user, "userMessage", "Earlier question \($0) of the reading fixture."),
+          (DisplayItemRole.assistant, "agentMessage", "Earlier reply \($0) of the reading fixture."),
+        ]
+      }
+      texts.append((.user, "userMessage", "How do I run the sync tests?"))
     } else {
       texts += (1...40).map {
         (.assistant, "agentMessage", "Earlier reply \($0) of the reading fixture.\nIts second line.")

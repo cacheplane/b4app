@@ -73,7 +73,12 @@ final class B4RuntimeSmokeTests: XCTestCase {
     try send(app)
     _ = try await waitForTurns(fixture, completed: 2)
     try requireElement(text(Self.toolReply, in: app), in: app)
-    let tool = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "fixture_lookup"))
+    // The turn's work is one closed line; its step is a row once the line is opened.
+    let line = app.buttons["activity-line"].firstMatch
+    try requireElement(line, in: app)
+    line.click()
+    let tool = app.descendants(matching: .any).matching(identifier: "step-row").matching(
+      NSPredicate(format: "label CONTAINS %@", "fixture_lookup"))
     try requireElement(tool.firstMatch, in: app)
     XCTAssertEqual(tool.count, 1)
     capture(app, name: "b4-tool-result")
