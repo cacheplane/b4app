@@ -70,7 +70,8 @@ print((pro or phones)[0]["identifier"], runtime["identifier"])
   destination="platform=iOS Simulator,id=$device"
 fi
 results=${B4APP_LAYOUT_RESULTS:-"$PWD/.build/iOSLayout/Results-$(date -u +%Y%m%dT%H%M%S).xcresult"}
-if xcodebuild test -quiet -project .build/iOSLayout/WorkspaceLayout.xcodeproj -scheme WorkspaceLayout \
+if xcodebuild test -project .build/iOSLayout/WorkspaceLayout.xcodeproj -scheme WorkspaceLayout \
+  -skipPackageUpdates -disableAutomaticPackageResolution \
   -destination "$destination" -parallel-testing-enabled NO \
   -derivedDataPath "${B4APP_LAYOUT_DERIVED_DATA:-.build/iOSLayout/DerivedData}" \
   -resultBundlePath "$results" "$@"; then
