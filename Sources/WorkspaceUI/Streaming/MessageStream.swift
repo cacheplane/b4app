@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import StreamingMarkdown
 
-enum RevealPacing: Sendable { case paced, immediate }
+public enum RevealPacing: Sendable { case paced, immediate }
 
 /// The owner of one streaming assistant message: the text received, how much of it the reader has
 /// been shown, and the parser that reads the shown text. Text only grows (`append`); a paced tick

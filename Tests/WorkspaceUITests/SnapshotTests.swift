@@ -799,25 +799,33 @@ private final class BackgroundWindow: NSWindow {
       ["text": .string("The failure is in the second target; check how it links before changing it.")])
   }
 
+  /// A scripted thread and the text its streaming replies show, by native item id.
+  private struct Scripted {
+    var detail: ThreadDetail
+    var live: [String: String]
+  }
+
   private func detail(
     _ items: [DisplayItem], _ status: TurnStatus = .terminal, _ outcome: TurnOutcome? = .completed,
     turns: [Turn]? = nil, live: [String: String] = [:]
-  ) -> ThreadDetail {
+  ) -> Scripted {
     let numbered = items.enumerated().map { index, item -> DisplayItem in
       var copy = item
       copy.sequence = index + 1
       return copy
     }
-    var result = ThreadDetail(
+    let result = ThreadDetail(
       thread: ListFixture.threads[0],
       turns: turns ?? [Turn(id: "t1", threadId: "th", operationId: "op", status: status, outcome: outcome)],
       items: numbered, requests: [])
-    result.liveText = live
-    return result
+    return Scripted(detail: result, live: live)
   }
 
-  private func transcript(_ detail: ThreadDetail, dense: Bool = true, open: Set<String> = []) -> some View {
-    TranscriptView(detail: detail, dense: dense, folds: TranscriptFolds(open: open))
+  private func transcript(_ scripted: Scripted, dense: Bool = true, open: Set<String> = []) -> some View {
+    let streams = MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() })
+    for (native, text) in scripted.live { streams.append(text, to: native) }
+    return TranscriptView(
+      detail: scripted.detail, streams: streams, dense: dense, folds: TranscriptFolds(open: open))
   }
 
   /// A thread at dense density, from scripted details: closed, open, failed, running, waiting, only

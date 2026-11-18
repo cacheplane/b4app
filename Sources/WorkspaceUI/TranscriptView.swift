@@ -91,6 +91,9 @@ struct TranscriptEnd: Equatable {
 /// Cached items plus live streaming text. Agent output is rendered as text, never executed.
 struct TranscriptView: View {
   let detail: ThreadDetail
+  /// The thread's streaming messages. The body never reads their per-token state: only the rows and
+  /// the zero-size follower inside the scroll content do.
+  let streams: MessageStreamStore
   /// The phone's message still on its way to the Mac, shown after the items with its state, until its
   /// turn's own message arrives (M8c). Always nil on the Mac.
   var pending: PendingSend? = nil
@@ -100,10 +103,11 @@ struct TranscriptView: View {
   @State private var folds: TranscriptFolds
 
   init(
-    detail: ThreadDetail, pending: PendingSend? = nil, pendingStatus: String? = nil, dense: Bool = false,
-    folds: TranscriptFolds = TranscriptFolds()
+    detail: ThreadDetail, streams: MessageStreamStore, pending: PendingSend? = nil,
+    pendingStatus: String? = nil, dense: Bool = false, folds: TranscriptFolds = TranscriptFolds()
   ) {
     self.detail = detail
+    self.streams = streams
     self.pending = pending
     self.pendingStatus = pendingStatus
     self.dense = dense
@@ -114,7 +118,10 @@ struct TranscriptView: View {
     ScrollViewReader { proxy in
       ScrollView {
         TranscriptContent(
-          detail: detail, pending: pending, pendingStatus: pendingStatus, dense: dense, folds: folds)
+          detail: detail, streams: streams, pending: pending, pendingStatus: pendingStatus, dense: dense,
+          folds: folds
+        )
+        .background { StreamFollower(streams: streams) { follow(proxy) } }
       }
       .accessibilityIdentifier("transcript")
       #if os(iOS)
@@ -158,7 +165,6 @@ struct TranscriptView: View {
       }
       .onChange(of: detail.items.count) { _, _ in follow(proxy) }
       .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in follow(proxy) }
-      .onChange(of: detail.liveText) { _, _ in follow(proxy) }
       // Normal density has no lines to hold open, so a switch lets go and normal scrolls as it always has.
       .onChange(of: dense) { _, _ in folds.reset() }
       // The reader sent something: back to the end, as today.
@@ -189,9 +195,23 @@ struct TranscriptView: View {
   }
 }
 
+/// Follows a growing reply: a zero-size leaf that alone reads the streams' revision, so a reveal
+/// re-evaluates it and not the transcript around it.
+private struct StreamFollower: View {
+  let streams: MessageStreamStore
+  let follow: () -> Void
+
+  var body: some View {
+    Color.clear.frame(width: 0, height: 0)
+      .accessibilityHidden(true)
+      .onChange(of: streams.revision) { _, _ in follow() }
+  }
+}
+
 /// The transcript's rows, without the scroll view around them (so a test can measure them).
 struct TranscriptContent: View {
   let detail: ThreadDetail
+  let streams: MessageStreamStore
   var pending: PendingSend? = nil
   var pendingStatus: String? = nil
   var dense = false
@@ -233,7 +253,7 @@ struct TranscriptContent: View {
     ForEach(window.entries) { entry in
       switch entry {
       case .item(let item):
-        TranscriptRow(item: item, liveText: item.nativeItemId.flatMap { detail.liveText[$0] })
+        TranscriptRow(item: item, streams: streams)
           .id(item.id)
       case .line(let line):
         StepsLineRow(line: line, open: folds.open.contains(line.group)) {
@@ -387,7 +407,7 @@ struct PendingMessageRow: View {
 
 struct TranscriptRow: View {
   let item: DisplayItem
-  let liveText: String?
+  let streams: MessageStreamStore
 
   var body: some View {
     switch item.role {
@@ -406,9 +426,8 @@ struct TranscriptRow: View {
       if item.type == "agentMessage" {
         // Trimmed: a reply's trailing blank lines otherwise widen the gap to the next item unevenly.
         MarkdownText(
-          text: (liveText ?? item.payload["text"]?.stringValue ?? "").trimmingCharacters(
-            in: .whitespacesAndNewlines),
-          streaming: liveText != nil
+          text: streams.text(for: item).trimmingCharacters(in: .whitespacesAndNewlines),
+          streaming: item.nativeItemId.map(streams.isStreaming) ?? false
         )
         .frame(maxWidth: .infinity, alignment: .leading)
       } else {
