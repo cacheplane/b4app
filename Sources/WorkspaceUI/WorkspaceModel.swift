@@ -1719,12 +1719,13 @@ public final class WorkspaceModel {
       await relayRespond(RequestRespond.Params(requestId: requestId, decision: decision))
       return
     }
-    _ = await perform {
+    let answered = await perform {
       try await $0.request(
         RequestRespond.self, RequestRespond.Params(requestId: requestId, decision: decision),
         options: Self.mutation()
       ).request
     }
+    settle(answered)
   }
 
   public func answer(requestId: String, answers: [String: [String]]) async {
@@ -1732,12 +1733,22 @@ public final class WorkspaceModel {
       await relayRespond(RequestRespond.Params(requestId: requestId, answers: answers))
       return
     }
-    _ = await perform {
+    let answered = await perform {
       try await $0.request(
         RequestRespond.self, RequestRespond.Params(requestId: requestId, answers: answers),
         options: Self.mutation()
       ).request
     }
+    settle(answered)
+  }
+
+  /// The coordinator's reply to an answer is the request as it now stands. One that is no longer
+  /// pending leaves the detail with the reply: its resolved event comes separately and may come
+  /// later, and until it did the card's buttons were offered again for an answer the coordinator
+  /// would refuse (D-253). The event still removes it when it is the first to arrive.
+  private func settle(_ request: RuntimeRequest?) {
+    guard let request, request.state != .pending, detail?.thread.id == request.threadId else { return }
+    detail?.requests.removeAll { $0.id == request.id }
   }
 
   // MARK: - Internals
