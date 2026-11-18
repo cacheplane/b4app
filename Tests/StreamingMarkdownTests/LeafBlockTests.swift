@@ -56,6 +56,14 @@ import Testing
   @Test func theLastLineIsNotDroppedWithoutATrailingNewline() {
     #expect(parsed("a\n\nb") == "p \"a\"\np \"b\"")
   }
+  @Test func finishCommitsTheOpenTopLevelParagraph() {
+    // Nothing is guessed after `finish()`: the paragraph is committed, not projected.
+    var parser = MarkdownParser()
+    parser.push("a **b\n")
+    parser.finish()
+    #expect(outline(parser.document) == "p \"a **b\"")
+    #expect(parser.document.blocks.map(\.id) == ["0"])
+  }
   @Test func idsArePositionsAndCommittedBlocksKeepTheirValue() {
     var parser = MarkdownParser()
     parser.push("a\n\nb\n\n")

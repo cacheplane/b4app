@@ -6,10 +6,19 @@ public struct MarkdownParser: Sendable {
   private var buffer = ""
   private var committed: [MarkdownBlock] = []
   private var state = BlockState()
+  /// The inline scan of the open leaf's text as of the last push, so a read scans only the
+  /// characters that are new since. A cache: a read whose text does not extend it scans afresh.
+  private var inline = InlineProjection.Scan()
 
   public init() {}
 
   public mutating func push(_ text: String) {
+    // A piece with no newline completes no line: it only grows the unfinished one.
+    if !text.utf8.contains(UInt8(ascii: "\n")) {
+      buffer += text
+      advanceInlineScan()
+      return
+    }
     // "\r\n" is one Character in Swift, so line endings are made "\n" before lines are cut. A "\r" at
     // the end of the buffer stays in it, so a "\r\n" split across two pushes is still one ending.
     let all = (buffer + text).replacingOccurrences(of: "\r\n", with: "\n")
@@ -20,6 +29,7 @@ public struct MarkdownParser: Sendable {
       start = all.index(after: newline)
     }
     buffer = String(all[start...])
+    advanceInlineScan()
   }
 
   /// Hands the unfinished line over as a last line and closes everything.
@@ -30,13 +40,19 @@ public struct MarkdownParser: Sendable {
       consume(line.hasSuffix("\r") ? line.dropLast() : line)
     }
     commit(state.close())
+    inline = InlineProjection.Scan()
   }
 
-  /// The committed blocks and the open one, read from the completed lines. The text after the last
-  /// newline is not in it yet.
+  /// The committed blocks and the open one. Before `finish()` the unfinished line after the last
+  /// newline is projected into it: markers the next character decides are held and unfinished
+  /// syntax is guessed (`OpenLineProjection.swift`, `InlineProjection`). The guesses are made on a
+  /// copy of the open state on every read and never stored, so a wrong one reverts by itself.
   public var document: MarkdownDocument {
+    let projection = state.projection(of: openLine, inline: inline)
     var blocks = committed
-    if let kind = state.current() { blocks.append(MarkdownBlock(id: String(blocks.count), kind: kind)) }
+    for kind in projection.finished + [projection.open].compactMap({ $0 }) {
+      blocks.append(MarkdownBlock(id: String(blocks.count), kind: kind))
+    }
     return MarkdownDocument(blocks: blocks)
   }
 
@@ -45,6 +61,16 @@ public struct MarkdownParser: Sendable {
     parser.push(text)
     parser.finish()
     return parser.document
+  }
+
+  /// The unfinished line, without the "\r" of a "\r\n" split across pushes.
+  private var openLine: Substring {
+    buffer.hasSuffix("\r") ? Substring(buffer).dropLast() : Substring(buffer)
+  }
+
+  /// Brings the kept inline scan up to the open leaf's text, so the next read starts from it.
+  private mutating func advanceInlineScan() {
+    inline = state.projection(of: openLine, inline: inline).inline
   }
 
   private mutating func consume(_ line: Substring) {

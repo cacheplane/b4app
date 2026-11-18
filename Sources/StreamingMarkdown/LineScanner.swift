@@ -11,8 +11,9 @@ enum LineScanner {
 
   /// The line without up to three leading spaces, or nil when it is indented further.
   static func unindented(_ line: Substring) -> Substring? {
-    let body = line.drop { $0 == " " }
-    return line.count - body.count <= 3 ? body : nil
+    // Counts only the leading spaces, so a long line is not walked to its end.
+    let spaces = line.prefix(4).prefix { $0 == " " }.count
+    return spaces <= 3 ? line.dropFirst(spaces) : nil
   }
 
   /// Three or more of one of `-`, `*`, `_`, with spaces and tabs between, and nothing else.

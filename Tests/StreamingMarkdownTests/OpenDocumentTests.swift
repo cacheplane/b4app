@@ -14,10 +14,10 @@ import Testing
   @Test func anOpenFenceShowsAsOpen() {
     #expect(midStream("```swift\nlet a\n") == "code swift open \"let a\"")
   }
-  @Test func theUnfinishedLastLineIsIgnoredForNow() {
-    #expect(midStream("one\ntw") == "p \"one\"")
-    #expect(midStream("```\nlet a\nlet") == "code - open \"let a\"")
-    #expect(midStream("# hea") == "")
+  @Test func theUnfinishedLastLineIsProjected() {
+    #expect(midStream("one\ntw") == "p \"one tw\"")
+    #expect(midStream("```\nlet a\nlet") == "code - open \"let a\\nlet\"")
+    #expect(midStream("# hea") == "h1 \"hea\"")
   }
   @Test func aLongFencePushedLineByLineStaysFast() {
     let filler = String(repeating: "x", count: 300)
