@@ -43,6 +43,7 @@ private func nodeProbeLine(
     + " resolveAccepted=\(flag(observation.resolveAccepted))"
     + " callerCancelledAtReturn=\(flag(observation.callerCancelledAtReturn))"
     + " probeParentElapsedMilliseconds=\(observation.probeParentElapsedMilliseconds)"
+    + " selectedOutcomeOrigin=\(observation.selectedOutcomeOrigin?.rawValue ?? "unavailable")"
 }
 
 private final class ServerNodeProbeCollector: Sendable {
@@ -89,19 +90,25 @@ struct NodeProbeDiagnosticFormattingTests {
     let shapes: [NodeVersionProbeObservation.StdoutShape] = [
       .unavailable, .empty, .exactFake24, .vPrefixOther, .other,
     ]
+    let origins: [CommandRunner.SelectedOutcomeOrigin?] = [
+      nil, .finished, .timerReturned, .workCancellationCaught, .defensiveNoOutcome,
+    ]
     for shape in shapes {
-      let observation = NodeVersionProbeObservation(
-        commandThrew: false, returnedTimedOut: false, returnedExitCode: 0, returnedSignal: nil,
-        returnedSucceeded: true, stdoutShape: shape, versionPrefixAccepted: true,
-        minimumAccepted: true, resolveAccepted: true, callerCancelledAtReturn: false,
-        probeParentElapsedMilliseconds: 123)
-      let line = nodeProbeLine(label: .addsAProjectAndInspectsItsRoutes, observation: observation)
-      #expect(
-        line == "node-explicit-probe case=addsAProjectAndInspectsItsRoutes"
-          + " commandThrew=false returnedTimedOut=false returnedExitCode=0 returnedSignal=unavailable"
-          + " returnedSucceeded=true stdoutShape=\(shape.rawValue) versionPrefixAccepted=true"
-          + " minimumAccepted=true resolveAccepted=true callerCancelledAtReturn=false"
-          + " probeParentElapsedMilliseconds=123")
+      for origin in origins {
+        let observation = NodeVersionProbeObservation(
+          commandThrew: false, returnedTimedOut: false, returnedExitCode: 0, returnedSignal: nil,
+          returnedSucceeded: true, stdoutShape: shape, versionPrefixAccepted: true,
+          minimumAccepted: true, resolveAccepted: true, callerCancelledAtReturn: false,
+          probeParentElapsedMilliseconds: 123, selectedOutcomeOrigin: origin)
+        let line = nodeProbeLine(label: .addsAProjectAndInspectsItsRoutes, observation: observation)
+        #expect(
+          line == "node-explicit-probe case=addsAProjectAndInspectsItsRoutes"
+            + " commandThrew=false returnedTimedOut=false returnedExitCode=0 returnedSignal=unavailable"
+            + " returnedSucceeded=true stdoutShape=\(shape.rawValue) versionPrefixAccepted=true"
+            + " minimumAccepted=true resolveAccepted=true callerCancelledAtReturn=false"
+            + " probeParentElapsedMilliseconds=123"
+            + " selectedOutcomeOrigin=\(origin?.rawValue ?? "unavailable")")
+      }
     }
   }
 }
@@ -460,9 +467,11 @@ struct ServerHarness {
     }
     let clock = ContinuousClock()
     var finished = false
-    let elapsed = await clock.measure { finished = await h.coordinator.servers.stopAll(within: .seconds(4)) }
+    // The grace is `budget - 2 s`, capped at 10 s, so only a budget past 12 s leaves more than 2 s after
+    // SIGKILL; a loaded CI runner needed more. One after the other the stops would take 20 s or more.
+    let elapsed = await clock.measure { finished = await h.coordinator.servers.stopAll(within: .seconds(14)) }
     #expect(finished)
-    #expect(elapsed < .seconds(6), "the stops were not bounded: \(elapsed)")
+    #expect(elapsed < .seconds(16), "the stops were not bounded: \(elapsed)")
     for server in started {
       #expect(!ProcessInspector.isAlive(pid: server.pid!))
       #expect(try await h.status(server).health == .stopped)

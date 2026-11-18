@@ -790,21 +790,27 @@ final class L1FactoryCalls: Sendable {
   static func begin(
     _ fixture: Fixture, _ cleanup: L1Cleanup, session: AuthSession? = nil,
     timing: NativeTimingBoundary? = nil,
-    observation: NarrowTimingWitness? = nil
+    observation: NarrowTimingWitness? = nil,
+    executorPreference: AccountMigrationTestExecutor? = nil
   ) -> Run {
-    begin(fixture, cleanup, session: session, trace: nil, timing: timing, observation: observation)
+    begin(
+      fixture, cleanup, session: session, trace: nil, timing: timing, observation: observation,
+      executorPreference: executorPreference)
   }
 
   private static func begin(
     _ fixture: Fixture, _ cleanup: L1Cleanup, session: AuthSession? = nil, trace: L1PhaseTrace?,
     timing: NativeTimingBoundary? = nil,
-    observation: NarrowTimingWitness? = nil
+    observation: NarrowTimingWitness? = nil,
+    executorPreference: AccountMigrationTestExecutor? = nil
   ) -> Run {
     let state = L1RunState()
     let answer = session ?? Self.session()
     timing?.record(.issued)
     observation?.record(.issued, nil)
-    let task = Task {
+    let task = Task<Result<AccountStatus.Result, any Error>, Never>(
+      executorPreference: executorPreference
+    ) {
       observation?.record(.taskEntered, nil)
       timing?.record(.taskEntered)
       trace?.record(.taskEntered)
@@ -828,7 +834,12 @@ final class L1FactoryCalls: Sendable {
         return .failure(error)
       }
     }
-    cleanup.join { _ = await task.value }
+    cleanup.join {
+      _ = await task.value
+      // The actual retained Task joins before acknowledging already-submitted queue blocks.
+      // This sentinel does not establish thread exit or absence of future jobs.
+      if let executorPreference { await executorPreference.drainSubmittedJobs() }
+    }
     return Run(task: task, state: state, timing: timing)
   }
 
@@ -1189,9 +1200,9 @@ final class L1FactoryCalls: Sendable {
 }
 
 extension AgentProtocolAccountMigrationTests {
-  // Only the two diagnostic subjects: each private queue supplies resources; AccountManager remains
+  // Selected migration test subjects: each private queue supplies resources; AccountManager remains
   // actor-isolated. This is not a dedicated OS thread or a scheduling-deadline guarantee.
-  private final class AccountMigrationTestExecutor: TaskExecutor {
+  final class AccountMigrationTestExecutor: TaskExecutor {
     private let queue = DispatchQueue(label: "b4app.test.account-migration-subject")
 
     func enqueue(_ job: consuming ExecutorJob) {

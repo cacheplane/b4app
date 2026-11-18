@@ -12,6 +12,7 @@ import WorkspaceProtocol
   @Test func concurrentServerClosersAwaitTheAcceptOwnerAndSharedCleanup() async throws {
     let timing = NativeTimingBoundary(.serverClosers)
     let shutdownTiming = NarrowTimingObservation(.serverClosers)
+    let shutdownCallbackQueue = DispatchQueue(label: "b4app.test.serverClosers.shutdown")
     defer { shutdownTiming.emitAfterCleanup() }
     timing.record(.harnessIssued)
     let h = try await Harness.start()
@@ -55,7 +56,7 @@ import WorkspaceProtocol
           case .groupShutdownAwaitReturned: shutdownTiming.record(.groupShutdownAwaitReturned)
           default: break
           }
-        })
+        }, shutdownCallbackQueue: shutdownCallbackQueue)
       timing.record(.serverStartReturned)
     } catch {
       timing.record(.harnessStopIssued)

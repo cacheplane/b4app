@@ -187,6 +187,7 @@ private struct RawLifecyclePeer {
   @Test func concurrentTransportClosersJoinTheReaderDespiteCallerCancellation() async throws {
     let timing = NativeTimingBoundary(.transportClosers)
     let shutdownTiming = NarrowTimingObservation(.transportClosers)
+    let shutdownCallbackQueue = DispatchQueue(label: "b4app.test.transportClosers.shutdown")
     defer { shutdownTiming.emitAfterCleanup() }
     let directory = try lifecycleDirectory()
     defer { try? FileManager.default.removeItem(atPath: directory) }
@@ -221,7 +222,7 @@ private struct RawLifecyclePeer {
         case .groupShutdownAwaitReturned: shutdownTiming.record(.groupShutdownAwaitReturned)
         default: log.record(transportEventName(event))
         }
-      })
+      }, shutdownCallbackQueue: shutdownCallbackQueue)
     timing.record(.connectReturned)
     timing.record(.acceptIssued)
     do { try peer.acceptOnce(); timing.record(.acceptReturned) } catch {

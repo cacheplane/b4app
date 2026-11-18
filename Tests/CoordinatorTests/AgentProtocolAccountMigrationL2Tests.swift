@@ -957,9 +957,11 @@ private final class L2LifetimeOwner: Sendable {
     // Separate REAL async-close boundary: in-flight push is NOT such a barrier, because
     // HubSync.close cancels it without joining. Hold actual fake adapter disposal instead.
     let adapters = StubbornAdapters()
+    let executor = H.AccountMigrationTestExecutor()
     try await H.withFixture(
       adapterFactory: { _, _, _, _ in adapters.make() }, expectedAdapterFactoryCalls: 1,
-      migrationObserver: { secondFixtureTiming.recordMigration($0, flag: $1) }
+      migrationObserver: { secondFixtureTiming.recordMigration($0, flag: $1) },
+      migrationCloseTaskExecutor: executor
     ) { fixture, cleanup in
       cleanup.release { adapters.release() }
       _ = try await fixture.scope.sessions.adapter(
@@ -970,7 +972,8 @@ private final class L2LifetimeOwner: Sendable {
       cleanup.join { for pump in pumps { await pump.value } }
       secondFixtureTiming.arm()
       let run = H.begin(
-        fixture, cleanup, observation: NarrowTimingWitness { secondFixtureTiming.record($0, flag: $1) })
+        fixture, cleanup, observation: NarrowTimingWitness { secondFixtureTiming.record($0, flag: $1) },
+        executorPreference: executor)
       guard
         await observation.observed(
           .callbacksDisposeEnteredObservation,

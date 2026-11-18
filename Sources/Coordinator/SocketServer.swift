@@ -8,6 +8,7 @@ import WorkspaceProtocol
 /// NIO server on the coordinator's Unix socket: hello on connect, events fanned out, commands routed.
 public final class SocketServer: Sendable {
   private let group: MultiThreadedEventLoopGroup
+  private let shutdownCallbackQueue: DispatchQueue?
   private let serverChannel: NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>
   private let acceptTask: Task<Void, Never>
   private let invocations: SocketInvocations
@@ -21,9 +22,10 @@ public final class SocketServer: Sendable {
     serverChannel: NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>,
     acceptTask: Task<Void, Never>, socketPath: String,
     invocations: SocketInvocations, lifecycleObserver: SocketLifecycleObserver?,
-    acceptanceObserver: SocketAcceptanceObserver?
+    acceptanceObserver: SocketAcceptanceObserver?, shutdownCallbackQueue: DispatchQueue?
   ) {
     self.group = group
+    self.shutdownCallbackQueue = shutdownCallbackQueue
     self.serverChannel = serverChannel
     self.acceptTask = acceptTask
     self.socketPath = socketPath
@@ -36,35 +38,40 @@ public final class SocketServer: Sendable {
     socketPath: String, router: Router, eventLog: EventLog
   ) async throws -> SocketServer {
     try await start(
-      socketPath: socketPath, router: router, eventLog: eventLog, lifecycleObserver: nil)
+      socketPath: socketPath, router: router, eventLog: eventLog, lifecycleObserver: nil,
+      shutdownCallbackQueue: nil)
   }
 
   // Observes actual ownership operations without providing lifecycle authority.
   static func start(
     socketPath: String, router: Router, eventLog: EventLog,
-    lifecycleObserver: SocketLifecycleObserver?, acceptanceObserver: SocketAcceptanceObserver? = nil
+    lifecycleObserver: SocketLifecycleObserver?, acceptanceObserver: SocketAcceptanceObserver? = nil,
+    shutdownCallbackQueue: DispatchQueue? = nil
   ) async throws -> SocketServer {
     try await start(
       socketPath: socketPath, eventLog: eventLog,
       plainDispatch: { [router] line in await router.dispatch(line: line) },
-      lifecycleObserver: lifecycleObserver, acceptanceObserver: acceptanceObserver)
+      lifecycleObserver: lifecycleObserver, acceptanceObserver: acceptanceObserver,
+      shutdownCallbackQueue: shutdownCallbackQueue)
   }
 
   // This internal fixture seam accepts only a plain request/response operation. Its captures must be
   // NIO-free, exactly like the production closure above (Router only).
   static func start(
     socketPath: String, eventLog: EventLog, plainDispatch: @escaping SocketDispatch,
-    lifecycleObserver: SocketLifecycleObserver?
+    lifecycleObserver: SocketLifecycleObserver?, shutdownCallbackQueue: DispatchQueue? = nil
   ) async throws -> SocketServer {
     try await start(
       socketPath: socketPath, eventLog: eventLog, plainDispatch: plainDispatch,
-      lifecycleObserver: lifecycleObserver, acceptanceObserver: nil)
+      lifecycleObserver: lifecycleObserver, acceptanceObserver: nil,
+      shutdownCallbackQueue: shutdownCallbackQueue)
   }
 
   // Separate socket-only acceptance witnesses; never passed to plain invocation/dispatch state.
   static func start(
     socketPath: String, eventLog: EventLog, plainDispatch: @escaping SocketDispatch,
-    lifecycleObserver: SocketLifecycleObserver?, acceptanceObserver: SocketAcceptanceObserver?
+    lifecycleObserver: SocketLifecycleObserver?, acceptanceObserver: SocketAcceptanceObserver?,
+    shutdownCallbackQueue: DispatchQueue? = nil
   ) async throws -> SocketServer {
     let logger = Log.logger("socket")
     let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -97,7 +104,7 @@ public final class SocketServer: Sendable {
         }
       }
     } catch {
-      try? await group.shutdownGracefully()
+      await shutdownGroup(group, callbackQueue: shutdownCallbackQueue)
       throw WorkspaceError(.internalError, "Could not listen on \(socketPath): \(error)")
     }
     chmod(socketPath, 0o600)
@@ -133,7 +140,7 @@ public final class SocketServer: Sendable {
     return SocketServer(
       group: group, serverChannel: serverChannel, acceptTask: acceptTask, socketPath: socketPath,
       invocations: invocations, lifecycleObserver: lifecycleObserver,
-      acceptanceObserver: acceptanceObserver)
+      acceptanceObserver: acceptanceObserver, shutdownCallbackQueue: shutdownCallbackQueue)
   }
 
   private static func serve(
@@ -186,7 +193,10 @@ public final class SocketServer: Sendable {
     // This synchronous Mutex transition is close's admission boundary, before its first suspension.
     invocations.stopAdmission()
     await closeCompletion.close(observer: lifecycleObserver) {
-      [acceptTask, serverChannel, group, socketPath, lifecycleObserver, acceptanceObserver] in
+      [
+        acceptTask, serverChannel, group, socketPath, lifecycleObserver, acceptanceObserver,
+        shutdownCallbackQueue
+      ] in
       await lifecycleObserver?(.cleanupStarted)
       let listener = serverChannel.channel
       let loop = listener.eventLoop
@@ -211,7 +221,10 @@ public final class SocketServer: Sendable {
       // Normal source finish preserves buffered children for unconditional structured handoff.
       await acceptTask.value
       await lifecycleObserver?(.groupShutdownStarted)
-      if let acceptanceObserver {
+      if let shutdownCallbackQueue {
+        await Self.shutdownGroup(
+          group, callbackQueue: shutdownCallbackQueue, observer: acceptanceObserver)
+      } else if let acceptanceObserver {
         // Same pinned NIO bridge and default global callback queue; no new shutdown authority.
         try? await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
           acceptanceObserver(.groupShutdownInvoked)
@@ -232,6 +245,30 @@ public final class SocketServer: Sendable {
       await lifecycleObserver?(.cleanupFinished)
     }
   }
+
+  // Only internal fixtures select a callback queue; nil keeps NIO's original async bridge.
+  private static func shutdownGroup(
+    _ group: MultiThreadedEventLoopGroup, callbackQueue: DispatchQueue?,
+    observer: SocketAcceptanceObserver? = nil
+  ) async {
+    guard let callbackQueue else {
+      try? await group.shutdownGracefully()
+      return
+    }
+    try? await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+      observer?(.groupShutdownInvoked)
+      group.shutdownGracefully(queue: callbackQueue) { error in
+        observer?(.groupShutdownCallbackEntered)
+        if let error = error {
+          cont.resume(throwing: error)
+        } else {
+          cont.resume()
+        }
+      }
+    }
+    observer?(.groupShutdownAwaitReturned)
+  }
+
 }
 
 // Module-internal operation witness. Production's public entry point supplies nil.

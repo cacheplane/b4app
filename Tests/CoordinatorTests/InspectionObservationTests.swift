@@ -624,6 +624,14 @@ struct NarrowTimingObservationTests {
         adapterOrdinal: 0, inspectionCallOrdinal: 129))
     firstCore.record(firstCommand, .commandCoreExited)
     secondCore.record(secondCommand, .commandCoreExited)
+    let additionalStages: [CommandRunner.CoreStage] = [
+      .commandWorkEntered, .commandWorkExited, .commandTimerEntered, .commandTimerExited,
+      .commandSelectedFinished, .commandSelectedTimerReturned, .commandSelectedWorkCancellationCaught,
+      .commandSelectedDefensiveNoOutcome,
+    ]
+    for (core, command) in [(firstCore, firstCommand), (secondCore, secondCommand)] {
+      for stage in additionalStages { core.record(command, stage) }
+    }
     for scope in [missingAdapter, missingCall, outOfRange] {
       let core = collector.commandObservation(scope: scope)
       let command = try #require(core.reserve())
@@ -631,7 +639,28 @@ struct NarrowTimingObservationTests {
       core.record(command, .commandCoreExited)
     }
     let snapshot = collector.snapshot()
-    #expect(snapshot.scopes.count == 5 && snapshot.records.count == 10)
+    let legacyRecords = snapshot.records.filter {
+      $0.stage == .commandCoreEntered || $0.stage == .commandCoreExited
+    }
+    #expect(snapshot.scopes.count == 5 && legacyRecords.count == 10)
+    #expect(
+      legacyRecords.map(\.stage)
+        == Array(
+          repeating: [NarrowTimingObservation.Stage.commandCoreEntered, .commandCoreExited], count: 5
+        )
+        .flatMap { $0 })
+    let expectedCommandStages: [NarrowTimingObservation.Stage] = [
+      .commandCoreEntered, .commandCoreExited,
+      .commandWorkEntered, .commandWorkExited, .commandTimerEntered, .commandTimerExited,
+      .commandSelectedFinished, .commandSelectedTimerReturned, .commandSelectedWorkCancellationCaught,
+      .commandSelectedDefensiveNoOutcome,
+    ]
+    // Snapshot order is the finite storage layout, not runtime callback order.
+    #expect(snapshot.records.count == 26)
+    #expect(
+      snapshot.records.map(\.stage) == expectedCommandStages + expectedCommandStages
+        + Array(repeating: [NarrowTimingObservation.Stage.commandCoreEntered, .commandCoreExited], count: 3)
+        .flatMap { $0 })
     #expect(snapshot.overflow == false)
     for record in snapshot.records {
       let scope = try #require(record.scope)
@@ -658,6 +687,14 @@ struct NarrowTimingObservationTests {
     #expect(text.contains("scope=3 adapterOrdinal=unavailable inspectionCallOrdinal=1"))
     #expect(text.contains("scope=4 adapterOrdinal=2 inspectionCallOrdinal=unavailable"))
     #expect(text.contains("scope=5 adapterOrdinal=unavailable inspectionCallOrdinal=unavailable"))
+    for label in [
+      "commandCoreEntered", "commandCoreExited", "commandWorkEntered", "commandWorkExited",
+      "commandTimerEntered", "commandTimerExited", "commandSelectedFinished", "commandSelectedTimerReturned",
+      "commandSelectedWorkCancellationCaught", "commandSelectedDefensiveNoOutcome",
+    ] {
+      #expect(text.contains("stage=\(label) scope=1 command=1 adapterOrdinal=1 inspectionCallOrdinal=1"))
+      #expect(text.contains("stage=\(label) scope=2 command=1 adapterOrdinal=2 inspectionCallOrdinal=2"))
+    }
     #expect(parent.nextAdapterOrdinal() == 3 && parent.nextCallOrdinal() == 3)
     #expect(parent.snapshot().records.isEmpty)
   }

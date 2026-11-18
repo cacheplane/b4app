@@ -68,7 +68,12 @@ public enum CommandRunner {
     return try await runCore(executable, arguments, options: options)
   }
 
-  package enum CoreStage: Sendable { case commandCoreEntered, commandCoreExited }
+  package enum CoreStage: Sendable {
+    case commandCoreEntered, commandCoreExited
+    case commandWorkEntered, commandWorkExited, commandTimerEntered, commandTimerExited
+    case commandSelectedFinished, commandSelectedTimerReturned, commandSelectedWorkCancellationCaught
+    case commandSelectedDefensiveNoOutcome
+  }
 
   /// Primitive fixture observation only; descendants may inherit this value past lexical scope exit.
   package struct CoreObservation: Sendable {
@@ -116,6 +121,11 @@ public enum CommandRunner {
 
     return try await withThrowingTaskGroup(of: Outcome.self) { group in
       group.addTask {
+        // Includes Subprocess and the original result/error mapping, not just executable runtime.
+        if let observation, let ordinal { observation.record(ordinal, .commandWorkEntered) }
+        defer {
+          if let observation, let ordinal { observation.record(ordinal, .commandWorkExited) }
+        }
         do {
           if let input {
             let result = try await Subprocess.run(
@@ -135,18 +145,33 @@ public enum CommandRunner {
         }
       }
       group.addTask {
+        if let observation, let ordinal { observation.record(ordinal, .commandTimerEntered) }
+        defer {
+          if let observation, let ordinal { observation.record(ordinal, .commandTimerExited) }
+        }
         try await Task.sleep(for: timeout)
         return .timedOut(.timerReturned)
       }
       guard let first = try await group.next() else {
+        if let observation, let ordinal { observation.record(ordinal, .commandSelectedDefensiveNoOutcome) }
         return ObservedResult(
           result: CommandResult(stdout: "", stderr: "", exitCode: nil, signal: nil, timedOut: true),
           selectedOutcomeOrigin: .defensiveNoOutcome)
       }
       group.cancelAll()
       switch first {
-      case .finished(let result): return ObservedResult(result: result, selectedOutcomeOrigin: .finished)
+      case .finished(let result):
+        if let observation, let ordinal { observation.record(ordinal, .commandSelectedFinished) }
+        return ObservedResult(result: result, selectedOutcomeOrigin: .finished)
       case .timedOut(let origin):
+        if let observation, let ordinal {
+          switch origin {
+          case .finished: observation.record(ordinal, .commandSelectedFinished)
+          case .timerReturned: observation.record(ordinal, .commandSelectedTimerReturned)
+          case .workCancellationCaught: observation.record(ordinal, .commandSelectedWorkCancellationCaught)
+          case .defensiveNoOutcome: observation.record(ordinal, .commandSelectedDefensiveNoOutcome)
+          }
+        }
         return ObservedResult(
           result: CommandResult(stdout: "", stderr: "", exitCode: nil, signal: nil, timedOut: true),
           selectedOutcomeOrigin: origin)

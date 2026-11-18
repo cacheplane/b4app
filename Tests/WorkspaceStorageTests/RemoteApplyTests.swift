@@ -416,7 +416,10 @@ private func storedDensity(_ db: WorkspaceDatabase) throws -> String? {
     _ = try db.setViewSettings(quietThreads: .collapsed)
     let settings = try db.viewSettings()
     let logged = try db.changes(after: 0).filter { $0.table == "viewSettings" }
-    #expect(logged.map(\.op) == ["insert", "update", "update"])
+    // The second write logs `updatedAt` too unless both writes fell in the same millisecond.
+    #expect(logged.first?.op == "insert")
+    #expect(logged.dropFirst().map(\.column).contains("quietThreads"))
+    #expect(logged.dropFirst().allSatisfy { $0.op == "update" })
     let clocks = try ["id", "arrangement", "quietThreads", "updatedAt"].map {
       try db.columnClock(table: "viewSettings", rowId: "view", column: $0)
     }

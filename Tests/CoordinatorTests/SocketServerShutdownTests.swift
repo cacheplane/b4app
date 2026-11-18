@@ -10,6 +10,7 @@ import WorkspaceProtocol
   @Test func initializedBufferedChildrenReachScopedOwnersBeforeLoopShutdown() async throws {
     let timing = NativeTimingBoundary(.bufferedChildren)
     let shutdownTiming = NarrowTimingObservation(.bufferedChildren)
+    let shutdownCallbackQueue = DispatchQueue(label: "b4app.test.bufferedChildren.shutdown")
     defer { shutdownTiming.emitAfterCleanup() }
     let root = try directory()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -44,7 +45,7 @@ import WorkspaceProtocol
         case .sourceFinished: timing.record(.sourceFinished)
         default: break
         }
-      })
+      }, shutdownCallbackQueue: shutdownCallbackQueue)
     timing.record(.serverStartReturned)
     var peers: [UnixSocketTransport] = []
     var closing: Task<Void, Never>?

@@ -45,6 +45,17 @@ final class FakeB4Server: Sendable {
     _ = await process.waitForExit()
   }
 
+  /// Waits (bounded) until the server's stderr holds `text`. The fixture flushes each line, but the
+  /// parent reads stderr asynchronously, so a line can land just after the event that caused it.
+  func stderrContains(_ text: String, timeout: Duration = .seconds(5)) async -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+      if process.recentStderr().contains(text) { return true }
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+    return process.recentStderr().contains(text)
+  }
+
   /// Raw read for assertions about server-side state (turn counts, thread status).
   func get(_ path: String, token: String? = nil) async throws -> JSONValue? {
     var request = URLRequest(url: URL(string: baseURL + path)!)

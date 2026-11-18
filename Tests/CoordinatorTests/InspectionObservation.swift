@@ -491,6 +491,10 @@ final class NarrowTimingObservation: Sendable {
     case scopeCloseWorkEntered, scopeCloseWorkReturned, scopeCloseAwaitReturned
     case issued, taskEntered, operationReturned, finished
     case observationDeadline, resultBool, callerCancelled, normalReturn, sleepThrew, atDeadline
+    // Append to preserve all legacy raw values used by the other fixed-capacity roles.
+    case commandWorkEntered, commandWorkExited, commandTimerEntered, commandTimerExited
+    case commandSelectedFinished, commandSelectedTimerReturned, commandSelectedWorkCancellationCaught
+    case commandSelectedDefensiveNoOutcome
   }
   enum Availability: String, Sendable { case available, notArmed, lockUnavailable, alreadyAttempted }
   struct Scope: Sendable {
@@ -549,6 +553,7 @@ final class NarrowTimingObservation: Sendable {
     var overflow = false
     init(capacity: Int) { slots = [Record?](repeating: nil, count: capacity) }
   }
+  private static let commandStageCount = 10
   private let role: Role
   private let capacity: Int
   private let state: Mutex<State>
@@ -561,7 +566,7 @@ final class NarrowTimingObservation: Sendable {
   init(_ role: Role) {
     self.role = role
     switch role {
-    case .inspectionCommands: capacity = 16 * 8 * 2
+    case .inspectionCommands: capacity = 16 * 8 * Self.commandStageCount
     case .bufferedChildren, .serverClosers, .transportClosers: capacity = 3
     case .l2SecondFixture: capacity = 32
     case .peerBeforeAckCleanup: capacity = 4
@@ -638,6 +643,17 @@ final class NarrowTimingObservation: Sendable {
         switch stage {
         case .commandCoreEntered: self.record(.commandCoreEntered, scope: scope, command: ordinal)
         case .commandCoreExited: self.record(.commandCoreExited, scope: scope, command: ordinal)
+        case .commandWorkEntered: self.record(.commandWorkEntered, scope: scope, command: ordinal)
+        case .commandWorkExited: self.record(.commandWorkExited, scope: scope, command: ordinal)
+        case .commandTimerEntered: self.record(.commandTimerEntered, scope: scope, command: ordinal)
+        case .commandTimerExited: self.record(.commandTimerExited, scope: scope, command: ordinal)
+        case .commandSelectedFinished: self.record(.commandSelectedFinished, scope: scope, command: ordinal)
+        case .commandSelectedTimerReturned:
+          self.record(.commandSelectedTimerReturned, scope: scope, command: ordinal)
+        case .commandSelectedWorkCancellationCaught:
+          self.record(.commandSelectedWorkCancellationCaught, scope: scope, command: ordinal)
+        case .commandSelectedDefensiveNoOutcome:
+          self.record(.commandSelectedDefensiveNoOutcome, scope: scope, command: ordinal)
         }
       })
   }
@@ -649,9 +665,9 @@ final class NarrowTimingObservation: Sendable {
     switch role {
     case .inspectionCommands:
       if let scope, let command, scope >= 1, scope <= 16, command >= 1, command <= 8,
-        stage == .commandCoreEntered || stage == .commandCoreExited
+        let commandSlot = stage.commandSlot
       {
-        slot = ((Int(scope) - 1) * 8 + Int(command) - 1) * 2 + stage.rawValue
+        slot = ((Int(scope) - 1) * 8 + Int(command) - 1) * Self.commandStageCount + commandSlot
       } else {
         slot = nil
       }
@@ -740,10 +756,34 @@ final class NarrowTimingObservation: Sendable {
 }
 
 extension NarrowTimingObservation.Stage {
+  fileprivate var commandSlot: Int? {
+    switch self {
+    case .commandCoreEntered: return 0
+    case .commandCoreExited: return 1
+    case .commandWorkEntered: return 2
+    case .commandWorkExited: return 3
+    case .commandTimerEntered: return 4
+    case .commandTimerExited: return 5
+    case .commandSelectedFinished: return 6
+    case .commandSelectedTimerReturned: return 7
+    case .commandSelectedWorkCancellationCaught: return 8
+    case .commandSelectedDefensiveNoOutcome: return 9
+    default: return nil
+    }
+  }
+
   fileprivate var label: String {
     switch self {
     case .commandCoreEntered: return "commandCoreEntered"
     case .commandCoreExited: return "commandCoreExited"
+    case .commandWorkEntered: return "commandWorkEntered"
+    case .commandWorkExited: return "commandWorkExited"
+    case .commandTimerEntered: return "commandTimerEntered"
+    case .commandTimerExited: return "commandTimerExited"
+    case .commandSelectedFinished: return "commandSelectedFinished"
+    case .commandSelectedTimerReturned: return "commandSelectedTimerReturned"
+    case .commandSelectedWorkCancellationCaught: return "commandSelectedWorkCancellationCaught"
+    case .commandSelectedDefensiveNoOutcome: return "commandSelectedDefensiveNoOutcome"
     case .groupShutdownInvoked: return "groupShutdownInvoked"
     case .groupShutdownCallbackEntered: return "groupShutdownCallbackEntered"
     case .groupShutdownAwaitReturned: return "groupShutdownAwaitReturned"
