@@ -271,14 +271,7 @@ struct BlockState: Equatable, Sendable {
 
   /// A body row: padded with empty cells or cut to the header's count.
   private mutating func tableRow(_ line: Substring) {
-    var cells = LineScanner.tableRow(line).cells
-    let count = tableHeader.count
-    if cells.count > count {
-      cells.removeSubrange(count...)
-    } else if cells.count < count {
-      cells += [String](repeating: "", count: count - cells.count)
-    }
-    tableRows.append(cells)
+    tableRows.append(LineScanner.fit(LineScanner.tableRow(line).cells, to: tableHeader.count))
   }
 
   /// A line inside the open fence: its closer, or one more line of code.

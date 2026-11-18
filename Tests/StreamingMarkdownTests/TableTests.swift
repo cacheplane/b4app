@@ -21,6 +21,7 @@ import Testing
   }
   @Test func aMismatchedDelimiterRowIsNotATable() {
     #expect(parsed("| a | b |\n|---|").hasPrefix("p "))
+    #expect(parsed("| a | b |\n|---|") == "p \"| a | b | |---|\"")
   }
   @Test func escapedPipesAndPipesInCodeDoNotSplit() {
     #expect(
@@ -45,5 +46,44 @@ import Testing
       return
     }
     #expect(table.rows.count == 8000)
+  }
+  @Test func onlyAParagraphsFirstLineCanBeAHeader() {
+    #expect(parsed("a\n|b|c|\n|-|-|") == "p \"a |b|c| |-|-|\"")
+  }
+  @Test func aLazyDelimiterLineInAQuoteDoesNotMakeATable() {
+    #expect(parsed("> |a|b|\n|-|-|") == "quote\n  p \"|a|b| |-|-|\"")
+  }
+  @Test func aHeadingAFenceAndAQuoteEndATable() {
+    #expect(parsed("|a|\n|-|\n|1|\n# h") == "table -\n  head \"a\"\n  row \"1\"\nh1 \"h\"")
+    #expect(
+      parsed("|a|\n|-|\n|1|\n```\nx") == "table -\n  head \"a\"\n  row \"1\"\ncode - open \"x\"")
+    #expect(
+      parsed("|a|\n|-|\n|1|\n> q")
+        == "table -\n  head \"a\"\n  row \"1\"\nquote\n  p \"q\"")
+  }
+  @Test func anEscapedBackslashBeforeAPipeStillSplits() {
+    #expect(parsed("|a\\\\|b|\n|-|-|") == "table - -\n  head \"a\\\\\" | \"b\"")
+  }
+  @Test func aLongLineOfBacktickRunsStaysLinear() {
+    // Runs of increasing length with pipes between: none has a matching closer.
+    func line(_ size: Int) -> Substring {
+      var text = ""
+      var length = 1
+      while text.count < size {
+        text += String(repeating: "`", count: length) + "|"
+        length += 1
+      }
+      return Substring(text)
+    }
+    let clock = ContinuousClock()
+    func time(_ size: Int) -> Duration {
+      var best = Duration.seconds(1000)
+      for _ in 0..<3 {
+        best = min(best, clock.measure { _ = MarkdownParser.parse(String(line(size))) })
+      }
+      return best
+    }
+    #expect(time(400_000) < time(100_000) * 8)
+    #expect(time(400_000) < .seconds(5))
   }
 }

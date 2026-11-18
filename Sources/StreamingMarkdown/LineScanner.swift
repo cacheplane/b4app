@@ -193,26 +193,60 @@ enum LineScanner {
   struct TableRow: Equatable {
     var cells: [String]
     var splits: Bool
+    /// How many of the cells a pipe has closed. The cell still being typed is the last one when
+    /// this is less than `cells.count`: `|a|b` has two cells and one closed, `|a|b|` two and two.
+    var closedCount: Int
   }
 
   /// The cells of a line. A pipe splits unless it is escaped (`\|`, which is a literal pipe in the
   /// cell) or inside a backtick code span; a leading and a trailing pipe are optional and make no
-  /// cell. Cell text is trimmed. A line with no splitting pipe is one cell.
+  /// cell. Cell text is trimmed. A line with no splitting pipe is one cell. One pass over the line:
+  /// each backtick run is matched with the next run of the same length, found from a table built
+  /// backwards, so the cost is linear in the line.
   static func tableRow(_ line: Substring) -> TableRow {
     let chars = Array(trimmed(line))
+    // The backtick runs, and for each the next run of the same length.
+    var runs: [(start: Int, length: Int)] = []
+    var position = 0
+    while position < chars.count {
+      if chars[position] == "`" {
+        var end = position
+        while end < chars.count, chars[end] == "`" { end += 1 }
+        runs.append((position, end - position))
+        position = end
+      } else {
+        position += 1
+      }
+    }
+    var next = [Int?](repeating: nil, count: runs.count)
+    var latest: [Int: Int] = [:]
+    for run in runs.indices.reversed() {
+      next[run] = latest[runs[run].length]
+      latest[runs[run].length] = run
+    }
+
     var parts: [String] = []
     var current = ""
     var splits = false
     var endsWithSplit = false
     var index = 0
+    var run = 0
     while index < chars.count {
       let character = chars[index]
       if character == "\\", index + 1 < chars.count, chars[index + 1] == "|" {
         current.append("|")
         index += 2
+      } else if character == "\\", index + 1 < chars.count, chars[index + 1] == "\\" {
+        current.append("\\\\")
+        index += 2
       } else if character == "`" {
-        let length = chars[index...].prefix { $0 == "`" }.count
-        let end = codeSpanEnd(chars, from: index + length, length: length) ?? index + length
+        // A run with a matching later run opens a code span that ends after it; one without is text.
+        var end = index + runs[run].length
+        var after = run + 1
+        if let closer = next[run] {
+          end = runs[closer].start + runs[closer].length
+          after = closer + 1
+        }
         var inner = index
         while inner < end {
           if chars[inner] == "\\", inner + 1 < end, chars[inner + 1] == "|" {
@@ -224,6 +258,7 @@ enum LineScanner {
           }
         }
         index = end
+        run = after
       } else if character == "|" {
         parts.append(current)
         current = ""
@@ -240,27 +275,20 @@ enum LineScanner {
       if chars.first == "|" { parts.removeFirst() }
       if endsWithSplit { parts.removeLast() }
     }
-    return TableRow(cells: parts.map { String(trimmed(Substring($0))) }, splits: splits)
+    let cells = parts.map { String(trimmed(Substring($0))) }
+    let closed = !splits ? 0 : endsWithSplit ? cells.count : max(cells.count - 1, 0)
+    return TableRow(cells: cells, splits: splits, closedCount: closed)
   }
 
-  /// Where the code span opened by a run of `length` backticks ends (after its closing run), or nil
-  /// when the run has no closer, so it is text.
-  private static func codeSpanEnd(_ chars: [Character], from start: Int, length: Int) -> Int? {
-    var index = start
-    while index < chars.count {
-      if chars[index] == "`" {
-        let run = chars[index...].prefix { $0 == "`" }.count
-        if run == length { return index + run }
-        index += run
-      } else {
-        index += 1
-      }
-    }
-    return nil
+  /// A row's cells padded with empty cells or cut to the table's column count.
+  static func fit(_ cells: [String], to count: Int) -> [String] {
+    if cells.count > count { return Array(cells[..<count]) }
+    return cells + [String](repeating: "", count: count - cells.count)
   }
 
   /// A table's header row: it has a splitting pipe and at least one cell.
   static func tableHeader(_ line: Substring) -> [String]? {
+    guard line.contains("|") else { return nil }
     let row = tableRow(line)
     return row.splits && !row.cells.isEmpty ? row.cells : nil
   }
