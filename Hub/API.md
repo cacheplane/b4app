@@ -944,13 +944,16 @@ have a push token, and are not the one whose push caused the change:
 - A `runtimeRequests` row whose `state` is `pending` notifies, whatever its age: kinds
   `command_approval`, `file_change_approval`, `tool_permission`, and `unknown` say "Waiting for
   your approval"; `user_question` and `elicitation` say "Has a question for you".
-- A `turns` row `X` the batch touched notifies in two cases. A terminal `failed` outcome ("Turn
-  failed") notifies for `X`, whatever open work the thread holds. Otherwise, when the thread's
-  latest live turn `L` (greatest `createdAt`, ties by greatest `id`) is terminal and `completed`,
-  and the thread is at rest (the `openWork` of its live turns sums to 0), "Replied" notifies, keyed
-  by `L`, not `X`: the thread's reply comes once the agents it started have finished, and the
-  turn that wakes it is the one that notifies. In the reply case the touched row only triggers the
-  decision and supplies the recency; the latest turn is the one keyed. A reply the owner has
+- A `turns` row `X` the batch touched is checked for two notifications, each keyed and ledgered
+  on its own, the failure first. A terminal `failed` outcome ("Turn failed") notifies for `X`,
+  whatever open work the thread holds. And when the thread's latest live turn `L` (greatest
+  `createdAt`, ties by greatest `id`) is terminal and `completed`, and the thread is at rest (the
+  `openWork` of its live turns sums to 0), "Replied" notifies, keyed by `L`, not `X`: the thread's
+  reply comes once the agents it started have finished, and the turn that wakes it is the one
+  that notifies. In the reply case the touched row only triggers the decision and supplies the
+  recency; the latest turn is the one keyed. Both can come from one touch: when an earlier turn
+  that failed holding open work later drops it to 0, its failure is already in the ledger and the
+  later reply it held back is told. When `X` is itself `L` and failed, only the failure applies. A reply the owner has
   already read (`readTurnId` at or after it) is written to the ledger and withdrawn in the same
   push, so no alert reaches the phones. `cancelled` never notifies, and a terminal turn with
   no outcome yet waits for the batch that sets it. `X` notifies only when its `updatedAt` is
