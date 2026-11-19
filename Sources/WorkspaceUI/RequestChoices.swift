@@ -14,6 +14,8 @@ struct RequestChoices: Equatable {
   }
 
   let choices: [Choice]
+  /// What the wider allow covers, when the request names one rule; drawn above the buttons.
+  let reach: String?
 
   /// `payload` is a runtime request's payload.
   init(payload: JSONValue) {
@@ -27,6 +29,12 @@ struct RequestChoices: Equatable {
     }
     choices.append(Choice(decision: .deny, label: "Deny", identifier: "deny"))
     self.choices = choices
+    let wider = choices.first { $0.decision == .allowAlways }?.label
+    if let wider, let rule = AllowScope.rule(requestPayload: payload) {
+      reach = "\(wider) covers \(rule)"
+    } else {
+      reach = nil
+    }
   }
 
   /// Whether a question takes several of its options. One with no options is a text field either way.

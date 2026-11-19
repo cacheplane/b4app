@@ -450,10 +450,39 @@ public struct ClaudeTurnTracker: Sendable {
       if let reason = request.request["decision_reason"]?.stringValue {
         out["decisionReason"] = .string(reason)
       }
+      let rules = sessionRules(request: request.request)
+      if request.toolName != "AskUserQuestion", !rules.isEmpty {
+        out[AllowScope.payloadKey] = .string(AllowScope.session.rawValue)
+        out[AllowScope.rulePayloadKey] = .string(ruleText(rules))
+      }
     } else if request.subtype == "elicitation" {
       out["message"] = request.request["message"] ?? ""
     }
     return .object(out)
+  }
+
+  /// The allow rules a `can_use_tool` request suggests, each re-addressed to the session, so the rule
+  /// lives in the process and no settings file is written. A suggested mode change or directory is
+  /// left out: "Allow for session" grants the rule the card shows and nothing more (D-250).
+  static func sessionRules(request: JSONValue) -> [JSONValue] {
+    (request["permission_suggestions"]?.arrayValue ?? []).compactMap { suggestion in
+      guard suggestion["type"]?.stringValue == "addRules", suggestion["behavior"]?.stringValue == "allow",
+        let rules = suggestion["rules"]?.arrayValue, !rules.isEmpty,
+        rules.allSatisfy({ $0["toolName"]?.stringValue?.isEmpty == false }),
+        case .object(var update) = suggestion
+      else { return nil }
+      update["destination"] = "session"
+      return .object(update)
+    }
+  }
+
+  /// The rules as Claude Code writes them, `Bash(touch one.txt)` or a bare tool name.
+  static func ruleText(_ updates: [JSONValue]) -> String {
+    updates.flatMap { $0["rules"]?.arrayValue ?? [] }.map { rule in
+      let tool = rule["toolName"]?.stringValue ?? ""
+      guard let content = rule["ruleContent"]?.stringValue, !content.isEmpty else { return tool }
+      return "\(tool)(\(content))"
+    }.joined(separator: ", ")
   }
 
   static func errorCode(forAssistantError name: String) -> ErrorCode {

@@ -177,4 +177,53 @@ struct ClaudeLiveTests {
     #expect(try await !wrote("plan"), "plan mode wrote the file")
     await adapter.dispose()
   }
+
+  /// "Allow for session" keeps its word against the real CLI: the first ask is answered with the
+  /// suggested rule for the session, the same command again is not asked, and a different command is.
+  @Test func sessionAllowStopsTheSameAskLive() async throws {
+    let adapter = ClaudeAdapter(connectionId: "live", executablePath: nil, clientVersion: "live-test")
+    let collector = EventCollector(adapter.events())
+    let inspection = try await adapter.inspectConnection()
+    try #require(inspection.status == .ready && inspection.authStatus == .authenticated)
+    let cwd = NSTemporaryDirectory() + "b4app-claude-session-allow-\(UUID().uuidString.prefix(8))"
+    try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+    let ref = try await adapter.createSession(
+      NewSessionInput(workingDirectory: cwd, model: "haiku", permission: "default"))
+    let receipt = try await adapter.sendTurn(
+      ref,
+      input: TurnInput(
+        operationId: "session-allow-1",
+        text: "Use the Bash tool three separate times, one command per call, in this order: "
+          + "`touch one.txt`, then `touch one.txt` again exactly, then `touch two.txt`. "
+          + "Do not combine them. Then reply with the word done.",
+        workingDirectory: cwd, model: "haiku", permission: "default"))
+    let turnId = try #require(receipt.nativeTurnId)
+    var asked: [String] = []
+    var answered: Set<String> = []
+    while true {
+      let seen = answered
+      let event = try await collector.waitFor(timeout: .seconds(240)) {
+        ($0.kind == .turnFinished && $0.nativeIds["turnId"] == turnId)
+          || ($0.kind == .runtimeRequestOpened && !seen.contains($0.nativeIds["requestId"] ?? ""))
+      }
+      if event.kind == .turnFinished { break }
+      let id = try #require(event.nativeIds["requestId"])
+      answered.insert(id)
+      asked.append(event.payload["request"]?["command"]?.stringValue ?? "?")
+      print("live session allow request:", asked.last ?? "", event.payload["request"]?["allowRule"] ?? .null)
+      let first = asked.count == 1
+      if first {
+        #expect(AllowScope(requestPayload: event.payload) == .session)
+        #expect(event.payload["request"]?["allowRule"]?.stringValue == "Bash(touch one.txt)")
+      }
+      try await adapter.respond(
+        RuntimeRequestRef(
+          nativeRequestId: id, kind: .toolPermission, adapterGeneration: event.adapterGeneration),
+        response: .decision(first ? .allowAlways : .allowOnce))
+    }
+    #expect(asked == ["touch one.txt", "touch two.txt"])
+    #expect(FileManager.default.fileExists(atPath: cwd + "/two.txt"))
+    #expect(!FileManager.default.fileExists(atPath: cwd + "/.claude"), "a settings file was written")
+    await adapter.dispose()
+  }
 }

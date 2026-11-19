@@ -115,7 +115,8 @@ public enum ClaudeStream {
   }
 
   public enum PermissionDecision: Sendable, Equatable {
-    case allow(updatedInput: JSONValue)
+    /// `updatedPermissions` are permission updates Claude Code applies with the allow; empty sends none.
+    case allow(updatedInput: JSONValue, updatedPermissions: [JSONValue] = [])
     case deny(message: String, interrupt: Bool)
   }
 
@@ -124,9 +125,10 @@ public enum ClaudeStream {
   ) throws -> Data {
     var response: [String: JSONValue] = ["toolUseID": .string(toolUseId)]
     switch decision {
-    case .allow(let updatedInput):
+    case .allow(let updatedInput, let updatedPermissions):
       response["behavior"] = "allow"
       response["updatedInput"] = updatedInput
+      if !updatedPermissions.isEmpty { response["updatedPermissions"] = .array(updatedPermissions) }
     case .deny(let message, let interrupt):
       response["behavior"] = "deny"
       response["message"] = .string(message)

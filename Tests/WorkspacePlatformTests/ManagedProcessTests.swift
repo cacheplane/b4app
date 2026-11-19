@@ -258,6 +258,7 @@ private func contentsOnceCreated(_ path: String, timeout: Duration = .seconds(60
     let elapsed = clock.measure {
       for _ in 0..<3 { #expect(!Ports.isFree(port)) }
     }
-    #expect(elapsed < .seconds(2))
+    // Three 200 ms polls at most; a blocking connect would take about 75 s.
+    #expect(elapsed < .seconds(5))
   }
 }

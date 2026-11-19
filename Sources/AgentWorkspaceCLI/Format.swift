@@ -134,6 +134,9 @@ enum Format {
     } else if request.payload["answerable"]?.boolValue == true {
       // The wider allow only where the request's runtime applies one (D-248).
       let wider = AllowScope(requestPayload: request.payload) == nil ? "" : " | --accept-session"
+      if let rule = AllowScope.rule(requestPayload: request.payload) {
+        lines.append("  --accept-session covers: \(rule)")
+      }
       lines.append("  answer: agent-workspace request respond \(request.id) --accept\(wider) | --decline")
     } else {
       lines.append("  (not answerable here; declined automatically)")

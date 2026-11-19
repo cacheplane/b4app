@@ -11,6 +11,9 @@
   @Suite(.serialized) @MainActor struct DenseTranscriptViewTests {
     // MARK: fixtures
 
+    /// No message streams: every row draws its stored text.
+    private let streams = MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() })
+
     private func item(
       _ id: String, turn: String? = "t1", role: DisplayItemRole, type: String, status: String? = nil,
       payload: [String: JSONValue] = [:], thread: String = "th"
@@ -82,7 +85,7 @@
       .frame(maxWidth: .infinity)
     }
 
-    private func row(_ item: DisplayItem) -> TranscriptRow { TranscriptRow(item: item, liveText: nil) }
+    private func row(_ item: DisplayItem) -> TranscriptRow { TranscriptRow(item: item, streams: streams) }
 
     private func line(
       counted: Int = 4, failed: Int = 0, running: Bool = false, name: String? = nil
@@ -101,7 +104,7 @@
     @Test func normalDensityIsTodaysTranscript() {
       let items = fiveItems()
       let content = TranscriptContent(
-        detail: detail(items), dense: false, folds: TranscriptFolds())
+        detail: detail(items), streams: streams, dense: false, folds: TranscriptFolds())
       let reference = column { ForEach(items) { row($0) } }
       #expect(height(content) == height(reference))
     }
@@ -109,9 +112,9 @@
     @Test func denseIsShorterByTheFoldedSteps() {
       let items = fiveItems()
       let normal = height(
-        TranscriptContent(detail: detail(items), dense: false, folds: TranscriptFolds()))
+        TranscriptContent(detail: detail(items), streams: streams, dense: false, folds: TranscriptFolds()))
       let dense = height(
-        TranscriptContent(detail: detail(items), dense: true, folds: TranscriptFolds()))
+        TranscriptContent(detail: detail(items), streams: streams, dense: true, folds: TranscriptFolds()))
       #expect(dense < normal)
       let reference = column {
         row(items[0])
@@ -124,19 +127,21 @@
     @Test func anOpenTurnIsAsTallAsNormalPlusTheLine() {
       let items = fiveItems()
       let normal = height(
-        TranscriptContent(detail: detail(items), dense: false, folds: TranscriptFolds()))
+        TranscriptContent(detail: detail(items), streams: streams, dense: false, folds: TranscriptFolds()))
       let open = height(
         TranscriptContent(
-          detail: detail(items), dense: true, folds: TranscriptFolds(open: ["t1"])))
+          detail: detail(items), streams: streams, dense: true, folds: TranscriptFolds(open: ["t1"])))
       #expect(open == normal + height(lineRow(line(), open: true)) + LLA.Space.l)
     }
 
     @Test func aThreadFromHistoryIsDenseToo() {
       let withTurn = height(
-        TranscriptContent(detail: detail(fiveItems()), dense: true, folds: TranscriptFolds()))
+        TranscriptContent(
+          detail: detail(fiveItems()), streams: streams, dense: true, folds: TranscriptFolds()))
       let history = height(
         TranscriptContent(
-          detail: detail(fiveItems(turn: nil), turns: []), dense: true, folds: TranscriptFolds())
+          detail: detail(fiveItems(turn: nil), turns: []), streams: streams, dense: true,
+          folds: TranscriptFolds())
       )
       #expect(history == withTurn)
     }
@@ -158,7 +163,7 @@
       for dense in [false, true] {
         func content(_ turn: Turn) -> some View {
           TranscriptContent(
-            detail: detail(items, turns: [turn]), dense: dense, folds: TranscriptFolds())
+            detail: detail(items, turns: [turn]), streams: streams, dense: dense, folds: TranscriptFolds())
         }
         let withNote = height(content(turn(.terminal, .failed)))
         let without = height(content(turn()))
@@ -252,13 +257,16 @@
 
     @Observable @MainActor final class Host {
       var detail: ThreadDetail
+      let streams = MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() })
       init(_ detail: ThreadDetail) { self.detail = detail }
     }
 
     private struct HostView: View {
       let host: Host
       let folds: TranscriptFolds
-      var body: some View { TranscriptView(detail: host.detail, dense: true, folds: folds) }
+      var body: some View {
+        TranscriptView(detail: host.detail, streams: host.streams, dense: true, folds: folds)
+      }
     }
 
     @Test func openTurnsAreForgottenWithTheThread() async throws {
@@ -355,9 +363,11 @@
         user("u13", turn: "t13", sequence: 130),
         message("a13", turn: "t13", sequence: 131, native: "n13", text: ""),
       ]
-      detail.liveText["n13"] = "Starting."
       return detail
     }
+
+    /// The running reply of `twelveAndARunningTurn()` as it starts.
+    private static let starting = ["n13": "Starting."]
 
     private func conversation() -> ConversationThread {
       ConversationThread(
@@ -365,8 +375,9 @@
         createdAt: "2026-11-11T10:00:00Z", updatedAt: "2026-11-11T10:00:00Z")
     }
 
+    /// A reply of `count` paragraphs, one line each: a single newline is a soft break, read as a space.
     private func lines(_ count: Int) -> String {
-      (1...count).map { "Line \($0) of the streamed reply." }.joined(separator: "\n")
+      (1...count).map { "Line \($0) of the streamed reply." }.joined(separator: "\n\n")
     }
 
     // MARK: the hosted transcript
@@ -374,11 +385,23 @@
     @Observable @MainActor final class Host {
       var detail: ThreadDetail
       var dense: Bool
+      let streams: MessageStreamStore
       /// The reader's own sends in this thread (`WorkspaceModel.ownSends`).
       var sent = 0
-      init(_ detail: ThreadDetail, dense: Bool) {
+      /// Immediate reveal unless a ticker is given: then the reveal is paced and the test fires it.
+      init(_ detail: ThreadDetail, dense: Bool, ticker: ManualTicker? = nil) {
         self.detail = detail
         self.dense = dense
+        streams =
+          ticker.map { ticker in MessageStreamStore(pacing: .paced, makeTicker: { ticker }) }
+          ?? MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() })
+      }
+
+      /// The reply `native` streams and shows `text`, as `detail.liveText[native] = text` did: a fresh
+      /// stream, so a text that does not extend the last one replaces it.
+      func live(_ native: String, _ text: String) {
+        streams.reset()
+        streams.append(text, to: native)
       }
     }
 
@@ -386,7 +409,8 @@
       let host: Host
       let folds: TranscriptFolds
       var body: some View {
-        TranscriptView(detail: host.detail, dense: host.dense, sent: host.sent, folds: folds)
+        TranscriptView(
+          detail: host.detail, streams: host.streams, dense: host.dense, sent: host.sent, folds: folds)
       }
     }
 
@@ -399,8 +423,11 @@
       private let window: NSWindow
       let scroll: NSScrollView
 
-      init(_ detail: ThreadDetail, dense: Bool = true) throws {
-        host = Host(detail, dense: dense)
+      init(
+        _ detail: ThreadDetail, dense: Bool = true, live: [String: String] = [:], ticker: ManualTicker? = nil
+      ) throws {
+        host = Host(detail, dense: dense, ticker: ticker)
+        for (native, text) in live { host.streams.append(text, to: native) }
         folds = TranscriptFolds()
         let snapshot = SnapshotWindow(
           rootView: HostView(host: host, folds: folds).frame(width: 720, height: 480),
@@ -521,7 +548,7 @@
     }
 
     @Test func aStreamDoesNotMoveAnOpenedTurn() async throws {
-      let view = try Hosted(twelveAndARunningTurn())
+      let view = try Hosted(twelveAndARunningTurn(), live: Self.starting)
       defer { view.close() }
       try await view.scrollToEnd()
       // Reading back a little, where the tenth turn is.
@@ -534,7 +561,7 @@
       #expect(abs(view.origin - origin) <= 0.5, "opening moved it by \(view.origin - origin)")
 
       let height = view.documentHeight
-      view.host.detail.liveText["n13"] = lines(20)
+      view.host.live("n13", lines(20))
       view.host.detail.items.append(step("s13-1", turn: "t13", sequence: 132, status: "inProgress"))
       try await view.until("the reply grows") { view.documentHeight > height + 1 }
       try await view.settle()
@@ -542,20 +569,20 @@
     }
 
     @Test func scrollingBackToTheEndFollowsTheStreamAgain() async throws {
-      let view = try Hosted(twelveAndARunningTurn())
+      let view = try Hosted(twelveAndARunningTurn(), live: Self.starting)
       defer { view.close() }
       try await view.scrollToEnd()
       try await view.scroll(to: view.origin - 300)
       view.folds.toggle("t10")
       try await view.settle()
-      view.host.detail.liveText["n13"] = lines(10)
+      view.host.live("n13", lines(10))
       try await view.settle()
       #expect(view.folds.holds)
 
       try await view.scrollToEnd()
       try await view.until("the hold is released") { !view.folds.holds }
       let height = view.documentHeight
-      view.host.detail.liveText["n13"] = lines(30)
+      view.host.live("n13", lines(30))
       try await view.until("the reply grows") { view.documentHeight > height + 1 }
       try await view.settle()
       #expect(view.atEnd, "below the viewport: \(view.below)")
@@ -571,8 +598,7 @@
         step("s13-1", turn: "t13", sequence: 132),
         message("a13", turn: "t13", sequence: 133, native: "n13", text: ""),
       ]
-      detail.liveText["n13"] = lines(4)
-      let view = try Hosted(detail)
+      let view = try Hosted(detail, live: ["n13": lines(4)])
       defer { view.close() }
       try await view.scrollToEnd()
       try await view.scroll(to: view.origin - 300)
@@ -586,8 +612,8 @@
       if let index = ended.items.firstIndex(where: { $0.id == "a13" }) {
         ended.items[index].payload = .object(["text": .string(lines(4))])
       }
-      ended.liveText = [:]
       ended.turns[ended.turns.count - 1] = turn(13)
+      view.host.streams.turnFinished()
       view.host.detail = ended
       try await view.until("the interim message folds") { view.documentHeight < height - 1 }
       try await view.settle()
@@ -670,7 +696,7 @@
     }
 
     @Test func switchingDensityLetsGoOfTheHold() async throws {
-      let view = try Hosted(twelveAndARunningTurn())
+      let view = try Hosted(twelveAndARunningTurn(), live: Self.starting)
       defer { view.close() }
       try await view.scrollToEnd()
       try await view.scroll(to: view.origin - 300)
@@ -681,7 +707,7 @@
       view.host.dense = false
       try await view.settle()
       let height = view.documentHeight
-      view.host.detail.liveText["n13"] = lines(20)
+      view.host.live("n13", lines(20))
       try await view.until("the reply grows") { view.documentHeight > height + 1 }
       try await view.settle()
       #expect(view.atEnd, "below the viewport: \(view.below)")
@@ -694,8 +720,7 @@
         [user("u1", turn: "t1", sequence: 1)]
         + (1...4).map { step("s1-\($0)", turn: "t1", sequence: 1 + $0) }
         + [message("a1", turn: "t1", sequence: 6, native: "n1", text: "")]
-      detail.liveText["n1"] = "Starting."
-      let view = try Hosted(detail)
+      let view = try Hosted(detail, live: ["n1": "Starting."])
       defer { view.close() }
       try await view.settle()
 
@@ -706,7 +731,7 @@
       #expect(view.documentHeight <= view.viewportHeight + 0.5, "the open turn should still fit")
       #expect(!view.folds.holds)
 
-      view.host.detail.liveText["n1"] = lines(60)
+      view.host.live("n1", lines(60))
       try await view.until("the reply outgrows the window") {
         view.documentHeight > view.viewportHeight * 2
       }
@@ -727,13 +752,12 @@
         step("s13-3", turn: "t13", sequence: 136),
         message("a13", turn: "t13", sequence: 137, native: "n13", text: ""),
       ]
-      detail.liveText["n13"] = "Starting."
-      let view = try Hosted(detail)
+      let view = try Hosted(detail, live: ["n13": "Starting."])
       defer { view.close() }
       try await view.scrollToEnd()
       // The view follows the stream, as it does while a reply arrives.
       let streaming = view.documentHeight
-      view.host.detail.liveText["n13"] = lines(4)
+      view.host.live("n13", lines(4))
       try await view.until("the reply grows") { view.documentHeight > streaming + 1 }
       try await view.settle()
       #expect(view.atEnd, "below the viewport: \(view.below)")
@@ -746,8 +770,8 @@
       if let index = ended.items.firstIndex(where: { $0.id == "a13" }) {
         ended.items[index].payload = .object(["text": .string(lines(4))])
       }
-      ended.liveText = [:]
       ended.turns[ended.turns.count - 1] = turn(13)
+      view.host.streams.turnFinished()
       view.host.detail = ended
       try await view.until("the interim messages fold") { view.documentHeight < height - 1 }
       try await view.settle()
@@ -812,14 +836,14 @@
     /// A reader who scrolled back, with nothing opened, is left where they are while the reply streams
     /// and a step arrives; going back to the end follows the stream again. Both densities.
     @Test(arguments: [true, false]) func readingBackIsNotPulledToTheEndByTheStream(dense: Bool) async throws {
-      let view = try Hosted(twelveAndARunningTurn(), dense: dense)
+      let view = try Hosted(twelveAndARunningTurn(), dense: dense, live: Self.starting)
       defer { view.close() }
       try await view.scrollToEnd()
       try await view.scroll(to: view.origin - 300)
       let origin = view.origin
 
       let height = view.documentHeight
-      view.host.detail.liveText["n13"] = lines(20)
+      view.host.live("n13", lines(20))
       view.host.detail.items.append(step("s13-1", turn: "t13", sequence: 132, status: "inProgress"))
       try await view.until("the reply grows") { view.documentHeight > height + 1 }
       try await view.settle()
@@ -827,7 +851,7 @@
 
       try await view.scrollToEnd()
       let later = view.documentHeight
-      view.host.detail.liveText["n13"] = lines(40)
+      view.host.live("n13", lines(40))
       try await view.until("the reply grows again") { view.documentHeight > later + 1 }
       try await view.settle()
       #expect(view.atEnd, "below the viewport: \(view.below)")
@@ -835,7 +859,7 @@
 
     /// The turn the reader was not following ends: the view stays where they are reading.
     @Test func readingBackIsNotPulledToTheEndWhenTheTurnEnds() async throws {
-      let view = try Hosted(twelveAndARunningTurn(), dense: false)
+      let view = try Hosted(twelveAndARunningTurn(), dense: false, live: Self.starting)
       defer { view.close() }
       try await view.scrollToEnd()
       try await view.scroll(to: view.origin - 300)
@@ -845,21 +869,78 @@
       if let index = ended.items.firstIndex(where: { $0.id == "a13" }) {
         ended.items[index].payload = .object(["text": .string(lines(12))])
       }
-      ended.liveText = [:]
       ended.turns[ended.turns.count - 1] = turn(13)
       let height = view.documentHeight
+      view.host.streams.turnFinished()
       view.host.detail = ended
       try await view.until("the answer is drawn") { view.documentHeight > height + 1 }
       try await view.settle()
       #expect(abs(view.origin - origin) <= 0.5, "the turn's end moved the reader by \(view.origin - origin)")
     }
 
+    // MARK: a paced reveal
+
+    /// Waits for the transcript to tell the store it is on screen, and paces the reveal whatever the
+    /// machine's Reduce Motion setting is: a runner with it on reveals at once, and no tick is asked for.
+    private func paced(_ view: Hosted) async throws {
+      try await view.until("the reveal is paced") {
+        view.host.streams.setReduceMotion(false)
+        return view.host.streams.pacing == .paced
+      }
+    }
+
+    /// A reader at the end stays there while a reply taller than the window is revealed tick by tick.
+    @Test func aPinnedReaderStaysAtTheEndThroughAPacedReveal() async throws {
+      let ticker = ManualTicker()
+      let view = try Hosted(twelveAndARunningTurn(), dense: false, ticker: ticker)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await paced(view)
+      view.host.streams.append(lines(40), to: "n13")
+      #expect(ticker.running)
+      var ticks = 0
+      while ticker.running {
+        ticker.fire()
+        ticks += 1
+        try await view.settle()
+        // Following rests the end marker at the viewport's bottom edge, with the bottom padding below
+        // it: from there to the end is at most 8 pt.
+        #expect(
+          view.below >= -0.5 && view.below - LLA.Metrics.margin <= 8,
+          "after tick \(ticks), below the viewport: \(view.below)")
+      }
+      #expect(view.documentHeight > view.viewportHeight * 2)
+    }
+
+    /// A reader who scrolled back is left where they are while a reply is revealed tick by tick.
+    @Test func aHeldReaderIsNotMovedByAPacedReveal() async throws {
+      let ticker = ManualTicker()
+      let view = try Hosted(twelveAndARunningTurn(), dense: false, ticker: ticker)
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      #expect(view.folds.holds)
+      let origin = view.origin
+      let height = view.documentHeight
+      try await paced(view)
+      view.host.streams.append(lines(40), to: "n13")
+      #expect(ticker.running)
+      var ticks = 0
+      while ticker.running {
+        ticker.fire()
+        ticks += 1
+        try await view.settle()
+        #expect(abs(view.origin - origin) <= 0.5, "tick \(ticks) moved the reader by \(view.origin - origin)")
+      }
+      #expect(view.documentHeight > height + 1)
+    }
+
     @Test func withNothingToggledNormalDensityScrollsAsToday() async throws {
-      let view = try Hosted(twelveAndARunningTurn(), dense: false)
+      let view = try Hosted(twelveAndARunningTurn(), dense: false, live: Self.starting)
       defer { view.close() }
       try await view.scrollToEnd()
       let height = view.documentHeight
-      view.host.detail.liveText["n13"] = lines(20)
+      view.host.live("n13", lines(20))
       try await view.until("the reply grows") { view.documentHeight > height + 1 }
       try await view.settle()
       #expect(view.atEnd, "below the viewport: \(view.below)")

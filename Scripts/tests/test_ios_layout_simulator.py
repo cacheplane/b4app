@@ -173,21 +173,75 @@ class SimulatorWorkflowTests(unittest.TestCase):
                     if status == 0:
                         self.assertEqual(marker.read_text().strip(), destination)
 
-    def test_boot_is_in_the_layout_job_and_exact_readiness_precedes_full_wrapper(self):
-        # The layout tests run in their own job (D-197), so the boot no longer overlaps the app builds.
+    def test_the_build_overlaps_the_boot_and_readiness_precedes_the_tests(self):
+        # The layout tests run in their own job (D-197). The harness builds while the Simulator boots
+        # (build-for-testing never touches the device); the tests wait for the boot, then run what
+        # was built.
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
         job = workflow.index('\n  ios-layout:')
         setup = workflow.index('python3 Scripts/prepare_ios_layout_simulator.py')
+        build = workflow.index('./Scripts/test-ios-layout.sh --build-only -clonedSourcePackagesDirPath .spm')
         readiness = workflow.index('xcrun simctl bootstatus "$B4APP_LAYOUT_SIMULATOR_UDID" -b')
-        wrapper = workflow.index('./Scripts/test-ios-layout.sh -clonedSourcePackagesDirPath .spm')
+        wrapper = workflow.index('./Scripts/test-ios-layout.sh --without-building -clonedSourcePackagesDirPath .spm')
         self.assertLess(job, setup)
-        self.assertLess(setup, readiness)
+        self.assertLess(setup, build)
+        self.assertLess(build, readiness)
         self.assertLess(readiness, wrapper)
         self.assertLess(wrapper, workflow.index('\n  hub:'))
         self.assertIn('B4APP_LAYOUT_SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}', workflow)
         self.assertIn('B4APP_LAYOUT_DESTINATION: ${{ steps.simulator.outputs.destination }}', workflow)
         self.assertIn('set -euo pipefail\n          xcrun simctl bootstatus', workflow)
         self.assertIn('timeout-minutes: 30', workflow[job:])
+
+    def test_the_wrapper_builds_and_tests_in_separate_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'Scripts').mkdir()
+            wrapper = root / 'Scripts/test-ios-layout.sh'
+            wrapper.write_text((ROOT / 'Scripts/test-ios-layout.sh').read_text())
+            wrapper.chmod(0o755)
+            (root / 'Package.resolved').write_text('{"pins": [], "version": 3}\n')
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            for name, body in {
+                'xcodegen': 'exit 0',
+                'xcodebuild': 'printf "%s\\n" "$*" >> "$CALLS"; for a; do [ "$prev" = -resultBundlePath ] && mkdir -p "$a"; prev=$a; done',
+                'xcrun': 'case "$*" in simctl*) echo simctl >> "$CALLS"; exit 1;; esac; echo \'{"totalTestCount":3,"result":"Passed"}\'',
+            }.items():
+                (bin_dir / name).write_text('#!/bin/sh\n' + body + '\n')
+                (bin_dir / name).chmod(0o755)
+            env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'],
+                       CALLS=str(root / 'calls'), B4APP_LAYOUT_DESTINATION=f'platform=iOS Simulator,id={FIRST}')
+            for mode, action, verifies in [('--build-only', 'build-for-testing', False),
+                                           ('--without-building', 'test-without-building', True)]:
+                with self.subTest(mode=mode):
+                    (root / 'calls').unlink(missing_ok=True)
+                    result = subprocess.run([str(wrapper), mode, '-clonedSourcePackagesDirPath', '.spm'],
+                                            cwd=root, env=env, capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    calls = (root / 'calls').read_text().splitlines()
+                    self.assertEqual(len(calls), 1, calls)
+                    self.assertTrue(calls[0].startswith(action + ' '), calls[0])
+                    self.assertNotIn(mode, calls[0])
+                    self.assertIn('-clonedSourcePackagesDirPath .spm', calls[0])
+                    # The generated project carries the package's pins, so neither run resolves the
+                    # package graph afresh (three minutes beside a booting Simulator, run 44198847451).
+                    self.assertIn('-disableAutomaticPackageResolution', calls[0])
+                    pins = root / ('.build/iOSLayout/WorkspaceLayout.xcodeproj/project.xcworkspace'
+                                   '/xcshareddata/swiftpm/Package.resolved')
+                    self.assertEqual(pins.read_text(), (root / 'Package.resolved').read_text())
+                    self.assertEqual('-resultBundlePath' in calls[0], verifies)
+                    self.assertEqual('totalTestCount' in result.stdout, verifies)
+                    if verifies:
+                        self.assertIn(f'-destination platform=iOS Simulator,id={FIRST}', calls[0])
+                    else:
+                        # The build names no device, so it never waits on a booting Simulator, and it
+                        # builds arm64 alone, as a build for one Apple silicon Simulator would. It is
+                        # verbose, so the log shows where its time goes.
+                        self.assertIn('-destination generic/platform=iOS Simulator', calls[0])
+                        self.assertIn('ARCHS=arm64', calls[0])
+                        self.assertNotIn('-quiet', calls[0])
+                        self.assertNotIn('simctl', calls)
 
     def test_one_layout_job_and_the_required_check_needs_it(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
@@ -201,9 +255,9 @@ class SimulatorWorkflowTests(unittest.TestCase):
         self.assertIn('name: iOS navigation and banner regression tests\n', result)
         self.assertIn('needs: [scope, ios-layout]\n', result)
         # The one skip it accepts is the scope job's explicit "false" (test_ci_scope.py).
-        self.assertIn('if [ "$APPLE" = false ] && [ "$SHARDS" = skipped ]; then', result)
+        self.assertIn('if [ "$APPLE" = false ] && [ "$LAYOUT" = skipped ]; then', result)
         self.assertIn('if: always()\n', result)
-        self.assertIn('test "$SHARDS" = success', result)
+        self.assertIn('test "$LAYOUT" = success', result)
 
 if __name__ == '__main__':
     unittest.main()

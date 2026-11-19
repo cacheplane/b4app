@@ -110,7 +110,7 @@ class CombiningCheckTests(unittest.TestCase):
 
     def script(self, job):
         text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
-        step = {"apps": "Every app build passed", "ios-layout-result": "Every shard passed"}[job]
+        step = {"apps": "Every app build passed", "ios-layout-result": "The layout job passed"}[job]
         body = text[text.index(f"\n  {job}:\n"):].split(f"      - name: {step}\n", 1)[1].split("        run: |\n", 1)[1]
         lines = []
         for line in body.split("\n"):
@@ -137,11 +137,11 @@ class CombiningCheckTests(unittest.TestCase):
             self.assertFalse(self.passes("apps", **{**good, **change}), change)
 
     def test_the_layout_check(self):
-        self.assertTrue(self.passes("ios-layout-result", APPLE="true", SHARDS="success"))
-        self.assertTrue(self.passes("ios-layout-result", APPLE="false", SHARDS="skipped"))
-        for apple, shards in (("true", "failure"), ("true", "cancelled"), ("true", "skipped"), ("", "skipped"),
+        self.assertTrue(self.passes("ios-layout-result", APPLE="true", LAYOUT="success"))
+        self.assertTrue(self.passes("ios-layout-result", APPLE="false", LAYOUT="skipped"))
+        for apple, layout in (("true", "failure"), ("true", "cancelled"), ("true", "skipped"), ("", "skipped"),
                               ("false", "failure"), ("true", "")):
-            self.assertFalse(self.passes("ios-layout-result", APPLE=apple, SHARDS=shards), (apple, shards))
+            self.assertFalse(self.passes("ios-layout-result", APPLE=apple, LAYOUT=layout), (apple, layout))
 
 
 if __name__ == "__main__":
