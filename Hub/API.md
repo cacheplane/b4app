@@ -949,7 +949,10 @@ have a push token, and are not the one whose push caused the change:
   latest live turn `L` (greatest `createdAt`, ties by greatest `id`) is terminal and `completed`,
   and the thread is at rest (the `openWork` of its live turns sums to 0), "Replied" notifies, keyed
   by `L`, not `X`: the thread's reply comes once the agents it started have finished, and the
-  turn that wakes it is the one that notifies. `cancelled` never notifies, and a terminal turn with
+  turn that wakes it is the one that notifies. In the reply case the touched row only triggers the
+  decision and supplies the recency; the latest turn is the one keyed. A reply the owner has
+  already read (`readTurnId` at or after it) is written to the ledger and withdrawn in the same
+  push, so no alert reaches the phones. `cancelled` never notifies, and a terminal turn with
   no outcome yet waits for the batch that sets it. `X` notifies only when its `updatedAt` is
   within 10 minutes of the hub's clock (judged on `X`, so open work ending long after `L`
   completed still notifies), so a Mac's first join does not flood the phone with history.

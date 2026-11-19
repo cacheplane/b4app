@@ -1700,3 +1700,49 @@ async fn a_malformed_timestamp_costs_only_its_row(pool: PgPool) {
         vec![("turn".into(), "good".into(), "replied".into())]
     );
 }
+
+/// `T` completed with open work, `L` (later) completed at rest, and the thread read up to `read`;
+/// then `T`'s open work ends.
+async fn open_work_ends_after_read(w: &World, read: &str) -> PushOutcome {
+    let early = stamp(&w.app, &w.mac, "0 seconds").await;
+    let late = stamp(&w.app, &w.mac, "2 seconds").await;
+    push_batch(
+        w,
+        &[
+            turn_at(3, "T", "terminal", Some("completed"), &early, &early, 1),
+            turn_at(4, "L", "terminal", Some("completed"), &late, &late, 0),
+            update(5, "threads", "thread-1", "readTurnId", json!(read)),
+        ],
+    )
+    .await;
+    let fresh = stamp(&w.app, &w.mac, "3 seconds").await;
+    push_batch(w, &open_work_to(6, "T", 0, &fresh)).await
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_reply_already_read_does_not_alert_when_open_work_ends(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Read").await;
+    let rest = open_work_ends_after_read(&w, "L").await;
+    assert!(rest.notifications.is_empty());
+    assert_eq!(
+        ledger(&w).await,
+        vec![("turn".into(), "L".into(), "replied".into())]
+    );
+    assert_eq!(withdrawn_in_ledger(&w).await, ["turn:L"]);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_newer_reply_than_the_read_turn_alerts_when_open_work_ends(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Newer").await;
+    let rest = open_work_ends_after_read(&w, "T").await;
+    assert_eq!(
+        summary(&rest.notifications),
+        expect(&w, "Newer", Reason::Replied)
+    );
+    assert_eq!(
+        ledger(&w).await,
+        vec![("turn".into(), "L".into(), "replied".into())]
+    );
+}

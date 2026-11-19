@@ -547,11 +547,14 @@ async fn detect(
     Ok((notifications, fresh_keys, turn_threads))
 }
 
-/// Reads the row (scoped to the org and the pushing user) with its thread's title and applies
-/// the rules. `None` when the row is gone or deleted (D-089: `deleted_at` set), has no thread to
-/// open, or the rules say no. A row whose thread is deleted (`deleted_at`, or the owner's
-/// `userDeletedAt`, D-119) never notifies either: a deleted thread cannot be opened, so the alert
-/// would lead nowhere.
+/// Reads the touched row (scoped to the org and the pushing user) with its thread's title and
+/// applies the rules. `None` when the row is gone or deleted (D-089: `deleted_at` set), has no
+/// thread to open, or the rules say no. A row whose thread is deleted (`deleted_at`, or the
+/// owner's `userDeletedAt`, D-119) never notifies either: a deleted thread cannot be opened, so
+/// the alert would lead nowhere. A request or a failed turn is keyed by the touched row. A reply
+/// is keyed by the thread's latest live turn, not the touched row: it needs that turn terminal
+/// and completed and the thread's summed open work to be zero; the touched row supplies
+/// `recent`.
 async fn subject(
     conn: &mut sqlx::postgres::PgConnection,
     auth: &AuthedDevice,
