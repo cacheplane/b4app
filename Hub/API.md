@@ -993,6 +993,13 @@ status, `reason`, and `apns-id`; never the token, the title, or the provider tok
 withdrawal uses. `badge` is the number of the user's threads that need them (not archived or
 deleted, in the needs-input or unread band), computed after the whole push.
 
+The bands are needs input (a pending request), quiet (no turn), working (the latest turn has not
+ended, or the thread's live turns hold open work: their `openWork` sums above zero, unless the
+latest turn's `outcome` is `failed`), unread (the latest turn is not the thread's `readTurnId`),
+and quiet. A `turns` row's `openWork` (integer, how many agents the turn started are still
+running) and `origin` (text, the runtime's word for a turn it started itself) are nullable
+columns of the sync tables (migration 0023); a Mac that predates them sends neither.
+
 A withdrawal is a background push naming the keys to remove, with no alert, sound, or badge:
 
 ```json

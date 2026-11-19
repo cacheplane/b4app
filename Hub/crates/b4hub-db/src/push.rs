@@ -404,22 +404,29 @@ async fn withdraw(
 /// when it is deleted (`deleted_at`) or the owner deleted it (`userDeletedAt`); deleted turns and
 /// requests do not count. The rule is `Attention.band(of:)`: needs input when any request of the
 /// thread is pending; else quiet with no turn; else working when the latest turn (greatest
-/// `createdAt`, ties by greatest `id`, timestamps compared bytewise) has not finished; else unread
-/// when that turn is not the thread's `readTurnId`; else quiet.
+/// `createdAt`, ties by greatest `id`, timestamps compared bytewise) has not finished; else working
+/// when the thread's live turns hold open work (the sum of their `openWork` above zero) unless the
+/// latest turn's outcome is `failed`; else unread when that turn is not the thread's `readTurnId`;
+/// else quiet.
 const BANDS: &str = "\
     SELECT t.\"id\" AS thread_id, COALESCE(t.\"archived\", false) AS archived, \
            CASE WHEN pr.n > 0 THEN 'needsInput' \
                 WHEN lt.\"status\" IS NULL THEN 'quiet' \
                 WHEN lt.\"status\" <> 'terminal' THEN 'working' \
+                WHEN ow.n > 0 AND lt.\"outcome\" IS DISTINCT FROM 'failed' THEN 'working' \
                 WHEN t.\"readTurnId\" IS DISTINCT FROM lt.\"id\" THEN 'unread' \
                 ELSE 'quiet' END AS band \
     FROM \"threads\" t \
     LEFT JOIN LATERAL ( \
-        SELECT u.\"id\", u.\"status\" FROM \"turns\" u \
+        SELECT u.\"id\", u.\"status\", u.\"outcome\" FROM \"turns\" u \
         WHERE u.org_id = t.org_id AND u.user_id = t.user_id AND u.\"threadId\" = t.\"id\" \
           AND u.deleted_at IS NULL \
         ORDER BY u.\"createdAt\" COLLATE \"C\" DESC NULLS LAST, u.\"id\" COLLATE \"C\" DESC \
         LIMIT 1) lt ON true \
+    CROSS JOIN LATERAL ( \
+        SELECT COALESCE(sum(u.\"openWork\"), 0) AS n FROM \"turns\" u \
+        WHERE u.org_id = t.org_id AND u.user_id = t.user_id AND u.\"threadId\" = t.\"id\" \
+          AND u.deleted_at IS NULL) ow \
     CROSS JOIN LATERAL ( \
         SELECT count(*) AS n FROM \"runtimeRequests\" r \
         WHERE r.org_id = t.org_id AND r.user_id = t.user_id AND r.\"threadId\" = t.\"id\" \

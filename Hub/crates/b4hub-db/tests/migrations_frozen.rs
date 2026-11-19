@@ -100,6 +100,10 @@ const PINNED: &[(&str, &str)] = &[
         "0022_density.sql",
         "8837d9fbfb7f8d68fb52e2b9855480b0b06ff3648d87fcd6140c55f47d2a1141",
     ),
+    (
+        "0023_turn_open_work.sql",
+        "b4a647cb85c778bd43aa62c9cee0aaca977791ffb61f4dceadcd43f8faa03ed5",
+    ),
 ];
 
 #[test]

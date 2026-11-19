@@ -127,6 +127,25 @@ fn turn(seq: i64, id: &str, status: &str, outcome: Option<&str>, updated_at: &st
     )
 }
 
+/// A turn with an explicit creation time and open work.
+fn turn_at(
+    seq: i64,
+    id: &str,
+    status: &str,
+    outcome: Option<&str>,
+    created_at: &str,
+    updated_at: &str,
+    open_work: i64,
+) -> Change {
+    insert(
+        seq,
+        "turns",
+        id,
+        json!({"id": id, "threadId": "thread-1", "status": status, "outcome": outcome,
+               "createdAt": created_at, "updatedAt": updated_at, "openWork": open_work}),
+    )
+}
+
 fn delete(seq: i64, table: &str, row: &str) -> Change {
     Change {
         op: ChangeOp::Delete,
@@ -1328,4 +1347,123 @@ async fn delete_token_spares_a_newer_token(pool: PgPool) {
     ];
     expected.sort();
     assert_eq!(told, expected);
+}
+
+#[sqlx::test(migrations = false)]
+async fn open_work_keeps_an_ended_thread_working(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Plan").await;
+    let at = stamp(&w.app, &w.mac, "0 seconds").await;
+    push_batch(
+        &w,
+        &[turn_at(
+            3,
+            "turn-1",
+            "terminal",
+            Some("completed"),
+            &at,
+            &at,
+            1,
+        )],
+    )
+    .await;
+    assert_eq!(bands_of(&w).await["thread-1"], "working");
+    assert_eq!(needs_you(&w).await, 0);
+
+    push_batch(&w, &[update(4, "turns", "turn-1", "openWork", json!(0))]).await;
+    assert_eq!(bands_of(&w).await["thread-1"], "unread");
+    assert_eq!(needs_you(&w).await, 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn open_work_on_an_earlier_turn_counts(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Plan").await;
+    let first = stamp(&w.app, &w.mac, "-2 minutes").await;
+    let second = stamp(&w.app, &w.mac, "-1 minutes").await;
+    push_batch(
+        &w,
+        &[
+            turn_at(
+                3,
+                "turn-1",
+                "terminal",
+                Some("completed"),
+                &first,
+                &first,
+                1,
+            ),
+            turn_at(
+                4,
+                "turn-2",
+                "terminal",
+                Some("completed"),
+                &second,
+                &second,
+                0,
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(bands_of(&w).await["thread-1"], "working");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_failed_latest_turn_stays_unread_despite_open_work(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Plan").await;
+    let first = stamp(&w.app, &w.mac, "-2 minutes").await;
+    let second = stamp(&w.app, &w.mac, "-1 minutes").await;
+    push_batch(
+        &w,
+        &[
+            turn_at(
+                3,
+                "turn-1",
+                "terminal",
+                Some("completed"),
+                &first,
+                &first,
+                1,
+            ),
+            turn_at(4, "turn-2", "terminal", Some("failed"), &second, &second, 0),
+        ],
+    )
+    .await;
+    assert_eq!(bands_of(&w).await["thread-1"], "unread");
+    assert_eq!(needs_you(&w).await, 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_deleted_turns_open_work_does_not_count(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Plan").await;
+    let first = stamp(&w.app, &w.mac, "-2 minutes").await;
+    let second = stamp(&w.app, &w.mac, "-1 minutes").await;
+    push_batch(
+        &w,
+        &[
+            turn_at(
+                3,
+                "turn-1",
+                "terminal",
+                Some("completed"),
+                &first,
+                &first,
+                1,
+            ),
+            turn_at(
+                4,
+                "turn-2",
+                "terminal",
+                Some("completed"),
+                &second,
+                &second,
+                0,
+            ),
+            delete(5, "turns", "turn-1"),
+        ],
+    )
+    .await;
+    assert_eq!(bands_of(&w).await["thread-1"], "unread");
 }
