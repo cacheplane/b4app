@@ -21,6 +21,7 @@ struct AttentionFixture {
     case latestTurnByUpdatedAt
     case tieBreakLeastId
     case threadUpdatedAt
+    case ignoresOpenWork
   }
 
   var connections: [Connection]
@@ -84,7 +85,7 @@ struct AttentionFixture {
 
   /// Reference `activity`: latest turn by `createdAt` (ties by greatest `id`), `lastActivityAt` = max of
   /// the thread's `createdAt` and its latest turn's and requests' `updatedAt`; never the thread's own
-  /// `updatedAt`. The other variants are deliberate mistakes.
+  /// `updatedAt`. `openWork` is the sum over all the thread's turns, not the latest turn's. The other variants are deliberate mistakes.
   func threadsWithActivity(_ variant: Variant) -> [ConversationThread] {
     threads.map { thread in
       let own = turns.filter { $0.threadId == thread.id }
@@ -106,6 +107,7 @@ struct AttentionFixture {
         latestTurnId: latest?.id, latestTurnStatus: latest?.status, latestTurnOutcome: latest?.outcome,
         pendingRequests: requests.filter { $0.state == .pending }.count,
         pendingApprovals: requests.filter { $0.state == .pending && $0.kind.isApproval }.count,
+        openWork: variant == .ignoresOpenWork ? 0 : own.reduce(0) { $0 + $1.openWork },
         lastActivityAt: stamps.max()!)
       return copy
     }

@@ -113,6 +113,7 @@ private func turn(
         latestTurnId: latest?.id, latestTurnStatus: latest?.status, latestTurnOutcome: latest?.outcome,
         pendingRequests: requests.filter { $0.state == .pending }.count,
         pendingApprovals: requests.filter { $0.state == .pending && $0.kind.isApproval }.count,
+        openWork: own.reduce(0) { $0 + $1.openWork },
         lastActivityAt: stamps.max()!)
       #expect(try db.thread(id: thread.id)?.activity == expected, "\(thread.id)")
     }

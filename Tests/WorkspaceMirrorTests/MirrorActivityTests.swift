@@ -112,6 +112,7 @@ private func requestRow(
         latestTurnId: latest?.id, latestTurnStatus: latest?.status, latestTurnOutcome: latest?.outcome,
         pendingRequests: own.filter { $0.state == .pending }.count,
         pendingApprovals: own.filter { $0.state == .pending && $0.kind.isApproval }.count,
+        openWork: turns.filter { $0.threadId == thread.id }.reduce(0) { $0 + $1.openWork },
         lastActivityAt: stamps.max()!)
       #expect(try store.thread(id: thread.id)?.activity == expected, "\(thread.id)")
     }
