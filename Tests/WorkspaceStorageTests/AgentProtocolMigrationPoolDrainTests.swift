@@ -237,6 +237,14 @@ private final class MigrationPoolObservation: Sendable {
     let borrowed: Result<Void, any Error>
   }
 
+  private struct OrdinaryCloseControllerFacts: Sendable {
+    let entered: Bool
+    let finishedWhileHeld: Bool
+    let refused: Bool
+    let borrowed: Result<Void, any Error>
+    let closed: Result<Void, any Error>
+  }
+
   private struct PreAdmissionControllerFacts: Sendable {
     let ready: Bool
     let drained: Result<Bool, any Error>
@@ -320,6 +328,44 @@ private final class MigrationPoolObservation: Sendable {
       release.signal()
       let attempted = waiter.join()
       return PreAdmissionControllerFacts(ready: ready, drained: drained, attempted: attempted)
+    }
+  }
+
+  private static func ordinaryCloseController(
+    _ fixture: Fixture, observation: MigrationPoolObservation
+  ) async -> OrdinaryCloseControllerFacts {
+    await onDrainController {
+      let release = DispatchSemaphore(value: 0)
+      let borrower = MigrationPoolWork {
+        try fixture.pool.withConnection { _ in
+          observation.borrowerHeld.withLock { $0 = true }
+          observation.borrowerEntered.withLock { $0 = true }
+          defer { observation.borrowerHeld.withLock { $0 = false } }
+          guard release.wait(timeout: .now() + .seconds(8)) == .success else {
+            throw FixtureFailure.barrierTimeout
+          }
+        }
+      }
+      let entered = Self.observedOnDrainController { observation.borrowerEntered.withLock { $0 } }
+      let closer = MigrationPoolWork {
+        fixture.pool.close()
+        observation.drainFinished.withLock { $0 = true }
+      }
+      let finished = Self.observedOnDrainController { observation.drainFinished.withLock { $0 } }
+      let finishedWhileHeld = finished && observation.borrowerHeld.withLock { $0 }
+      var refused = false
+      if finished {
+        refused = Self.isClosedRefusal(
+          Result {
+            try fixture.pool.withConnection { _ in observation.bodyCalls.withLock { $0 += 1 } }
+          })
+      }
+      release.signal()
+      let borrowed = borrower.join()
+      let closed = closer.join()
+      return OrdinaryCloseControllerFacts(
+        entered: entered, finishedWhileHeld: finishedWhileHeld, refused: refused,
+        borrowed: borrowed, closed: closed)
     }
   }
 
@@ -494,34 +540,12 @@ private final class MigrationPoolObservation: Sendable {
     let fixture = try Self.fixture()
     defer { fixture.pool.close() }
     let observation = MigrationPoolObservation()
-    let release = DispatchSemaphore(value: 0)
-    let borrower = MigrationPoolWork {
-      try fixture.pool.withConnection { _ in
-        observation.borrowerHeld.withLock { $0 = true }
-        observation.borrowerEntered.withLock { $0 = true }
-        defer { observation.borrowerHeld.withLock { $0 = false } }
-        guard release.wait(timeout: .now() + .seconds(8)) == .success else {
-          throw FixtureFailure.barrierTimeout
-        }
-      }
-    }
-    let entered = await Self.observed { observation.borrowerEntered.withLock { $0 } }
-    let closer = MigrationPoolWork {
-      fixture.pool.close()
-      observation.drainFinished.withLock { $0 = true }
-    }
-    let finished = await Self.observed { observation.drainFinished.withLock { $0 } }
-    let finishedWhileHeld = finished && observation.borrowerHeld.withLock { $0 }
-    var refused = false
-    if finished {
-      refused = Self.isClosedRefusal(
-        Result {
-          try fixture.pool.withConnection { _ in observation.bodyCalls.withLock { $0 += 1 } }
-        })
-    }
-    release.signal()
-    let result = borrower.join()
-    try closer.value()
+    let facts = await Self.ordinaryCloseController(fixture, observation: observation)
+    let entered = facts.entered
+    let finishedWhileHeld = facts.finishedWhileHeld
+    let refused = facts.refused
+    let result = facts.borrowed
+    try facts.closed.get()
     _ = try result.get()
     #expect(entered)
     #expect(finishedWhileHeld)

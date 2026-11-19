@@ -6,6 +6,34 @@ import WorkspaceProtocol
 
 @testable import WorkspaceStorage
 
+private enum ConcurrentBackupWorkFailure: Error { case missingResult }
+
+/// An operation ACK handle for the held migration fixture; it never abandons a started worker.
+private final class ConcurrentBackupWork<Value: Sendable> {
+  private final class State: Sendable {
+    let result = Mutex<Result<Value, any Error>?>(nil)
+    let completed = DispatchSemaphore(value: 0)
+  }
+  private let state: State
+  private let thread: Thread
+
+  init(_ operation: @escaping @Sendable () throws -> Value) {
+    let state = State()
+    self.state = state
+    thread = Thread {
+      let result = Result { try operation() }
+      state.result.withLock { $0 = result }
+      state.completed.signal()
+    }
+    thread.start()
+  }
+
+  func join() -> Result<Value, any Error> {
+    state.completed.wait()
+    return state.result.withLock { $0 } ?? .failure(ConcurrentBackupWorkFailure.missingResult)
+  }
+}
+
 /// Real PostgreSQL controls for the shared migration admission core. Faults are injected at observed
 /// durability boundaries, not reported as actual kernel syscall failures. No account/runtime starts.
 @Suite(NativeDBResources(), .serialized) struct AgentProtocolBackupBoundaryTests {
@@ -225,6 +253,38 @@ import WorkspaceProtocol
     try await onDedicatedBackupThread { Result<T, any Error> { try operation() } }.get()
   }
 
+  private struct ConcurrentOpenFacts: Sendable {
+    let paused: Bool
+    let waiting: Bool
+    let lockedBeforeRelease: Bool
+    let whileHeld: Result<Snapshot, any Error>
+    let firstResult: Result<Void, any Error>
+    let secondResult: Result<Void, any Error>
+  }
+
+  // Native coordination keeps the eight-second held fixture independent of Task resumption.
+  // The continuation reports completed operations, not physical Thread exit.
+  private static func onConcurrentOpenController(
+    _ operation: @escaping @Sendable () -> ConcurrentOpenFacts
+  ) async -> ConcurrentOpenFacts {
+    let retained = Mutex<Thread?>(nil)
+    let facts: ConcurrentOpenFacts = await withCheckedContinuation { continuation in
+      retained.withLock { thread in
+        thread = Thread { continuation.resume(returning: operation()) }
+        thread?.start()
+      }
+    }
+    retained.withLock { $0 = nil }
+    return facts
+  }
+
+  // Same three-second observation and ten-millisecond cadence as the original Task observer.
+  private static func observedOnConcurrentOpenController(_ body: () -> Bool) -> Bool {
+    let deadline = ContinuousClock.now + .seconds(3)
+    while !body(), ContinuousClock.now < deadline { Thread.sleep(forTimeInterval: 0.01) }
+    return body()
+  }
+
   private static func observed(_ body: () -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + .seconds(3)
     while !body(), ContinuousClock.now < deadline {
@@ -309,8 +369,8 @@ import WorkspaceProtocol
     let firstGateExpired = Mutex(false)
     let secondPID = Mutex(0)
     let secondLocked = Mutex(false)
-    let first = Task.detached {
-      try await Self.onDedicatedBackupThread {
+    let facts = await Self.onConcurrentOpenController {
+      let first = ConcurrentBackupWork<Void> {
         let c = try Self.connection(fixture.endpoint)
         try WorkspaceDatabase.migrateWithBackup(
           c, endpoint: fixture.endpoint, backupDirectory: fixture.backupDirectory
@@ -324,10 +384,8 @@ import WorkspaceProtocol
           }
         }
       }
-    }
-    let paused = await Self.observed { firstPaused.withLock { $0 } }
-    let second = Task.detached {
-      try await Self.onDedicatedBackupThread {
+      let paused = Self.observedOnConcurrentOpenController { firstPaused.withLock { $0 } }
+      let second = ConcurrentBackupWork<Void> {
         let c = try Self.connection(fixture.endpoint)
         let pid = try c.execute("SELECT pg_backend_pid() AS pid").rows.first?.int("pid") ?? 0
         secondPID.withLock { $0 = pid }
@@ -335,16 +393,25 @@ import WorkspaceProtocol
           c, endpoint: fixture.endpoint, backupDirectory: fixture.backupDirectory
         ) { stage in if stage == .locked { secondLocked.withLock { $0 = true } } }
       }
+      let waiting = Self.observedOnConcurrentOpenController {
+        Self.waitingOnAdvisory(fixture.raw, pid: secondPID.withLock { $0 })
+      }
+      let lockedBeforeRelease = secondLocked.withLock { $0 }
+      let whileHeld = Result { try Self.snapshot(fixture.raw) }
+      // No throwing assertion or exit may skip releasing/joining either worker.
+      release.signal()
+      let firstResult = first.join()
+      let secondResult = second.join()
+      return ConcurrentOpenFacts(
+        paused: paused, waiting: waiting, lockedBeforeRelease: lockedBeforeRelease,
+        whileHeld: whileHeld, firstResult: firstResult, secondResult: secondResult)
     }
-    let waiting = await Self.observed {
-      Self.waitingOnAdvisory(fixture.raw, pid: secondPID.withLock { $0 })
-    }
-    let lockedBeforeRelease = secondLocked.withLock { $0 }
-    let whileHeld = Result { try Self.snapshot(fixture.raw) }
-    // No throwing assertion or exit may skip releasing/joining either worker.
-    release.signal()
-    let firstResult = await first.result
-    let secondResult = await second.result
+    let paused = facts.paused
+    let waiting = facts.waiting
+    let lockedBeforeRelease = facts.lockedBeforeRelease
+    let whileHeld = facts.whileHeld
+    let firstResult = facts.firstResult
+    let secondResult = facts.secondResult
     // Emit only safe test-owned outcomes after release and both joins, before a wrapped error
     // can leave the test. No SQL, native errors, paths, PIDs or captured row material are printed.
     let snapshotSucceeded =

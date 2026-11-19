@@ -601,7 +601,9 @@ struct ServerHarness {
     _ = try await URLSession.shared.data(
       from: URL(string: "http://127.0.0.1:\(started.actualPort ?? 0)/readyz")!)
     let more = try await h.logs(started, afterOffset: first.offset)
-    #expect(more.lines == ["fake-b4: GET /readyz"])
+    // The owned server monitor can append a health poll independently of this explicit request.
+    // Every other incremental line must still be exactly this one readiness request.
+    #expect(more.lines.filter { $0 != "fake-b4: GET /healthz" } == ["fake-b4: GET /readyz"])
     #expect(more.offset > first.offset)
     let two = try await h.logs(started, lines: 2)
     #expect(two.lines.count == 2 && two.truncated)

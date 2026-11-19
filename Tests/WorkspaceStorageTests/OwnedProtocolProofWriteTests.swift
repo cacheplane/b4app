@@ -1877,6 +1877,168 @@ extension OwnedProtocolProofWriteTests {
               'FROM "owned_bind_stage"."expected" WHERE name=$1) EXCEPT ALL '
               '(SELECT to_jsonb(p) FROM public.%I p))',t,t)
               INTO mismatch USING t,required_reference;
+          ELSIF convert_to(t,'UTF8')=convert_to('appFolders','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."appFolders" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."appFolders" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('changes','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."changes" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."changes" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('columnClocks','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."columnClocks" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."columnClocks" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('connectionUsage','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."connectionUsage" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."connectionUsage" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('connections','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."connections" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."connections" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('devices','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."devices" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."devices" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('displayItems','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."displayItems" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."displayItems" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('drafts','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."drafts" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."drafts" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('localServers','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."localServers" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."localServers" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('projectFolders','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."projectFolders" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."projectFolders" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('projects','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."projects" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."projects" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolGrantSecrets','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolGrantSecrets" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolGrantSecrets" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolGrants','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolGrants" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolGrants" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolHistoryAnchors','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolHistoryAnchors" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolHistoryAnchors" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolOperations','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolOperations" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolOperations" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolPromptAnswers','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolPromptAnswers" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolPromptAnswers" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolRunSegments','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolRunSegments" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolRunSegments" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolSubscriptions','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolSubscriptions" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolSubscriptions" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('runtimeRequests','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."runtimeRequests" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."runtimeRequests" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('schemaMigrations','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."schemaMigrations" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."schemaMigrations" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('settings','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."settings" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."settings" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('threadDeletes','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."threadDeletes" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."threadDeletes" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('threads','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."threads" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."threads" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('tokenUsage','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."tokenUsage" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."tokenUsage" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('turns','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."turns" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."turns" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('usageReadings','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."usageReadings" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."usageReadings" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('viewSettings','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."viewSettings" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."viewSettings" p))
+              INTO mismatch;
           ELSE
             EXECUTE format(
               'SELECT EXISTS((SELECT to_jsonb(p) FROM public.%I p) EXCEPT ALL '
@@ -2222,6 +2384,80 @@ extension OwnedProtocolProofWriteTests {
     return results
   }
 
+  // The same whole-image predicate must retain duplicate bags and names outside the static
+  // plan branches. These native controls run only in this test's new private fixture.
+  private static func ownedBindStaticPlanBagControls() throws -> [Bool] {
+    var outcomes: [Bool] = []
+    try withFixture { f in
+      let predecessor = try validateFixture(f)
+      let stage = try ownedBindFreeze(
+        f, predecessor: predecessor, replacement: f.link.tokenRef)
+      try ownedBindInstall(f, stage: stage, rawBodyFault: false)
+      let raw = try ownedBindRawDriver(f, stage: stage, row: .normalA, family: .bind)
+      guard raw.qualified else { throw FixtureFailure.nativeShape }
+      let c = f.inspector
+      let assertion = "SELECT \"owned_bind_stage\".\"assert_complete\"($1)"
+      try c.execute("BEGIN")
+      defer { _ = try? c.execute("ROLLBACK") }
+      try c.execute(assertion, [stage.replacement])
+      outcomes.append(true)
+      // This name is deliberately absent from every static branch. Equal duplicate bags must
+      // still pass through the original dynamic fallback, including its runtime names lookup.
+      try c.execute(
+        """
+        CREATE TABLE public."owned_plan_cache_extra"(value text NOT NULL);
+        INSERT INTO public."owned_plan_cache_extra" VALUES ('same'),('same');
+        INSERT INTO "owned_bind_stage"."names"(name) VALUES ('owned_plan_cache_extra');
+        INSERT INTO "owned_bind_stage"."expected"(name,value)
+          SELECT 'owned_plan_cache_extra',to_jsonb(p) FROM public."owned_plan_cache_extra" p;
+        """)
+      try c.execute(assertion, [stage.replacement])
+      outcomes.append(true)
+
+      // A caught server error aborts the subtransaction: restore its savepoint before proving
+      // recovery or testing a different multiplicity mismatch. Never print the rendered error.
+      func rejectsMismatch() -> Bool {
+        do {
+          try c.execute(assertion, [stage.replacement])
+          return false
+        } catch let error as PostgresError {
+          return error.sqlState == "P0001"
+            && error.message.components(separatedBy: "\n").first
+              == "ERROR:  OWNED_BIND_COMPLETE_MISMATCH"
+            && equalBytes(error.sql, assertion)
+        } catch {
+          return false
+        }
+      }
+
+      try c.execute("SAVEPOINT owned_plan_cache_probe")
+      guard
+        try c.execute(
+          """
+          INSERT INTO "owned_bind_stage"."expected"(name,value)
+            SELECT name,value FROM "owned_bind_stage"."expected" WHERE name='settings' LIMIT 1
+          """
+        ).affected == 1
+      else { throw FixtureFailure.nativeShape }
+      outcomes.append(rejectsMismatch())
+      try c.execute("ROLLBACK TO SAVEPOINT owned_plan_cache_probe")
+      try c.execute(assertion, [stage.replacement])
+      outcomes.append(true)
+      try c.execute("RELEASE SAVEPOINT owned_plan_cache_probe")
+
+      try c.execute("SAVEPOINT owned_plan_cache_probe")
+      guard
+        try c.execute("INSERT INTO public.\"owned_plan_cache_extra\" VALUES ('same')").affected == 1
+      else { throw FixtureFailure.nativeShape }
+      outcomes.append(rejectsMismatch())
+      try c.execute("ROLLBACK TO SAVEPOINT owned_plan_cache_probe")
+      try c.execute(assertion, [stage.replacement])
+      outcomes.append(true)
+      try c.execute("RELEASE SAVEPOINT owned_plan_cache_probe")
+    }
+    return outcomes
+  }
+
   @Test(NativeDBResources()) func ownedBindRawStageFixtureValidation() throws {
     // Synthetic inputs stay transient; assertions expose only closed output primitives.
     let known = OwnedRawDriverRenderedContext.classify(
@@ -2314,6 +2550,8 @@ extension OwnedProtocolProofWriteTests {
     #expect(NativeDBCaseQueueWait.maximum(.value(9), .value(4)) == .value(9))
     #expect(NativeDBCaseQueueWait.maximum(.overflow, .value(4)) == .overflow)
     let rows = try Self.ownedBindRawStageControls()
+    let planBags = try Self.ownedBindStaticPlanBagControls()
+    #expect(planBags == [true, true, true, true, true, true])
     #expect(rows.count == 4)
     for row in rows {
       #expect(row.qualified)
@@ -5010,6 +5248,168 @@ extension OwnedProtocolProofWriteTests {
                 'FROM "owned_bind_stage"."expected" WHERE name=$1) EXCEPT ALL '
                 '(SELECT to_jsonb(p) FROM public.%I p))',t,t)
                 INTO mismatch USING t,required_reference;
+            ELSIF convert_to(t,'UTF8')=convert_to('appFolders','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."appFolders" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."appFolders" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('changes','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."changes" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."changes" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('columnClocks','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."columnClocks" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."columnClocks" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('connectionUsage','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."connectionUsage" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."connectionUsage" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('connections','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."connections" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."connections" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('devices','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."devices" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."devices" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('displayItems','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."displayItems" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."displayItems" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('drafts','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."drafts" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."drafts" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('localServers','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."localServers" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."localServers" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('projectFolders','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."projectFolders" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."projectFolders" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('projects','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."projects" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."projects" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('protocolGrantSecrets','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolGrantSecrets" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolGrantSecrets" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('protocolGrants','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolGrants" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolGrants" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('protocolHistoryAnchors','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolHistoryAnchors" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolHistoryAnchors" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('protocolOperations','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolOperations" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolOperations" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('protocolPromptAnswers','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolPromptAnswers" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolPromptAnswers" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('protocolRunSegments','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolRunSegments" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolRunSegments" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('protocolSubscriptions','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolSubscriptions" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolSubscriptions" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('runtimeRequests','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."runtimeRequests" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."runtimeRequests" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('schemaMigrations','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."schemaMigrations" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."schemaMigrations" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('settings','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."settings" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."settings" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('threadDeletes','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."threadDeletes" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."threadDeletes" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('threads','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."threads" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."threads" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('tokenUsage','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."tokenUsage" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."tokenUsage" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('turns','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."turns" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."turns" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('usageReadings','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."usageReadings" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."usageReadings" p))
+                INTO mismatch;
+            ELSIF convert_to(t,'UTF8')=convert_to('viewSettings','UTF8') THEN
+              SELECT EXISTS((SELECT to_jsonb(p) FROM public."viewSettings" p)
+                  EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+                OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                  EXCEPT ALL (SELECT to_jsonb(p) FROM public."viewSettings" p))
+                INTO mismatch;
             ELSE
               EXECUTE format(
                 'SELECT EXISTS((SELECT to_jsonb(p) FROM public.%I p) EXCEPT ALL '
@@ -7542,6 +7942,168 @@ extension OwnedProtocolProofWriteTests {
               'FROM "owned_bind_stage"."expected" WHERE name=$1) EXCEPT ALL '
               '(SELECT to_jsonb(p) FROM public.%I p))',t,t)
               INTO mismatch USING t,required_reference;
+          ELSIF convert_to(t,'UTF8')=convert_to('appFolders','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."appFolders" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."appFolders" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('changes','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."changes" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."changes" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('columnClocks','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."columnClocks" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."columnClocks" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('connectionUsage','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."connectionUsage" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."connectionUsage" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('connections','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."connections" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."connections" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('devices','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."devices" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."devices" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('displayItems','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."displayItems" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."displayItems" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('drafts','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."drafts" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."drafts" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('localServers','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."localServers" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."localServers" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('projectFolders','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."projectFolders" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."projectFolders" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('projects','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."projects" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."projects" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolGrantSecrets','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolGrantSecrets" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolGrantSecrets" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolGrants','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolGrants" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolGrants" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolHistoryAnchors','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolHistoryAnchors" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolHistoryAnchors" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolOperations','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolOperations" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolOperations" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolPromptAnswers','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolPromptAnswers" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolPromptAnswers" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolRunSegments','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolRunSegments" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolRunSegments" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('protocolSubscriptions','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."protocolSubscriptions" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."protocolSubscriptions" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('runtimeRequests','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."runtimeRequests" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."runtimeRequests" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('schemaMigrations','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."schemaMigrations" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."schemaMigrations" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('settings','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."settings" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."settings" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('threadDeletes','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."threadDeletes" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."threadDeletes" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('threads','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."threads" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."threads" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('tokenUsage','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."tokenUsage" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."tokenUsage" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('turns','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."turns" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."turns" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('usageReadings','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."usageReadings" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."usageReadings" p))
+              INTO mismatch;
+          ELSIF convert_to(t,'UTF8')=convert_to('viewSettings','UTF8') THEN
+            SELECT EXISTS((SELECT to_jsonb(p) FROM public."viewSettings" p)
+                EXCEPT ALL (SELECT value FROM "owned_bind_stage"."expected" WHERE name=t))
+              OR EXISTS((SELECT value FROM "owned_bind_stage"."expected" WHERE name=t)
+                EXCEPT ALL (SELECT to_jsonb(p) FROM public."viewSettings" p))
+              INTO mismatch;
           ELSE
             EXECUTE format(
               'SELECT EXISTS((SELECT to_jsonb(p) FROM public.%I p) EXCEPT ALL '
