@@ -119,8 +119,7 @@ struct ThreadDetailView: View {
   private func transcript(_ detail: ThreadDetail) -> some View {
     TranscriptView(
       detail: detail, streams: model.streams, pending: model.pendingMessage(for: thread.id),
-      pendingStatus: model.sendStatus(for: thread.id), dense: model.denseThread,
-      sent: model.ownSends(in: thread.id))
+      pendingStatus: model.sendStatus(for: thread.id), sent: model.ownSends(in: thread.id))
   }
 
   /// Pending requests, the continuity banner, and the composer, under the transcript.

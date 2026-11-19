@@ -1312,7 +1312,9 @@ public actor SessionService {
       case .connectionChanged:
         try await environmentConnectionChanged(raw)
       case .turnAcknowledged:
-        if let turn, let thread {
+        // A late acknowledgement of a turn that ended changes nothing, and `updateTurn` would still move
+        // `updatedAt`, which is when the turn ended (the line's duration reads it).
+        if let turn, let thread, turn.status != .terminal {
           let updated = try db.updateTurn(id: turn.id) {
             if $0.nativeTurnId == nil { $0.nativeTurnId = raw.nativeIds["turnId"] }
             if $0.status == .submitting {
@@ -1486,9 +1488,16 @@ public actor SessionService {
         return nil
       }
     }
+    // A tool step's end is stamped here, whatever its final status: the row's duration is this less
+    // the item's `createdAt`, which the upsert keeps from the started write.
+    var payload = item
+    if raw.kind == .toolCompleted, var fields = item.objectValue {
+      fields["endedAt"] = .string(Timestamp.now())
+      payload = .object(fields)
+    }
     return try db.upsertDisplayItem(
       threadId: thread.id, turnId: turn?.id, nativeItemId: nativeItemId, role: role, type: type,
-      payload: item,
+      payload: payload,
       provenance: .live)
   }
 

@@ -1,8 +1,8 @@
 import SwiftUI
 import WorkspaceProtocol
 
-/// Which turns' lines are open, by group key. Owned by the transcript as `@State`, so it is forgotten
-/// with the view and never stored.
+/// Which turns' lines and which step rows are open, by group key and by item id. Owned by the transcript
+/// as `@State`, so it is forgotten with the view and never stored.
 @Observable final class TranscriptFolds {
   var open: Set<String>
   /// From a toggle until the reader returns to the end, sends a message, or another thread is shown:
@@ -98,8 +98,6 @@ struct TranscriptView: View {
   /// turn's own message arrives (M8c). Always nil on the Mac.
   var pending: PendingSend? = nil
   var pendingStatus: String? = nil
-  /// Dense draws each turn as the message, one line for the work, and the answer.
-  var dense = false
   /// How many messages the reader has sent in this thread from this app (`WorkspaceModel.ownSends`).
   var sent = 0
   @State private var folds: TranscriptFolds
@@ -107,14 +105,12 @@ struct TranscriptView: View {
 
   init(
     detail: ThreadDetail, streams: MessageStreamStore, pending: PendingSend? = nil,
-    pendingStatus: String? = nil, dense: Bool = false, sent: Int = 0,
-    folds: TranscriptFolds = TranscriptFolds()
+    pendingStatus: String? = nil, sent: Int = 0, folds: TranscriptFolds = TranscriptFolds()
   ) {
     self.detail = detail
     self.streams = streams
     self.pending = pending
     self.pendingStatus = pendingStatus
-    self.dense = dense
     self.sent = sent
     _folds = State(initialValue: folds)
   }
@@ -123,10 +119,11 @@ struct TranscriptView: View {
     ScrollViewReader { proxy in
       ScrollView {
         TranscriptContent(
-          detail: detail, streams: streams, pending: pending, pendingStatus: pendingStatus, dense: dense,
+          detail: detail, streams: streams, pending: pending, pendingStatus: pendingStatus,
           folds: folds
         )
         .background { StreamFollower(streams: streams) { follow(proxy) } }
+        .environment(\.holdTranscript) { [folds] in folds.hold() }
       }
       .accessibilityIdentifier("transcript")
       #if os(iOS)
@@ -175,8 +172,6 @@ struct TranscriptView: View {
       .onDisappear { streams.transcriptDisappeared() }
       .onChange(of: detail.items.count) { _, _ in follow(proxy) }
       .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in follow(proxy) }
-      // Normal density has no lines to hold open, so a switch lets go and normal scrolls as it always has.
-      .onChange(of: dense) { _, _ in folds.reset() }
       // The reader sent something: back to the end. Nothing else that adds a turn does this: a turn
       // started from another device, or by the CLI, leaves a reader who scrolled back where they are,
       // with "Jump to latest" to go to it (D-254).
@@ -222,7 +217,6 @@ struct TranscriptContent: View {
   let streams: MessageStreamStore
   var pending: PendingSend? = nil
   var pendingStatus: String? = nil
-  var dense = false
   let folds: TranscriptFolds
   var body: some View {
     // Not a lazy stack. A lazy stack sizes rows it has not laid out by estimate, and with the bottom
@@ -236,13 +230,10 @@ struct TranscriptContent: View {
       .frame(maxWidth: .infinity)
   }
 
-  /// Dense folds each turn's work into a line; normal draws every item. Both settle an ended turn's
-  /// open steps and put its note with it.
+  /// Each turn's work folds into a line, an ended turn's open steps settle, and its note goes with it.
   private var window: DenseTranscript.Window {
     DenseTranscript.window(
-      dense
-        ? DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open)
-        : DenseTranscript.plain(items: detail.items, turns: detail.turns),
+      DenseTranscript.entries(items: detail.items, turns: detail.turns, open: folds.open),
       shown: folds.shown)
   }
 
@@ -258,20 +249,10 @@ struct TranscriptContent: View {
         .accessibilityLabel("Show earlier, \(window.hidden) more")
         .accessibilityIdentifier("show-earlier")
     }
-    ForEach(window.entries) { entry in
-      switch entry {
-      case .item(let item):
-        TranscriptRow(item: item, streams: streams)
-          .id(item.id)
-      case .line(let line):
-        StepsLineRow(line: line, open: folds.open.contains(line.group)) {
-          folds.toggle(line.group)
-        }
-        .id(entry.id)
-      case .note(let turn):
-        TurnNoteRow(turn: turn).id(entry.id)
-      case .running(let line):
-        RunningLineRow(line: line).id(entry.id)
+    // A line and the step rows under it are one child of the column, so they stand close.
+    ForEach(DenseTranscript.runs(window.entries), id: \.first?.id) { run in
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(run) { entry in self.entry(entry) }
       }
     }
     if let pending {
@@ -288,46 +269,94 @@ struct TranscriptContent: View {
     }
     Color.clear.frame(height: 1).id("bottom")
   }
+
+  @ViewBuilder private func entry(_ entry: DenseTranscript.Entry) -> some View {
+    switch entry {
+    case .item(let item):
+      TranscriptRow(item: item, streams: streams)
+        .id(item.id)
+    case .line(let line):
+      ActivityLineRow(line: line, open: folds.open.contains(line.group)) {
+        folds.toggle(line.group)
+      }
+      .id(entry.id)
+    case .step(let row):
+      StepRowView(row: row, streams: streams, open: folds.open.contains(row.id)) {
+        folds.toggle(row.id)
+      }
+      .id(entry.id)
+    case .note(let turn):
+      TurnNoteRow(turn: turn).id(entry.id)
+    case .output(let row):
+      AgentOutputRow(row: row).id(entry.id)
+    }
+  }
 }
 
-/// A turn's line: what the turn did, or is doing, and the word that shows or hides it. One muted line,
-/// cut at its tail; at accessibility sizes it wraps under the action word.
-struct StepsLineRow: View {
-  let line: DenseTranscript.StepsLine
+/// A turn's line: the working mark while it runs, what the turn did or is doing, the time it took or
+/// has taken, and the word that shows or hides its work. One muted line, cut at its tail; at
+/// accessibility sizes it stacks. A line with nothing to open is read as its words and is not a control.
+struct ActivityLineRow: View {
+  let line: DenseTranscript.ActivityLine
   let open: Bool
   let toggle: () -> Void
   @Environment(\.dynamicTypeSize) private var typeSize
 
-  /// The line read as one element: "4 steps, 1 failed, Show".
+  /// The line read as one element: "4 steps, 1 failed, 1m 12s, Show".
   var label: String { line.spoken(open: open) }
 
+  /// Whether the row draws a clock: only a line that has not ended does, and it is the only part of the
+  /// row that reads the time.
+  static func ticks(_ line: DenseTranscript.ActivityLine) -> Bool { line.startedAt != nil }
+
   var body: some View {
-    Button {
-      withAnimation(.none) { toggle() }
-    } label: {
-      let stacked = typeSize.isAccessibilitySize
-      let layout =
-        stacked
-        ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
-        : AnyLayout(HStackLayout(spacing: LLA.Space.xs))
-      layout {
+    Group {
+      if line.canOpen {
+        Button {
+          withAnimation(.none) { toggle() }
+        } label: {
+          content
+        }
+        .buttonStyle(.plain)
+        // The spoken word stays; the value says whether it is open, as a step row's does.
+        .accessibilityValue(open ? "Expanded" : "Collapsed")
+      } else {
+        content
+      }
+    }
+    // The row's children are its words and its clock, so the clock speaks the time it shows: nothing
+    // outside the clock's `TimelineView` reads it.
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("activity-line")
+  }
+
+  private var content: some View {
+    let stacked = typeSize.isAccessibilitySize
+    let layout =
+      stacked
+      ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
+      : AnyLayout(HStackLayout(spacing: LLA.Space.xs))
+    return layout {
+      if stacked {
+        HStack(alignment: .top, spacing: LLA.Space.s) {
+          if line.marked { ThreadMark(state: .working).accessibilityHidden(true) }
+          if !segments.isEmpty { parts }
+        }
+      } else {
+        if line.marked { ThreadMark(state: .working).accessibilityHidden(true) }
         if !segments.isEmpty { parts }
-        // A running step's name is free text ("swift test"), so a dot keeps the action word from
-        // reading as its last word. It is part of the action's text, not a view of its own: a third
-        // view in the row kept a lazy stack from settling when the transcript had one.
-        // Stacked, the action word has the row's width to itself and wraps rather than overrun it.
-        Text(segments.isEmpty || stacked ? line.action(open: open) : "· \(line.action(open: open))")
+      }
+      if Self.ticks(line), let start = line.startedAt { ActivityClock(start: start).fixedSize() }
+      if let action = line.action(open: open) {
+        Text(action)
           .foregroundStyle(LLA.Color.muted)
           .lineLimit(stacked ? nil : 1)
           .fixedSize(horizontal: !stacked, vertical: true)
       }
-      .font(LLAFont.small)
-      .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row, alignment: .leading)
-      .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel(label)
-    .accessibilityIdentifier("steps-line")
+    .font(LLAFont.small)
+    .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row, alignment: .leading)
+    .contentShape(Rectangle())
   }
 
   /// A run of the line drawn in one colour.
@@ -338,7 +367,8 @@ struct StepsLineRow: View {
   }
 
   /// The text, "N failed" (danger, and only it) and "N declined", with a muted ", " between the parts
-  /// that are present. The action word is not part of it.
+  /// that are present, then an ended line's duration after " · ". The action word and the clock are not
+  /// part of it.
   var segments: [Segment] {
     var segments: [Segment] = []
     func add(_ text: String?, _ tone: Segment.Tone) {
@@ -349,6 +379,10 @@ struct StepsLineRow: View {
     add(line.text, .muted)
     add(line.failedText, .danger)
     add(line.declinedText, .muted)
+    if let duration = line.durationText {
+      segments.append(Segment(text: " · ", tone: .muted))
+      segments.append(Segment(text: duration, tone: .muted))
+    }
     return segments
   }
 
@@ -362,6 +396,7 @@ struct StepsLineRow: View {
     if typeSize.isAccessibilitySize {
       segments.dropFirst().reduce(styled(segments[0])) { Text("\($0)\(styled($1))") }
         .fixedSize(horizontal: false, vertical: true)
+        .accessibilityLabel(spokenWords)
     } else {
       HStack(spacing: 0) {
         ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
@@ -372,6 +407,32 @@ struct StepsLineRow: View {
           }
         }
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(spokenWords)
+    }
+  }
+
+  /// The line's words, as the screen reader has them ahead of the clock and the action.
+  private var spokenWords: String {
+    [line.text, line.failedText, line.declinedText, line.durationText].compactMap { $0 }
+      .joined(separator: ", ")
+  }
+}
+
+/// The time since a turn began, once a second. It is the only view that reads the time: the row, the
+/// transcript and the projection around it are not drawn again for a tick.
+struct ActivityClock: View {
+  let start: String
+
+  var body: some View {
+    TimelineView(.periodic(from: .now, by: 1)) { context in
+      let seconds = ActivityTime.seconds(since: start, now: context.date)
+      Text(ActivityTime.clock(seconds))
+        .monospacedDigit()
+        .foregroundStyle(LLA.Color.muted)
+        .lineLimit(1)
+        .accessibilityLabel(ActivityTime.words(seconds))
     }
   }
 }
@@ -413,6 +474,8 @@ struct PendingMessageRow: View {
   }
 }
 
+/// A user's message, a reply, a plan row or a system item. Work (a tool, reasoning) reaches the screen
+/// as a step row (`StepRowView`), never here.
 struct TranscriptRow: View {
   let item: DisplayItem
   let streams: MessageStreamStore
@@ -436,32 +499,14 @@ struct TranscriptRow: View {
         MarkdownText(
           document: streams.document(for: item),
           streaming: item.nativeItemId.map(streams.isStreaming) ?? false)
-      } else {
-        CollapsibleCard(
-          title: item.type == "reasoning" || item.type == "thinking" ? "Reasoning" : item.type.capitalized,
-          status: nil
-        ) {
-          Text(reasoningText).llaSmallMuted().textSelection(.enabled).fixedSize(
-            horizontal: false, vertical: true)
-        }
       }
     case .tool:
-      if item.type == TaskList.itemType {
-        if let display = TaskListDisplay(item: item) { TaskListRow(display: display) }
-      } else {
-        ToolCard(item: item)
+      if item.type == TaskList.itemType, let display = TaskListDisplay(item: item) {
+        TaskListRow(display: display)
       }
     case .system:
       Text(item.type).llaCaption()
     }
-  }
-
-  private var reasoningText: String {
-    if let text = item.payload["text"]?.stringValue, !text.isEmpty { return text }
-    let summary = item.payload["summary"]?.arrayValue?.compactMap(\.stringValue) ?? []
-    if !summary.isEmpty { return summary.joined(separator: "\n") }
-    return item.payload["text"]?.stringValue ?? item.payload["content"]?.arrayValue?.compactMap(\.stringValue)
-      .joined(separator: "\n") ?? ""
   }
 }
 
@@ -527,126 +572,6 @@ enum Clipboard {
     #else
       UIPasteboard.general.string = text
     #endif
-  }
-}
-
-struct ToolCard: View {
-  let item: DisplayItem
-
-  var body: some View {
-    CollapsibleCard(title: title, status: item.payload["status"]?.stringValue) {
-      let detail = ToolEvidence.detail(of: item)
-      VStack(alignment: .leading, spacing: LLA.Space.s) {
-        if let cwd = detail.cwd {
-          Text(cwd).llaCodeMuted()
-        }
-        if let input = detail.input {
-          Text("Input").llaCaption()
-          LLACodeBlock(input)
-        }
-        switch detail.output {
-        case .none: EmptyView()
-        // A result with no text is still a result; say so rather than draw nothing.
-        case .empty: Text("No text output.").llaSmallMuted()
-        case .text(let output):
-          if detail.input != nil { Text("Output").llaCaption() }
-          LLACodeBlock(output)
-        }
-        if let exitCode = detail.exitCode {
-          Text("Exit code \(exitCode)").llaSmallMuted()
-        }
-        ForEach(Array(detail.changes.enumerated()), id: \.offset) { _, change in
-          Text(change.path).font(LLAFont.mono(12, weight: .semibold)).foregroundStyle(LLA.Color.ink)
-          if let diff = change.diff {
-            LLACodeBlock(diff)
-          }
-        }
-        if let raw = detail.raw {
-          Text(raw).llaCodeMuted().textSelection(.enabled)
-          if detail.rawCut {
-            Text("Cut at \(ToolEvidence.rawLimit) characters.").llaSmallMuted()
-          }
-        }
-      }
-    }
-  }
-
-  private var title: String { DenseTranscript.title(of: item) }
-}
-
-/// A bordered row with a mono title that opens to its detail. No icon; the title says what it is.
-struct CollapsibleCard<Content: View>: View {
-  let title: String
-  let status: String?
-  @ViewBuilder let content: () -> Content
-  @State private var expanded = false
-  @Environment(\.dynamicTypeSize) private var typeSize
-
-  var body: some View {
-    LLACard(fill: .bg, padding: LLA.Space.m) {
-      VStack(alignment: .leading, spacing: 0) {
-        Button {
-          withAnimation(.none) { expanded.toggle() }
-        } label: {
-          // At accessibility sizes the title takes the full width and wraps; the badge and the
-          // Show/Hide word go under it rather than squeezing it to an ellipsis.
-          let stacked = typeSize.isAccessibilitySize
-          let layout =
-            stacked
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: LLA.Space.xs))
-            : AnyLayout(HStackLayout(spacing: LLA.Space.s))
-          layout {
-            Text(title).llaCode().lineLimit(stacked ? 4 : 1).truncationMode(.middle)
-            if !stacked { Spacer() }
-            HStack(spacing: LLA.Space.s) {
-              if let status { LLABadge(DenseTranscript.statusLabel(status), tone: statusTone(status)) }
-              Text(expanded ? "Hide" : "Show").font(LLAFont.caption).foregroundStyle(LLA.Color.muted)
-            }
-          }
-          // The target reaches over the card's padding, so the whole closed card is the button: at
-          // least 44 pt tall on the phone without making the card itself taller.
-          .frame(
-            maxWidth: .infinity, minHeight: max(LLA.Metrics.row - 2 * LLA.Space.m, 0), alignment: .leading
-          )
-          .contentShape(Rectangle().inset(by: -LLA.Space.m))
-        }
-        .buttonStyle(.plain)
-        if expanded {
-          content().padding(.top, LLA.Space.m)
-        }
-      }
-    }
-  }
-
-  private func statusTone(_ status: String) -> LLABadge.Tone {
-    switch status {
-    case "completed": return .neutral
-    case "failed", "declined": return .danger
-    case "inProgress": return .accent
-    default: return .muted
-    }
-  }
-}
-
-/// What a running turn is doing (D-239): the working mark and one muted line, cut at its tail, the
-/// height of a steps line. A turn waiting for an answer has the words alone: the request below it is
-/// what asks. It is read as its text and is not a control.
-struct RunningLineRow: View {
-  let line: DenseTranscript.RunningLine
-
-  var body: some View {
-    HStack(spacing: LLA.Space.s) {
-      if !line.waiting { ThreadMark(state: .working).accessibilityHidden(true) }
-      Text(line.text)
-        .font(LLAFont.small)
-        .foregroundStyle(LLA.Color.muted)
-        .lineLimit(1)
-        .truncationMode(.tail)
-    }
-    .frame(maxWidth: .infinity, minHeight: LLA.Metrics.row, alignment: .leading)
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(line.text)
-    .accessibilityIdentifier("running-line")
   }
 }
 

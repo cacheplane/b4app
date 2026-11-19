@@ -155,7 +155,7 @@
 
     #if DEBUG
       /// A token reaches only the row that reads its stream: the transcript's grouping is not run again.
-      @Test(arguments: [false, true]) func aTokenDoesNotRerunTheGrouping(dense: Bool) async throws {
+      @Test func aTokenDoesNotRerunTheGrouping() async throws {
         let thread = "grouping-\(UUID().uuidString)"
         var turns: [Turn] = []
         var items: [DisplayItem] = []
@@ -186,7 +186,7 @@
         let ticker = ManualTicker()
         let streams = MessageStreamStore(pacing: .paced, makeTicker: { ticker })
         let window = SnapshotWindow(
-          rootView: TranscriptView(detail: detail, streams: streams, dense: dense).frame(
+          rootView: TranscriptView(detail: detail, streams: streams).frame(
             width: 720, height: 480),
           untitled: true, size: CGSize(width: 720, height: 480))
         defer { window.window.close() }

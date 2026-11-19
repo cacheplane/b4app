@@ -3,7 +3,7 @@ import WorkspaceProtocol
 
 @testable import WorkspaceUI
 
-/// What an opened tool card shows for each runtime's payload shape (F05, F18).
+/// What an opened step row shows for each runtime's payload shape (F05, F18).
 @Suite struct ToolEvidenceTests {
   private func tool(_ type: String, _ payload: [String: JSONValue]) -> DisplayItem {
     DisplayItem(
@@ -83,7 +83,7 @@ import WorkspaceProtocol
     #expect(detail.raw == nil)
   }
 
-  /// An item type the card does not know is still inspectable, and bounded.
+  /// An item type the row does not know is still inspectable, and bounded.
   @Test func anUnknownShapeFallsBackToItsPayload() {
     let detail = ToolEvidence.detail(
       of: tool(

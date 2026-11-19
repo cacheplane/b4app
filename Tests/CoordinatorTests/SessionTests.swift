@@ -210,6 +210,41 @@ private struct SlowRespondAdapter: AgentAdapter {
   func dispose() async { await inner.dispose() }
 }
 
+/// A real adapter (the fake Codex runtime) that also delivers the events a test hands it.
+private struct InjectingAdapter: AgentAdapter {
+  let inner: any AgentAdapter
+  let injected: AsyncStream<AdapterEvent>
+  var kind: ConnectionKind { inner.kind }
+  func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
+  func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
+    try await inner.createSession(input)
+  }
+  func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot {
+    try await inner.loadSession(ref)
+  }
+  func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
+    try await inner.sendTurn(ref, input: input)
+  }
+  func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
+    try await inner.interrupt(ref, turn: turn)
+  }
+  func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
+    try await inner.respond(ref, response: response)
+  }
+  func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
+    try await inner.reconcile(ref, turn: turn)
+  }
+  func events() -> AsyncStream<AdapterEvent> {
+    let (merged, continuation) = AsyncStream<AdapterEvent>.makeStream()
+    let pumps = [inner.events(), injected].map { stream in
+      Task { for await event in stream { continuation.yield(event) } }
+    }
+    continuation.onTermination = { _ in pumps.forEach { $0.cancel() } }
+    return merged
+  }
+  func dispose() async { await inner.dispose() }
+}
+
 actor EventCollector {
   private(set) var events: [EventEnvelope] = []
   /// Suspended `until` calls, resumed by the next event (or a deadline).
@@ -299,6 +334,90 @@ actor EventCollector {
     #expect(read.requests.isEmpty)
     let listed = try await h.client.request(ThreadList.self, ThreadList.Params())
     #expect(listed.threads.map(\.id) == [thread.id])
+    await h.stop()
+  }
+
+  /// `updatedAt` is when a terminal turn ended (the transcript's duration reads it), so a late
+  /// acknowledgement of an ended turn does not move it.
+  @Test func aLateAcknowledgementLeavesAnEndedTurnAlone() async throws {
+    let (injected, deliver) = AsyncStream<AdapterEvent>.makeStream()
+    let h = try await Harness.start(adapterFactory: { connection, environment, version, secrets in
+      InjectingAdapter(
+        inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
+        injected: injected)
+    })
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "hello there")
+    _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    let ended = try #require(try await h.read(thread).turns.first)
+    #expect(ended.status == .terminal)
+    let nativeTurnId = try #require(ended.nativeTurnId)
+
+    // The event is published once the coordinator has handled it, so the turn is read after that.
+    let acknowledged = await h.events.events.filter { $0.event.kind == .turnAcknowledged }.count
+    deliver.yield(
+      AdapterEvent(
+        kind: .turnAcknowledged, connectionId: connection.id,
+        nativeIds: ["threadId": thread.nativeThreadId, "turnId": nativeTurnId]))
+    _ = try #require(
+      await h.events.until { seen in seen.filter { $0.kind == .turnAcknowledged }.count > acknowledged })
+    let after = try #require(try await h.read(thread).turns.first)
+    #expect(after.updatedAt == ended.updatedAt)
+    #expect(after.status == .terminal)
+    await h.stop()
+  }
+
+  /// A tool step records when it ended (the row's duration is that less the item's `createdAt`), a
+  /// started one has no end yet, and a reconcile of the thread leaves the live row's end alone.
+  @Test func aCompletedToolItemRecordsWhenItEnded() async throws {
+    let (injected, deliver) = AsyncStream<AdapterEvent>.makeStream()
+    let h = try await Harness.start(adapterFactory: { connection, environment, version, secrets in
+      InjectingAdapter(
+        inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
+        injected: injected)
+    })
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "hello there")
+    _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+
+    func tool(_ kind: EventKind, _ id: String, status: String) -> AdapterEvent {
+      AdapterEvent(
+        kind: kind, connectionId: connection.id,
+        nativeIds: ["threadId": thread.nativeThreadId, "itemId": id],
+        payload: [
+          "type": "commandExecution", "role": "tool",
+          "item": ["command": "ls", "status": .string(status)],
+        ])
+    }
+    func settled(_ kind: EventKind, after count: Int) async {
+      _ = await h.events.until { $0.filter { $0.kind == kind }.count > count }
+    }
+    func stored(_ id: String) async throws -> DisplayItem {
+      try #require(try await h.read(thread).items.first { $0.nativeItemId == id })
+    }
+
+    let started = await h.events.events.filter { $0.event.kind == .toolStarted }.count
+    deliver.yield(tool(.toolStarted, "call-1", status: "inProgress"))
+    await settled(.toolStarted, after: started)
+    let open = try await stored("call-1")
+    #expect(open.payload["endedAt"] == nil)
+
+    let completed = await h.events.events.filter { $0.event.kind == .toolCompleted }.count
+    deliver.yield(tool(.toolCompleted, "call-1", status: "failed"))
+    await settled(.toolCompleted, after: completed)
+    let done = try await stored("call-1")
+    #expect(done.createdAt == open.createdAt)
+    #expect(done.payload["status"]?.stringValue == "failed")
+    let endedAt = try #require(done.payload["endedAt"]?.stringValue)
+    let end = try #require(Timestamp.date(from: endedAt))
+    #expect(end >= (try #require(Timestamp.date(from: done.createdAt))))
+
+    _ = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    #expect(try await stored("call-1").payload["endedAt"]?.stringValue == endedAt)
     await h.stop()
   }
 
@@ -716,6 +835,42 @@ actor EventCollector {
     #expect(claudeRead.turns[0].outcome == .failed)
     let again = try await h.send(claudeThread, "hello again")
     try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == again.id }
+    await h.stop()
+  }
+
+  /// The fake replays a turn recorded on Claude Code 2.1.282 in which one `Agent` call ran two tools:
+  /// each child row is stored once and names the call, after the turn and after a reconcile (history
+  /// holds the parent's lines only, so the children are live rows no snapshot names).
+  @Test func aSubAgentsStepsAreRowsThatNameTheCall() async throws {
+    let call = "toolu_01MYgoiNaRXENvWnkmFHm6m3"
+    let children = ["toolu_01AYqQZFiYBu9gBzJMaJ4JqG", "toolu_01TUgdc6SEEu9HLJuG6paxPJ"]
+    let h = try await Harness.start()
+    let thread = try await h.newThread(try await h.addClaude())
+    let turn = try await h.send(thread, "run a subagent")
+    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+
+    func check(_ items: [DisplayItem]) {
+      #expect(items.filter { $0.type == "toolUse" }.count == 3)
+      #expect(items.filter { $0.nativeItemId == call }.count == 1)
+      #expect(items.first { $0.nativeItemId == call }?.payload["parentNativeItemId"] == nil)
+      for child in children {
+        let rows = items.filter { $0.nativeItemId == child }
+        #expect(rows.count == 1)
+        #expect(rows.first?.payload["parentNativeItemId"]?.stringValue == call)
+        #expect(rows.first?.payload["status"]?.stringValue == "completed")
+      }
+      #expect(
+        !items.contains {
+          $0.type == "userMessage" && $0.payload["text"]?.stringValue?.hasPrefix("In the directory") == true
+        })
+    }
+    let items = try await h.read(thread).items
+    check(items)
+    let merged = try await h.client.request(
+      ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id),
+      options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    check(merged.items)
+    #expect(merged.items.map(\.id).sorted() == items.map(\.id).sorted())
     await h.stop()
   }
 }
