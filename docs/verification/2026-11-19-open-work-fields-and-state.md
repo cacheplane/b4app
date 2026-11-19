@@ -4,20 +4,18 @@ The first part of the runtime turns design: `Turn.openWork` and `Turn.origin`, t
 
 ### Commands
 
-- `swift test --filter "TurnCodingTests|AttentionTests|ActivityQueryTests|WorkspaceMirrorTests|AttentionModelTests|ThreadLinkTests"`: `Test run with 351 tests in 25 suites failed after 7.826 seconds with 3 issues.` The three issues are the ones listed under "Failures" below.
-- `swift test` (full): `Test run with 2283 tests in 258 suites failed after 111.182 seconds with 3 issues.` The same three. The six tests that have failed on this machine under load before (`RecordingSessionTests.rejectsGapEpochAndAccountChanges` and five in `WorkspaceMirrorTests`) passed in this run.
+- `swift test --filter "TurnCodingTests|AttentionTests|ActivityQueryTests|WorkspaceMirrorTests|AttentionModelTests|ThreadLinkTests"` at 19910a63: `Test run with 351 tests in 25 suites passed after 7.629 seconds.`
+- `swift test` (full) at 19910a63: `Test run with 2283 tests in 258 suites passed after 113.699 seconds.` An earlier full run, before 19910a63, had 3 issues (see "Fixture-derived expectations").
 - From `Hub/`, `source <(./scripts/test-db.sh) && cargo test --workspace --locked`: exit 0; 30 test binaries, 560 tests passed, 0 failed. The cluster was stopped afterwards with `./scripts/test-db.sh --stop`.
 - `cargo fmt --all -- --check`: clean. `cargo clippy --workspace --all-targets --locked -- -D warnings`: finished with no warnings.
 - `Scripts/docs-index.sh --check`: see "Docs check" below.
 
-### Failures
+### Fixture-derived expectations
 
-Three Swift tests fail, each on a second run of its own suite alone (`swift test --filter "MirrorNotificationsTests|MirrorGlanceTests"`: 20 tests, 3 issues), so they are not load flakes. Each reads `Tests/Fixtures/sync/attention.json`, which gained four threads in commit 3f0791cf:
+Three tests pinned values derived from `Tests/Fixtures/sync/attention.json`. The full run, made after the fixture gained its four open-work threads in commit 3f0791cf, found them failing (`Test run with 2283 tests in 258 suites failed ... with 3 issues`, the same three on a second run of their suites alone, so not load flakes). Commit 19910a63 updated them; no production code or fixture changed:
 
-- `MirrorNotificationsTests.needsYouCountMatchesFixture` pins the count of needs-you threads in the fixture at 5; the fixture now has 6, because `t-open-work-unread` is a thread that needs you.
-- `MirrorGlanceTests.loadsTheTopThreeInAttentionOrderWithEnvironmentNames` and `MirrorGlanceTests.archivedThreadsAreLeftOut` pin the top three rows of the glance; `t-open-work-failed` is a failed thread and now ranks among them.
-
-These failures follow from the fixture change and were not fixed in this record's commit, which changes no code and no test. They need their expected values updated before CI will pass.
+- `MirrorNotificationsTests.needsYouCountMatchesFixture` pinned 5; the fixture's needs-you threads are now 6, two `needsInput` plus four `unread`, `t-open-work-failed` among the unread (its hub band).
+- `MirrorGlanceTests.loadsTheTopThreeInAttentionOrderWithEnvironmentNames` and `archivedThreadsAreLeftOut` pinned the glance's rows; `t-open-work-failed` is a failed thread and now ranks in them.
 
 ### Cases added
 
@@ -35,4 +33,3 @@ Each of tasks 1 to 5 had a task review. Task 5 had one fix round: a proposed ext
 - Anything on a device or in the running app. No row carries open work until the coordinator change, so no thread state or notification could differ on screen.
 - A hub that already holds data being migrated by `0023`; the tests migrate an empty database.
 - The phone app migrating a schema 10 mirror outside the tests (`MirrorMigrationTests` covers it in process).
-- The three failing tests above, which are not fixed.
