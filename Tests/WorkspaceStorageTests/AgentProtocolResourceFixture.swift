@@ -1,6 +1,7 @@
 import Darwin
 import Dispatch
 import Foundation
+import Synchronization
 import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
@@ -51,15 +52,109 @@ enum AgentProtocolResourceFixture {
   }
 }
 
+/// Closed primitive observation of this preference queue only, not a thread or operation identity.
+enum NativeDBCaseQueueWait: Equatable, Sendable {
+  case none, overflow
+  case value(Int64)
+
+  static func classify(_ elapsed: Duration?) -> Self {
+    guard let elapsed else { return .none }
+    let components = elapsed.components
+    guard components.seconds >= 0, components.attoseconds >= 0 else { return .none }
+    let (whole, multiplyOverflow) = components.seconds.multipliedReportingOverflow(by: 1_000_000)
+    guard !multiplyOverflow else { return .overflow }
+    let fraction = components.attoseconds / 1_000_000_000_000
+    let (microseconds, addOverflow) = whole.addingReportingOverflow(fraction)
+    guard !addOverflow else { return .overflow }
+    return .value(microseconds)
+  }
+
+  static func maximum(_ lhs: Self, _ rhs: Self) -> Self {
+    switch (lhs, rhs) {
+    case (.overflow, _), (_, .overflow): return .overflow
+    case (.value(let a), .value(let b)): return .value(max(a, b))
+    case (.none, _): return rhs
+    case (_, .none): return lhs
+    }
+  }
+
+  var fieldValue: String {
+    switch self {
+    case .none: return "none"
+    case .overflow: return "overflow"
+    case .value(let microseconds): return String(microseconds)
+    }
+  }
+}
+
+struct NativeDBCaseQueueSnapshot: Sendable {
+  enum Availability: String, Sendable { case unavailable, available }
+  let availability: Availability
+  let enqueueCount: UInt32
+  let enqueueOverflow: Bool
+  let firstWait: NativeDBCaseQueueWait
+  let maxWait: NativeDBCaseQueueWait
+
+  static let unavailable = Self(
+    availability: .unavailable, enqueueCount: 0, enqueueOverflow: false,
+    firstWait: .none, maxWait: .none)
+
+  var enqueueCountField: String {
+    availability == .available ? String(enqueueCount) : "none"
+  }
+
+  var enqueueOverflowField: String {
+    availability == .available ? String(enqueueOverflow) : "none"
+  }
+}
+
+enum NativeDBCaseExecutorScope {
+  @TaskLocal static var current: NativeDBCaseExecutor? = nil
+}
+
 /// One concurrent resource per executing test case; actor isolation and runner ownership remain intact.
 /// This is an executor preference, not a deadline or a join of unstructured descendants.
 final class NativeDBCaseExecutor: TaskExecutor {
+  private struct QueueState: Sendable {
+    var enqueueCount: UInt32 = 0
+    var enqueueOverflow = false
+    var observedEntry = false
+    var firstWait: NativeDBCaseQueueWait = .none
+    var maxWait: NativeDBCaseQueueWait = .none
+  }
+
+  private let stats = Mutex(QueueState())
   private let queue = DispatchQueue(
     label: "b4app.tests.native-db-case", attributes: .concurrent)
 
+  func snapshot() -> NativeDBCaseQueueSnapshot {
+    stats.withLock {
+      NativeDBCaseQueueSnapshot(
+        availability: .available, enqueueCount: $0.enqueueCount,
+        enqueueOverflow: $0.enqueueOverflow, firstWait: $0.firstWait, maxWait: $0.maxWait)
+    }
+  }
+
   func enqueue(_ job: consuming ExecutorJob) {
+    stats.withLock {
+      if $0.enqueueCount == UInt32.max {
+        $0.enqueueOverflow = true
+      } else {
+        $0.enqueueCount += 1
+      }
+    }
     let job = UnownedJob(job)
+    let enqueuedAt = ContinuousClock.now
     queue.async { [self] in
+      let wait = NativeDBCaseQueueWait.classify(enqueuedAt.duration(to: ContinuousClock.now))
+      stats.withLock {
+        if !$0.observedEntry {
+          $0.observedEntry = true
+          $0.firstWait = wait
+        }
+        $0.maxWait = NativeDBCaseQueueWait.maximum($0.maxWait, wait)
+      }
+      // The statistics lock is released before the original job runs; no native work is enclosed.
       job.runSynchronously(on: asUnownedTaskExecutor())
     }
   }
@@ -75,7 +170,9 @@ struct NativeDBResources: TestTrait, SuiteTrait, TestScoping {
     let executor = NativeDBCaseExecutor()
     defer { withExtendedLifetime(executor) {} }
     try await withTaskExecutorPreference(executor) {
-      try await function()
+      try await NativeDBCaseExecutorScope.$current.withValue(executor) {
+        try await function()
+      }
     }
   }
 }

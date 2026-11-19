@@ -15,6 +15,8 @@ import WorkspaceProtocol
   private static let sentinelKey = "owned-proof-unrelated"
   private enum FixtureFailure: Error { case nativeShape, redactedFailure }
 
+  private enum OwnedRawDriverFamily: String, Sendable { case bind, positive, fence }
+
   private enum OwnedRawDriverPhase: String {
     case connect
     case bodyProbeBefore
@@ -127,27 +129,98 @@ import WorkspaceProtocol
     }
   }
 
+  /// Only an exact final rendered frame is observed. Earlier SQL is transient and untrusted.
+  /// Fabricated whole messages cannot be authenticated here; this proves no CPU or lock cause.
+  private struct OwnedRawDriverRenderedContext: Sendable {
+    enum State: String, Sendable { case absent, known, unlisted }
+    enum Function: String, Sendable {
+      case none, unlisted, assertComplete, assertTransaction, body, commitNormal
+    }
+    enum Site: String, Sendable { case none, execute, perform, sqlStatement, other }
+
+    let state: State
+    let function: Function
+    let line: Int?
+    let site: Site
+
+    static let absent = Self(state: .absent, function: .none, line: nil, site: .none)
+    private static let unlisted = Self(
+      state: .unlisted, function: .unlisted, line: nil, site: .none)
+
+    static func classify(_ rendered: String) -> Self {
+      let lines = rendered.components(separatedBy: "\n")
+      let labels = lines.indices.filter { lines[$0].hasPrefix("CONTEXT:") }
+      guard !labels.isEmpty else { return .absent }
+      guard labels.count == 1, let label = labels.first,
+        lines[label].hasPrefix("CONTEXT:  "),
+        let tailIndex = lines.lastIndex(where: { !$0.isEmpty }), tailIndex >= label
+      else { return .unlisted }
+      // Never scan backward for a more convenient frame. Multiline SQL may contain fake frames.
+      let tail =
+        tailIndex == label ? String(lines[tailIndex].dropFirst("CONTEXT:  ".count)) : lines[tailIndex]
+      let prefix = "PL/pgSQL function owned_bind_stage."
+      guard tail.hasPrefix(prefix) else { return .unlisted }
+      let parts = String(tail.dropFirst(prefix.count)).components(separatedBy: " line ")
+      guard parts.count == 2 else { return .unlisted }
+      let function: Function
+      switch parts[0] {
+      case "assert_complete(text)": function = .assertComplete
+      case "assert_transaction()": function = .assertTransaction
+      case "body()": function = .body
+      case "commit_normal()": function = .commitNormal
+      default: return .unlisted
+      }
+      let location = parts[1].components(separatedBy: " at ")
+      guard location.count == 2 else { return .unlisted }
+      let number = location[0]
+      guard !number.isEmpty, number.utf8.count <= 3, number.first != "0",
+        number.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+        let line = Int(number), (1...512).contains(line)
+      else { return .unlisted }
+      let site: Site
+      switch location[1] {
+      case "EXECUTE": site = .execute
+      case "PERFORM": site = .perform
+      case "SQL statement": site = .sqlStatement
+      case "RAISE", "assignment", "IF", "RETURN", "FOR over SELECT rows": site = .other
+      default: return .unlisted
+      }
+      return Self(state: .known, function: function, line: line, site: site)
+    }
+
+    var lineField: String { line.map { String($0) } ?? "none" }
+  }
+
   /// No arbitrary native error, message, SQL, image, reference, or fixture is retained here.
   private struct OwnedRawDriverDiagnostic: Error {
     let row: OwnedBindRawControl
+    let family: OwnedRawDriverFamily
     let phase: OwnedRawDriverPhase
     let category: OwnedRawDriverCategory
     let sqlState: OwnedRawDriverSQLState
     let nativeReason: OwnedRawDriverNativeReason
     let elapsedMicroseconds: OwnedRawDriverElapsedMicroseconds
+    let queue: NativeDBCaseQueueSnapshot
+    let context: OwnedRawDriverRenderedContext
 
     init(
-      row: OwnedBindRawControl, phase: OwnedRawDriverPhase, error: any Error,
+      row: OwnedBindRawControl, family: OwnedRawDriverFamily, phase: OwnedRawDriverPhase,
+      error: any Error,
       elapsed: Duration? = nil
     ) {
       self.row = row
+      self.family = family
       self.phase = phase
       elapsedMicroseconds = OwnedRawDriverElapsedMicroseconds.classify(elapsed)
+      // Capture primitives now; the diagnostic never retains the TaskLocal executor or resources.
+      queue = NativeDBCaseExecutorScope.current?.snapshot() ?? .unavailable
       if let postgres = error as? PostgresError {
         category = .postgresError
         sqlState = OwnedRawDriverSQLState.classify(postgres.sqlState)
         nativeReason = OwnedRawDriverNativeReason.classify(postgres)
+        context = OwnedRawDriverRenderedContext.classify(postgres.message)
       } else {
+        context = .absent
         sqlState = .none
         nativeReason = .none
         switch error as? FixtureFailure {
@@ -203,6 +276,17 @@ import WorkspaceProtocol
             sqlstate=\(diagnostic.sqlState.rawValue) \
             reason=\(diagnostic.nativeReason.rawValue) \
             elapsedMicroseconds=\(diagnostic.elapsedMicroseconds.fieldValue)
+            OWNED_RAW_DRIVER_CONTEXT_V1 family=\(diagnostic.family.rawValue) \
+            contextState=\(diagnostic.context.state.rawValue) framePosition=renderedTail \
+            renderedOnly=true structuredFieldAuthenticated=false causality=unqualified \
+            function=\(diagnostic.context.function.rawValue) \
+            line=\(diagnostic.context.lineField) site=\(diagnostic.context.site.rawValue)
+            OWNED_RAW_DRIVER_QUEUE_V1 family=\(diagnostic.family.rawValue) \
+            casePreferenceQueue=\(diagnostic.queue.availability.rawValue) partial=true \
+            enqueueCount=\(diagnostic.queue.enqueueCountField) \
+            enqueueCountOverflow=\(diagnostic.queue.enqueueOverflowField) \
+            firstObservedWaitMicroseconds=\(diagnostic.queue.firstWait.fieldValue) \
+            maxObservedWaitMicroseconds=\(diagnostic.queue.maxWait.fieldValue)
             """))
       throw FixtureFailure.redactedFailure
     } catch {
@@ -1936,7 +2020,8 @@ extension OwnedProtocolProofWriteTests {
   }
 
   private static func ownedBindRawDriver(
-    _ f: Fixture, stage: OwnedBindStageFixture, row: OwnedBindRawControl
+    _ f: Fixture, stage: OwnedBindStageFixture, row: OwnedBindRawControl,
+    family: OwnedRawDriverFamily
   ) throws -> OwnedBindRawFacts {
     var phase = OwnedRawDriverPhase.connect
     do {
@@ -2018,7 +2103,8 @@ extension OwnedProtocolProofWriteTests {
           && equalBytes(error.sql, ownedBindRawUpsert)
         guard predicateRejected || bodyFaultRejected else {
           throw OwnedRawDriverDiagnostic(
-            row: row, phase: .unexpectedUpsertError, error: error, elapsed: upsertElapsed)
+            row: row, family: family, phase: .unexpectedUpsertError, error: error,
+            elapsed: upsertElapsed)
         }
       }
       phase = .expectedReference
@@ -2082,7 +2168,7 @@ extension OwnedProtocolProofWriteTests {
       throw diagnostic
     } catch {
       // Only closed primitive categories leave this lexical driver, after normal rollback cleanup.
-      throw OwnedRawDriverDiagnostic(row: row, phase: phase, error: error)
+      throw OwnedRawDriverDiagnostic(row: row, family: family, phase: phase, error: error)
     }
   }
 
@@ -2124,7 +2210,7 @@ extension OwnedProtocolProofWriteTests {
         diagnostic?.phase = .rawInitialImage
         guard try ownedBindImage(f.inspector) == stage.before else { throw FixtureFailure.nativeShape }
         diagnostic?.phase = .rawDriver
-        observed = try ownedBindRawDriver(f, stage: stage, row: row)
+        observed = try ownedBindRawDriver(f, stage: stage, row: row, family: .bind)
         diagnostic?.phase = .rawTeardown
       }
       // withFixture has closed its database and relinquished its inspector/physical root first.
@@ -2137,6 +2223,96 @@ extension OwnedProtocolProofWriteTests {
   }
 
   @Test(NativeDBResources()) func ownedBindRawStageFixtureValidation() throws {
+    // Synthetic inputs stay transient; assertions expose only closed output primitives.
+    let known = OwnedRawDriverRenderedContext.classify(
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.assert_complete(text) line 17 at EXECUTE")
+    #expect(known.state == .known)
+    #expect(known.function == .assertComplete && known.line == 17 && known.site == .execute)
+    let multiline = OwnedRawDriverRenderedContext.classify(
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  SQL statement \"SELECT secret:PRIVATE\nFROM private_data\"\n"
+        + "PL/pgSQL function owned_bind_stage.assert_complete(text) line 17 at EXECUTE\n"
+        + "SQL statement \"SELECT \"owned_bind_stage\".\"assert_complete\"(original)\"\n"
+        + "PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM\n")
+    #expect(multiline.state == .known && multiline.function == .body)
+    #expect(multiline.line == 4 && multiline.site == .perform)
+    let transaction = OwnedRawDriverRenderedContext.classify(
+      "ERROR:  canceling statement due to lock timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.assert_transaction() line 1 at SQL statement")
+    #expect(transaction.state == .known && transaction.function == .assertTransaction)
+    #expect(transaction.line == 1 && transaction.site == .sqlStatement)
+    let finalKnown = OwnedRawDriverRenderedContext.classify(
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  SQL statement \"SELECT secret:PRIVATE\n"
+        + "PL/pgSQL function owned_bind_stage.assert_complete(text) line 1 at EXECUTE\n\"\n"
+        + "PL/pgSQL function owned_bind_stage.commit_normal() line 512 at RETURN")
+    #expect(finalKnown.state == .known && finalKnown.function == .commitNormal)
+    #expect(finalKnown.line == 512 && finalKnown.site == .other)
+    let absent = OwnedRawDriverRenderedContext.classify(
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM")
+    #expect(absent.state == .absent && absent.function == .none)
+    #expect(absent.line == nil && absent.site == .none)
+    let unlistedInputs = [
+      "ERROR:  secret:PRIVATE\nCONTEXT:  PL/pgSQL function private.secret() line 2 at EXECUTE",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM\n"
+        + "unknown final secret:PRIVATE",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.assert_complete(text) line 0 at EXECUTE",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.assert_complete(text) line 513 at EXECUTE",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.assert_complete(text) line 01 at EXECUTE",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.assert_complete(text) line +1 at EXECUTE",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.assert_complete(text) line ١ at EXECUTE",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.assert_complete(text) line 2 at secret:PRIVATE",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT: PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  SQL statement \"SELECT secret:PRIVATE\n"
+        + "PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM\n\"",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.commit_normal() line 7 at RETURN",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM\n"
+        + "PL/pgSQL function owned_bind_stage.transaction_checked(boolean) line 2 at EXECUTE",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM\n ",
+      // CRLF/control/trailing-junk tails are unsupported; no earlier frame is substituted.
+      "ERROR:  canceling statement due to statement timeout\r\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM\r\n",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM\0",
+      "ERROR:  canceling statement due to statement timeout\n"
+        + "CONTEXT:  PL/pgSQL function owned_bind_stage.body() line 4 at PERFORM secret:PRIVATE",
+    ]
+    for input in unlistedInputs {
+      let closed = OwnedRawDriverRenderedContext.classify(input)
+      #expect(closed.state == .unlisted && closed.function == .unlisted)
+      #expect(closed.line == nil && closed.site == .none)
+    }
+    let missingWait = NativeDBCaseQueueWait.classify(nil)
+    let negativeWait = NativeDBCaseQueueWait.classify(.seconds(-1))
+    let finiteWait = NativeDBCaseQueueWait.classify(.seconds(1) + .microseconds(7))
+    let overflowWait = NativeDBCaseQueueWait.classify(.seconds(Int64.max))
+    let negativeFractionWait = NativeDBCaseQueueWait.classify(.nanoseconds(-1))
+    let subMicrosecondWait = NativeDBCaseQueueWait.classify(.nanoseconds(999))
+    let largestWait = NativeDBCaseQueueWait.classify(
+      .seconds(9_223_372_036_854) + .microseconds(775_807))
+    let addOverflowWait = NativeDBCaseQueueWait.classify(
+      .seconds(9_223_372_036_854) + .microseconds(775_808))
+    #expect(missingWait == .none && negativeWait == .none && negativeFractionWait == .none)
+    #expect(subMicrosecondWait == .value(0))
+    #expect(largestWait == .value(Int64.max) && addOverflowWait == .overflow)
+    #expect(finiteWait == .value(1_000_007) && overflowWait == .overflow)
+    #expect(NativeDBCaseQueueWait.maximum(.value(9), .value(4)) == .value(9))
+    #expect(NativeDBCaseQueueWait.maximum(.overflow, .value(4)) == .overflow)
     let rows = try Self.ownedBindRawStageControls()
     #expect(rows.count == 4)
     for row in rows {
@@ -7615,7 +7791,7 @@ extension OwnedProtocolProofWriteTests {
         diagnostic?.phase = .rawInitialImage
         guard try ownedBindImage(f.inspector) == stage.before else { throw FixtureFailure.nativeShape }
         diagnostic?.phase = .rawDriver
-        observed = try ownedBindRawDriver(f, stage: stage, row: row)
+        observed = try ownedBindRawDriver(f, stage: stage, row: row, family: .positive)
         guard try ownedDeferredCatalog(f.inspector) == catalog else { throw FixtureFailure.nativeShape }
         try ownedPositiveBodyShape(
           f.inspector, stage: checkedStage, replacement: replacement, fault: row == .bodyFault)
@@ -9802,7 +9978,7 @@ extension OwnedProtocolProofWriteTests {
         diagnostic?.phase = .rawInitialImage
         guard try ownedBindImage(f.inspector) == stage.before else { throw FixtureFailure.nativeShape }
         diagnostic?.phase = .rawDriver
-        observed = try ownedBindRawDriver(f, stage: stage, row: row)
+        observed = try ownedBindRawDriver(f, stage: stage, row: row, family: .fence)
         guard try ownedDeferredCatalog(f.inspector) == catalog else { throw FixtureFailure.nativeShape }
         try ownedPositiveBodyShape(
           f.inspector, stage: checkedStage, replacement: replacement, fault: row == .bodyFault)

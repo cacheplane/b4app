@@ -229,6 +229,100 @@ private final class MigrationPoolObservation: Sendable {
     return signal()
   }
 
+  private struct TimeoutControllerFacts: Sendable {
+    let entered: Bool
+    let guarded: Result<(Bool, Duration), any Error>
+    let after: Result<[String], any Error>
+    let backupExists: Bool
+    let borrowed: Result<Void, any Error>
+  }
+
+  private struct PreAdmissionControllerFacts: Sendable {
+    let ready: Bool
+    let drained: Result<Bool, any Error>
+    let attempted: Result<Result<Void, any Error>, any Error>
+  }
+
+  // The retained controller advances native release/ACK without a Testing Task resumption.
+  // Its handoff proves operation results, not physical Thread exit.
+  private static func onDrainController<Value: Sendable>(
+    _ operation: @escaping @Sendable () -> Value
+  ) async -> Value {
+    let retained = Mutex<Thread?>(nil)
+    let facts: Value = await withCheckedContinuation { continuation in
+      retained.withLock { thread in
+        thread = Thread { continuation.resume(returning: operation()) }
+        thread?.start()
+      }
+    }
+    retained.withLock { $0 = nil }
+    return facts
+  }
+
+  private static func timeoutController(
+    _ fixture: Fixture, observation: MigrationPoolObservation,
+    stageCalled: @escaping @Sendable () -> Void
+  ) async -> TimeoutControllerFacts {
+    await onDrainController {
+      let release = DispatchSemaphore(value: 0)
+      let borrower = MigrationPoolWork {
+        try fixture.pool.withConnection { _ in
+          observation.borrowerEntered.withLock { $0 = true }
+          guard release.wait(timeout: .now() + .seconds(8)) == .success else {
+            throw FixtureFailure.barrierTimeout
+          }
+        }
+      }
+      let entered = Self.observedOnDrainController { observation.borrowerEntered.withLock { $0 } }
+      let guardCaller = MigrationPoolWork {
+        let start = ContinuousClock.now
+        let drained = fixture.pool.closeForMigration(timeout: .milliseconds(100))
+        let elapsed = start.duration(to: .now)
+        // Test-owned caller exercises the real storage bridge only if the bounded drain succeeds.
+        if drained {
+          let c = try Self.connection(fixture.endpoint)
+          try WorkspaceDatabase.migrateWithBackup(
+            c, endpoint: fixture.endpoint, backupDirectory: fixture.backupDirectory
+          ) { _ in stageCalled() }
+        }
+        return (drained, elapsed)
+      }
+      let guarded = guardCaller.join()
+      let after = Result { try Self.snapshot(fixture.inspector) }
+      let backupExists = FileManager.default.fileExists(atPath: fixture.backupDirectory)
+      release.signal()
+      let borrowed = borrower.join()
+      return TimeoutControllerFacts(
+        entered: entered, guarded: guarded, after: after, backupExists: backupExists, borrowed: borrowed)
+    }
+  }
+
+  private static func preAdmissionController(
+    _ fixture: Fixture, observation: MigrationPoolObservation
+  ) async -> PreAdmissionControllerFacts {
+    await onDrainController {
+      let release = DispatchSemaphore(value: 0)
+      let waiter = MigrationPoolWork {
+        Result {
+          try fixture.pool.withConnection(
+            beforeWaiting: {
+              observation.waiterEntered.withLock { $0 = true }
+              if release.wait(timeout: .now() + .seconds(8)) != .success {
+                observation.waiterTimedOut.withLock { $0 = true }
+              }
+            }
+          ) { _ in observation.bodyCalls.withLock { $0 += 1 } }
+        }
+      }
+      let ready = Self.observedOnDrainController { observation.waiterEntered.withLock { $0 } }
+      let drainer = MigrationPoolWork { fixture.pool.closeForMigration(timeout: .milliseconds(100)) }
+      let drained = drainer.join()
+      release.signal()
+      let attempted = waiter.join()
+      return PreAdmissionControllerFacts(ready: ready, drained: drained, attempted: attempted)
+    }
+  }
+
   private static func drainController(
     _ fixture: Fixture, observation: MigrationPoolObservation, trace: MigrationPoolPhaseTrace
   ) async -> DrainControllerFacts {
@@ -361,37 +455,13 @@ private final class MigrationPoolObservation: Sendable {
     }
     let before = try Self.snapshot(fixture.inspector)
     let observation = MigrationPoolObservation()
-    let release = DispatchSemaphore(value: 0)
     let stageCalls = Mutex(0)
-    let borrower = MigrationPoolWork {
-      try fixture.pool.withConnection { _ in
-        observation.borrowerEntered.withLock { $0 = true }
-        guard release.wait(timeout: .now() + .seconds(8)) == .success else {
-          throw FixtureFailure.barrierTimeout
-        }
-      }
+    let facts = await Self.timeoutController(fixture, observation: observation) {
+      stageCalls.withLock { $0 += 1 }
     }
-    let entered = await Self.observed { observation.borrowerEntered.withLock { $0 } }
-    let guardCaller = MigrationPoolWork {
-      let start = ContinuousClock.now
-      let drained = fixture.pool.closeForMigration(timeout: .milliseconds(100))
-      let elapsed = start.duration(to: .now)
-      // Test-owned caller exercises the real storage bridge only if the bounded drain succeeds.
-      if drained {
-        let c = try Self.connection(fixture.endpoint)
-        try WorkspaceDatabase.migrateWithBackup(
-          c, endpoint: fixture.endpoint, backupDirectory: fixture.backupDirectory
-        ) { _ in stageCalls.withLock { $0 += 1 } }
-      }
-      return (drained, elapsed)
-    }
-    let guarded = guardCaller.join()
-    let after = Result { try Self.snapshot(fixture.inspector) }
-    let backupExists = FileManager.default.fileExists(atPath: fixture.backupDirectory)
-    release.signal()
-    let borrowed = borrower.join()
-    _ = try borrowed.get()
-    let (drained, elapsed) = try guarded.get()
+    let entered = facts.entered, after = facts.after, backupExists = facts.backupExists
+    _ = try facts.borrowed.get()
+    let (drained, elapsed) = try facts.guarded.get()
     #expect(entered)
     #expect(!drained)
     #expect(elapsed < .seconds(1))
@@ -406,24 +476,10 @@ private final class MigrationPoolObservation: Sendable {
     let fixture = try Self.fixture()
     defer { fixture.pool.close() }
     let observation = MigrationPoolObservation()
-    let release = DispatchSemaphore(value: 0)
-    let waiter = MigrationPoolWork {
-      Result {
-        try fixture.pool.withConnection(
-          beforeWaiting: {
-            observation.waiterEntered.withLock { $0 = true }
-            if release.wait(timeout: .now() + .seconds(8)) != .success {
-              observation.waiterTimedOut.withLock { $0 = true }
-            }
-          }
-        ) { _ in observation.bodyCalls.withLock { $0 += 1 } }
-      }
-    }
-    let ready = await Self.observed { observation.waiterEntered.withLock { $0 } }
-    let drainer = MigrationPoolWork { fixture.pool.closeForMigration(timeout: .milliseconds(100)) }
-    let drained = try drainer.value()
-    release.signal()
-    let attempted = try waiter.value()
+    let facts = await Self.preAdmissionController(fixture, observation: observation)
+    let ready = facts.ready
+    let drained = try facts.drained.get()
+    let attempted = try facts.attempted.get()
     #expect(ready)
     #expect(drained)
     #expect(Self.isClosedRefusal(attempted))
