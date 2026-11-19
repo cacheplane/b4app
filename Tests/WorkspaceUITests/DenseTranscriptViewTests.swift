@@ -441,7 +441,7 @@
         createdAt: "2026-11-11T10:00:00Z", updatedAt: "2026-11-11T10:00:00Z")
     }
 
-    /// A reply of `count` paragraphs, one line each: a single newline is a soft break, read as a space.
+    /// A reply of `count` paragraphs, one line each, a blank line between them.
     private func lines(_ count: Int) -> String {
       (1...count).map { "Line \($0) of the streamed reply." }.joined(separator: "\n\n")
     }

@@ -18,11 +18,11 @@ import Testing
         == "table - -\n  head \"a\" | \"b\"\n  row \"1\" | \"\"\n  row \"1\" | \"2\"")
   }
   @Test func aHeaderWithNoDelimiterRowIsAParagraph() {
-    #expect(parsed("| a | b |\nplain") == "p \"| a | b | plain\"")
+    #expect(parsed("| a | b |\nplain") == "p \"| a | b |\\nplain\"")
   }
   @Test func aMismatchedDelimiterRowIsNotATable() {
     #expect(parsed("| a | b |\n|---|").hasPrefix("p "))
-    #expect(parsed("| a | b |\n|---|") == "p \"| a | b | |---|\"")
+    #expect(parsed("| a | b |\n|---|") == "p \"| a | b |\\n|---|\"")
   }
   @Test func escapedPipesAndPipesInCodeDoNotSplit() {
     #expect(
@@ -47,10 +47,10 @@ import Testing
     #expect(table.rows.count == 2000)
   }
   @Test func onlyAParagraphsFirstLineCanBeAHeader() {
-    #expect(parsed("a\n|b|c|\n|-|-|") == "p \"a |b|c| |-|-|\"")
+    #expect(parsed("a\n|b|c|\n|-|-|") == "p \"a\\n|b|c|\\n|-|-|\"")
   }
   @Test func aLazyDelimiterLineInAQuoteDoesNotMakeATable() {
-    #expect(parsed("> |a|b|\n|-|-|") == "quote\n  p \"|a|b| |-|-|\"")
+    #expect(parsed("> |a|b|\n|-|-|") == "quote\n  p \"|a|b|\\n|-|-|\"")
   }
   @Test func aHeadingAFenceAndAQuoteEndATable() {
     #expect(parsed("|a|\n|-|\n|1|\n# h") == "table -\n  head \"a\"\n  row \"1\"\nh1 \"h\"")

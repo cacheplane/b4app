@@ -42,8 +42,8 @@ import Testing
         == "quote\n  h1 \"T\"\n  list ul\n    item\n      p \"a\"\n  quote\n    p \"deep\"")
   }
   @Test func aLazyLineContinuesTheParagraphInAQuoteOrItem() {
-    #expect(parsed("> a\nb") == "quote\n  p \"a b\"")
-    #expect(parsed("- a\nb") == "list ul\n  item\n    p \"a b\"")
+    #expect(parsed("> a\nb") == "quote\n  p \"a\\nb\"")
+    #expect(parsed("- a\nb") == "list ul\n  item\n    p \"a\\nb\"")
   }
   @Test func aParagraphThenAQuoteAreSiblings() {  // cacheplane's `a\n> q` bug
     #expect(parsed("a\n> q") == "p \"a\"\nquote\n  p \"q\"")
@@ -52,7 +52,7 @@ import Testing
     #expect(parsed("- a\n2. b") == "list ul\n  item\n    p \"a\"\nlist ol 2\n  item\n    p \"b\"")
     #expect(parsed("> a\n2. b") == "quote\n  p \"a\"\nlist ol 2\n  item\n    p \"b\"")
     #expect(parsed("- a\n*") == "list ul\n  item\n    p \"a\"\nlist ul\n  item")
-    #expect(parsed("a\n2. b") == "p \"a 2. b\"")
+    #expect(parsed("a\n2. b") == "p \"a\\n2. b\"")
   }
   @Test func aQuoteInsideAnItem() {
     #expect(parsed("- a\n  > q") == "list ul\n  item\n    p \"a\"\n    quote\n      p \"q\"")
@@ -95,7 +95,7 @@ import Testing
     #expect(earlyList.items[0].id == lateList.items[0].id)
     #expect(lateList.items.map(\.id) == ["1.1.0", "1.1.1"])
     #expect(lateList.items[0].blocks.map(\.id) == ["1.1.0.0"])
-    #expect(outline(parser.document).hasSuffix("item\n      p \"z b\""))
+    #expect(outline(parser.document).hasSuffix("item\n      p \"z\\nb\""))
   }
   @Test func anOpenListShowsItsCompletedLines() {
     var parser = MarkdownParser()
