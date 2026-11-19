@@ -7,7 +7,7 @@
 
   @testable import WorkspaceUI
 
-  /// What the transcript draws at each density, measured on hosted views at the reading column's width.
+  /// What the transcript draws, measured on hosted views at the reading column's width.
   @Suite(.serialized) @MainActor struct DenseTranscriptViewTests {
     // MARK: fixtures
 
@@ -88,60 +88,63 @@
     private func row(_ item: DisplayItem) -> TranscriptRow { TranscriptRow(item: item, streams: streams) }
 
     private func line(
-      counted: Int = 4, failed: Int = 0, running: Bool = false, name: String? = nil
-    ) -> DenseTranscript.StepsLine {
-      DenseTranscript.StepsLine(
-        group: "t1", folded: [], counted: counted, failed: failed, declined: 0, running: running,
-        waiting: false, runningName: name)
+      counted: Int = 4, failed: Int = 0, state: DenseTranscript.ActivityLine.State = .ended,
+      name: String? = nil, folded: Int = 1, duration: Int? = nil
+    ) -> DenseTranscript.ActivityLine {
+      DenseTranscript.ActivityLine(
+        group: "t1",
+        folded: (0..<folded).map {
+          item("f\($0)", role: .assistant, type: "reasoning")
+        }, counted: counted, failed: failed, declined: 0, state: state, runningName: name,
+        startedAt: state == .ended ? nil : Timestamp.now(), duration: duration)
     }
 
-    private func lineRow(_ line: DenseTranscript.StepsLine, open: Bool = false) -> StepsLineRow {
-      StepsLineRow(line: line, open: open, toggle: {})
+    private func lineRow(_ line: DenseTranscript.ActivityLine, open: Bool = false) -> ActivityLineRow {
+      ActivityLineRow(line: line, open: open, toggle: {})
     }
 
-    // MARK: density
+    // MARK: the one transcript
 
-    @Test func normalDensityIsTodaysTranscript() {
+    @Test func aTurnIsTheMessageTheLineAndTheAnswer() {
       let items = fiveItems()
-      let content = TranscriptContent(
-        detail: detail(items), streams: streams, dense: false, folds: TranscriptFolds())
-      let reference = column { ForEach(items) { row($0) } }
-      #expect(height(content) == height(reference))
-    }
-
-    @Test func denseIsShorterByTheFoldedSteps() {
-      let items = fiveItems()
-      let normal = height(
-        TranscriptContent(detail: detail(items), streams: streams, dense: false, folds: TranscriptFolds()))
-      let dense = height(
-        TranscriptContent(detail: detail(items), streams: streams, dense: true, folds: TranscriptFolds()))
-      #expect(dense < normal)
+      let drawn = height(TranscriptContent(detail: detail(items), streams: streams, folds: TranscriptFolds()))
       let reference = column {
         row(items[0])
         lineRow(line())
         row(items[4])
       }
-      #expect(dense == height(reference))
-    }
-
-    @Test func anOpenTurnIsAsTallAsNormalPlusTheLine() {
-      let items = fiveItems()
-      let normal = height(
-        TranscriptContent(detail: detail(items), streams: streams, dense: false, folds: TranscriptFolds()))
+      #expect(drawn == height(reference))
       let open = height(
-        TranscriptContent(
-          detail: detail(items), streams: streams, dense: true, folds: TranscriptFolds(open: ["t1"])))
-      #expect(open == normal + height(lineRow(line(), open: true)) + LLA.Space.l)
+        TranscriptContent(detail: detail(items), streams: streams, folds: TranscriptFolds(open: ["t1"])))
+      #expect(drawn < open)
     }
 
-    @Test func aThreadFromHistoryIsDenseToo() {
+    /// Opened, the line and one row per folded item stand close together, between the message and the
+    /// answer.
+    @Test func anOpenTurnIsItsLineAndOneRowPerStep() {
+      let items = fiveItems()
+      let open = height(
+        TranscriptContent(detail: detail(items), streams: streams, folds: TranscriptFolds(open: ["t1"])))
+      let reference = column {
+        row(items[0])
+        VStack(alignment: .leading, spacing: 0) {
+          lineRow(line(), open: true)
+          ForEach(items[1...3]) { item in
+            StepRowView(
+              row: DenseTranscript.stepRow(item, in: .terminal), streams: streams, open: false, toggle: {})
+          }
+        }
+        row(items[4])
+      }
+      #expect(open == height(reference))
+    }
+
+    @Test func aThreadFromHistoryDrawsAsAThreadWithATurn() {
       let withTurn = height(
-        TranscriptContent(
-          detail: detail(fiveItems()), streams: streams, dense: true, folds: TranscriptFolds()))
+        TranscriptContent(detail: detail(fiveItems()), streams: streams, folds: TranscriptFolds()))
       let history = height(
         TranscriptContent(
-          detail: detail(fiveItems(turn: nil), turns: []), streams: streams, dense: true,
-          folds: TranscriptFolds())
+          detail: detail(fiveItems(turn: nil), turns: []), streams: streams, folds: TranscriptFolds())
       )
       #expect(history == withTurn)
     }
@@ -157,50 +160,115 @@
       #expect(!TurnNoteRow(turn: turn(.terminal, .cancelled)).isFailure)
     }
 
-    @Test func aFailedTurnsNoteIsDrawnAtBothDensities() {
+    @Test func aFailedTurnsNoteIsDrawn() {
       let items = Array(fiveItems().prefix(1))
       #expect(TurnNoteRow(turn: turn(.terminal, .failed)).text == "Turn failed.")
-      for dense in [false, true] {
-        func content(_ turn: Turn) -> some View {
-          TranscriptContent(
-            detail: detail(items, turns: [turn]), streams: streams, dense: dense, folds: TranscriptFolds())
-        }
-        let withNote = height(content(turn(.terminal, .failed)))
-        let without = height(content(turn()))
-        #expect(withNote > without, "dense: \(dense)")
+      func content(_ turn: Turn) -> some View {
+        TranscriptContent(detail: detail(items, turns: [turn]), streams: streams, folds: TranscriptFolds())
       }
+      #expect(height(content(turn(.terminal, .failed))) > height(content(turn())))
     }
 
     // MARK: the line
 
     @Test func theLineReadsAsOneElement() {
       #expect(lineRow(line(counted: 4, failed: 1)).label == "4 steps, 1 failed, Show")
+      #expect(lineRow(line(counted: 4, failed: 1, duration: 72)).label == "4 steps, 1 failed, 1m 12s, Show")
       #expect(lineRow(line(counted: 0)).label == "Show working")
-      #expect(lineRow(line(running: true, name: "swift test")).label == "swift test, Show")
+      #expect(lineRow(line(counted: 0, folded: 0)).label == "")
+      #expect(lineRow(line(state: .running, name: "swift test")).label == "swift test, Show")
+      #expect(lineRow(line(state: .running, name: nil, folded: 0)).label == "Working")
       #expect(lineRow(line(counted: 4), open: true).label == "4 steps, Hide")
     }
 
-    @Test func aLongRunningNameKeepsTheLineOneLineHigh() {
-      let long = String(repeating: "x", count: DenseTranscript.nameLimit)
-      let cut = lineRow(line(running: true, name: long))
-      let plain = lineRow(line(running: true, name: nil))
-      #expect(height(cut, width: 320) == height(plain, width: 320))
+    /// A running turn's line is one row high at a phone's width, whatever its step is called.
+    @Test func aLongRunningNameKeepsTheLineOneRowHigh() {
+      let long = String(repeating: "x", count: 200)
+      let cut = lineRow(line(state: .running, name: long))
+      let plain = height(lineRow(line(state: .running, name: nil)), width: 320)
+      #expect(plain >= LLA.Metrics.row)
+      #expect(height(cut, width: 320) == plain)
+      #expect(height(lineRow(line(state: .stopping, folded: 0)), width: 320) == plain)
       // The action word is part of the label whatever the name's length.
       #expect(cut.label.hasSuffix(", Show"))
     }
 
     @Test func onlyTheFailedCountIsInDanger() {
-      typealias Segment = StepsLineRow.Segment
-      let both = DenseTranscript.StepsLine(
-        group: "t1", folded: [], counted: 4, failed: 1, declined: 1, running: false, waiting: false,
-        runningName: nil)
+      typealias Segment = ActivityLineRow.Segment
+      var both = line(counted: 4, failed: 1)
+      both.declined = 1
       #expect(
         lineRow(both).segments == [
           Segment(text: "4 steps", tone: .muted), Segment(text: ", ", tone: .muted),
           Segment(text: "1 failed", tone: .danger), Segment(text: ", ", tone: .muted),
           Segment(text: "1 declined", tone: .muted),
         ])
+      both.duration = 72
+      #expect(
+        lineRow(both).segments.suffix(2) == [
+          Segment(text: " · ", tone: .muted), Segment(text: "1m 12s", tone: .muted),
+        ])
       #expect(lineRow(line(counted: 0)).segments.isEmpty)
+    }
+
+    /// A running line says how long it has run, in words, ahead of its action: the clock speaks it.
+    @Test func aRunningLineSpeaksItsElapsedTime() throws {
+      var running = line(state: .running, name: "swift test")
+      running.startedAt = Timestamp.string(from: Date().addingTimeInterval(-75))
+      let screen = HostedScreen(lineRow(running), size: CGSize(width: 400, height: 60))
+      defer { screen.close() }
+      let heard = screen.elements.compactMap(\.label)
+      #expect(
+        heard.contains("swift test, 1 minute 15 seconds, Show")
+          || heard.contains("swift test, 1 minute 16 seconds, Show"), "\(heard)")
+      // A line that opens says whether it is open, as a step row does, and keeps its spoken word.
+      #expect(screen.value("activity-line") == "Collapsed")
+      // An ended line has no clock to speak.
+      let done = HostedScreen(lineRow(line(duration: 72)), size: CGSize(width: 400, height: 60))
+      defer { done.close() }
+      #expect(!done.elements.compactMap(\.label).contains { $0.hasSuffix("seconds") })
+      let opened = HostedScreen(lineRow(line(duration: 72), open: true), size: CGSize(width: 400, height: 60))
+      defer { opened.close() }
+      #expect(opened.value("activity-line") == "Expanded")
+      #expect(opened.label("activity-line") == "4 steps, 1m 12s, Hide")
+      // A line with nothing to open is no control and has no state.
+      let still = HostedScreen(
+        lineRow(line(state: .running, name: nil, folded: 0)), size: CGSize(width: 400, height: 60))
+      defer { still.close() }
+      #expect(still.value("activity-line") != "Collapsed" && still.value("activity-line") != "Expanded")
+    }
+
+    /// Only a line that has not ended draws a clock.
+    @Test func onlyALineThatHasNotEndedTicks() {
+      for state: DenseTranscript.ActivityLine.State in [.running, .waiting, .stopping] {
+        #expect(ActivityLineRow.ticks(line(state: state)), "\(state)")
+      }
+      #expect(!ActivityLineRow.ticks(line(duration: 72)))
+    }
+
+    /// The clock counts from the turn's start, once a second, and is the only thing that moves.
+    @Test func theClockCountsAndTheProjectionDoesNot() async throws {
+      let began = Timestamp.string(from: Date().addingTimeInterval(-42))
+      let running = Turn(
+        id: "t1", threadId: "clock-th", operationId: "op-t1", status: .running, createdAt: began)
+      // A thread of its own: the projection counter is by thread, and other suites use "th".
+      var first = fiveItems()[0]
+      first.threadId = "clock-th"
+      let screen = HostedScreen(
+        TranscriptContent(
+          detail: detail([first], turns: [running], thread: "clock-th"), streams: streams,
+          folds: TranscriptFolds()),
+        size: CGSize(width: 720, height: 400))
+      defer { screen.close() }
+      let before = DenseTranscript.projections(of: "clock-th")
+      #expect(before > 0)
+      // The running line draws its clock: 42 s since the turn began, spoken in words.
+      #expect(
+        screen.elements.compactMap(\.label).contains {
+          $0.hasPrefix("Working, 4") && $0.hasSuffix(" seconds")
+        })
+      try await Task.sleep(for: .seconds(1.3))
+      #expect(DenseTranscript.projections(of: "clock-th") == before)
     }
 
     @Test func stackedTheActionWordWraps() {
@@ -212,12 +280,10 @@
       #expect(stacked(width: 40) > stacked(width: 400))
 
       // A line with every part wraps as one text: the count is not squeezed by the parts after it.
-      let both = lineRow(
-        DenseTranscript.StepsLine(
-          group: "t1", folded: [], counted: 4, failed: 1, declined: 1, running: false, waiting: false,
-          runningName: nil)
-      )
-      .environment(\.dynamicTypeSize, .accessibility5)
+      var every = line(counted: 4, failed: 1)
+      every.declined = 1
+      let both = lineRow(every)
+        .environment(\.dynamicTypeSize, .accessibility5)
       let oneLine = height(
         Text("Show").font(LLAFont.small).environment(\.dynamicTypeSize, .accessibility5), width: 320)
       // macOS does not scale the type with `dynamicTypeSize`, so 320 pt holds the whole line here; 100 pt
@@ -265,7 +331,7 @@
       let host: Host
       let folds: TranscriptFolds
       var body: some View {
-        TranscriptView(detail: host.detail, streams: host.streams, dense: true, folds: folds)
+        TranscriptView(detail: host.detail, streams: host.streams, folds: folds)
       }
     }
 
@@ -384,14 +450,12 @@
 
     @Observable @MainActor final class Host {
       var detail: ThreadDetail
-      var dense: Bool
       let streams: MessageStreamStore
       /// The reader's own sends in this thread (`WorkspaceModel.ownSends`).
       var sent = 0
       /// Immediate reveal unless a ticker is given: then the reveal is paced and the test fires it.
-      init(_ detail: ThreadDetail, dense: Bool, ticker: ManualTicker? = nil) {
+      init(_ detail: ThreadDetail, ticker: ManualTicker? = nil) {
         self.detail = detail
-        self.dense = dense
         streams =
           ticker.map { ticker in MessageStreamStore(pacing: .paced, makeTicker: { ticker }) }
           ?? MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() })
@@ -409,8 +473,7 @@
       let host: Host
       let folds: TranscriptFolds
       var body: some View {
-        TranscriptView(
-          detail: host.detail, streams: host.streams, dense: host.dense, sent: host.sent, folds: folds)
+        TranscriptView(detail: host.detail, streams: host.streams, sent: host.sent, folds: folds)
       }
     }
 
@@ -424,9 +487,9 @@
       let scroll: NSScrollView
 
       init(
-        _ detail: ThreadDetail, dense: Bool = true, live: [String: String] = [:], ticker: ManualTicker? = nil
+        _ detail: ThreadDetail, live: [String: String] = [:], ticker: ManualTicker? = nil
       ) throws {
-        host = Host(detail, dense: dense, ticker: ticker)
+        host = Host(detail, ticker: ticker)
         for (native, text) in live { host.streams.append(text, to: native) }
         folds = TranscriptFolds()
         let snapshot = SnapshotWindow(
@@ -511,6 +574,41 @@
         try await settle()
       }
 
+      /// The accessibility frames, in screen coordinates (y grows upward), of the elements under the
+      /// transcript that `match` picks. The tree is read with the enhanced interface on, as a screen reader
+      /// has it, and the setting is put back.
+      func frames(_ match: (HostedScreen.Element) -> Bool) -> [CGRect] {
+        let enhanced = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        let old = NSApplication.shared.accessibilityAttributeValue(enhanced)
+        NSApplication.shared.accessibilitySetValue(true, forAttribute: enhanced)
+        defer { NSApplication.shared.accessibilitySetValue(old ?? false, forAttribute: enhanced) }
+        var found: [CGRect] = []
+        func walk(_ element: HostedScreen.Element) {
+          if match(element), let frame = element.frame { found.append(frame) }
+          element.children.forEach(walk)
+        }
+        walk(HostedScreen.Element(object: root))
+        return found
+      }
+
+      /// Presses the first element under the transcript that `match` picks, with the tree read as
+      /// `frames` reads it. False when there is none.
+      func press(_ match: (HostedScreen.Element) -> Bool) -> Bool {
+        let enhanced = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        let old = NSApplication.shared.accessibilityAttributeValue(enhanced)
+        NSApplication.shared.accessibilitySetValue(true, forAttribute: enhanced)
+        defer { NSApplication.shared.accessibilitySetValue(old ?? false, forAttribute: enhanced) }
+        func find(_ element: HostedScreen.Element) -> HostedScreen.Element? {
+          if match(element) { return element }
+          for child in element.children {
+            if let found = find(child) { return found }
+          }
+          return nil
+        }
+        guard let found = find(HostedScreen.Element(object: root)) else { return false }
+        return found.object.accessibilityPerformPress?() ?? false
+      }
+
       /// Written when the transcript was a lazy stack, whose end moved as it was reached; kept as it is.
       func scrollToEnd() async throws {
         try await settle()
@@ -545,6 +643,137 @@
       try await view.until("the turn's steps are gone") { view.documentHeight < open - 1 }
       try await view.settle()
       #expect(abs(view.origin - origin) <= 0.5 || view.atDocumentEnd, "moved by \(view.origin - origin)")
+    }
+
+    /// Opening a step in a thread taller than the window holds the view, and the output is drawn under
+    /// the pressed row without moving it: the view's top edge stays, and so does everything above the
+    /// row's own bottom edge.
+    @Test func openingAStepLeavesItsRowWhereItWas() async throws {
+      let view = try Hosted(twelveTurns())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      view.folds.toggle("t10")
+      try await view.settle()
+      view.folds.release()
+      #expect(!view.folds.holds)
+      let origin = view.origin
+      let closed = view.documentHeight
+      func pressed() -> [CGRect] {
+        view.frames { $0.identifier == "step-row" && ($0.label ?? "").hasSuffix("--filter s10-2") }
+      }
+      let before = try #require(pressed().first, "the pressed row is not in view")
+      #expect(view.frames { $0.identifier == "step-output" }.isEmpty)
+
+      view.folds.toggle("s10-2")
+      #expect(view.folds.holds)
+      try await view.until("the step's output is drawn") { view.documentHeight > closed + 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5, "moved by \(view.origin - origin)")
+      #expect(view.folds.open == ["t10", "s10-2"])
+      // The row's own top edge (maxY: screen coordinates grow upward) is where it was, and the output
+      // stands under the row's bottom edge.
+      let after = try #require(pressed().first, "the pressed row is gone from view")
+      #expect(abs(after.maxY - before.maxY) <= 0.5, "the row moved by \(after.maxY - before.maxY)")
+      let output = try #require(view.frames { $0.identifier == "step-output" }.first, "no output drawn")
+      #expect(
+        output.maxY <= after.minY + 0.5,
+        "the output's top \(output.maxY) is above the row's bottom \(after.minY)")
+    }
+
+    /// "Show all" on an output at the end of the thread holds the view, as every toggle does: the lines
+    /// are drawn under the step's row, which stays where it was, rather than pushing it up.
+    @Test func showingAllOfAnOutputHoldsTheView() async throws {
+      var detail = twelveTurns()
+      let index = try #require(detail.items.firstIndex { $0.id == "s12-4" })
+      detail.items[index] = item(
+        "s12-4", turn: "t12", role: .tool, type: "commandExecution", sequence: 124,
+        payload: [
+          "command": "swift test --filter s12-4", "status": "completed",
+          "aggregatedOutput": .string((1...25).map { "line \($0)" }.joined(separator: "\n")),
+        ])
+      let view = try Hosted(detail)
+      defer { view.close() }
+      view.folds.toggle("t12")
+      view.folds.toggle("s12-4")
+      try await view.settle()
+      try await view.scrollToEnd()
+      view.folds.release()
+      try await view.settle()
+      #expect(!view.folds.holds)
+      #expect(view.atEnd || view.atDocumentEnd)
+      func pressed() -> [CGRect] {
+        view.frames { $0.identifier == "step-row" && ($0.label ?? "").hasSuffix("--filter s12-4") }
+      }
+      let before = try #require(pressed().first, "the step's row is not in view")
+      let closed = view.documentHeight
+
+      #expect(view.press { $0.role == .button && $0.label == "Show all 25 lines" })
+      #expect(view.folds.holds)
+      try await view.until("all the lines are drawn") { view.documentHeight > closed + 1 }
+      try await view.settle()
+      let after = try #require(pressed().first, "the step's row is gone from view")
+      #expect(abs(after.maxY - before.maxY) <= 0.5, "the row moved by \(after.maxY - before.maxY)")
+    }
+
+    /// Twelve ended turns whose tenth turn's second step is a sub-agent's call with two children and
+    /// its own result.
+    private func twelveTurnsWithAnAgent() -> ThreadDetail {
+      var detail = twelveTurns()
+      guard let index = detail.items.firstIndex(where: { $0.id == "s10-2" }) else { return detail }
+      detail.items[index] = item(
+        "s10-2", turn: "t10", role: .tool, type: "toolUse", sequence: 102, native: "n-s10-2",
+        payload: [
+          "name": "Agent", "status": "completed", "output": "Three files.",
+          "input": ["description": "Count Swift files in src", "prompt": "Count them."],
+        ])
+      for (offset, id) in ["c10-1", "c10-2"].enumerated() {
+        detail.items.append(
+          item(
+            id, turn: "t10", role: .tool, type: "commandExecution", sequence: 106 + offset,
+            payload: [
+              "command": .string("ls --filter \(id)"), "status": "completed",
+              "parentNativeItemId": "n-s10-2",
+            ]))
+      }
+      return detail
+    }
+
+    /// Opening a sub-agent inside an opened turn holds the view like any step, leaves its row where it
+    /// was, and draws its children one level further in than its own row, then its own result.
+    @Test func openingAnAgentIndentsItsChildrenOneLevel() async throws {
+      let view = try Hosted(twelveTurnsWithAnAgent())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      view.folds.toggle("t10")
+      try await view.settle()
+      view.folds.release()
+      let origin = view.origin
+      let closed = view.documentHeight
+      func rows(_ suffix: String) -> [CGRect] {
+        view.frames { $0.identifier == "step-row" && ($0.label ?? "").hasSuffix(suffix) }
+      }
+      let before = try #require(
+        rows("Count Swift files in src · 2 steps").first, "the agent row is not in view")
+      #expect(rows("--filter c10-1").isEmpty)
+
+      view.folds.toggle("s10-2")
+      #expect(view.folds.holds)
+      try await view.until("the agent's steps are drawn") { view.documentHeight > closed + 1 }
+      try await view.settle()
+      #expect(abs(view.origin - origin) <= 0.5, "moved by \(view.origin - origin)")
+      let agent = try #require(rows("Count Swift files in src · 2 steps").first, "the agent row is gone")
+      #expect(abs(agent.maxY - before.maxY) <= 0.5, "the row moved by \(agent.maxY - before.maxY)")
+      let first = try #require(rows("--filter c10-1").first, "the first child is not drawn")
+      let last = try #require(rows("--filter c10-2").first, "the second child is not drawn")
+      #expect(abs(first.minX - agent.minX - StepRowView.level) <= 0.5, "\(first.minX) \(agent.minX)")
+      #expect(abs(last.minX - first.minX) <= 0.5)
+      // The children stand under the agent's row, and its own result under the last of them.
+      #expect(first.maxY <= agent.minY + 0.5)
+      let output = try #require(view.frames { $0.identifier == "step-output" }.first, "no result drawn")
+      #expect(
+        output.maxY <= last.minY + 0.5, "the result's top \(output.maxY), the child's bottom \(last.minY)")
     }
 
     @Test func aStreamDoesNotMoveAnOpenedTurn() async throws {
@@ -695,25 +924,6 @@
       #expect(abs(view.origin - origin) <= 0.5, "moved by \(view.origin - origin)")
     }
 
-    @Test func switchingDensityLetsGoOfTheHold() async throws {
-      let view = try Hosted(twelveAndARunningTurn(), live: Self.starting)
-      defer { view.close() }
-      try await view.scrollToEnd()
-      try await view.scroll(to: view.origin - 300)
-      view.folds.toggle("t10")
-      try await view.settle()
-      #expect(view.folds.holds)
-
-      view.host.dense = false
-      try await view.settle()
-      let height = view.documentHeight
-      view.host.live("n13", lines(20))
-      try await view.until("the reply grows") { view.documentHeight > height + 1 }
-      try await view.settle()
-      #expect(view.atEnd, "below the viewport: \(view.below)")
-      #expect(!view.folds.holds)
-    }
-
     @Test func aShortThreadStillFollowsItsStream() async throws {
       var detail = ThreadDetail(thread: conversation(), turns: [turn(1, .running)], items: [], requests: [])
       detail.items =
@@ -782,7 +992,7 @@
 
     /// A thread whose first reply is several windows tall opens at its end, with the messages after
     /// the reply laid out. Run by itself too: a lazy stack passed this only after other tests had run.
-    @Test(arguments: [true, false]) func aThreadWithAVeryTallReplyOpensAtItsEnd(dense: Bool) async throws {
+    @Test func aThreadWithAVeryTallReplyOpensAtItsEnd() async throws {
       let detail = ThreadDetail(
         thread: conversation(), turns: [turn(1, .running)],
         items: [
@@ -791,7 +1001,7 @@
           message("m2", turn: "t1", sequence: 3, text: "Run them like this."),
           message("m3", turn: "t1", sequence: 4, text: "End of the reading fixture."),
         ], requests: [])
-      let view = try Hosted(detail, dense: dense)
+      let view = try Hosted(detail)
       defer { view.close() }
       try await view.settle()
       #expect(view.documentHeight > 2_000, "the document is \(view.documentHeight) pt tall")
@@ -802,13 +1012,13 @@
     /// A thread longer than a page draws its latest page and opens at its end; "Show earlier" draws
     /// a page more above and leaves the row that stood first where it was.
     @Test func aLongThreadDrawsItsLatestPageAndShowsEarlierInPlace() async throws {
-      let turns = 60
+      let turns = 120
       let detail = ThreadDetail(
         thread: conversation(), turns: (1...turns).map { turn($0) },
         items: (1...turns).flatMap { endedTurn($0, from: $0 * 10) }, requests: [])
-      let all = DenseTranscript.plain(items: detail.items, turns: detail.turns)
+      let all = DenseTranscript.entries(items: detail.items, turns: detail.turns, open: [])
       #expect(all.count == 360)
-      let view = try Hosted(detail, dense: false)
+      let view = try Hosted(detail)
       defer { view.close() }
       try await view.settle()
       #expect(view.atEnd || view.atDocumentEnd, "below the viewport: \(view.below)")
@@ -834,9 +1044,9 @@
     // MARK: reading back (F14)
 
     /// A reader who scrolled back, with nothing opened, is left where they are while the reply streams
-    /// and a step arrives; going back to the end follows the stream again. Both densities.
-    @Test(arguments: [true, false]) func readingBackIsNotPulledToTheEndByTheStream(dense: Bool) async throws {
-      let view = try Hosted(twelveAndARunningTurn(), dense: dense, live: Self.starting)
+    /// and a step arrives; going back to the end follows the stream again.
+    @Test func readingBackIsNotPulledToTheEndByTheStream() async throws {
+      let view = try Hosted(twelveAndARunningTurn(), live: Self.starting)
       defer { view.close() }
       try await view.scrollToEnd()
       try await view.scroll(to: view.origin - 300)
@@ -859,7 +1069,7 @@
 
     /// The turn the reader was not following ends: the view stays where they are reading.
     @Test func readingBackIsNotPulledToTheEndWhenTheTurnEnds() async throws {
-      let view = try Hosted(twelveAndARunningTurn(), dense: false, live: Self.starting)
+      let view = try Hosted(twelveAndARunningTurn(), live: Self.starting)
       defer { view.close() }
       try await view.scrollToEnd()
       try await view.scroll(to: view.origin - 300)
@@ -892,7 +1102,7 @@
     /// A reader at the end stays there while a reply taller than the window is revealed tick by tick.
     @Test func aPinnedReaderStaysAtTheEndThroughAPacedReveal() async throws {
       let ticker = ManualTicker()
-      let view = try Hosted(twelveAndARunningTurn(), dense: false, ticker: ticker)
+      let view = try Hosted(twelveAndARunningTurn(), ticker: ticker)
       defer { view.close() }
       try await view.scrollToEnd()
       try await paced(view)
@@ -915,7 +1125,7 @@
     /// A reader who scrolled back is left where they are while a reply is revealed tick by tick.
     @Test func aHeldReaderIsNotMovedByAPacedReveal() async throws {
       let ticker = ManualTicker()
-      let view = try Hosted(twelveAndARunningTurn(), dense: false, ticker: ticker)
+      let view = try Hosted(twelveAndARunningTurn(), ticker: ticker)
       defer { view.close() }
       try await view.scrollToEnd()
       try await view.scroll(to: view.origin - 300)
@@ -935,8 +1145,8 @@
       #expect(view.documentHeight > height + 1)
     }
 
-    @Test func withNothingToggledNormalDensityScrollsAsToday() async throws {
-      let view = try Hosted(twelveAndARunningTurn(), dense: false, live: Self.starting)
+    @Test func withNothingToggledTheTranscriptFollowsItsStream() async throws {
+      let view = try Hosted(twelveAndARunningTurn(), live: Self.starting)
       defer { view.close() }
       try await view.scrollToEnd()
       let height = view.documentHeight

@@ -3,7 +3,7 @@ import WorkspaceProtocol
 
 @testable import WorkspaceUI
 
-/// A turn's plan or task list: where each density puts it, how an ended turn settles it, and what the
+/// A turn's plan or task list: where it goes, how an ended turn settles it, and what the
 /// row says. Decided without SwiftUI.
 @Suite struct TaskListRowTests {
   private func item(
@@ -37,19 +37,24 @@ import WorkspaceProtocol
     DenseTranscript.entries(items: items, turns: [turn], open: open)
   }
   private func marks(_ id: String = "p1", in entries: [DenseTranscript.Entry]) -> [TaskStepMark]? {
-    for case .item(let item) in entries where item.id == id {
-      return TaskListDisplay(item: item)?.steps.map(\.mark)
+    // A running turn's list stands outside the fold; an ended turn's is one of its opened rows.
+    for entry in entries {
+      switch entry {
+      case .item(let item) where item.id == id: return TaskListDisplay(item: item)?.steps.map(\.mark)
+      case .step(let row) where row.id == id: return TaskListDisplay(item: row.item)?.steps.map(\.mark)
+      default: continue
+      }
     }
     return nil
   }
-  private func line(_ entries: [DenseTranscript.Entry]) -> DenseTranscript.StepsLine? {
+  private func line(_ entries: [DenseTranscript.Entry]) -> DenseTranscript.ActivityLine? {
     for case .line(let line) in entries { return line }
     return nil
   }
 
   // MARK: dense
 
-  @Test func aRunningTurnShowsItsListAfterTheStepsLine() throws {
+  @Test func aRunningTurnShowsItsListAfterItsLine() throws {
     let result = dense([user("u1"), command("k1"), list([.completed, .inProgress])], turn(.running, nil))
     #expect(ids(result) == ["u1", "steps-t1", "p1"])
     #expect(try #require(line(result)).counted == 1)
@@ -65,19 +70,15 @@ import WorkspaceProtocol
     #expect(ids(dense(items, turn(), open: ["t1"])) == ["u1", "steps-t1", "k1", "p1", "m1"])
   }
 
-  /// The list says the turn is working; the running line would say it twice.
-  @Test func aRunningTurnWithOnlyAListDrawsTheListAlone() {
-    #expect(ids(dense([user("u1"), list([.inProgress, .pending])], turn(.running, nil))) == ["u1", "p1"])
-  }
-
-  /// A list with no step in progress does not say the turn is working, so the running line does.
-  @Test func aRunningTurnWhoseListHasNoStepInProgressSaysItIsWorking() {
+  /// A running turn always has its line, whatever its list says: the list follows it.
+  @Test func aRunningTurnsListFollowsItsLine() {
     let running = turn(.running, nil)
-    #expect(ids(dense([user("u1"), list([.pending, .pending])], running)) == ["u1", "running-t1", "p1"])
+    #expect(ids(dense([user("u1"), list([.inProgress, .pending])], running)) == ["u1", "steps-t1", "p1"])
+    #expect(ids(dense([user("u1"), list([.pending, .pending])], running)) == ["u1", "steps-t1", "p1"])
     #expect(
-      ids(dense([user("u1"), list([.completed, .completed])], running)) == ["u1", "running-t1", "p1"])
-    // A message beside the list is the turn's own word, as it is without a list.
-    #expect(ids(dense([user("u1"), list([.pending]), message("m1")], running)) == ["u1", "p1", "m1"])
+      ids(dense([user("u1"), list([.completed, .completed])], running)) == ["u1", "steps-t1", "p1"])
+    #expect(
+      ids(dense([user("u1"), list([.pending]), message("m1")], running)) == ["u1", "steps-t1", "p1", "m1"])
   }
 
   @Test func aListIsNotACountedStep() {
@@ -85,38 +86,27 @@ import WorkspaceProtocol
     #expect(DenseTranscript.title(of: list([.pending])) == "Plan")
   }
 
-  // MARK: normal
-
-  @Test func aListStandsWhereItWasWritten() {
-    let items = [user("u1"), list([.completed, .pending]), command("k1"), message("m1")]
-    #expect(ids(DenseTranscript.plain(items: items, turns: [turn()])) == ["u1", "p1", "k1", "m1"])
-  }
-
-  // MARK: both
-
-  @Test func anEmptyListIsNotDrawnAtEitherDensity() {
+  @Test func anEmptyListIsNotDrawn() {
     let items = [user("u1"), list([]), message("m1")]
-    #expect(ids(DenseTranscript.plain(items: items, turns: [turn()])) == ["u1", "m1"])
     #expect(ids(dense(items, turn(), open: ["t1"])) == ["u1", "m1"])
-    #expect(ids(dense([user("u1"), list([])], turn(.running, nil))) == ["u1", "running-t1"])
+    #expect(ids(dense([user("u1"), list([])], turn(.running, nil))) == ["u1", "steps-t1"])
   }
 
   @Test(arguments: [TurnOutcome.completed, .cancelled, .failed])
   func aStepInProgressWhenTheTurnEndedIsUnfinished(_ outcome: TurnOutcome) {
     let items = [user("u1"), list([.completed, .inProgress, .pending])]
     let ended = turn(.terminal, outcome)
-    #expect(marks(in: DenseTranscript.plain(items: items, turns: [ended])) == [.done, .unfinished, .pending])
     #expect(marks(in: dense(items, ended, open: ["t1"])) == [.done, .unfinished, .pending])
   }
 
   @Test func aStepInProgressWhileReconcilingIsUnknown() {
     let items = [user("u1"), list([.inProgress])]
-    #expect(marks(in: DenseTranscript.plain(items: items, turns: [turn(.reconciling, nil)])) == [.unknown])
+    #expect(marks(in: dense(items, turn(.reconciling, nil), open: ["t1"])) == [.unknown])
   }
 
   @Test func aRunningTurnLeavesAStepInProgress() {
     let items = [user("u1"), list([.inProgress])]
-    #expect(marks(in: DenseTranscript.plain(items: items, turns: [turn(.running, nil)])) == [.running])
+    #expect(marks(in: dense(items, turn(.running, nil), open: ["t1"])) == [.running])
   }
 
   // MARK: the row

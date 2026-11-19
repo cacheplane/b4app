@@ -231,6 +231,31 @@ class WorkflowTests(unittest.TestCase):
                         and node.name == "prepare"]
         self.assertEqual(len(preparations), 1)
         prepare = preparations[0]
+        # Keep the literal package pins coupled to the guard that reads and hashes each root file.
+        import hashlib
+        package_loops = [node for node in ast.walk(prepare) if isinstance(node, ast.For)
+                         and isinstance(node.target, ast.Tuple) and isinstance(node.iter, ast.Tuple)]
+        self.assertEqual(len(package_loops), 1)
+        package_loop = package_loops[0]
+        self.assertIn(package_loop, prepare.body)
+        target = ast.parse("for relative, expected in (): pass").body[0].target
+        self.assertEqual(ast.dump(package_loop.target), ast.dump(target))
+        self.assertEqual(len(package_loop.iter.elts), 2)
+        for entry in package_loop.iter.elts:
+            self.assertIsInstance(entry, ast.Tuple)
+            self.assertEqual(len(entry.elts), 2)
+            self.assertTrue(all(isinstance(value, ast.Constant) and isinstance(value.value, str)
+                                for value in entry.elts))
+        package_pins = ast.literal_eval(package_loop.iter)
+        self.assertEqual([name for name, digest in package_pins], ["Package.swift", "Package.resolved"])
+        guard = ast.parse(
+            "_, content = read_regular(checkout / relative, checkout, MAX_INPUT)\n"
+            'require(hashlib.sha256(content).hexdigest() == expected, "package_pin")').body
+        self.assertEqual([ast.dump(node) for node in package_loop.body], [ast.dump(node) for node in guard])
+        self.assertFalse(package_loop.orelse)
+        for relative, expected_digest in package_pins:
+            self.assertRegex(expected_digest, r"^[0-9a-f]{64}$")
+            self.assertEqual(expected_digest, hashlib.sha256((root / relative).read_bytes()).hexdigest(), relative)
         profiles = [node for node in ast.walk(prepare) if isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Name) and node.func.id == "emit" and node.args
                     and isinstance(node.args[0], ast.Constant)

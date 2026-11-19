@@ -100,7 +100,12 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     allow.click()
     let toolState = try await waitForTurns(fixture, id: currentId, completed: 1, cancelled: 1)
     try requireElement(text("Command completed.", in: app), in: app)
-    let tool = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "ls -la"))
+    // The turn's work is one closed line; its step is a row once the line is opened.
+    let line = app.buttons["activity-line"].firstMatch
+    try requireElement(line, in: app)
+    line.click()
+    let tool = app.descendants(matching: .any).matching(identifier: "step-row").matching(
+      NSPredicate(format: "label CONTAINS %@", "ls -la"))
     try requireElement(tool.firstMatch, in: app)
     XCTAssertEqual(tool.count, 1)
     tool.firstMatch.click()
@@ -118,10 +123,14 @@ final class HistoricalCacheSmokeTests: XCTestCase {
 
     // Reading the old cache never resumes, retries, cancels or abandons its unknown turn.
     try select("Historical B4 cache fixture", draft: Self.historicalDraft, app: app)
+    let historicalLine = app.buttons["activity-line"].firstMatch
+    try requireElement(historicalLine, in: app)
+    historicalLine.click()
     try requireElement(text("Historical cached text remains readable.", in: app), in: app)
     try requireElement(app.descendants(matching: .any).matching(identifier: "task-list").firstMatch, in: app)
     try requireElement(
-      app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "cached lookup")).firstMatch,
+      app.descendants(matching: .any).matching(identifier: "step-row").matching(
+        NSPredicate(format: "label CONTAINS %@", "cached lookup")).firstMatch,
       in: app)
     XCTAssertEqual(composer.value as? String, Self.historicalDraft)
     let historicalComposerWasEnabled = composer.isEnabled

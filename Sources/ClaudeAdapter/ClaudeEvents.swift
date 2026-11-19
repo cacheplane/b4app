@@ -19,6 +19,10 @@ public struct ClaudeTurnTracker: Sendable {
   /// frame's position is not the block's stream index; a completion takes the first of its type here.
   private var unfinished: [String: [(type: String, itemId: String)]] = [:]
   private var toolUses: [String: (name: String, input: JSONValue)] = [:]
+  /// The tool call that started the sub-agent a tool use belongs to, by tool use id: every write of the
+  /// item names it, so the app draws the step under that call. Kept past the result, since a refusal
+  /// can close the use again; cleared when the turn ends.
+  private var toolParents: [String: String] = [:]
   /// Tool uses whose permission the app refused (the user's "Deny", a decline, a stop). Claude Code
   /// reports each as an error result; it is the user's refusal, not the tool's failure (D-227).
   private var declinedToolUses: Set<String> = []
@@ -66,9 +70,12 @@ public struct ClaudeTurnTracker: Sendable {
       kind: kind, connectionId: connectionId, nativeIds: ids, adapterGeneration: generation, payload: payload)
   }
 
-  private func item(_ type: String, role: DisplayItemRole, _ body: [String: JSONValue]) -> JSONValue {
+  private func item(
+    _ type: String, role: DisplayItemRole, _ body: [String: JSONValue], parent: String? = nil
+  ) -> JSONValue {
     var merged = body
     merged["type"] = .string(type)
+    if let parent { merged["parentNativeItemId"] = .string(parent) }
     return ["item": .object(merged), "role": .string(role.rawValue), "type": .string(type)]
   }
 
@@ -81,7 +88,7 @@ public struct ClaudeTurnTracker: Sendable {
     if let command = use?.input["command"]?.stringValue { body["command"] = .string(command) }
     if let path = use?.input["file_path"]?.stringValue { body["path"] = .string(path) }
     body.merge(extra) { _, new in new }
-    return item("toolUse", role: .tool, body)
+    return item("toolUse", role: .tool, body, parent: toolParents[id])
   }
 
   // MARK: - Frames
@@ -143,7 +150,7 @@ public struct ClaudeTurnTracker: Sendable {
         return []
       }
     case .streamEvent(let value):
-      return streamEvent(value["event"] ?? [:])
+      return streamEvent(value["event"] ?? [:], parent: value["parent_tool_use_id"]?.stringValue)
     case .assistant(let value):
       return assistant(value)
     case .user(let value):
@@ -165,7 +172,10 @@ public struct ClaudeTurnTracker: Sendable {
     }
   }
 
-  private mutating func streamEvent(_ raw: JSONValue) -> [AdapterEvent] {
+  /// `parent` is the call that started the sub-agent this frame is from, if any. Claude Code was not
+  /// seen to stream a sub-agent (2.1.282); were it to, the items carry the parent and its text is not
+  /// streamed, as a sub-agent's text is not the reply.
+  private mutating func streamEvent(_ raw: JSONValue, parent: String?) -> [AdapterEvent] {
     switch raw["type"]?.stringValue {
     case "message_start":
       currentMessageId = raw["message"]?["id"]?.stringValue
@@ -181,25 +191,33 @@ public struct ClaudeTurnTracker: Sendable {
         let itemId = "\(messageId)#\(index)"
         blocks[index] = ("text", itemId)
         unfinished[messageId, default: []].append(("text", itemId))
-        return [event(.messageStarted, item("agentMessage", role: .assistant, ["text": ""]), itemId: itemId)]
+        return [
+          event(
+            .messageStarted, item("agentMessage", role: .assistant, ["text": ""], parent: parent),
+            itemId: itemId)
+        ]
       case "tool_use":
         guard let id = block["id"]?.stringValue else { return [] }
         // A task tool is never a row: its `assistant` frame brings the input the list is made from.
         if let name = block["name"]?.stringValue, ClaudeTaskFold.toolNames.contains(name) { return [] }
         toolUses[id] = (block["name"]?.stringValue ?? "tool", .null)
+        toolParents[id] = parent
         blocks[index] = ("tool_use", id)
         return [event(.toolStarted, toolItem(id: id, status: "inProgress"), itemId: id)]
       case "thinking":
         let itemId = "\(messageId)#\(index)"
         blocks[index] = ("thinking", itemId)
         unfinished[messageId, default: []].append(("thinking", itemId))
-        return [event(.toolStarted, item("thinking", role: .assistant, ["text": ""]), itemId: itemId)]
+        return [
+          event(
+            .toolStarted, item("thinking", role: .assistant, ["text": ""], parent: parent), itemId: itemId)
+        ]
       default:
         return []
       }
     case "content_block_delta":
-      guard let index = raw["index"]?.numberValue.map(Int.init), let block = blocks[index],
-        block.type == "text",
+      guard parent == nil, let index = raw["index"]?.numberValue.map(Int.init),
+        let block = blocks[index], block.type == "text",
         let delta = raw["delta"]?["text"]?.stringValue
       else { return [] }
       return [event(.messageDelta, ["delta": .string(delta)], itemId: block.itemId)]
@@ -212,6 +230,7 @@ public struct ClaudeTurnTracker: Sendable {
     var events: [AdapterEvent] = []
     let message = value["message"] ?? [:]
     let messageId = message["id"]?.stringValue ?? currentMessageId ?? "message"
+    let parent = value["parent_tool_use_id"]?.stringValue
     if let errorName = value["error"]?.stringValue {
       let code = Self.errorCode(forAssistantError: errorName)
       lastErrorCode = code
@@ -230,12 +249,13 @@ public struct ClaudeTurnTracker: Sendable {
         let itemId = completedItemId(type: "text", messageId: messageId, index: index)
         events.append(
           event(
-            .messageCompleted, item("agentMessage", role: .assistant, ["text": block["text"] ?? ""]),
+            .messageCompleted,
+            item("agentMessage", role: .assistant, ["text": block["text"] ?? ""], parent: parent),
             itemId: itemId))
       case "tool_use":
         guard let id = block["id"]?.stringValue else { continue }
         if let name = block["name"]?.stringValue, ClaudeTaskFold.toolNames.contains(name) {
-          if value["parent_tool_use_id"]?.stringValue != nil {
+          if parent != nil {
             subAgentTaskUses.insert(id)
             continue
           }
@@ -243,12 +263,14 @@ public struct ClaudeTurnTracker: Sendable {
           continue
         }
         toolUses[id] = (block["name"]?.stringValue ?? "tool", block["input"] ?? .null)
+        toolParents[id] = parent
         events.append(event(.toolStarted, toolItem(id: id, status: "inProgress"), itemId: id))
       case "thinking":
         let itemId = completedItemId(type: "thinking", messageId: messageId, index: index)
         events.append(
           event(
-            .toolCompleted, item("thinking", role: .assistant, ["text": block["thinking"] ?? ""]),
+            .toolCompleted,
+            item("thinking", role: .assistant, ["text": block["thinking"] ?? ""], parent: parent),
             itemId: itemId))
       default:
         continue
@@ -286,6 +308,13 @@ public struct ClaudeTurnTracker: Sendable {
           events.append(taskListEvent(list))
         }
         continue
+      }
+      // A result whose use was never seen still names the sub-agent its own frame comes from. A use that
+      // was seen keeps what its own frame said, a parent or none; one already closed keeps its parent.
+      if toolUses[id] == nil, toolParents[id] == nil,
+        let frameParent = value["parent_tool_use_id"]?.stringValue
+      {
+        toolParents[id] = frameParent
       }
       let declined = declinedToolUses.remove(id) != nil
       let extra: [String: JSONValue] = [
@@ -366,6 +395,7 @@ public struct ClaudeTurnTracker: Sendable {
     // Claude Code's own record of what it refused this turn; `permission_denied` frames are advisory.
     let redeclined = result.permissionDenials.flatMap { redecline($0) }
     failedToolUses = [:]
+    toolParents = [:]
     let finished = event(.turnFinished, .object(payload))
     activeTurnUuid = nil
     interruptRequested = false

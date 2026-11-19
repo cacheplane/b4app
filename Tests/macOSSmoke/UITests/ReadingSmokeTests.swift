@@ -29,10 +29,11 @@ final class ReadingSmokeTests: XCTestCase {
     let last = text("End of the reading fixture.", in: app)
     try requireElement(last, in: app)
     XCTAssertTrue(transcript.frame.intersects(last.frame), "the thread did not open at its end")
-    // 203 rows: the latest 150 are drawn, and the first reply is not among them.
+    // 203 rows (100 questions and replies, the last question, its activity line and its answer): the
+    // latest 150 are drawn from the question before them, and the first reply is not among them.
     let earlier = app.buttons["show-earlier"]
     try requireElement(earlier, in: app)
-    XCTAssertEqual(earlier.label, "Show earlier, 53 more")
+    XCTAssertEqual(earlier.label, "Show earlier, 52 more")
     let firstReply = text("Earlier reply 1 of the reading fixture.", in: app)
     XCTAssertFalse(firstReply.exists)
 
@@ -42,8 +43,8 @@ final class ReadingSmokeTests: XCTestCase {
       transcript.scroll(byDeltaX: 0, deltaY: 3_000)
       return false
     }
-    // The question and replies 1 to 52 are left out: reply 53 is the first row drawn.
-    let reading = text("Earlier reply 53 of the reading fixture.", in: app)
+    // Questions and replies 1 to 26 are left out: question 27 is the first row drawn.
+    let reading = text("Earlier reply 27 of the reading fixture.", in: app)
     try requireElement(reading, in: app)
     XCTAssertTrue(transcript.frame.intersects(reading.frame))
     shot(app, "long-at-the-top")

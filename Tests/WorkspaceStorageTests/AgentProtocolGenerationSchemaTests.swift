@@ -31,11 +31,13 @@ import WorkspaceProtocol
       connectionString:
         "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
     try body(Fixture(endpoint: endpoint, raw: raw, root: root))
-    #expect(
+    let observation = ApplicationBackendObservation.observe {
       try raw.execute(
         "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
         [endpoint.database]
-      ).rows.isEmpty)
+      ).rows.count
+    }
+    #expect(observation.accepted, Comment(rawValue: observation.diagnostic))
   }
 
   private static func seed(_ f: Fixture, count: Int, oldThirteen: Bool = false) throws {

@@ -28,15 +28,15 @@ public enum ThreadRowState: String, Sendable, Equatable, CaseIterable {
 public enum SettingsPage: String, CaseIterable, Identifiable, Sendable {
   case account, display, connections, servers, remoteAccess, diagnostics
 
-  /// The pages this platform shows. "Account" comes first (sign-in plan, Task 12). "Display" is on both
-  /// (Dense changes a thread on the phone too). "Remote access" is the Mac's: it mints the pairing code
-  /// and holds itself awake, neither of which the phone does. The phone's Account page reads its host's
-  /// account (Task 14).
+  /// The pages this platform shows. "Account" comes first (sign-in plan, Task 12). "Display" is the
+  /// Mac's: Dense changes its sidebar rows and composer, and the phone has neither. "Remote access" is
+  /// the Mac's: it mints the pairing code and holds itself awake, neither of which the phone does. The
+  /// phone's Account page reads its host's account (Task 14).
   nonisolated public static var allCases: [SettingsPage] {
     #if os(macOS)
       [.account, .display, .connections, .servers, .remoteAccess, .diagnostics]
     #else
-      [.account, .display, .connections, .servers, .diagnostics]
+      [.account, .connections, .servers, .diagnostics]
     #endif
   }
 
@@ -1300,9 +1300,6 @@ public final class WorkspaceModel {
   /// Whether the Mac's sidebar draws the threads that do not need the owner as tight rows: Dense, on the
   /// Mac. The phone (which relays through the hub) keeps its 44 pt rows at either density.
   var tightQuietRows: Bool { viewSettings.density == .dense && !relaysThroughHub }
-
-  /// Dense draws a thread as message, line, answer. Both platforms.
-  var denseThread: Bool { viewSettings.density == .dense }
 
   /// Dense draws the composer with one line in place of its row of pickers. The Mac only: the phone and
   /// the iPad keep their pickers at either density.

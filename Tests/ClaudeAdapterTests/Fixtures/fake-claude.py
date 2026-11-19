@@ -3,7 +3,9 @@
 recorded from Claude Code 2.1.282 (docs/research/2026-10-30-claude-cli-stream-protocol.md and the
 2026-10-31 probe). Behavior is scripted by the user text: "tool" asks for a Bash permission,
 "question" asks an AskUserQuestion, "elicitation" sends an MCP elicitation, "hang" waits for an
-interrupt, "crash" exits mid-turn, "fail" returns an error result. Resuming session "missing" fails as
+interrupt, "crash" exits mid-turn, "fail" returns an error result, "subagent" replays subagent-run.jsonl (a turn in which one Agent call runs
+two tools, recorded on 2.1.282) frame by frame, and writes only the parent's lines to the transcript, as the
+real CLI does. Resuming session "missing" fails as
 the real CLI does; "missing-late" fails the same way, but its stderr line is written by a grandchild
 300 ms after the fake has exited (stderr ends only then). Never a substitute for the real CLI in
 anything the docs call live-tested. FAKE_CLAUDE_LOG=<file> appends one JSON line for the argv at
@@ -256,6 +258,21 @@ while True:
                 break
         # As Claude Code 2.1.282 does live: a requested stop is an error result with reason aborted_streaming.
         result(user_uuid, is_error=True, text="Counting 1", terminal_reason="aborted_streaming", subtype="error_during_execution")
+        continue
+    if "subagent" in text:
+        # The recorded frames in order, less its `system/init` (this fake sent its own above). A frame
+        # that names a parent call is a sub-agent's; its lines are not in the session's transcript.
+        recording = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subagent-run.jsonl")
+        with open(recording) as f:
+            for line in f:
+                frame = json.loads(line)
+                if frame.get("type") == "system" and frame.get("subtype") == "init":
+                    continue
+                if "session_id" in frame:
+                    frame["session_id"] = session_id
+                send(frame)
+                if frame.get("type") in ("assistant", "user") and not frame.get("parent_tool_use_id"):
+                    record({"type": frame["type"], "uuid": frame.get("uuid") or next_id("uuid"), "message": frame["message"]})
         continue
     reply = "Hello from fake Claude."
     if "tool" in text:

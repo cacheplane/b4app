@@ -46,3 +46,4 @@ docs/verification/index.md
 
 # Brainstorming mockups (superpowers visual companion)
 .superpowers/
+__pycache__/

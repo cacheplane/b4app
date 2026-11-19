@@ -81,21 +81,75 @@ import WorkspaceProtocol
     }
   }
 
+  private enum OwnedRawDriverNativeReason: String {
+    case none, statementTimeout, userRequest, lockTimeout, unlisted
+
+    static func classify(_ error: PostgresError) -> Self {
+      let firstLine = error.message.components(separatedBy: "\n").first
+      if error.sqlState == "57014" {
+        if firstLine == "ERROR:  canceling statement due to statement timeout" {
+          return .statementTimeout
+        }
+        if firstLine == "ERROR:  canceling statement due to user request" {
+          return .userRequest
+        }
+      } else if error.sqlState == "55P03",
+        firstLine == "ERROR:  canceling statement due to lock timeout"
+      {
+        return .lockTimeout
+      }
+      return .unlisted
+    }
+  }
+
+  private enum OwnedRawDriverElapsedMicroseconds {
+    case none, overflow
+    case value(Int64)
+
+    static func classify(_ elapsed: Duration?) -> Self {
+      guard let elapsed else { return .none }
+      let components = elapsed.components
+      guard components.seconds >= 0, components.attoseconds >= 0 else { return .none }
+      let (whole, multiplyOverflow) = components.seconds.multipliedReportingOverflow(by: 1_000_000)
+      guard !multiplyOverflow else { return .overflow }
+      let fraction = components.attoseconds / 1_000_000_000_000
+      let (microseconds, addOverflow) = whole.addingReportingOverflow(fraction)
+      guard !addOverflow else { return .overflow }
+      return .value(microseconds)
+    }
+
+    var fieldValue: String {
+      switch self {
+      case .none: return "none"
+      case .overflow: return "overflow"
+      case .value(let microseconds): return String(microseconds)
+      }
+    }
+  }
+
   /// No arbitrary native error, message, SQL, image, reference, or fixture is retained here.
   private struct OwnedRawDriverDiagnostic: Error {
     let row: OwnedBindRawControl
     let phase: OwnedRawDriverPhase
     let category: OwnedRawDriverCategory
     let sqlState: OwnedRawDriverSQLState
+    let nativeReason: OwnedRawDriverNativeReason
+    let elapsedMicroseconds: OwnedRawDriverElapsedMicroseconds
 
-    init(row: OwnedBindRawControl, phase: OwnedRawDriverPhase, error: any Error) {
+    init(
+      row: OwnedBindRawControl, phase: OwnedRawDriverPhase, error: any Error,
+      elapsed: Duration? = nil
+    ) {
       self.row = row
       self.phase = phase
+      elapsedMicroseconds = OwnedRawDriverElapsedMicroseconds.classify(elapsed)
       if let postgres = error as? PostgresError {
         category = .postgresError
         sqlState = OwnedRawDriverSQLState.classify(postgres.sqlState)
+        nativeReason = OwnedRawDriverNativeReason.classify(postgres)
       } else {
         sqlState = .none
+        nativeReason = .none
         switch error as? FixtureFailure {
         case .nativeShape?: category = .nativeShape
         case .redactedFailure?: category = .redactedFailure
@@ -140,6 +194,16 @@ import WorkspaceProtocol
       print(
         "OWNED_RAW_DRIVER_DIAGNOSTIC_V1 row=\(diagnostic.row.rawValue) phase=\(diagnostic.phase.rawValue) category=\(diagnostic.category.rawValue) sqlstate=\(diagnostic.sqlState.rawValue)"
       )
+      Issue.record(
+        Comment(
+          rawValue: """
+            OWNED_RAW_DRIVER_DETAIL_V1 row=\(diagnostic.row.rawValue) \
+            phase=\(diagnostic.phase.rawValue) \
+            category=\(diagnostic.category.rawValue) \
+            sqlstate=\(diagnostic.sqlState.rawValue) \
+            reason=\(diagnostic.nativeReason.rawValue) \
+            elapsedMicroseconds=\(diagnostic.elapsedMicroseconds.fieldValue)
+            """))
       throw FixtureFailure.redactedFailure
     } catch {
       // Neither SQL errors nor fixture values may escape through Swift Testing's error rendering.
@@ -1932,12 +1996,14 @@ extension OwnedProtocolProofWriteTests {
         phase = .setDevice
         try c.execute("SELECT pg_catalog.set_config('b4app.device_id',$1,true)", [stage.device])
       }
+      phase = .upsert
+      let upsertStarted = ContinuousClock.now
       do {
-        phase = .upsert
         let result = try c.execute(ownedBindRawUpsert, [key, stage.controlJSON])
         guard result.affected == 1 else { throw FixtureFailure.nativeShape }
         dmlReturned = true
       } catch let error as PostgresError {
+        let upsertElapsed = upsertStarted.duration(to: ContinuousClock.now)
         phase = .unexpectedUpsertError
         // libpq currently exposes SQLSTATE + full rendered message + originating SQL only.
         // Match the ENTIRE first diagnostic line and exact originating DML, never contains().
@@ -1951,7 +2017,8 @@ extension OwnedProtocolProofWriteTests {
           && firstLine == "ERROR:  OWNED_BIND_RAW_BODY_FAULT"
           && equalBytes(error.sql, ownedBindRawUpsert)
         guard predicateRejected || bodyFaultRejected else {
-          throw OwnedRawDriverDiagnostic(row: row, phase: .unexpectedUpsertError, error: error)
+          throw OwnedRawDriverDiagnostic(
+            row: row, phase: .unexpectedUpsertError, error: error, elapsed: upsertElapsed)
         }
       }
       phase = .expectedReference

@@ -1,7 +1,7 @@
 import Foundation
 import WorkspaceProtocol
 
-/// What an opened tool card shows, read from the item's payload. No SwiftUI: the card only draws it.
+/// What an opened step row shows, read from the item's payload. No SwiftUI: the row only draws it.
 enum ToolEvidence {
   struct Change: Equatable, Sendable {
     var path: String
@@ -28,7 +28,7 @@ enum ToolEvidence {
     /// The payload as JSON with sorted keys, cut at `rawLimit`, when nothing above was found: an unknown item type is
     /// still inspectable.
     var raw: String?
-    /// `raw` is not the whole payload: the card says so.
+    /// `raw` is not the whole payload: the row says so.
     var rawCut = false
   }
 

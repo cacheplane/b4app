@@ -451,38 +451,14 @@ import WorkspaceProtocol
       freshEndpoint.dataDir = nil
       let freshRaw = try Self.connection(freshEndpoint)
       defer {
-        var noFreshApplicationBackends: Bool?
-        var freshCleanupFacts: [String] = []
-        do {
-          let originalRows = try freshRaw.execute(
+        let observation = ApplicationBackendObservation.observe {
+          try freshRaw.execute(
             "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
             [freshEndpoint.database]
-          ).rows
-          noFreshApplicationBackends = originalRows.isEmpty
-          freshCleanupFacts.append("originalRowCount=\(originalRows.count)")
-          freshCleanupFacts.append("originalRows=\(String(reflecting: originalRows))")
-          if !originalRows.isEmpty {
-            do {
-              let laterIdentityRows = try freshRaw.execute(
-                "SELECT pid,state,application_name FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
-                [freshEndpoint.database]
-              ).rows
-              freshCleanupFacts.append("laterIdentityRows=\(String(reflecting: laterIdentityRows))")
-            } catch {
-              freshCleanupFacts.append("identityErrorType=\(String(reflecting: type(of: error)))")
-              freshCleanupFacts.append("identitySQLState=\((error as? PostgresError)?.sqlState ?? "<none>")")
-            }
-          }
-        } catch {
-          noFreshApplicationBackends = nil
-          freshCleanupFacts.append("originalErrorType=\(String(reflecting: type(of: error)))")
-          freshCleanupFacts.append("originalSQLState=\((error as? PostgresError)?.sqlState ?? "<none>")")
+          ).rows.count
         }
-        let freshCleanupDiagnostic = freshCleanupFacts.joined(separator: "; ")
-        print("A3_PROFILE_CLEANUP_DIAGNOSTIC " + freshCleanupDiagnostic)
-        #expect(
-          noFreshApplicationBackends == true,
-          Comment(rawValue: freshCleanupDiagnostic))
+        print("A3_PROFILE_CLEANUP_DIAGNOSTIC " + observation.diagnostic)
+        #expect(observation.accepted, Comment(rawValue: observation.diagnostic))
       }
       let freshPath = (fixture.backup as NSString).deletingLastPathComponent + "/fresh"
       let fresh = try WorkspaceDatabase(

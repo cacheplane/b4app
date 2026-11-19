@@ -30,7 +30,7 @@ import XCTest
   }
 
   /// `reading` asks the host for a second thread that ends in a reply with a fenced block: forty short
-  /// replies before it, or `tall`, one reply several windows tall, or `long`, two hundred replies.
+  /// replies before it, or `tall`, one reply several windows tall, or `long`, a hundred questions and replies.
   enum Reading: String { case short = "", tall, long }
 
   static func start(
