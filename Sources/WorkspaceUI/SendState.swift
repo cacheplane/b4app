@@ -326,6 +326,7 @@ extension WorkspaceModel {
     let send = PendingSend(
       id: UUID().uuidString.lowercased(), threadId: threadId, text: text, tappedAt: now())
     pendingSends[threadId] = send
+    countOwnSend(in: threadId)
     await attempt(threadId: threadId, id: send.id)
   }
 

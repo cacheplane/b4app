@@ -43,3 +43,12 @@ The two explicit upstream renames are `CodeFenceViewTests.aReplyWithNoFenceIsDra
 ParserTimingTests has eight methods/nine cases and StreamingTickTimingTests has one macOS case; both are skipped without B4APP_TIMING in the default process. The inherited existing Test step adds only inline `B4APP_TIMING=1 swift test --skip-build --filter ParserTimingTests || status=1` as its third process after DB and other tests, retaining status accumulation. It selects parser timing only and gives no StreamingTick qualification. The iOS combining check is named “The layout job passed” and uses LAYOUT. No global timing export, new job or tick invocation is added.
 
 The 17 November plan and verification records remain frozen. No new decision number or release is created. All SDK/npm/production/release/activation/A4–A10/live-HTTP holds remain held.
+
+
+## D-254 integration on the reviewed format repair
+
+Integrate main 99bf5ec5a91134efd0d05bcf0b8cc4c2b7d42bd6 onto the reviewed c849 format-only repair. Preserve the exact Mac/phone count-at-press locations and the transcript's rise-only own-send scroll signal. Retain every existing runtime, historical/staged, request-identity, stream and post-await guard. A counter decrease never releases the transcript hold.
+
+The thread-keyed own-send counter is ephemeral account-workspace state: clear it only in the existing forgetWorkspace account-retirement segment, so a later account's same-ID thread does not inherit it. There is no new per-thread deletion/selection reset and no count in reads, events, request settlement or retry. Existing 17 historical-action methods/136 cases separately snapshot public ownSends getters for known fixture IDs, seeded nonzero through the existing internal count method. Refused/non-send/read/event actions preserve counts; an admitted Mac/phone send increments only its target once; account retirement clears every seeded count and a stale old reply cannot restore one. Existing stream snapshots and prior assertions remain.
+
+Retain all four incoming test IDs. The three OwnSendTests use a valid ready native connection fixture so the existing admission guard reaches the behavior being tested; product admission is unchanged. Preserve c849's RequestAnswer and ResourceFixture format bytes and every workflow/helper/C6 pin. The expected additive source census is 1510 paths/2778 methods, subject to final inert inventory. Source review and fresh managed CI remain pending; no old runtime pass transfers and all existing release/activation/live-HTTP holds remain.

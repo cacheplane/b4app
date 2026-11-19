@@ -437,6 +437,7 @@ Exit gate status: closed. Part 1 passed in the Simulator through APNs sandbox; p
 - [x] "Allow for session" on Claude Code (D-250): a tool permission whose `permission_suggestions` include an allow rule gets `allowScope: "session"` and `allowRule`; `allow_always` sends the allow with that rule as `updatedPermissions`, `destination: "session"`, and never a suggested mode change or directory; the card and the CLI say what the rule covers. Fixture-tested and live-tested through the adapter on 2.1.282; the card not seen on screen.
 - [x] A turn that ended with no outcome is not drawn as failed (D-251): the transcript's note says "Turn ended." in the muted colour for a terminal turn with no outcome, and "Turn failed." only for a recorded failure. Fixture-tested; not seen on screen.
 - [x] An answered request leaves with the coordinator's reply (D-253): on the Mac the card is removed when the reply says the request is no longer pending, so its buttons are not offered again before the resolved event. Fixture-tested; not seen on screen.
+- [x] Only the reader's own send returns the transcript to the end (D-254): a turn started from another device or the CLI leaves a reader who scrolled back where they are, with "Jump to latest"; the model counts this app's sends per thread and the transcript goes to the end only when that count rises. Tested with the hosted transcript; not seen in the running app.
 
 ## Documentation authoring
 

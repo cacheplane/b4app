@@ -389,6 +389,15 @@ public final class WorkspaceModel {
   /// The phone's sends, and the Mac's thread starts, by thread id, one per thread, until settled and
   /// shown.
   public internal(set) var pendingSends: [String: PendingSend] = [:]
+  /// How many messages this app has sent in each thread in the current account workspace. The transcript
+  /// goes back to the end when its thread's count rises, and for no other new turn: another device's turn
+  /// leaves a reader who scrolled back where they are (D-254).
+  private var ownSendCounts: [String: Int] = [:]
+
+  /// The reader pressed send in this thread, on the Mac or the phone.
+  func countOwnSend(in threadId: String) { ownSendCounts[threadId, default: 0] += 1 }
+
+  public func ownSends(in threadId: String) -> Int { ownSendCounts[threadId] ?? 0 }
   /// A `thread.start` is out, from the Mac or the phone: a second tap starts nothing until its call
   /// returns.
   public internal(set) var isStartingThread = false
@@ -1664,6 +1673,7 @@ public final class WorkspaceModel {
     guard !text.isEmpty else { return }
     let generation = accountGeneration
     composerText = ""
+    countOwnSend(in: detail.thread.id)
     let sent: Turn? = await perform {
       try await $0.request(
         TurnSend.self, TurnSend.Params(threadId: detail.thread.id, text: text),
@@ -2098,6 +2108,7 @@ public final class WorkspaceModel {
     accountGeneration += 1
     pendingRequestTargets = [:]
     requestTargetRevisions = [:]
+    ownSendCounts = [:]
     draftSaveTask?.cancel()
     draftSaveTask = nil
     for task in refetchTasks.values { task.cancel() }
