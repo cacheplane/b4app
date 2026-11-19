@@ -197,9 +197,9 @@ jobs:
         run: swift test --filter 'AccountRegistryTests/aLedgerIsCreatedOnlyWhenMissing'
       - name: Focused socket ownership and shutdown regressions
         id: socket-ownership-controls
-        run: swift test --filter 'SocketResponseOwnershipTests|SocketLifecycleTests|SocketClosePreservationTests|OwnedCloseConcurrencyTests|SocketServerShutdownTests'
+        run: swift test --skip-build --filter 'SocketResponseOwnershipTests|SocketLifecycleTests|SocketClosePreservationTests|OwnedCloseConcurrencyTests|SocketServerShutdownTests'
       - name: Focused Agent Protocol transport regressions
-        run: swift test --filter AgentProtocolTransportTests
+        run: swift test --skip-build --filter AgentProtocolTransportTests
       - name: Sample owner-carrier build metadata (compiler controls held)
         id: owner-carrier-metadata
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' }}
@@ -1040,18 +1040,18 @@ jobs:
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.test-postgres-prewarm.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' && steps.owner-carrier-origin-controls.outcome == 'success' && steps.owner-carrier-receipt-controls.outcome == 'success' && steps.account-session-package-controls.outcome == 'success' && steps.account-session-storage-fields-controls.outcome == 'success' && steps.account-session-coordinator-controls.outcome == 'success' && steps.account-session-check-boundary-controls.outcome == 'success' && steps.account-session-probe-boundary-controls.outcome == 'success' && steps.account-session-reference-receipt-controls.outcome == 'success' && steps.account-session-presence-authority-controls.outcome == 'success' && steps.account-session-decoder-boundary-controls.outcome == 'success' && steps.account-session-fileprivate-contexts-controls.outcome == 'success' }}
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
-        run: swift test --filter 'AccountSessionComparisonTests|AccountSessionComparisonOwnerTests'
+        run: swift test --skip-build --filter 'AccountSessionComparisonTests|AccountSessionComparisonOwnerTests'
       - name: Historical action admission regressions
         id: historical-action-controls
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.test-postgres-prewarm.outcome == 'success' }}
         run: swift test --skip-build --filter AgentProtocolHistoricalActionTests
       - name: Focused Agent Protocol foundation regressions
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.test-postgres-prewarm.outcome == 'success' }}
-        run: swift test --filter 'AgentProtocol|ProtocolProjectionStoreTests|ProtocolActivation'
+        run: swift test --skip-build --filter 'AgentProtocol|ProtocolProjectionStoreTests|ProtocolActivation'
       - name: Focused Node probe observation controls
         id: node-probe-control
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.test-postgres-prewarm.outcome == 'success' }}
-        run: swift test --filter NodeVersionProbeObservationTests
+        run: swift test --skip-build --filter NodeVersionProbeObservationTests
       # The parser's linearity checks (ParserTimingTests) compare CPU times, so they run only with
       # B4APP_TIMING, in a third process of their own after the others, with no other test running.
       - name: Test
@@ -1066,13 +1066,13 @@ jobs:
           exit "$status"
       - name: Focused owned protocol proof writer regressions
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' && steps.owner-carrier-origin-controls.outcome == 'success' && steps.owner-carrier-receipt-controls.outcome == 'success' }}
-        run: swift test --experimental-maximum-parallelization-width 2 --filter OwnedProtocolProofWriteTests
+        run: swift test --skip-build --experimental-maximum-parallelization-width 2 --filter OwnedProtocolProofWriteTests
       - name: Focused scope owner publication regressions
         id: scope-owner-publication-controls
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' && steps.owner-carrier-origin-controls.outcome == 'success' && steps.owner-carrier-receipt-controls.outcome == 'success' }}
         env:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
-        run: swift test --filter ScopeOwnerPublicationTests
+        run: swift test --skip-build --filter ScopeOwnerPublicationTests
       - name: Save the SwiftPM build
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

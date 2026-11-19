@@ -184,7 +184,7 @@ class WorkflowTests(unittest.TestCase):
         for before, after in zip(ordered_steps[3:17], ordered_steps[4:18]):
             self.assertEqual(package.index(after), package.index(before) + len(before))
         native = by_id["account-session-comparison-controls"]
-        selector = "swift test --filter 'AccountSessionComparisonTests|AccountSessionComparisonOwnerTests'"
+        selector = "swift test --skip-build --filter 'AccountSessionComparisonTests|AccountSessionComparisonOwnerTests'"
         self.assertEqual(package.count(selector), 1)
         self.assertIn("        run: " + selector + "\n", native)
         dependencies = ["package-build", "test-postgres-prewarm", "socket-ownership-controls",
@@ -197,7 +197,7 @@ class WorkflowTests(unittest.TestCase):
                         "&& steps.test-postgres-prewarm.outcome == 'success' }}\n")
         foundation = named["Focused Agent Protocol foundation regressions"]
         self.assertIn(availability, foundation)
-        self.assertIn("        run: swift test --filter 'AgentProtocol|ProtocolProjectionStoreTests|ProtocolActivation'\n",
+        self.assertIn("        run: swift test --skip-build --filter 'AgentProtocol|ProtocolProjectionStoreTests|ProtocolActivation'\n",
                       foundation)
         historical = by_id["historical-action-controls"]
         self.assertEqual(historical, "      - name: Historical action admission regressions\n"
@@ -208,13 +208,19 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("        timeout-minutes: 1\n", by_id[key])
         self.assertNotIn("continue-on-error", package)
         self.assertIn("    timeout-minutes: 45\n", package)
+        # Prewarm compiles the test bundle once for all subsequent test invocations.
+        commands = re.findall(r"^\s*(?:run: |B4APP_TIMING=1 )?(swift test .+)$", package, re.M)
+        self.assertEqual(len(commands), 12)
+        self.assertEqual(commands[0], "swift test --filter 'AccountRegistryTests/aLedgerIsCreatedOnlyWhenMissing'")
+        for command in commands[1:]:
+            self.assertTrue(command.startswith("swift test --skip-build "), command)
         # Bound only independent database/writer cases; scenario-internal tasks stay concurrent.
         width = "--experimental-maximum-parallelization-width 2"
         self.assertEqual(package.count("--experimental-maximum-parallelization-width"), 2)
         self.assertIn("          swift test --skip-build " + width +
                       " --filter '^(WorkspaceStorageTests|CoordinatorTests)\\.' || status=1\n",
                       named["Test"])
-        self.assertIn("        run: swift test " + width +
+        self.assertIn("        run: swift test --skip-build " + width +
                       " --filter OwnedProtocolProofWriteTests\n",
                       named["Focused owned protocol proof writer regressions"])
 
@@ -234,8 +240,8 @@ class WorkflowTests(unittest.TestCase):
                                      "--experimental-maximum-parallelization-width 1"),
                      package.replace("--experimental-maximum-parallelization-width 2",
                                      "--experimental-maximum-parallelization-width 4"),
-                     package.replace("run: swift test --filter NodeVersionProbeObservationTests",
-                                     "run: swift test --experimental-maximum-parallelization-width 2"
+                     package.replace("run: swift test --skip-build --filter NodeVersionProbeObservationTests",
+                                     "run: swift test --skip-build --experimental-maximum-parallelization-width 2"
                                      " --filter NodeVersionProbeObservationTests")]
         for mutated in mutations:
             with self.subTest(mutation=mutations.index(mutated)):
