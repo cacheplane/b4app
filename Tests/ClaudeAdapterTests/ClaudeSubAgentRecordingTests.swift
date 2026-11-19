@@ -96,4 +96,22 @@ import WorkspaceProtocol
       })
     #expect(!after.contains { $0["type"]?.stringValue == "result" })
   }
+
+  /// A background shell command that ends after the turn wakes Claude Code too: `task_notification`,
+  /// then an `init` frame, a reply and a second result, with no agent and no user frame.
+  @Test func aBackgroundShellCommandWakesTheSessionToo() throws {
+    let all = try frames("background-shell-wake")
+    #expect(agentCalls(all).isEmpty)
+    let results = all.indices.filter { all[$0]["type"]?.stringValue == "result" }
+    #expect(results.count == 2)
+    let after = all[(results[0] + 1)...]
+    #expect(after.contains { $0["subtype"]?.stringValue == "task_notification" })
+    #expect(after.filter { $0["subtype"]?.stringValue == "init" }.count == 1)
+    #expect(!after.contains { $0["type"]?.stringValue == "user" })
+    #expect(
+      after.contains { frame in
+        frame["type"]?.stringValue == "assistant"
+          && blocks(frame).contains { $0["type"]?.stringValue == "text" }
+      })
+  }
 }

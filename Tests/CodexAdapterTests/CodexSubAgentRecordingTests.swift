@@ -35,4 +35,37 @@ import WorkspaceProtocol
     #expect(collab.first?["item"]?["tool"]?.stringValue == "wait")
     #expect(collab.first?["item"]?["prompt"] == .null)
   }
+
+  /// The parent did not wait: its turn completes while the agent works, the agent's turn names the
+  /// parent's as `rootTurnId`, and the "completed" activity item lands on the ended turn. No turn is
+  /// started on the parent thread afterwards.
+  @Test func anAgentNotWaitedForOutlivesItsTurn() throws {
+    let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .appendingPathComponent("Fixtures/subagent-not-awaited.jsonl")
+    let all = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map {
+      try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+    }
+    func index(_ method: String, thread: String) -> Int? {
+      all.firstIndex {
+        $0["method"]?.stringValue == method && $0["params"]?["threadId"]?.stringValue == thread
+      }
+    }
+    let started = try #require(all.first { $0["method"]?.stringValue == "turn/started" })
+    let root = try #require(started["params"]?["threadId"]?.stringValue)
+    let rootTurn = try #require(started["params"]?["turn"]?["id"]?.stringValue)
+    let activity = all.indices.filter {
+      all[$0]["method"]?.stringValue == "item/completed"
+        && all[$0]["params"]?["item"]?["type"]?.stringValue == "subAgentActivity"
+    }
+    #expect(activity.count == 2)
+    let child = try #require(all[activity[0]]["params"]?["item"]?["agentThreadId"]?.stringValue)
+    let rootEnd = try #require(index("turn/completed", thread: root))
+    let childStart = try #require(index("turn/started", thread: child))
+    let childEnd = try #require(index("turn/completed", thread: child))
+    #expect(rootEnd < childEnd)
+    #expect(all[childStart]["params"]?["turn"]?["rootTurnId"]?.stringValue == rootTurn)
+    #expect(activity[1] > rootEnd)
+    #expect(all[activity[1]]["params"]?["turnId"]?.stringValue == rootTurn)
+    #expect(all.filter { $0["method"]?.stringValue == "turn/started" }.count == 2)
+  }
 }
