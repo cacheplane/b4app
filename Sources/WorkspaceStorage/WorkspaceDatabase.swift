@@ -368,7 +368,7 @@ public final class WorkspaceDatabase: Sendable {
 
   /// Every thread column plus `activity`, computed in the same query: the latest turn (greatest
   /// `createdAt`, ties by greatest `id`), the count of pending runtime requests and of those that ask
-  /// for approval (`RuntimeRequestKind.isApproval`), and the newest of the thread's `createdAt` and
+  /// for approval (`RuntimeRequestKind.isApproval`), the sum of the thread's turns' `openWork`, and the newest of the thread's `createdAt` and
   /// its latest turn's and latest request's `updatedAt`. Timestamps are ISO-8601 text, compared
   /// bytewise (`COLLATE "C"`). Callers append a WHERE clause on `t`.
   static let threadWithActivity = """
@@ -378,6 +378,7 @@ public final class WorkspaceDatabase: Sendable {
       'latestTurnOutcome', lt."outcome",
       'pendingRequests', pr."n",
       'pendingApprovals', pr."approvals",
+      'openWork', ow."n",
       'lastActivityAt', (
         SELECT max(v."x" COLLATE "C") FROM (VALUES (t."createdAt"), (lt."updatedAt"), (lr."updatedAt")) AS v("x"))
     ) AS "activity"
@@ -393,6 +394,8 @@ public final class WorkspaceDatabase: Sendable {
         count(*) FILTER (
           WHERE "kind" IN ('command_approval', 'file_change_approval', 'tool_permission')) AS "approvals"
       FROM "runtimeRequests" WHERE "threadId" = t."id" AND "state" = 'pending') pr
+    CROSS JOIN LATERAL (
+      SELECT COALESCE(sum("openWork"), 0) AS "n" FROM "turns" WHERE "threadId" = t."id") ow
     """
 
   public func listThreads(_ filter: ThreadFilter = ThreadFilter()) throws -> [ConversationThread] {

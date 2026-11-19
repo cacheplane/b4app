@@ -306,12 +306,17 @@ public struct Turn: Codable, Sendable, Equatable, Identifiable {
   public var status: TurnStatus
   public var submission: SubmissionState
   public var outcome: TurnOutcome?
+  /// How many agents the turn started are still running. Absent or null on the wire reads as 0.
+  public var openWork: Int
+  /// Null for a turn the owner sent; the runtime's word for a turn it started itself.
+  public var origin: String?
   public var createdAt: String
   public var updatedAt: String
 
   public init(
     id: String, threadId: String, operationId: String, nativeTurnId: String? = nil, inputRef: String? = nil,
     status: TurnStatus = .submitting, submission: SubmissionState = .prepared, outcome: TurnOutcome? = nil,
+    openWork: Int = 0, origin: String? = nil,
     createdAt: String = Timestamp.now(), updatedAt: String = Timestamp.now()
   ) {
     self.id = id
@@ -322,8 +327,31 @@ public struct Turn: Codable, Sendable, Equatable, Identifiable {
     self.status = status
     self.submission = submission
     self.outcome = outcome
+    self.openWork = openWork
+    self.origin = origin
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, threadId, operationId, nativeTurnId, inputRef, status, submission, outcome, openWork, origin
+    case createdAt, updatedAt
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(String.self, forKey: .id)
+    threadId = try c.decode(String.self, forKey: .threadId)
+    operationId = try c.decode(String.self, forKey: .operationId)
+    nativeTurnId = try c.decodeIfPresent(String.self, forKey: .nativeTurnId)
+    inputRef = try c.decodeIfPresent(String.self, forKey: .inputRef)
+    status = try c.decode(TurnStatus.self, forKey: .status)
+    submission = try c.decode(SubmissionState.self, forKey: .submission)
+    outcome = try c.decodeIfPresent(TurnOutcome.self, forKey: .outcome)
+    openWork = try c.decodeIfPresent(Int.self, forKey: .openWork) ?? 0
+    origin = try c.decodeIfPresent(String.self, forKey: .origin)
+    createdAt = try c.decode(String.self, forKey: .createdAt)
+    updatedAt = try c.decode(String.self, forKey: .updatedAt)
   }
 }
 

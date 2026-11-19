@@ -129,6 +129,22 @@ private func turn(
           lastActivityAt: "2026-10-31T09:00:00Z"))
   }
 
+  @Test func openWorkIsSummedOverTheThreadsTurns() throws {
+    let db = try WorkspaceDatabase.temporary()
+    try seed(db)
+    for (id, n) in [("a", 2), ("b", 0), ("c", 1)] {
+      var t = turn(id, created: "2026-10-31T09:0\(n):00Z")
+      t.openWork = n
+      _ = try db.insertTurn(t)
+    }
+    #expect(try db.listThreads().first?.activity?.openWork == 3)
+    _ = try db.insertThread(
+      ConversationThread(
+        id: "t2", connectionId: "c1", nativeThreadId: "n2", title: "Second", context: "/tmp/p",
+        createdAt: "2026-10-31T09:00:00Z", updatedAt: "2026-10-31T09:00:00Z"))
+    #expect(try db.thread(id: "t2")?.activity?.openWork == 0)
+  }
+
   @Test func pendingApprovalsCountOnlyPendingApprovalKinds() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)

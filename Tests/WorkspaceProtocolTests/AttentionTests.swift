@@ -290,6 +290,29 @@ struct AttentionFixture {
     #expect(roundTrip.pendingApprovals == 2)
   }
 
+  @Test func openWorkKeepsAnEndedThreadWorking() {
+    let rows: [(TurnOutcome, Bool, Int, ThreadState)] = [
+      (.completed, false, 0, .working),
+      (.completed, true, 0, .working),
+      (.failed, false, 0, .failed),
+      (.completed, false, 1, .approve),
+      (.completed, false, 0, .finished),
+    ]
+    let open = [1, 1, 1, 1, 0]
+    for (i, row) in rows.enumerated() {
+      let t = thread(
+        approvals: row.2, openWork: open[i], status: .terminal, outcome: row.0, read: row.1)
+      #expect(Attention.state(of: t) == row.3, "row \(i)")
+      if i < 2 { #expect(!Attention.countsTowardBadge(t), "row \(i)") }
+      if i == 2 { #expect(Attention.countsTowardBadge(t)) }
+    }
+  }
+
+  @Test func aThreadActivityWithoutOpenWorkDecodesAsZero() throws {
+    let json = Data(#"{"pendingRequests":0,"lastActivityAt":"2026-11-19T10:00:00Z"}"#.utf8)
+    #expect(try JSONCoding.decoder.decode(ThreadActivity.self, from: json).openWork == 0)
+  }
+
   // MARK: - Order (decision 5)
 
   @Test func orderIsStateThenPinThenRecency() {
@@ -354,13 +377,14 @@ struct AttentionFixture {
 /// A thread whose `activity` is built from the arguments; `read` marks its latest turn read.
 private func thread(
   _ id: String = "t", pinned: Bool = false, at: String = "2026-10-31T09:00:00Z", pending: Int = 0,
-  approvals: Int = 0, status: TurnStatus? = nil, outcome: TurnOutcome? = nil, read: Bool = false
+  approvals: Int = 0, openWork: Int = 0, status: TurnStatus? = nil, outcome: TurnOutcome? = nil,
+  read: Bool = false
 ) -> ConversationThread {
   var t = ConversationThread(id: id, connectionId: "c", nativeThreadId: id, pinned: pinned, createdAt: at)
   let turnId = status == nil ? nil : "turn-" + id
   t.activity = ThreadActivity(
     latestTurnId: turnId, latestTurnStatus: status, latestTurnOutcome: outcome, pendingRequests: pending,
-    pendingApprovals: approvals, lastActivityAt: at)
+    pendingApprovals: approvals, openWork: openWork, lastActivityAt: at)
   if read { t.readTurnId = turnId }
   return t
 }
