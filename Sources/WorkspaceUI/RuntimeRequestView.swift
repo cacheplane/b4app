@@ -64,6 +64,9 @@ struct RuntimeRequestCard: View {
         if request.kind == .userQuestion {
           questions
         } else if answerable {
+          if let reach = RequestChoices(payload: request.payload).reach {
+            Text(reach).llaCaption().fixedSize(horizontal: false, vertical: true)
+          }
           HStack(spacing: LLA.Space.s) {
             ForEach(RequestChoices(payload: request.payload).choices) { choice in
               choiceButton(choice)

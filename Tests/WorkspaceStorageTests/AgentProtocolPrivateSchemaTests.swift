@@ -42,7 +42,7 @@ import WorkspaceProtocol
 
     func emitAfterQueryAssertion() {
       print(
-        "A3_NATIVE_OBSERVATION case=\(testCase.rawValue) close=\(closeOutcome.rawValue) query=\(queryOutcome.rawValue) instantaneous=true"
+        "A3_NATIVE_OBSERVATION case=\(testCase.rawValue) close=\(closeOutcome.rawValue) queryLastSample=\(queryOutcome.rawValue) boundedObservationSeconds=3"
       )
     }
   }
@@ -158,19 +158,23 @@ import WorkspaceProtocol
     let raw = try connection(endpoint)
     defer {
       if var cleanup = observation {
-        #expect(
-          (try? cleanup.query {
+        let observation = ApplicationBackendObservation.observe {
+          try cleanup.query {
             try raw.execute(
               "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
               [endpoint.database])
-          }.rows.isEmpty) == true)
+          }.rows.count
+        }
+        #expect(observation.accepted, Comment(rawValue: observation.diagnostic))
         cleanup.emitAfterQueryAssertion()
       } else {
-        #expect(
-          (try? raw.execute(
+        let observation = ApplicationBackendObservation.observe {
+          try raw.execute(
             "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
             [endpoint.database]
-          ).rows.isEmpty) == true)
+          ).rows.count
+        }
+        #expect(observation.accepted, Comment(rawValue: observation.diagnostic))
       }
     }
     let database = try WorkspaceDatabase(

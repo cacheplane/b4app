@@ -29,6 +29,16 @@ import WorkspaceProtocol
     #expect(labels(["request": ["allowScope": "always"]]) == ["Allow once", "Always allow", "Deny"])
   }
 
+  /// Claude Code's session allow covers one rule, and the card says which.
+  @Test func aSessionAllowWithARuleSaysWhatItCovers() {
+    let rule = RequestChoices(payload: [
+      "request": ["allowScope": "session", "allowRule": "Bash(touch one.txt)"]
+    ])
+    #expect(rule.reach == "Allow for session covers Bash(touch one.txt)")
+    #expect(RequestChoices(payload: ["request": ["allowScope": "session"]]).reach == nil)
+    #expect(RequestChoices(payload: ["request": ["allowRule": "Bash(ls)"]]).reach == nil)
+  }
+
   @Test func aScopeThisBuildDoesNotKnowOffersNothingWider() {
     #expect(labels(["request": ["allowScope": "forever"]]) == ["Allow once", "Deny"])
   }

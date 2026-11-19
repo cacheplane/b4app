@@ -556,6 +556,38 @@ private struct AttentionDocument: Decodable {
     #expect(transport.calls(.threadMarkRead).count == 1)
   }
 
+  /// A re-read issued before the next turn was known lands after that turn's first deltas: it lacks
+  /// the turn and holds no running one, but the model knows the turn runs, so its stream stays live.
+  @Test func aReadThatPredatesTheRunningTurnKeepsItsStream() async throws {
+    let transport = ScriptedTransport()
+    let idle = thread("t1", readTurnId: "u0", activity: activity(turn: "u0", status: .terminal, at: 1))
+    transport.set(threads: [idle])
+    let stale = read(idle, turns: [turn("u0", in: "t1", at: 1)])
+    transport.setRead(stale)
+    let model = try await connected(transport)
+    await model.openThread(id: "t1")
+    let reads = transport.calls(.threadRead).count
+
+    let running = turn("u1", in: "t1", status: .running, at: 2)
+    transport.emit(
+      AdapterEvent(
+        kind: .turnAcknowledged, connectionId: "c1", threadId: "t1", turnId: "u1",
+        payload: ["turn": try JSONValue(encoding: running)]))
+    transport.emit(delta("t1"))
+    try await waitUntil("streaming") { model.streams.isStreaming("i1") }
+    #expect(model.detail?.activeTurn?.id == "u1")
+
+    // The refetch the turn event scheduled answers with the stale read, which lacks u1.
+    try await waitUntil("refetched") {
+      transport.calls(.threadRead).count > reads && model.detail?.activeTurn == nil
+    }
+    #expect(model.streams.isStreaming("i1"))
+
+    // The turn's end still ends it.
+    transport.emit(try finished(turn("u1", in: "t1", at: 2)))
+    try await waitUntil("ended") { !model.streams.isStreaming("i1") }
+  }
+
   @Test func aReplyArrivingWhileTheThreadIsNotOnScreenStaysUnreadUntilItIs() async throws {
     let transport = ScriptedTransport()
     let running = thread("t1", readTurnId: "u0", activity: activity(turn: "u1", status: .running, at: 2))

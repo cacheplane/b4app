@@ -166,7 +166,7 @@ jobs:
         run: python3 Scripts/restore_mtimes.py
       - name: Restore the SwiftPM build
         if: github.event_name != 'push'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build
@@ -176,7 +176,7 @@ jobs:
       - name: Format lint
         run: swift format lint --strict --recursive Sources Tests Apps Package.swift
       - name: Cache the pinned PostgreSQL archive
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build/postgres-dl
           key: postgres-dl-${{ hashFiles('Scripts/fetch-postgres.sh') }}
@@ -228,10 +228,10 @@ jobs:
               "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "4ecadcb1cf0487e77f309d2a9b72b29a457c840c7c4f8135fed3aaa0dab58354",
           }
 
-          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': 'f2b28e208e58686cc95954255643af14240042ceeb4092980cc68177ad7dd421', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '9c3969edf4c7e8d058a48c9e78decfc85290b50ec89da8a832cc15e9bba8951a', 'Sources/WorkspaceStorage/PostgresClient.swift': 'e129b7fcf315bccb5659461cc7cbc16c0132b90e253568bd8e2942ff668106e2', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '4f079c33b0c9f32d5e6f2fd38b379b69633ec3945071a86d98b040f565cc89d7'}
+          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': 'f2b28e208e58686cc95954255643af14240042ceeb4092980cc68177ad7dd421', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '9c3969edf4c7e8d058a48c9e78decfc85290b50ec89da8a832cc15e9bba8951a', 'Sources/WorkspaceStorage/PostgresClient.swift': 'e129b7fcf315bccb5659461cc7cbc16c0132b90e253568bd8e2942ff668106e2', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '1e7b2b7db3545e0183d5784b89ae1b454df41f3fb1a193316950d5e8177ecde9'}
           ACCOUNT_SESSION_SOURCE_PINS = {'Sources/WorkspaceStorage/LibPQ.swift': '054d7d50a95231af518dbebce4162f7a9284c8c1f3b7596bb62f930edcc88513', 'Sources/WorkspaceStorage/PostgresClient.swift': 'e129b7fcf315bccb5659461cc7cbc16c0132b90e253568bd8e2942ff668106e2', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '9c3969edf4c7e8d058a48c9e78decfc85290b50ec89da8a832cc15e9bba8951a', 'Sources/WorkspaceStorage/ProtocolActivation.swift': 'f2b28e208e58686cc95954255643af14240042ceeb4092980cc68177ad7dd421', 'Sources/Coordinator/HubSync/HubOwnerCarrier.swift': '61233c33d04d8a2318f025e727aec08107feb0dc72218f3d6fe2d1994c1d28b4', 'Sources/WorkspaceStorage/AccountSessionComparison.swift': '3209f1d507b6d40be025d6b6eadf3604fef76c6469600701a1dd6ecffc8b0598', 'Tests/WorkspaceStorageTests/AccountSessionComparisonTests.swift': '7d58b5a5c50a8f10bfa3a40cf6416caad3057699b83c2a1ebc8bf8ee398de11a', 'Tests/CoordinatorTests/AccountSessionComparisonOwnerTests.swift': '55f4bad251cf1ee465ee14effb8e9217c2781c9310e417cb26fb761daf57043b'}
           HELPER_RELATIVE = "Scripts/check-owner-carrier-compiler-controls.py"
-          HELPER_SHA256 = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+          HELPER_SHA256 = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
 
           class Rejected(Exception):
               pass
@@ -501,7 +501,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -552,7 +552,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -603,7 +603,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -654,7 +654,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -705,7 +705,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -756,7 +756,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -807,7 +807,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -858,7 +858,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -909,7 +909,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -960,7 +960,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -1011,7 +1011,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "6641148ab8a7a8ab732753d0057e9f219a5a67f949b4850af23a798636c2d6bf"
+              expected = "2aa35d04b6d4d88c69e29d67f8b02dc9062d88bb052e91e66162138bd795b759"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -1052,6 +1052,8 @@ jobs:
         id: node-probe-control
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.test-postgres-prewarm.outcome == 'success' }}
         run: swift test --filter NodeVersionProbeObservationTests
+      # The parser's linearity checks (ParserTimingTests) compare CPU times, so they run only with
+      # B4APP_TIMING, in a third process of their own after the others, with no other test running.
       - name: Test
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.test-postgres-prewarm.outcome == 'success' }}
         env:
@@ -1060,6 +1062,7 @@ jobs:
           status=0
           swift test --skip-build --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           swift test --skip-build --skip '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
+          B4APP_TIMING=1 swift test --skip-build --filter ParserTimingTests || status=1
           exit "$status"
       - name: Focused owned protocol proof writer regressions
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' && steps.owner-carrier-origin-controls.outcome == 'success' && steps.owner-carrier-receipt-controls.outcome == 'success' }}
@@ -1072,7 +1075,7 @@ jobs:
         run: swift test --filter ScopeOwnerPublicationTests
       - name: Save the SwiftPM build
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build
@@ -1117,7 +1120,7 @@ jobs:
           swift --version
           shasum -a 256 Package.swift Package.resolved .github/workflows/ci.yml Tests/CoordinatorTests/AccountSessionComparisonOwnerTests.swift Tests/WorkspaceStorageTests/AccountSessionComparisonTests.swift Scripts/check-owner-carrier-compiler-controls.py
       - name: Cache SwiftPM
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build
@@ -1125,7 +1128,7 @@ jobs:
           key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: spm-${{ runner.os }}-
       - name: Cache the pinned PostgreSQL archive
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build/postgres-dl
           key: postgres-dl-${{ hashFiles('Scripts/fetch-postgres.sh') }}
@@ -1170,7 +1173,7 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Cache SwiftPM (xcodebuild)
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .spm
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
@@ -1179,7 +1182,7 @@ jobs:
         run: python3 Scripts/restore_mtimes.py
       - name: Restore DerivedData
         if: github.event_name != 'push'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/AppDerivedData/Build
@@ -1201,7 +1204,7 @@ jobs:
           -clonedSourcePackagesDirPath .spm -derivedDataPath .build/AppDerivedData CODE_SIGNING_ALLOWED=NO -showBuildTimingSummary
       - name: Save DerivedData
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/AppDerivedData/Build
@@ -1249,7 +1252,7 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Cache SwiftPM (xcodebuild)
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .spm
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
@@ -1258,7 +1261,7 @@ jobs:
         run: python3 Scripts/restore_mtimes.py
       - name: Restore DerivedData
         if: github.event_name != 'push'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/DerivedData/Build
@@ -1294,7 +1297,7 @@ jobs:
           retention-days: 7
       - name: Save DerivedData
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/DerivedData/Build
@@ -1312,17 +1315,17 @@ jobs:
     if: always()
     permissions: {}
     steps:
-      - name: Every shard passed
+      - name: The layout job passed
         env:
           APPLE: ${{ needs.scope.outputs.apple }}
-          SHARDS: ${{ needs.ios-layout.result }}
+          LAYOUT: ${{ needs.ios-layout.result }}
         run: |
-          echo "scope: apple=$APPLE; iOS layout job: $SHARDS"
-          if [ "$APPLE" = false ] && [ "$SHARDS" = skipped ]; then
+          echo "scope: apple=$APPLE; iOS layout job: $LAYOUT"
+          if [ "$APPLE" = false ] && [ "$LAYOUT" = skipped ]; then
             echo "This change touches nothing the layout tests read."
             exit 0
           fi
-          test "$SHARDS" = success
+          test "$LAYOUT" = success
 
   macos-smoke:
     name: macOS recovery smoke tests
@@ -1343,13 +1346,13 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Cache SwiftPM (xcodebuild)
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .spm
           key: spm-xcode-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: spm-xcode-${{ runner.os }}-
       - name: Cache the pinned PostgreSQL archive
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build/postgres-dl
           key: postgres-dl-${{ hashFiles('Scripts/fetch-postgres.sh') }}
@@ -1357,7 +1360,7 @@ jobs:
         run: python3 Scripts/restore_mtimes.py
       - name: Restore DerivedData
         if: github.event_name != 'push'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/macOSSmoke/DerivedData/Build
@@ -1376,7 +1379,7 @@ jobs:
           retention-days: 7
       - name: Save DerivedData
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build/macOSSmoke/DerivedData/Build
@@ -1412,7 +1415,7 @@ jobs:
           rustup toolchain install 1.93.1 --profile minimal --component rustfmt --component clippy
           rustup default 1.93.1
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry

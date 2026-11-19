@@ -4,7 +4,8 @@ import Foundation
 import Testing
 import WorkspacePlatform
 import WorkspaceProtocol
-import WorkspaceStorage
+
+@testable import WorkspaceStorage
 
 /// Task-local test helpers shared by the two test targets through identical thin delegates.
 /// EphemeralPostgres owns the opt-in resource registration and acknowledgment.
@@ -76,5 +77,108 @@ struct NativeDBResources: TestTrait, SuiteTrait, TestScoping {
     try await withTaskExecutorPreference(executor) {
       try await function()
     }
+  }
+}
+
+/// Primitive-only observation of the application backend rows after the original close defers.
+/// A three-second acceptance window permits short server-side retention; it does not bound PQexec
+/// return time or prove ARC, PQfinish, or native thread/process exit.
+struct ApplicationBackendObservation: Sendable {
+  enum Outcome: String { case emptyBeforeDeadline, nonemptyAtDeadline, lateEmpty, sampleLimit, queryError }
+  enum ErrorCategory: String { case none, postgresError, otherError }
+  enum SQLState: String {
+    case none, unlisted
+    case code08003 = "08003"
+    case code08006 = "08006"
+    case code22023 = "22023"
+    case code22P02 = "22P02"
+    case code23502 = "23502"
+    case code23503 = "23503"
+    case code23505 = "23505"
+    case code23514 = "23514"
+    case code25P02 = "25P02"
+    case code40001 = "40001"
+    case code40P01 = "40P01"
+    case code53100 = "53100"
+    case code53200 = "53200"
+    case code53300 = "53300"
+    case code53400 = "53400"
+    case code55P03 = "55P03"
+    case code57014 = "57014"
+    case code57P01 = "57P01"
+    case code58030 = "58030"
+    case code58P01 = "58P01"
+    case codeP0001 = "P0001"
+
+    static func classify(_ code: String) -> Self {
+      guard let state = Self(rawValue: code), state != .none else { return .unlisted }
+      return state
+    }
+  }
+
+  var firstRowCount: Int?
+  var firstCompletionElapsed: Duration?
+  var lastRowCount: Int?
+  var samples = 0
+  var outcome: Outcome = .sampleLimit
+  var totalElapsed: Duration = .zero
+  var errorCategory: ErrorCategory = .none
+  var sqlState: SQLState = .none
+
+  var accepted: Bool { outcome == .emptyBeforeDeadline }
+
+  var diagnostic: String {
+    let first = firstRowCount.map(String.init) ?? "none"
+    let last = lastRowCount.map(String.init) ?? "none"
+    let firstElapsed = firstCompletionElapsed.map { String(describing: $0) } ?? "none"
+    return "firstRowCount=\(first) firstCompletionElapsed=\(firstElapsed) lastRowCount=\(last) samples=\(samples) outcome=\(outcome.rawValue) totalElapsed=\(totalElapsed) category=\(errorCategory.rawValue) sqlstate=\(sqlState.rawValue) boundedObservationSeconds=3"
+  }
+
+  /// Query errors fail immediately. Even the first empty sample must COMPLETE before the deadline.
+  static func observe(_ query: () throws -> Int) -> Self {
+    var observation = Self()
+    let clock = ContinuousClock()
+    let started = clock.now
+    let deadline = started + .seconds(3)
+    while observation.samples < 301 {
+      observation.samples += 1
+      do {
+        let count = try query()
+        let completed = clock.now
+        let elapsed = started.duration(to: completed)
+        if observation.samples == 1 {
+          observation.firstRowCount = count
+          observation.firstCompletionElapsed = elapsed
+        }
+        observation.lastRowCount = count
+        if completed >= deadline {
+          observation.outcome = count == 0 ? .lateEmpty : .nonemptyAtDeadline
+          break
+        }
+        if count == 0 {
+          observation.outcome = .emptyBeforeDeadline
+          break
+        }
+      } catch {
+        // P3: an error is still a completed first observation; it has no row count.
+        if observation.samples == 1 {
+          observation.firstCompletionElapsed = started.duration(to: clock.now)
+        }
+        observation.errorCategory = error is PostgresError ? .postgresError : .otherError
+        if let error = error as? PostgresError {
+          observation.sqlState = SQLState.classify(error.sqlState)
+        }
+        observation.outcome = .queryError
+        break
+      }
+      if observation.samples == 301 { break }
+      Thread.sleep(forTimeInterval: 0.01)
+      if clock.now >= deadline {
+        observation.outcome = .nonemptyAtDeadline
+        break
+      }
+    }
+    observation.totalElapsed = started.duration(to: clock.now)
+    return observation
   }
 }

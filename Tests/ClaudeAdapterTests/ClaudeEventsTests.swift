@@ -237,6 +237,44 @@ private let streamedTurn = """
     #expect(events[3].nativeIds["requestId"] == "q")
   }
 
+  /// The suggestions are 2.1.282's, recorded live: an allow rule, a directory and a mode change.
+  @Test func aSuggestedAllowRuleOffersTheSession() {
+    var t = tracker()
+    let events = run(
+      &t,
+      """
+      {"type":"control_request","request_id":"a","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch one.txt"},"tool_use_id":"toolu_1","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"touch one.txt"}],"behavior":"allow","destination":"localSettings"},{"type":"addDirectories","directories":["/tmp/w"],"destination":"session"},{"type":"setMode","mode":"acceptEdits","destination":"session"}]}}
+      {"type":"control_request","request_id":"b","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch two.txt"},"tool_use_id":"toolu_2","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"touch two.txt"}],"behavior":"deny","destination":"session"},{"type":"addRules","rules":[],"behavior":"allow","destination":"session"},{"type":"setMode","mode":"acceptEdits","destination":"session"}]}}
+      {"type":"control_request","request_id":"c","request":{"subtype":"can_use_tool","tool_name":"WebSearch","input":{},"tool_use_id":"toolu_3","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"WebSearch"}],"behavior":"allow","destination":"localSettings"}]}}
+      """)
+    #expect(AllowScope(requestPayload: events[0].payload) == .session)
+    #expect(events[0].payload["request"]?["allowRule"]?.stringValue == "Bash(touch one.txt)")
+    #expect(events[0].payload["request"]?["permission_suggestions"] == nil)
+    #expect(AllowScope(requestPayload: events[1].payload) == nil)
+    #expect(events[1].payload["request"]?["allowRule"] == nil)
+    #expect(events[2].payload["request"]?["allowRule"]?.stringValue == "WebSearch")
+  }
+
+  @Test func sessionRulesKeepOnlyAllowRulesAndNameTheSession() {
+    let request: JSONValue = [
+      "permission_suggestions": [
+        [
+          "type": "addRules", "rules": [["toolName": "Bash", "ruleContent": "touch one.txt"]],
+          "behavior": "allow", "destination": "localSettings",
+        ],
+        ["type": "setMode", "mode": "acceptEdits", "destination": "session"],
+      ]
+    ]
+    #expect(
+      ClaudeTurnTracker.sessionRules(request: request) == [
+        [
+          "type": "addRules", "rules": [["toolName": "Bash", "ruleContent": "touch one.txt"]],
+          "behavior": "allow", "destination": "session",
+        ]
+      ])
+    #expect(ClaudeTurnTracker.sessionRules(request: [:]).isEmpty)
+  }
+
   @Test func sessionStateAndApiKeyConflictTranslate() {
     var t = tracker()
     let waiting = run(

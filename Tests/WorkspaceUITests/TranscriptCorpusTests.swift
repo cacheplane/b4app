@@ -1,3 +1,4 @@
+import StreamingMarkdown
 import Testing
 import WorkspaceProtocol
 
@@ -379,9 +380,11 @@ import WorkspaceProtocol
     #expect(normal(scenario).filter { $0 == "swift build [In progress]" }.count == 2)
     #expect(normal(scenario).filter { $0 == "swift build [Unfinished]" }.count == 1)
     // The streaming reply's block is open: code, no Copy yet.
+    var parser = MarkdownParser()
+    parser.push(scenario.live["n2"] ?? "")
     #expect(
-      MarkdownBlocks.split(scenario.live["n2"] ?? "")
-        == [.prose("Building:"), .code(language: "bash", text: "swift build", closed: false)])
+      parser.document.blocks.map(\.kind)
+        == [.paragraph("Building:"), .code(language: "bash", text: "swift build", closed: false)])
   }
 
   /// A history whose last call has no result, followed by a live turn that completed: the history

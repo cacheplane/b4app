@@ -48,11 +48,13 @@ import WorkspaceProtocol
     let c = try connection(endpoint)
     defer {
       // Body-local database defers run before this; raw inspector does not use this app name.
-      #expect(
-        (try? c.execute(
+      let observation = ApplicationBackendObservation.observe {
+        try c.execute(
           "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
           [endpoint.database]
-        ).rows.isEmpty) == true)
+        ).rows.count
+      }
+      #expect(observation.accepted, Comment(rawValue: observation.diagnostic))
     }
     let files = try Migrator.files().filter { $0.name <= "0009_thread_runtime_choice" }
     guard

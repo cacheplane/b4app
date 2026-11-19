@@ -196,6 +196,31 @@ func values(of flag: String, in argv: [String]) -> [String] {
     await rig.adapter.dispose()
   }
 
+  /// The fake echoes the rules it was sent as the tool's output.
+  @Test func aWiderAllowSendsTheSuggestedRuleForTheSessionOnly() async throws {
+    let rig = try Rig()
+    let ref = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))
+    _ = try await rig.turn(ref, "use a suggested tool")
+    let opened = try await rig.collector.waitFor { $0.kind == .runtimeRequestOpened }
+    #expect(AllowScope(requestPayload: opened.payload) == .session)
+    #expect(opened.payload["request"]?["allowRule"]?.stringValue == "Bash(ls -la)")
+    let requestRef = RuntimeRequestRef(
+      nativeRequestId: opened.nativeIds["requestId"]!, kind: .toolPermission,
+      adapterGeneration: opened.adapterGeneration)
+    try await rig.adapter.respond(requestRef, response: .decision(.allowAlways))
+    let tool = try await rig.collector.waitFor { $0.kind == .toolCompleted }
+    let sent = try JSONCoding.decoder.decode(
+      JSONValue.self, from: Data((tool.payload["item"]?["output"]?.stringValue ?? "").utf8))
+    #expect(
+      sent == [
+        [
+          "type": "addRules", "rules": [["toolName": "Bash", "ruleContent": "ls -la"]], "behavior": "allow",
+          "destination": "session",
+        ]
+      ])
+    await rig.adapter.dispose()
+  }
+
   @Test func answersAToolPermissionOnceAndPairsTheResult() async throws {
     let rig = try Rig()
     let ref = try await rig.adapter.createSession(NewSessionInput(workingDirectory: rig.workDir))

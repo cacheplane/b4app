@@ -1,4 +1,5 @@
 import Foundation
+import StreamingMarkdown
 import Testing
 import WorkspaceClient
 import WorkspaceProtocol
@@ -142,6 +143,35 @@ import WorkspaceProtocol
     return ThreadRead.Result(thread: thread, turns: [turn], items: [item], requests: requests)
   }
 
+  /// Snapshot only the known sentinel. Reading a stream's document does not populate the store's
+  /// lazy settled-document cache, and object identity catches a reset followed by a replacement.
+  struct StreamSnapshot: Equatable {
+    let present: Bool
+    let identity: ObjectIdentifier?
+    let received: String?
+    let shown: String?
+    let phase: MessageStream.Phase?
+    let document: MarkdownDocument?
+    let storeRevision: Int
+  }
+
+  static let sentinelItemId = "historical-action-sentinel"
+
+  static func streamSnapshot(_ model: WorkspaceModel) -> StreamSnapshot {
+    let stream = model.streams.stream(for: sentinelItemId)
+    return StreamSnapshot(
+      present: stream != nil, identity: stream.map { ObjectIdentifier($0) }, received: stream?.received,
+      shown: stream?.shown, phase: stream?.phase, document: stream?.document,
+      storeRevision: model.streams.revision)
+  }
+
+  static func seedStream(_ model: WorkspaceModel) throws -> StreamSnapshot {
+    model.streams.append("# Retained stream\n\nKnown **sentinel** text", to: sentinelItemId)
+    let snapshot = streamSnapshot(model)
+    try #require(snapshot.present && snapshot.received == snapshot.shown && snapshot.phase == .streaming)
+    return snapshot
+  }
+
   static func withModel(
     phone: Bool, selected: String, disabledCurrent: Bool = false, currentSend: Bool = false,
     currentStatus: TurnStatus? = nil,
@@ -163,7 +193,8 @@ import WorkspaceProtocol
       transport.setRead(read)
       transport.setDraft(Draft(threadId: read.thread.id, text: exactDraft, updatedAt: PhoneFixture.at(-10)))
     }
-    let model = WorkspaceModel(transportProvider: { transport })
+    let streams = MessageStreamStore(pacing: .immediate, makeTicker: { ManualTicker() })
+    let model = WorkspaceModel(transportProvider: { transport }, streams: streams)
     let clock = TestClock()
     model.clock = clock
     model.now = { clock.date }
@@ -271,6 +302,7 @@ nonisolated struct HistoricalActionCase: Sendable {
   func directUnavailableActionsNeverLeaveTheModel(fixture: HistoricalActionCase) async throws {
     let (phone, id, action) = (fixture.phone, fixture.id, fixture.action)
     try await HistoricalActionFixture.withModel(phone: phone, selected: id) { model, transport, reads in
+      let streamBefore = try HistoricalActionFixture.seedStream(model)
       let before = try #require(model.detail)
       let read = try #require(reads.first { $0.thread.id == before.thread.id })
       let turns = model.activeTurns
@@ -291,6 +323,7 @@ nonisolated struct HistoricalActionCase: Sendable {
         && model.connections == profiles && model.threads == threads
       #expect(exactDraftRetained)
       #expect(exactCacheRetained)
+      #expect(HistoricalActionFixture.streamSnapshot(model) == streamBefore)
       let sendStateRetained = model.pendingSends == pending
       let controlStateRetained = model.stopStates == stops && model.answerStates == answers
       #expect(sendStateRetained)
@@ -427,6 +460,7 @@ nonisolated struct HistoricalActionCase: Sendable {
       let historical = try #require(reads.first { $0.thread.id == model.detail?.thread.id })
       // Capture from an authoritative read, then actually open another thread: a real selection race.
       await model.openThread(id: "thread-codex")
+      let streamBefore = try HistoricalActionFixture.seedStream(model)
       let before = model.detail
       let draft = model.composerText
       transport.script(.requestRespond, [.failure(HistoricalActionFixture.cutover)])
@@ -434,6 +468,7 @@ nonisolated struct HistoricalActionCase: Sendable {
       #expect(transport.recorded(.requestRespond).isEmpty)
       let selectedStateRetained = model.detail == before && model.composerText == draft
       #expect(selectedStateRetained)
+      #expect(HistoricalActionFixture.streamSnapshot(model) == streamBefore)
       #expect(model.answerStates.isEmpty)
       await model.openThread(id: historical.thread.id)
       let historicalCacheRetained =
@@ -454,6 +489,7 @@ nonisolated struct HistoricalActionCase: Sendable {
       model, transport, reads in
       let current = try #require(reads.first { $0.thread.id == model.detail?.thread.id })
       await model.openThread(id: "thread-historical-managed")
+      let streamBefore = try HistoricalActionFixture.seedStream(model)
       let before = model.detail
       let draft = model.composerText
       var request = try #require(
@@ -469,6 +505,7 @@ nonisolated struct HistoricalActionCase: Sendable {
       #expect(transport.recorded(.requestRespond).first?.params["requestId"] == .string(request.id))
       let selectedStateRetained = model.detail == before && model.composerText == draft
       #expect(selectedStateRetained)
+      #expect(HistoricalActionFixture.streamSnapshot(model) == streamBefore)
       #expect(model.lastError == nil)
     }
   }
@@ -516,12 +553,14 @@ nonisolated struct HistoricalActionCase: Sendable {
   @Test(arguments: [false, true])
   func unknownRequestIdsFailClosedWithoutChangingSelectedState(phone: Bool) async throws {
     try await HistoricalActionFixture.withModel(phone: phone, selected: "codex") { model, transport, _ in
+      let streamBefore = try HistoricalActionFixture.seedStream(model)
       let before = model.detail
       let draft = model.composerText
       await model.respond(requestId: "never-observed", decision: .allowOnce)
       await model.answer(requestId: "never-observed", answers: ["question": ["answer"]])
       #expect(transport.recorded(.requestRespond).isEmpty)
       #expect(model.detail == before && model.composerText == draft)
+      #expect(HistoricalActionFixture.streamSnapshot(model) == streamBefore)
       #expect(model.answerStates.isEmpty && model.lastError == nil)
     }
   }
@@ -644,6 +683,8 @@ nonisolated struct HistoricalActionCase: Sendable {
   @Test(arguments: [false, true])
   func oldAccountReconcileCannotRestoreCapturedTargets(phone: Bool) async throws {
     try await HistoricalActionFixture.withModel(phone: phone, selected: "codex") { model, transport, reads in
+      let streamBefore = try HistoricalActionFixture.seedStream(model)
+      #expect(streamBefore.present)
       let read = try #require(reads.first { $0.thread.id == "thread-codex" })
       let request = try #require(read.requests.first)
       let reply = try JSONValue(encoding: read)
@@ -658,12 +699,14 @@ nonisolated struct HistoricalActionCase: Sendable {
         throw error
       }
       model.forgetWorkspace()
+      #expect(model.streams.stream(for: HistoricalActionFixture.sentinelItemId) == nil)
       #expect(!model.canAnswer(request))
       // Release the old account's authoritative reply after its generation has ended.
       let released = transport.release(.threadReconcile, with: .result(reply))
       await reconcile.value
       #expect(released)
       #expect(model.threads.isEmpty && model.detail == nil)
+      #expect(model.streams.stream(for: HistoricalActionFixture.sentinelItemId) == nil)
       #expect(!model.canAnswer(request))
       await model.respond(requestId: request.id, decision: .allowOnce)
       await model.answer(requestId: request.id, answers: [:])
@@ -724,6 +767,7 @@ nonisolated struct HistoricalActionCase: Sendable {
       transport.setRead(read)
       transport.script(.threadReconcile, [.result(try JSONValue(encoding: read))])
       await model.reconcileThread(id: read.thread.id)
+      let streamBefore = try HistoricalActionFixture.seedStream(model)
       let before = try #require(model.detail)
       let legitimate = try #require(before.requests.first)
       #expect(model.canAnswer(legitimate))
@@ -738,6 +782,7 @@ nonisolated struct HistoricalActionCase: Sendable {
           kind: .runtimeRequestOpened, connectionId: connectionId, threadId: read.thread.id,
           payload: ["runtimeRequest": try JSONValue(encoding: opened)]))
       #expect(model.detail == before)
+      #expect(HistoricalActionFixture.streamSnapshot(model) == streamBefore)
       #expect(!model.canAnswer(opened))
       #expect(model.canAnswer(legitimate))
       var terminal = legitimate
@@ -749,6 +794,7 @@ nonisolated struct HistoricalActionCase: Sendable {
           connectionId: connectionId, threadId: read.thread.id,
           payload: ["runtimeRequest": try JSONValue(encoding: terminal)]))
       #expect(model.detail == before)
+      #expect(HistoricalActionFixture.streamSnapshot(model) == streamBefore)
       #expect(model.canAnswer(legitimate))
       await model.respond(requestId: opened.id, decision: .allowOnce)
       #expect(transport.recorded(.requestRespond).isEmpty)
@@ -762,6 +808,7 @@ nonisolated struct HistoricalActionCase: Sendable {
       #expect(transport.recorded(.requestRespond).count == 1)
       #expect(transport.recorded(.requestRespond).first?.params["requestId"] == .string(legitimate.id))
       #expect(model.detail == before)
+      #expect(HistoricalActionFixture.streamSnapshot(model) == streamBefore)
       #expect(model.canAnswer(legitimate))
       #expect(model.answerStates.isEmpty && model.lastError == nil)
     }

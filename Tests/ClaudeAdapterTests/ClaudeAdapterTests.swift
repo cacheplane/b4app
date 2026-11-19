@@ -123,6 +123,14 @@ private let clean = ["PATH": "/usr/bin"]
     #expect(allow["response"]?["request_id"]?.stringValue == "abc")
     #expect(allow["response"]?["response"]?["behavior"]?.stringValue == "allow")
     #expect(allow["response"]?["response"]?["updatedInput"]?["command"]?.stringValue == "ls")
+    #expect(allow["response"]?["response"]?["updatedPermissions"] == nil)
+    let rule: JSONValue = ["type": "addRules", "destination": "session"]
+    let wider = try JSONCoding.decoder.decode(
+      JSONValue.self,
+      from: try ClaudeStream.permissionResponse(
+        requestId: "abc", toolUseId: "toolu_1",
+        decision: .allow(updatedInput: request.input, updatedPermissions: [rule])))
+    #expect(wider["response"]?["response"]?["updatedPermissions"] == [rule])
     let deny = try JSONCoding.decoder.decode(
       JSONValue.self,
       from: try ClaudeStream.permissionResponse(
@@ -139,7 +147,7 @@ private let clean = ["PATH": "/usr/bin"]
       ]
     ]
     let decision = ClaudeStream.askUserQuestionAnswer(questions: questions, answers: ["Which?": "A"])
-    guard case .allow(let updated) = decision else {
+    guard case .allow(let updated, _) = decision else {
       Issue.record("expected allow")
       return
     }

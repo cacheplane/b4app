@@ -15,6 +15,96 @@ import WorkspaceProtocol
   private static let sentinelKey = "owned-proof-unrelated"
   private enum FixtureFailure: Error { case nativeShape, redactedFailure }
 
+  private enum OwnedRawDriverPhase: String {
+    case connect
+    case bodyProbeBefore
+    case commitProbeBefore
+    case initialProbeGuard
+    case begin
+    case lockBudget
+    case statementBudget
+    case advisoryLock
+    case wallSample
+    case hlcShapeGuard
+    case setHLC
+    case setDevice
+    case upsert
+    case unexpectedUpsertError
+    case expectedReference
+    case refusalShapeGuard
+    case rollback
+    case rollbackObservedRead
+    case rollbackObservedGuard
+    case dmlReturnedGuard
+    case assertComplete
+    case ownImage
+    case settingsBeforeCommit
+    case beforeCommitProbeGuard
+    case commit
+    case settingsAfterCommitGuard
+    case finalProbeGuard
+    case durableImage
+    case finalFactsGuard
+  }
+
+  private enum OwnedRawDriverCategory: String {
+    case postgresError, nativeShape, redactedFailure, otherError
+  }
+
+  private enum OwnedRawDriverSQLState: String {
+    case none, unlisted
+    case code08003 = "08003"
+    case code08006 = "08006"
+    case code22023 = "22023"
+    case code22P02 = "22P02"
+    case code23502 = "23502"
+    case code23503 = "23503"
+    case code23505 = "23505"
+    case code23514 = "23514"
+    case code25P02 = "25P02"
+    case code40001 = "40001"
+    case code40P01 = "40P01"
+    case code53100 = "53100"
+    case code53200 = "53200"
+    case code53300 = "53300"
+    case code53400 = "53400"
+    case code55P03 = "55P03"
+    case code57014 = "57014"
+    case code57P01 = "57P01"
+    case code58030 = "58030"
+    case code58P01 = "58P01"
+    case codeP0001 = "P0001"
+
+    static func classify(_ code: String) -> Self {
+      guard let state = Self(rawValue: code), state != .none else { return .unlisted }
+      return state
+    }
+  }
+
+  /// No arbitrary native error, message, SQL, image, reference, or fixture is retained here.
+  private struct OwnedRawDriverDiagnostic: Error {
+    let row: OwnedBindRawControl
+    let phase: OwnedRawDriverPhase
+    let category: OwnedRawDriverCategory
+    let sqlState: OwnedRawDriverSQLState
+
+    init(row: OwnedBindRawControl, phase: OwnedRawDriverPhase, error: any Error) {
+      self.row = row
+      self.phase = phase
+      if let postgres = error as? PostgresError {
+        category = .postgresError
+        sqlState = OwnedRawDriverSQLState.classify(postgres.sqlState)
+      } else {
+        sqlState = .none
+        switch error as? FixtureFailure {
+        case .nativeShape?: category = .nativeShape
+        case .redactedFailure?: category = .redactedFailure
+        case nil: category = .otherError
+        }
+      }
+    }
+  }
+
   private struct Fixture {
     let database: WorkspaceDatabase
     let inspector: PostgresConnection
@@ -45,6 +135,12 @@ import WorkspaceProtocol
       defer { try? FileManager.default.removeItem(atPath: root) }
       // Keep the inspector's entire lifetime inside this call, before its physical root is removed.
       try withNativeFixture(root, body)
+    } catch let diagnostic as OwnedRawDriverDiagnostic {
+      // Native fixture close and physical-root unwind have completed before this bounded record.
+      print(
+        "OWNED_RAW_DRIVER_DIAGNOSTIC_V1 row=\(diagnostic.row.rawValue) phase=\(diagnostic.phase.rawValue) category=\(diagnostic.category.rawValue) sqlstate=\(diagnostic.sqlState.rawValue)"
+      )
+      throw FixtureFailure.redactedFailure
     } catch {
       // Neither SQL errors nor fixture values may escape through Swift Testing's error rendering.
       throw FixtureFailure.redactedFailure
@@ -1778,16 +1874,21 @@ extension OwnedProtocolProofWriteTests {
   private static func ownedBindRawDriver(
     _ f: Fixture, stage: OwnedBindStageFixture, row: OwnedBindRawControl
   ) throws -> OwnedBindRawFacts {
+    var phase = OwnedRawDriverPhase.connect
     do {
       let endpoint = f.database.endpoint
       // This connection never enters a pool, field, closure result, or returned facts.
+      phase = .connect
       let ownedPostgresConnection = try PostgresConnection(
         lib: LibPQ.load(binDir: endpoint.binDir!),
         connectionString:
           "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
       let c = ownedPostgresConnection
+      phase = .bodyProbeBefore
       let bodyBefore = try ownedBindProbe(c, "body_probe")
+      phase = .commitProbeBefore
       let commitBefore = try ownedBindProbe(c, "commit_probe")
+      phase = .initialProbeGuard
       guard bodyBefore == OwnedBindProbe(last: 1, called: false),
         commitBefore == OwnedBindProbe(last: 1, called: false)
       else { throw FixtureFailure.nativeShape }
@@ -1809,25 +1910,35 @@ extension OwnedProtocolProofWriteTests {
           _ = try? c.execute("ROLLBACK")
         }
       }
+      phase = .begin
       try c.execute("BEGIN ISOLATION LEVEL READ COMMITTED")
       began = true
+      phase = .lockBudget
       try c.execute("SET LOCAL lock_timeout='2s'")
+      phase = .statementBudget
       try c.execute("SET LOCAL statement_timeout='2s'")
+      phase = .advisoryLock
       try c.execute(
         "SELECT pg_catalog.pg_advisory_xact_lock($1::bigint)",
         [String(WorkspaceDatabase.remoteApplyLockKey)])
       // Independent native sample, not database.clock.next() or an owned writer output.
+      phase = .wallSample
       let authoredHLC = HLC(millis: try ownedBindWall(c), counter: 0, deviceId: stage.device)
+      phase = .hlcShapeGuard
       guard HLC(rawValue: authoredHLC.rawValue) != nil else { throw FixtureFailure.nativeShape }
+      phase = .setHLC
       try c.execute("SELECT pg_catalog.set_config('b4app.hlc',$1,true)", [authoredHLC.rawValue])
       if !equalBytes(stage.device, "local") {
+        phase = .setDevice
         try c.execute("SELECT pg_catalog.set_config('b4app.device_id',$1,true)", [stage.device])
       }
       do {
+        phase = .upsert
         let result = try c.execute(ownedBindRawUpsert, [key, stage.controlJSON])
         guard result.affected == 1 else { throw FixtureFailure.nativeShape }
         dmlReturned = true
       } catch let error as PostgresError {
+        phase = .unexpectedUpsertError
         // libpq currently exposes SQLSTATE + full rendered message + originating SQL only.
         // Match the ENTIRE first diagnostic line and exact originating DML, never contains().
         let firstLine = error.message.components(separatedBy: "\n").first
@@ -1839,40 +1950,56 @@ extension OwnedProtocolProofWriteTests {
           row == .bodyFault && error.sqlState == "23514"
           && firstLine == "ERROR:  OWNED_BIND_RAW_BODY_FAULT"
           && equalBytes(error.sql, ownedBindRawUpsert)
-        guard predicateRejected || bodyFaultRejected else { throw FixtureFailure.redactedFailure }
+        guard predicateRejected || bodyFaultRejected else {
+          throw OwnedRawDriverDiagnostic(row: row, phase: .unexpectedUpsertError, error: error)
+        }
       }
+      phase = .expectedReference
       let expectedAfter = try ownedBindExpectedReference(stage)
       if row == .imageReject || row == .bodyFault {
+        phase = .refusalShapeGuard
         guard !dmlReturned, predicateRejected == (row == .imageReject),
           bodyFaultRejected == (row == .bodyFault)
         else { throw FixtureFailure.nativeShape }
         rollbackSent = true
+        phase = .rollback
         try c.execute("ROLLBACK")
         rollbackAcknowledged = true
+        phase = .rollbackObservedRead
         let observed = try c.execute("SELECT count(*) AS n FROM \"owned_bind_stage\".\"observed\"").rows
+        phase = .rollbackObservedGuard
         guard observed.count == 1, observed[0].int("n") == 0 else { throw FixtureFailure.nativeShape }
       } else {
+        phase = .dmlReturnedGuard
         guard dmlReturned else { throw FixtureFailure.nativeShape }
+        phase = .assertComplete
         try c.execute(
           "SELECT \"owned_bind_stage\".\"assert_complete\"($1)", [stage.replacement])
+        phase = .ownImage
         ownImageValidated = try ownedBindImage(c) == expectedAfter
+        phase = .settingsBeforeCommit
         settingsValidated = try ownedBindObserved(c, stage: stage, authoredHLC: authoredHLC)
+        phase = .beforeCommitProbeGuard
         guard ownImageValidated, settingsValidated,
           try ownedBindProbe(c, "body_probe").advanced(from: bodyBefore, by: 1),
           try ownedBindProbe(c, "commit_probe").advanced(from: commitBefore, by: 0)
         else { throw FixtureFailure.nativeShape }
         commitSent = true
+        phase = .commit
         try c.execute("COMMIT")
         commitAcknowledged = true
+        phase = .settingsAfterCommitGuard
         guard try ownedBindObserved(f.inspector, stage: stage, authoredHLC: authoredHLC) else {
           throw FixtureFailure.nativeShape
         }
       }
       let bodyCount: Int64 = row == .imageReject ? 0 : 1
       let commitCount: Int64 = commitAcknowledged ? 1 : 0
+      phase = .finalProbeGuard
       guard try ownedBindProbe(f.inspector, "body_probe").advanced(from: bodyBefore, by: bodyCount),
         try ownedBindProbe(f.inspector, "commit_probe").advanced(from: commitBefore, by: commitCount)
       else { throw FixtureFailure.nativeShape }
+      phase = .durableImage
       let durable = try ownedBindImage(f.inspector)
       let facts = OwnedBindRawFacts(
         row: row.rawValue, dmlReturned: dmlReturned, commitSent: commitSent,
@@ -1881,11 +2008,14 @@ extension OwnedProtocolProofWriteTests {
         ownImageValidated: ownImageValidated,
         durableImageValidated: durable == (commitAcknowledged ? expectedAfter : stage.before),
         settingsValidated: settingsValidated, bodyAllocations: bodyCount, commitAllocations: commitCount)
+      phase = .finalFactsGuard
       guard facts.qualified else { throw FixtureFailure.nativeShape }
       return facts
+    } catch let diagnostic as OwnedRawDriverDiagnostic {
+      throw diagnostic
     } catch {
-      // No arbitrary native error or private image/reference leaves this lexical driver.
-      throw FixtureFailure.redactedFailure
+      // Only closed primitive categories leave this lexical driver, after normal rollback cleanup.
+      throw OwnedRawDriverDiagnostic(row: row, phase: phase, error: error)
     }
   }
 
