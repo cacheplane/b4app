@@ -12,13 +12,13 @@ What the activity line (D-255) meets from the real runtimes. Seven turns were ru
 - `Tests/CodexAdapterTests/Fixtures/subagent-run.jsonl` (30 notifications): one Codex sub-agent the parent waits for.
 - `Tests/CodexAdapterTests/Fixtures/subagent-not-awaited.jsonl` (24 notifications): one the parent does not wait for.
 
-The scrub replaced the folder with `/work/proj` and the task output folder with `/work/tasks`, the session id with `session-1`, cut the `init` frame to eight fields, the result to twelve, and dropped signatures, thinking text, usage, the `initialize` answer, rate-limit and lifecycle frames, and every Codex notification but thread, turn and item ones. A search for the owner's name, home paths, email addresses, organisation and account fields found none. `ClaudeSubAgentRecordingTests` and `CodexSubAgentRecordingTests` hold the shapes below.
+The scrub replaced the folder with `/work/proj` and the task output folder with `/work/tasks`, the session id with `session-1`, cut the `init` frame to eight fields, the result to fourteen, and dropped signatures, thinking text, usage, the `initialize` answer, rate-limit and lifecycle frames, and every Codex notification but thread, turn and item ones. A search for the owner's name, home paths, email addresses, organisation and account fields found none. `ClaudeSubAgentRecordingTests` and `CodexSubAgentRecordingTests` hold the shapes below.
 
 ### What Claude Code sends
 
 - An agent runs in the foreground only when the call says `run_in_background: false`. The two runs that left the field out ran in the background, the single-agent stop run among them.
 - A background agent's call gets its result at once, the text `Async agent launched successfully…`. The turn's `result` frame comes while the agent works. Its steps, text and thinking follow that frame, each naming the call. Its end is `task_updated` (with `end_time`) and `task_notification` naming the call; no second tool result is sent.
-- Claude Code then starts a turn itself for each hand-back: an `init` frame, a reply, a `result`, and no user frame. The parallel run ended with three results for one message.
+- Claude Code then starts a turn itself for each hand-back: an `init` frame, a reply, a `result`, and no user frame. The parallel run ended with three results for one message. The sent turn's result carries `user_message_uuid`; each wake-up turn's carries `origin` with `kind` `task-notification` and no uuid.
 - A foreground agent's text and thinking are not sent; only its prompt, tool uses and results. A background agent's are.
 - An agent started by an agent names the first agent's call. The inner agent's own steps are not sent.
 - An interrupt after the turn's result kills the background agent (`task_updated` `killed`, `task_notification` `stopped`) and sends no `result`.

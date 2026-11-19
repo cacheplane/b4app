@@ -40,6 +40,13 @@ import WorkspaceProtocol
       })
     let results = all.indices.filter { all[$0]["type"]?.stringValue == "result" }
     #expect(results.count == 3)
+    // The sent turn's result names the message that began it; a wake-up turn's names its origin instead.
+    #expect(all[results[0]]["user_message_uuid"]?.stringValue != nil)
+    #expect(all[results[0]]["origin"] == nil)
+    for index in results.dropFirst() {
+      #expect(all[index]["origin"]?["kind"]?.stringValue == "task-notification")
+      #expect(all[index]["user_message_uuid"] == nil)
+    }
     let childFrames = all.indices.filter { parent(all[$0]).map(calls.contains) == true }
     #expect(childFrames.contains { $0 > results[0] })
     // The wake-up turns: an `init` frame, a reply and a result, and no user frame of the thread's own.
