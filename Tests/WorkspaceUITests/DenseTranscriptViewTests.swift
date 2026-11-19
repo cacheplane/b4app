@@ -386,6 +386,8 @@
       var detail: ThreadDetail
       var dense: Bool
       let streams: MessageStreamStore
+      /// The reader's own sends in this thread (`WorkspaceModel.ownSends`).
+      var sent = 0
       /// Immediate reveal unless a ticker is given: then the reveal is paced and the test fires it.
       init(_ detail: ThreadDetail, dense: Bool, ticker: ManualTicker? = nil) {
         self.detail = detail
@@ -407,7 +409,8 @@
       let host: Host
       let folds: TranscriptFolds
       var body: some View {
-        TranscriptView(detail: host.detail, streams: host.streams, dense: host.dense, folds: folds)
+        TranscriptView(
+          detail: host.detail, streams: host.streams, dense: host.dense, sent: host.sent, folds: folds)
       }
     }
 
@@ -663,12 +666,33 @@
       #expect(view.folds.holds)
 
       let height = view.documentHeight
+      view.host.sent += 1
       view.host.detail.turns.append(turn(13, .running))
       view.host.detail.items.append(user("u13", turn: "t13", sequence: 130))
       try await view.until("the message is drawn") { view.documentHeight > height + 1 }
       try await view.settle()
       #expect(!view.folds.holds)
       #expect(view.atEnd, "below the viewport: \(view.below)")
+    }
+
+    /// A turn the reader did not send from this app (another device, the CLI) is drawn at the end and
+    /// leaves them where they were reading (D-254).
+    @Test func aTurnFromAnotherDeviceDoesNotMoveAReaderWhoScrolledBack() async throws {
+      let view = try Hosted(twelveTurns())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      try await view.settle()
+      #expect(view.folds.holds)
+      let origin = view.origin
+
+      let height = view.documentHeight
+      view.host.detail.turns.append(turn(13, .running))
+      view.host.detail.items.append(user("u13", turn: "t13", sequence: 130))
+      try await view.until("the message is drawn") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(view.folds.holds)
+      #expect(abs(view.origin - origin) <= 0.5, "moved by \(view.origin - origin)")
     }
 
     @Test func switchingDensityLetsGoOfTheHold() async throws {
