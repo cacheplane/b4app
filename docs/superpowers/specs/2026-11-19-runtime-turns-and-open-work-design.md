@@ -216,7 +216,7 @@ Six changes, each shippable alone, in this order:
 
 While a thread has open work, a completed turn sends nothing. What ends the silence? The research favours the first: Claude Code's own "finished" notice waits for background agents.
 
-- **At rest (proposed).** One "Replied" when the thread comes to rest: its latest turn is completed and its open work is zero, whichever happens last. A Codex agent nobody waited for then notifies when it ends. For Claude, an agent's end is followed at once by a wake-up turn, so the tracker emits that turn's acknowledgement before the agent's close (it holds a `completed` notification's close until the wake-up turn is acknowledged, two seconds at most); the hub then sees a running turn and waits for it. A stop by the owner sends nothing.
+- **At rest (proposed).** One "Replied" when the thread comes to rest: its latest turn is completed and its open work is zero, whichever happens last. A Codex agent nobody waited for then notifies when it ends. For Claude, an agent's end is followed at once by a wake-up turn, so the tracker emits that turn's acknowledgement before the agent's close (it holds a `completed` notification's close until the wake-up turn is acknowledged, two seconds at most); the hub then sees a running turn and waits for it. A stop by the owner that ends open work is, to the hub, the same as the agents ending: an unread latest reply is announced (D-259).
 - **Next turn only.** Nothing is sent for open work ending; the next completed turn at rest notifies. Simpler, no holding in the tracker, but a Codex agent nobody waited for ends silently (the badge still counts it).
 
 ## Not known
