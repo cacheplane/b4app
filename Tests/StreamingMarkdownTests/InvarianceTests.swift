@@ -74,7 +74,7 @@ private let names = corpus().map(\.name)
     #expect(scalarByScalar.document == expected)
     #expect(characterByCharacter.document == expected)
     // One "\r" before the "\n" ends the line; the other is trailing whitespace of the line "a\r".
-    #expect(outline(expected) == "p \"a b\"")
+    #expect(outline(expected) == "p \"a\\nb\"")
   }
 
   @Test(arguments: names) func oneCharacterAtATimeEndsInTheSameDocument(name: String) throws {

@@ -357,17 +357,15 @@ struct BlockState: Equatable, Sendable {
     tableRows = []
   }
 
-  /// The open paragraph's text: its lines joined by a space, or by a line break after a hard break.
+  /// The open paragraph's text: its lines joined by line breaks, each without a hard break's marker.
   /// Rebuilt on every read: one copy of the text.
   func paragraphText() -> String {
     var text = ""
     for (index, line) in paragraphLines.enumerated() {
       if index == paragraphLines.count - 1 {
         text += line.text
-      } else if let hard = line.hardText {
-        text += hard + "\n"
       } else {
-        text += line.text + " "
+        text += (line.hardText ?? line.text) + "\n"
       }
     }
     return text

@@ -108,10 +108,11 @@
       #expect(size(MarkdownText(text: " \n"), width: 420).height == 0)
     }
 
-    @Test func aSoftBreakIsASpaceAndAHardBreakIsALine() {
+    @Test func aLineBreakInAParagraphIsALine() {
       let oneLine = size(MarkdownText(text: "one two"), width: 420).height
-      #expect(size(MarkdownText(text: "one\ntwo"), width: 420).height == oneLine)
-      #expect(size(MarkdownText(text: "one  \ntwo"), width: 420).height > oneLine)
+      let twoLines = size(MarkdownText(text: "one  \ntwo"), width: 420).height
+      #expect(twoLines > oneLine)
+      #expect(size(MarkdownText(text: "one\ntwo"), width: 420).height == twoLines)
     }
 
     @Test func aStreamedReplyAndTheSameReplyFromHistoryDrawTheSame() {

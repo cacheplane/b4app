@@ -9,13 +9,13 @@ import Testing
   }
 
   @Test func anOpenParagraphShowsItsCompletedLines() {
-    #expect(midStream("one\ntwo\n") == "p \"one two\"")
+    #expect(midStream("one\ntwo\n") == "p \"one\\ntwo\"")
   }
   @Test func anOpenFenceShowsAsOpen() {
     #expect(midStream("```swift\nlet a\n") == "code swift open \"let a\"")
   }
   @Test func theUnfinishedLastLineIsProjected() {
-    #expect(midStream("one\ntw") == "p \"one tw\"")
+    #expect(midStream("one\ntw") == "p \"one\\ntw\"")
     #expect(midStream("```\nlet a\nlet") == "code - open \"let a\\nlet\"")
     #expect(midStream("# hea") == "h1 \"hea\"")
   }
