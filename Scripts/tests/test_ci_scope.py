@@ -80,6 +80,7 @@ class WorkflowTests(unittest.TestCase):
         jobs = workflow_job_sections(text)
         self.assertEqual([name for name in jobs if name in names], names)
         self.jobs = {name: jobs[name] for name in names}
+        self.serial_job = jobs["account-session-aggregate-serial-diagnostic"]
 
     def test_every_macos_job_runs_unless_the_scope_said_false(self):
         macos = [name for name, job in self.jobs.items() if "runs-on: macos-26" in job]
@@ -135,6 +136,14 @@ class WorkflowTests(unittest.TestCase):
             self.assertNotRegex(job, r"uses: actions/cache@\S+(?: # \S+)?\n        with:\n          path: \|?\n?\s*\.build(\n|/\w*DerivedData)",
                                 name)
 
+        # The PR-only serial job consumes the package build cache using the same inputs.
+        package = self.jobs["package"]
+        serial = self.serial_job
+        start = package.index("      - name: File times from content\n")
+        end = package.index("      - name: Format lint\n", start)
+        self.assertIn(package[start:end], serial)
+        self.assertNotIn("uses: actions/cache/save@", serial)
+        self.assertNotIn("name: Cache SwiftPM\n", serial)
 
     def assert_native_scheduling(self, package):
         # Canonical six-space step headers, including unnamed uses/run steps, delimit source slices.
@@ -199,6 +208,15 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("        timeout-minutes: 1\n", by_id[key])
         self.assertNotIn("continue-on-error", package)
         self.assertIn("    timeout-minutes: 45\n", package)
+        # Bound only independent database/writer cases; scenario-internal tasks stay concurrent.
+        width = "--experimental-maximum-parallelization-width 2"
+        self.assertEqual(package.count("--experimental-maximum-parallelization-width"), 2)
+        self.assertIn("          swift test --skip-build " + width +
+                      " --filter '^(WorkspaceStorageTests|CoordinatorTests)\\.' || status=1\n",
+                      named["Test"])
+        self.assertIn("        run: swift test " + width +
+                      " --filter OwnedProtocolProofWriteTests\n",
+                      named["Focused owned protocol proof writer regressions"])
 
     def test_focused_native_precedes_slow_checks_with_all_prerequisites(self):
         self.assert_native_scheduling(self.jobs["package"])
@@ -210,7 +228,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNotNone(match)
         native = match.group(0)
         mutations = [package.replace(native, "") + native, package + native,
-                     package.replace("steps.owner-carrier-receipt-controls.outcome == 'success' && ", "")]
+                     package.replace("steps.owner-carrier-receipt-controls.outcome == 'success' && ", ""),
+                     package.replace(" --experimental-maximum-parallelization-width 2", "", 1),
+                     package.replace("--experimental-maximum-parallelization-width 2",
+                                     "--experimental-maximum-parallelization-width 1"),
+                     package.replace("--experimental-maximum-parallelization-width 2",
+                                     "--experimental-maximum-parallelization-width 4"),
+                     package.replace("run: swift test --filter NodeVersionProbeObservationTests",
+                                     "run: swift test --experimental-maximum-parallelization-width 2"
+                                     " --filter NodeVersionProbeObservationTests")]
         for mutated in mutations:
             with self.subTest(mutation=mutations.index(mutated)):
                 with self.assertRaises(AssertionError):

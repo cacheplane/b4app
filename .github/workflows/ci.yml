@@ -1060,13 +1060,13 @@ jobs:
           B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
         run: |
           status=0
-          swift test --skip-build --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
+          swift test --skip-build --experimental-maximum-parallelization-width 2 --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           swift test --skip-build --skip '^(WorkspaceStorageTests|CoordinatorTests)\.' || status=1
           B4APP_TIMING=1 swift test --skip-build --filter ParserTimingTests || status=1
           exit "$status"
       - name: Focused owned protocol proof writer regressions
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' && steps.owner-carrier-origin-controls.outcome == 'success' && steps.owner-carrier-receipt-controls.outcome == 'success' }}
-        run: swift test --filter OwnedProtocolProofWriteTests
+        run: swift test --experimental-maximum-parallelization-width 2 --filter OwnedProtocolProofWriteTests
       - name: Focused scope owner publication regressions
         id: scope-owner-publication-controls
         if: ${{ !cancelled() && steps.package-build.outcome == 'success' && steps.socket-ownership-controls.outcome == 'success' && steps.owner-carrier-metadata.outcome == 'success' && steps.owner-carrier-origin-controls.outcome == 'success' && steps.owner-carrier-receipt-controls.outcome == 'success' }}
@@ -1119,14 +1119,17 @@ jobs:
           xcodebuild -version
           swift --version
           shasum -a 256 Package.swift Package.resolved .github/workflows/ci.yml Tests/CoordinatorTests/AccountSessionComparisonOwnerTests.swift Tests/WorkspaceStorageTests/AccountSessionComparisonTests.swift Scripts/check-owner-carrier-compiler-controls.py
-      - name: Cache SwiftPM
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: File times from content
+        run: python3 Scripts/restore_mtimes.py
+      - name: Restore the SwiftPM build
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build
             ~/Library/Caches/org.swift.swiftpm
-          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: spm-${{ runner.os }}-
+          key: spm-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: spm-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-
       - name: Cache the pinned PostgreSQL archive
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
