@@ -1254,6 +1254,15 @@ public actor SessionService {
         turnId: request.turnId,
         nativeIds: ["requestId": request.nativeRequestId], adapterGeneration: request.adapterGeneration,
         payload: ["source": "user", "runtimeRequest": try JSONValue(encoding: resolved)]))
+    // The answer ends the wait: a runtime may say nothing until the tool it allowed has finished.
+    if let turnId = request.turnId, try db.turn(id: turnId)?.status == .waitingForUser,
+      try db.pendingRuntimeRequests(threadId: thread.id).isEmpty,
+      let running = try db.updateTurn(
+        id: turnId, { if $0.status == .waitingForUser { $0.status = .running } }),
+      running.status == .running
+    {
+      await publishTurn(.turnStateChanged, running, thread: thread, payload: ["source": "answer"])
+    }
     return RequestRespond.Result(request: resolved)
   }
 
