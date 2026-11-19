@@ -468,6 +468,9 @@ pub async fn needs_you_count(conn: &mut PgConnection, org_id: Uuid, user_id: Uui
 /// What the rules need to know about one changed row.
 struct Subject {
     reason: Reason,
+    /// The row the notification is keyed by: the touched row, or for a reply the thread's latest
+    /// turn.
+    row_id: String,
     thread_id: String,
     title: String,
 }
@@ -512,7 +515,7 @@ async fn detect(
         )
         .bind(auth.org_id)
         .bind(kind.as_str())
-        .bind(row_id)
+        .bind(&subject.row_id)
         .bind(auth.user_id)
         .bind(&subject.thread_id)
         .bind(subject.reason.as_str())
@@ -521,7 +524,7 @@ async fn detect(
         if fresh.is_none() {
             continue;
         }
-        let key = key(*kind, row_id);
+        let key = key(*kind, &subject.row_id);
         fresh_keys.push(key.clone());
 
         if told.is_none() {
@@ -589,6 +592,7 @@ async fn subject(
             )
             .map(|reason| Subject {
                 reason,
+                row_id: row_id.to_string(),
                 thread_id,
                 title: alert_title(title.as_deref()),
             }))
@@ -601,10 +605,23 @@ async fn subject(
                             AS thread_deleted, \
                         CASE WHEN u.\"updatedAt\" ~ '^\\d{4}-\\d{2}-\\d{2}T' \
                              THEN u.\"updatedAt\"::timestamptz > now() - make_interval(secs => $4) \
-                             ELSE false END AS recent \
+                             ELSE false END AS recent, \
+                        lt.\"id\" AS latest_id, lt.\"status\" AS latest_status, \
+                        lt.\"outcome\" AS latest_outcome, ow.n AS open_work \
                  FROM \"turns\" u \
                  LEFT JOIN \"threads\" t ON t.org_id = u.org_id AND t.user_id = u.user_id \
                                         AND t.\"id\" = u.\"threadId\" \
+                 LEFT JOIN LATERAL ( \
+                     SELECT l.\"id\", l.\"status\", l.\"outcome\" FROM \"turns\" l \
+                     WHERE l.org_id = u.org_id AND l.user_id = u.user_id \
+                       AND l.\"threadId\" = u.\"threadId\" AND l.deleted_at IS NULL \
+                     ORDER BY l.\"createdAt\" COLLATE \"C\" DESC NULLS LAST, \
+                              l.\"id\" COLLATE \"C\" DESC \
+                     LIMIT 1) lt ON true \
+                 CROSS JOIN LATERAL ( \
+                     SELECT COALESCE(sum(o.\"openWork\"), 0)::bigint AS n FROM \"turns\" o \
+                     WHERE o.org_id = u.org_id AND o.user_id = u.user_id \
+                       AND o.\"threadId\" = u.\"threadId\" AND o.deleted_at IS NULL) ow \
                  WHERE u.org_id = $1 AND u.user_id = $2 AND u.\"id\" = $3 \
                    AND u.deleted_at IS NULL",
             )
@@ -621,19 +638,49 @@ async fn subject(
                 title,
                 thread_deleted: false,
                 recent,
+                latest_id,
+                latest_status,
+                latest_outcome,
+                open_work,
             }) = row
             else {
                 return Ok(None);
             };
-            Ok(
-                turn_reason(status.as_deref().unwrap_or(""), outcome.as_deref(), recent).map(
-                    |reason| Subject {
-                        reason,
-                        thread_id,
-                        title: alert_title(title.as_deref()),
-                    },
-                ),
+            let at_rest = open_work == 0;
+            let title = alert_title(title.as_deref());
+            // A failure notifies for the turn that failed, open work or not.
+            let own = turn_reason(
+                status.as_deref().unwrap_or(""),
+                outcome.as_deref(),
+                recent,
+                at_rest,
+            );
+            if own == Some(Reason::Failed) {
+                return Ok(Some(Subject {
+                    reason: Reason::Failed,
+                    row_id: row_id.to_string(),
+                    thread_id,
+                    title,
+                }));
+            }
+            // A reply notifies for the thread's latest turn, once the thread is at rest; recency
+            // is the touched row's, so open work ending late still notifies.
+            let Some(latest_id) = latest_id else {
+                return Ok(None);
+            };
+            let reply = turn_reason(
+                latest_status.as_deref().unwrap_or(""),
+                latest_outcome.as_deref(),
+                recent,
+                at_rest,
             )
+            .filter(|reason| *reason == Reason::Replied);
+            Ok(reply.map(|reason| Subject {
+                reason,
+                row_id: latest_id,
+                thread_id,
+                title,
+            }))
         }
     }
 }
@@ -655,4 +702,8 @@ struct TurnRow {
     title: Option<String>,
     thread_deleted: bool,
     recent: bool,
+    latest_id: Option<String>,
+    latest_status: Option<String>,
+    latest_outcome: Option<String>,
+    open_work: i64,
 }

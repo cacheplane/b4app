@@ -944,11 +944,15 @@ have a push token, and are not the one whose push caused the change:
 - A `runtimeRequests` row whose `state` is `pending` notifies, whatever its age: kinds
   `command_approval`, `file_change_approval`, `tool_permission`, and `unknown` say "Waiting for
   your approval"; `user_question` and `elicitation` say "Has a question for you".
-- A `turns` row whose `status` is `terminal` notifies when its `outcome` is `completed`
-  ("Replied") or `failed` ("Turn failed"). `cancelled` never notifies, and a terminal turn with no
-  outcome yet waits for the batch that sets it. A turn notifies only when its `updatedAt` is
-  within 10 minutes of the hub's clock, so a Mac's first join does not flood the phone with
-  history.
+- A `turns` row `X` the batch touched notifies in two cases. A terminal `failed` outcome ("Turn
+  failed") notifies for `X`, whatever open work the thread holds. Otherwise, when the thread's
+  latest live turn `L` (greatest `createdAt`, ties by greatest `id`) is terminal and `completed`,
+  and the thread is at rest (the `openWork` of its live turns sums to 0), "Replied" notifies, keyed
+  by `L`, not `X`: the thread's reply comes once the agents it started have finished, and the
+  turn that wakes it is the one that notifies. `cancelled` never notifies, and a terminal turn with
+  no outcome yet waits for the batch that sets it. `X` notifies only when its `updatedAt` is
+  within 10 minutes of the hub's clock (judged on `X`, so open work ending long after `L`
+  completed still notifies), so a Mac's first join does not flood the phone with history.
 - Once per request id or turn id: the decision is written to a ledger (`notifications_sent`) in the
   same transaction, whether or not a sender is configured or the phone has a token, so a retried
   batch or a later update to the same row notifies nobody twice, and delivery is at most once.

@@ -55,14 +55,21 @@ pub fn request_reason(kind: &str, state: &str) -> Option<Reason> {
 }
 
 /// A turn notifies when it is `terminal` with a `completed` or `failed` outcome and changed
-/// recently (`recent`, within [`TURN_RECENCY_SECS`]). A cancelled turn, a terminal turn with no
-/// outcome yet, and any status or outcome this hub does not know never notify.
-pub fn turn_reason(status: &str, outcome: Option<&str>, recent: bool) -> Option<Reason> {
+/// recently (`recent`, within [`TURN_RECENCY_SECS`]). A failed turn notifies whatever `at_rest`
+/// is; a completed one notifies only when its thread is `at_rest` (no live turn holds open work).
+/// A cancelled turn, a terminal turn with no outcome yet, and any status or outcome this hub
+/// does not know never notify.
+pub fn turn_reason(
+    status: &str,
+    outcome: Option<&str>,
+    recent: bool,
+    at_rest: bool,
+) -> Option<Reason> {
     if status != "terminal" || !recent {
         return None;
     }
     match outcome {
-        Some("completed") => Some(Reason::Replied),
+        Some("completed") if at_rest => Some(Reason::Replied),
         Some("failed") => Some(Reason::Failed),
         _ => None,
     }
@@ -193,10 +200,11 @@ mod tests {
             let status = str_of(case, "status");
             let outcome = opt_of(case, "outcome");
             let recent = case["recent"].as_bool().unwrap();
+            let at_rest = case.get("atRest").and_then(Value::as_bool).unwrap_or(true);
             assert_eq!(
-                reason_name(turn_reason(&status, outcome.as_deref(), recent)),
+                reason_name(turn_reason(&status, outcome.as_deref(), recent, at_rest)),
                 opt_of(case, "reason").as_deref(),
-                "turn {status} {outcome:?} recent={recent}"
+                "turn {status} {outcome:?} recent={recent} at_rest={at_rest}"
             );
         }
 
