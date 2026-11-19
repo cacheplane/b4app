@@ -1808,21 +1808,29 @@ extension OwnedProtocolProofWriteTests {
         isolation text NOT NULL,lock_budget text NOT NULL,statement_budget text NOT NULL,
         hlc text NOT NULL,device text);
       """)
-    for name in stage.expected.rows.keys.sorted() {
-      guard
-        try c.execute(
-          "INSERT INTO \"owned_bind_stage\".\"names\"(name) VALUES($1)", [name]
-        ).affected == 1
-      else { throw FixtureFailure.nativeShape }
-      for value in stage.expected.rows[name]! {
+    // The fixture inspector is idle here. Publish all expected rows before installing any trigger.
+    try c.execute("BEGIN")
+    do {
+      for name in stage.expected.rows.keys.sorted() {
         guard
           try c.execute(
-            "INSERT INTO \"owned_bind_stage\".\"expected\"(name,value) VALUES($1,$2::jsonb)",
-            [name, try ownedBindText(value)]
+            "INSERT INTO \"owned_bind_stage\".\"names\"(name) VALUES($1)", [name]
           ).affected == 1
         else { throw FixtureFailure.nativeShape }
+        for value in stage.expected.rows[name]! {
+          guard
+            try c.execute(
+              "INSERT INTO \"owned_bind_stage\".\"expected\"(name,value) VALUES($1,$2::jsonb)",
+              [name, try ownedBindText(value)]
+            ).affected == 1
+          else { throw FixtureFailure.nativeShape }
+        }
       }
+    } catch {
+      _ = try? c.execute("ROLLBACK")
+      throw error
     }
+    try c.execute("COMMIT")
     guard
       try c.execute(
         """
