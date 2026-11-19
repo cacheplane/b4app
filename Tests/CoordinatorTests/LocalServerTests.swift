@@ -14,6 +14,7 @@ import WorkspaceStorage
 enum ServerNodeProbeLabel: String, Sendable {
   case addsAProjectAndInspectsItsRoutes
   case startsToReadyInSourceModeAndIsIdempotent
+  case startsInDevelopmentModeWithTheEnvFile
   case logsAreTailedRedactedAndFollowable
   case managedConnectionRefusesWhileStopped
   case removingRefusesWhileATurnIsRunningUnlessForced
@@ -352,7 +353,8 @@ struct ServerHarness {
   }
 
   @Test func startsInDevelopmentModeWithTheEnvFile() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(nodeProbeLabel: .startsInDevelopmentModeWithTheEnvFile)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let path = try h.project()
     try "FAKE_B4_MARK=mark-1\n".write(toFile: path + "/.env", atomically: true, encoding: .utf8)
