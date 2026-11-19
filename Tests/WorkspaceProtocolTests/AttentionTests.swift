@@ -85,7 +85,8 @@ struct AttentionFixture {
 
   /// Reference `activity`: latest turn by `createdAt` (ties by greatest `id`), `lastActivityAt` = max of
   /// the thread's `createdAt` and its latest turn's and requests' `updatedAt`; never the thread's own
-  /// `updatedAt`. `openWork` is the sum over all the thread's turns, not the latest turn's. The other variants are deliberate mistakes.
+  /// `updatedAt`. `openWork` is the sum over all the thread's turns, not the latest turn's. The other
+  /// variants are deliberate mistakes.
   func threadsWithActivity(_ variant: Variant) -> [ConversationThread] {
     threads.map { thread in
       let own = turns.filter { $0.threadId == thread.id }
@@ -293,20 +294,27 @@ struct AttentionFixture {
   }
 
   @Test func openWorkKeepsAnEndedThreadWorking() {
-    let rows: [(TurnOutcome, Bool, Int, ThreadState)] = [
-      (.completed, false, 0, .working),
-      (.completed, true, 0, .working),
-      (.failed, false, 0, .failed),
-      (.completed, false, 1, .approve),
-      (.completed, false, 0, .finished),
+    struct Row {
+      var outcome: TurnOutcome
+      var read: Bool
+      var approvals: Int
+      var openWork: Int
+      var state: ThreadState
+      var badge: Bool
+    }
+    let rows = [
+      Row(outcome: .completed, read: false, approvals: 0, openWork: 1, state: .working, badge: false),
+      Row(outcome: .completed, read: true, approvals: 0, openWork: 1, state: .working, badge: false),
+      Row(outcome: .failed, read: false, approvals: 0, openWork: 1, state: .failed, badge: true),
+      Row(outcome: .completed, read: false, approvals: 1, openWork: 1, state: .approve, badge: true),
+      Row(outcome: .completed, read: false, approvals: 0, openWork: 0, state: .finished, badge: true),
     ]
-    let open = [1, 1, 1, 1, 0]
     for (i, row) in rows.enumerated() {
       let t = thread(
-        approvals: row.2, openWork: open[i], status: .terminal, outcome: row.0, read: row.1)
-      #expect(Attention.state(of: t) == row.3, "row \(i)")
-      if i < 2 { #expect(!Attention.countsTowardBadge(t), "row \(i)") }
-      if i == 2 { #expect(Attention.countsTowardBadge(t)) }
+        approvals: row.approvals, openWork: row.openWork, status: .terminal, outcome: row.outcome,
+        read: row.read)
+      #expect(Attention.state(of: t) == row.state, "row \(i)")
+      #expect(Attention.countsTowardBadge(t) == row.badge, "row \(i)")
     }
   }
 

@@ -88,7 +88,8 @@ public enum Attention {
   /// The first rule that holds: no `activity` is quiet; a pending approval is approve (it wins over a
   /// pending question); any other pending request is reply; no turn is quiet; a latest turn waiting
   /// for the user is reply; one that has not ended is working; one that failed is failed, read or
-  /// not; one that ended while agents it started are still running (`openWork`) is working; one the owner has not read is finished (completed or cancelled); else quiet.
+  /// not; one that ended while agents it started are still running (`openWork`) is working; one the
+  /// owner has not read is finished (completed or cancelled); else quiet.
   public static func state(of thread: ConversationThread) -> ThreadState {
     guard let activity = thread.activity else { return .quiet }
     if activity.pendingApprovals > 0 { return .approve }

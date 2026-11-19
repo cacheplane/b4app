@@ -368,9 +368,10 @@ public final class WorkspaceDatabase: Sendable {
 
   /// Every thread column plus `activity`, computed in the same query: the latest turn (greatest
   /// `createdAt`, ties by greatest `id`), the count of pending runtime requests and of those that ask
-  /// for approval (`RuntimeRequestKind.isApproval`), the sum of the thread's turns' `openWork`, and the newest of the thread's `createdAt` and
-  /// its latest turn's and latest request's `updatedAt`. Timestamps are ISO-8601 text, compared
-  /// bytewise (`COLLATE "C"`). Callers append a WHERE clause on `t`.
+  /// for approval (`RuntimeRequestKind.isApproval`), the sum of the thread's turns' `openWork`, and
+  /// the newest of the thread's `createdAt` and its latest turn's and latest request's `updatedAt`.
+  /// Timestamps are ISO-8601 text, compared bytewise (`COLLATE "C"`). Callers append a WHERE clause
+  /// on `t`.
   static let threadWithActivity = """
     SELECT t.*, jsonb_build_object(
       'latestTurnId', lt."id",
