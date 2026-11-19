@@ -188,8 +188,11 @@ import WorkspaceProtocol
     let transport = ScriptedTransport()
     let model = try await model(transport)
     var replacement = request(.pending)
-    if field == "nativeRequestId" { replacement.nativeRequestId = "new-native" }
-    else { replacement.adapterGeneration += 1 }
+    if field == "nativeRequestId" {
+      replacement.nativeRequestId = "new-native"
+    } else {
+      replacement.adapterGeneration += 1
+    }
     try await withHeldAnswer(model, transport, returning: request(.resolved)) {
       let replacementRead = ThreadRead.Result(thread: thread, turns: [], items: [], requests: [replacement])
       transport.script(.threadReconcile, [.result(try JSONValue(encoding: replacementRead))])
@@ -234,8 +237,7 @@ import WorkspaceProtocol
         model.store(changed)
       default:
         var changed = try #require(model.connection(id: "c"))
-        if change == "connectionKind" { changed.kind = .claude }
-        else { changed.nativeScope = "rebound" }
+        if change == "connectionKind" { changed.kind = .claude } else { changed.nativeScope = "rebound" }
         model.merge(changed)
       }
     }
@@ -311,13 +313,17 @@ import WorkspaceProtocol
       transport.script(method, [.hold])
       if path == "refetch" {
         model.refetchDelay = .zero
-        model.apply(AdapterEvent(
-          kind: .threadUpdated, connectionId: "c", threadId: thread.id,
-          payload: ["thread": try JSONValue(encoding: thread)]))
+        model.apply(
+          AdapterEvent(
+            kind: .threadUpdated, connectionId: "c", threadId: thread.id,
+            payload: ["thread": try JSONValue(encoding: thread)]))
       } else {
         readTask = Task {
-          if path == "loadDetail" { await model.openThread(id: thread.id) }
-          else { await model.reconcileThread(id: thread.id) }
+          if path == "loadDetail" {
+            await model.openThread(id: thread.id)
+          } else {
+            await model.reconcileThread(id: thread.id)
+          }
         }
       }
       try await waitUntil("older read reached transport") { transport.heldCount(method) == 1 }

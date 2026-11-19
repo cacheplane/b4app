@@ -131,7 +131,11 @@ struct ApplicationBackendObservation: Sendable {
     let first = firstRowCount.map(String.init) ?? "none"
     let last = lastRowCount.map(String.init) ?? "none"
     let firstElapsed = firstCompletionElapsed.map { String(describing: $0) } ?? "none"
-    return "firstRowCount=\(first) firstCompletionElapsed=\(firstElapsed) lastRowCount=\(last) samples=\(samples) outcome=\(outcome.rawValue) totalElapsed=\(totalElapsed) category=\(errorCategory.rawValue) sqlstate=\(sqlState.rawValue) boundedObservationSeconds=3"
+    return """
+      firstRowCount=\(first) firstCompletionElapsed=\(firstElapsed) lastRowCount=\(last) \
+      samples=\(samples) outcome=\(outcome.rawValue) totalElapsed=\(totalElapsed) \
+      category=\(errorCategory.rawValue) sqlstate=\(sqlState.rawValue) boundedObservationSeconds=3
+      """
   }
 
   /// Query errors fail immediately. Even the first empty sample must COMPLETE before the deadline.
