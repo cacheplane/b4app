@@ -130,7 +130,8 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     try requireElement(app.descendants(matching: .any).matching(identifier: "task-list").firstMatch, in: app)
     try requireElement(
       app.descendants(matching: .any).matching(identifier: "step-row").matching(
-        NSPredicate(format: "label CONTAINS %@", "cached lookup")).firstMatch,
+        NSPredicate(format: "label CONTAINS %@", "cached lookup")
+      ).firstMatch,
       in: app)
     XCTAssertEqual(composer.value as? String, Self.historicalDraft)
     let historicalComposerWasEnabled = composer.isEnabled
