@@ -101,7 +101,7 @@ class WorkflowTests(unittest.TestCase):
             # The timestamps are set before anything builds.
             self.assertLess(job.index("restore_mtimes.py"), job.index("uses: actions/cache/restore@"), name)
             # The always-saving cache step is used only for downloads (.spm, the PostgreSQL archive).
-            self.assertNotRegex(job, r"uses: actions/cache@v4\n        with:\n          path: \|?\n?\s*\.build(\n|/\w*DerivedData)",
+            self.assertNotRegex(job, r"uses: actions/cache@\S+(?: # \S+)?\n        with:\n          path: \|?\n?\s*\.build(\n|/\w*DerivedData)",
                                 name)
 
 

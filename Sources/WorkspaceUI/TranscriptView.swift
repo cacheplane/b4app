@@ -98,17 +98,20 @@ struct TranscriptView: View {
   /// turn's own message arrives (M8c). Always nil on the Mac.
   var pending: PendingSend? = nil
   var pendingStatus: String? = nil
+  /// How many messages the reader has sent in this thread from this app (`WorkspaceModel.ownSends`).
+  var sent = 0
   @State private var folds: TranscriptFolds
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   init(
     detail: ThreadDetail, streams: MessageStreamStore, pending: PendingSend? = nil,
-    pendingStatus: String? = nil, folds: TranscriptFolds = TranscriptFolds()
+    pendingStatus: String? = nil, sent: Int = 0, folds: TranscriptFolds = TranscriptFolds()
   ) {
     self.detail = detail
     self.streams = streams
     self.pending = pending
     self.pendingStatus = pendingStatus
+    self.sent = sent
     _folds = State(initialValue: folds)
   }
 
@@ -169,13 +172,11 @@ struct TranscriptView: View {
       .onDisappear { streams.transcriptDisappeared() }
       .onChange(of: detail.items.count) { _, _ in follow(proxy) }
       .onChange(of: detail.turns.filter { $0.status == .terminal }.count) { _, _ in follow(proxy) }
-      // The reader sent something: back to the end, as today.
-      .onChange(of: pending?.id) { _, _ in
-        folds.release()
-        proxy.scrollTo("bottom", anchor: .bottom)
-      }
-      .onChange(of: detail.turns.count) { old, new in
-        guard new > old, folds.holds else { return }
+      // The reader sent something: back to the end. Nothing else that adds a turn does this: a turn
+      // started from another device, or by the CLI, leaves a reader who scrolled back where they are,
+      // with "Jump to latest" to go to it (D-254).
+      .onChange(of: sent) { old, new in
+        guard new > old else { return }
         folds.release()
         proxy.scrollTo("bottom", anchor: .bottom)
       }
