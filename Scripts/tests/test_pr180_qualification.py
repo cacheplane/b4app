@@ -18,8 +18,8 @@ class ProtocolQualificationTests(unittest.TestCase):
         self.assertEqual(set(self.jobs), {"verify-checkout", "package", "bounded-database-aggregate",
                                          "account-session-aggregate-serial-diagnostic"})
         self.assertIn("    types: [labeled]", self.workflow)
-        self.assertIn('\nenv:\n  B4APP_QUALIFY_NATIVE_DB_EXECUTOR: "1"\n', self.workflow)
-        self.assertNotIn("B4APP_QUALIFY_NATIVE_DB_EXECUTOR", self.ordinary)
+        self.assertIn('\nenv:\n  B4APP_PROTOCOL_FULL_MATRIX: "1"\n', self.workflow)
+        self.assertNotIn("B4APP_PROTOCOL_FULL_MATRIX", self.ordinary)
         for required in ("github.repository == 'cacheplane/b4app'",
                          "github.event.label.name == 'qualify-pr-180'",
                          "github.event.pull_request.number == 180",

@@ -166,7 +166,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func p2bB05ViewsAndRLSHiddenEmptyRefuse() throws {
+  @Test(.protocolFullMatrix) func p2bB05ViewsAndRLSHiddenEmptyRefuse() throws {
     try P2BNativeFixture.withFixture { f in
       try f.sql(
         "ALTER TABLE public.\"hubLink\" RENAME TO p2b_backing; CREATE VIEW public.\"hubLink\" AS SELECT * FROM public.p2b_backing"
@@ -217,7 +217,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func p2bB06AllRowsAndCheckOnlyDriftAreExplicit() throws {
+  @Test(.protocolFullMatrix) func p2bB06AllRowsAndCheckOnlyDriftAreExplicit() throws {
     try P2BNativeFixture.withFixture { f in
       try f.sql("ALTER TABLE public.\"hubLink\" DROP CONSTRAINT \"hubLink_id_check\"")
       let noCheck =
@@ -263,7 +263,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func p2bB07StrictNativeLengthsShapeAndSQLASCII() throws {
+  @Test(.protocolFullMatrix) func p2bB07StrictNativeLengthsShapeAndSQLASCII() throws {
     try P2BNativeFixture.withFixture { f in
       try f.nativeResults()
       try f.pureResults()
@@ -370,7 +370,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func p2bB11QueuedCheckoutUsesOneFiveSecondDeadline() throws {
+  @Test(.protocolFullMatrix) func p2bB11QueuedCheckoutUsesOneFiveSecondDeadline() throws {
     try P2BNativeFixture.withFixture { f in
       let pool = try f.pool()
       let hold = f.resources.hold(seconds: 10)
@@ -415,7 +415,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func p2bB12QueuedCloseAndGuardRefusalCleanlySettle() throws {
+  @Test(.protocolFullMatrix) func p2bB12QueuedCloseAndGuardRefusalCleanlySettle() throws {
     try P2BNativeFixture.withFixture { f in
       let pool = try f.pool()
       let probe = try f.poolProbe(pool)
@@ -542,7 +542,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func p2bB14RealReadOnlyCommandsBudgetsAndLockWait() throws {
+  @Test(.protocolFullMatrix) func p2bB14RealReadOnlyCommandsBudgetsAndLockWait() throws {
     for (phase, command) in [
       (AccountSessionComparisonPhase.afterBeginBeforeG4, "BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY"),
       (.afterLockBudgetBeforeG5, "SET LOCAL lock_timeout='2s'"),
@@ -597,7 +597,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func p2bB15BeginReadRollbackAndEachGuardFailureYieldNoSnapshot() throws {
+  @Test(.protocolFullMatrix) func p2bB15BeginReadRollbackAndEachGuardFailureYieldNoSnapshot() throws {
     for guardNumber in 0...9 {
       try P2BNativeFixture.withFixture { f in
         let probe = try f.probe()

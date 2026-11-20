@@ -168,7 +168,7 @@ struct NativeDBResources: TestTrait, SuiteTrait, TestScoping {
     performing function: @concurrent @Sendable () async throws -> Void
   ) async throws {
     // Everyday tests use Swift Testing's executor. Qualification observes native queue scheduling.
-    guard ProcessInfo.processInfo.environment["B4APP_QUALIFY_NATIVE_DB_EXECUTOR"] == "1" else {
+    guard ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1" else {
       try await function()
       return
     }

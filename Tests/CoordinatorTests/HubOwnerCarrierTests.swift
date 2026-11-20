@@ -37,7 +37,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func hiddenAbsentAndUncapturedSnapshotsCannotRedeemLinkedRoles() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func hiddenAbsentAndUncapturedSnapshotsCannotRedeemLinkedRoles() async throws {
     try await OwnerFixture.withUnjoined { f in
       let absent = try f.database.captureProtocolVerification(
         accountID: f.scope.account.id, expectedMembership: nil)
@@ -196,7 +197,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func terminalCloseRetiresBeforeHeldStopAndRetainsOriginalPayload() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func terminalCloseRetiresBeforeHeldStopAndRetainsOriginalPayload() async throws {
     try await OwnerFixture.withLinked(heldSecret: true) { f in
       let origin = try await f.scope.hub.captureConfiguredClientOrigin()
       let ordinary = try await f.makeOrdinary()
@@ -304,7 +306,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func oldCompletionCannotRetireOrEraseReplacementOwner() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func oldCompletionCannotRetireOrEraseReplacementOwner() async throws {
     try await OwnerFixture.withLinked { f in
       let old = try await f.makeOrdinary()
       let oldOwner = try old.originalOwnerKey(for: f.manager)
@@ -328,7 +331,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func tentativeScopeGateRefusalReopenPreservesOrdinaryRegistration() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func tentativeScopeGateRefusalReopenPreservesOrdinaryRegistration() async throws {
     try await OwnerFixture.withLinked { f in
       let original = try await f.makeOrdinary()
       let child = try original.registerChild()
@@ -350,7 +354,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func nilOrdinaryCurrentAdmitsOnlyExactOldCleanupPhase() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func nilOrdinaryCurrentAdmitsOnlyExactOldCleanupPhase() async throws {
     try await OwnerFixture.withLinked { f in
       let ordinary = try await f.makeOrdinary()
       let phase = try await f.manager.beginDormantHubCleanup(original: ordinary)
@@ -378,7 +383,8 @@ import WorkspaceSync
     expectOwnerRefusal { try escaped.finalPush.requireFinalPushMemory() }
   }
 
-  @Test func cleanupPhasesAreExclusiveMonotoneAndRegisterBeforeLaunch() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func cleanupPhasesAreExclusiveMonotoneAndRegisterBeforeLaunch() async throws {
     try await OwnerFixture.withLinked { f in
       let ordinary = try await f.makeOrdinary()
       let finalPush = try await f.manager.beginDormantHubCleanup(original: ordinary)
@@ -422,13 +428,15 @@ import WorkspaceSync
     }
   }
 
-  @Test func blockedActualNativeComparisonRefusesAfterRetirementWithPositiveCompanion() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func blockedActualNativeComparisonRefusesAfterRetirementWithPositiveCompanion() async throws {
     // Two explicit causal cases: unchanged blocked positive, then retirement WHILE SELECT waits.
     try await OwnerFixture.withLinked { f in try await f.blockedConstruction(retire: false) }
     try await OwnerFixture.withLinked { f in try await f.blockedConstruction(retire: true) }
   }
 
-  @Test func carrierRetainsOriginalResourcesAfterWeakOwnersExpire() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func carrierRetainsOriginalResourcesAfterWeakOwnersExpire() async throws {
     var escaped: OwnerExpiredCarrier? = try await OwnerFixture.expiredCarrier()
     let ownersExpired =
       escaped.map {
@@ -455,7 +463,8 @@ import WorkspaceSync
     // Explicit shutdown/drain preceded weak expiry. No destructor is credited as close.
   }
 
-  @Test func slotLastScopeReleaseRunsApiDestructorOutsideMutex() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func slotLastScopeReleaseRunsApiDestructorOutsideMutex() async throws {
     let lifetime = try await OwnerFixture.slotLifetime()
     let retainedBySlot = lifetime.scope.value != nil && lifetime.api.value != nil
     #expect(retainedBySlot)
@@ -477,7 +486,8 @@ import WorkspaceSync
     await lifetime.finish()
   }
 
-  @Test func disposalOmitsOnlyHealthyTwoEligibilityAndKeepsStrictReference() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func disposalOmitsOnlyHealthyTwoEligibilityAndKeepsStrictReference() async throws {
     try await OwnerFixture.withLinked { f in
       let snapshot = try f.capture()
       try f.database.compareOriginalLinkedCredentialReference(

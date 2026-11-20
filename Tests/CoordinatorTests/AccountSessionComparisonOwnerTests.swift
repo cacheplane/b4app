@@ -8,6 +8,8 @@ import WorkspaceSync
 @testable import Coordinator
 @testable import WorkspaceStorage
 
+let protocolFullMatrixEnabled = ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1"
+
 // Real native stores and genuine dormant P2a owners; counted fake requests are not HTTP proof.
 @Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(1))) struct AccountSessionComparisonOwnerTests {
   @Test func p2bB16InstalledOwnerOnlyAndZeroNewEffects() async throws {
@@ -56,59 +58,69 @@ import WorkspaceSync
     try await p2bOwnerB17PoolSlotWait(retired: true, observationIndex: 2)
   }
 
-  @Test func p2bB17AfterConnectBeforeG3SameOwnerAllows() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB17AfterConnectBeforeG3SameOwnerAllows() async throws {
     try await p2bOwnerB17ControlledWait(
       phase: .afterConnectBeforeG3, refused: 4, normal: 0,
       retired: false, observationIndex: 3)
   }
 
-  @Test func p2bB17AfterConnectBeforeG3RetiredOwnerRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB17AfterConnectBeforeG3RetiredOwnerRefuses() async throws {
     try await p2bOwnerB17ControlledWait(
       phase: .afterConnectBeforeG3, refused: 4, normal: 0,
       retired: true, observationIndex: 4)
   }
 
-  @Test func p2bB17AfterStatementBudgetBeforeG6SameOwnerAllows() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB17AfterStatementBudgetBeforeG6SameOwnerAllows() async throws {
     try await p2bOwnerB17ControlledWait(
       phase: .afterStatementBudgetBeforeG6, refused: 32, normal: 3,
       retired: false, observationIndex: 5)
   }
 
-  @Test func p2bB17AfterStatementBudgetBeforeG6RetiredOwnerRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB17AfterStatementBudgetBeforeG6RetiredOwnerRefuses() async throws {
     try await p2bOwnerB17ControlledWait(
       phase: .afterStatementBudgetBeforeG6, refused: 32, normal: 3,
       retired: true, observationIndex: 6)
   }
 
-  @Test func p2bB17AfterFactsBeforeG7SameOwnerAllows() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB17AfterFactsBeforeG7SameOwnerAllows() async throws {
     try await p2bOwnerB17ControlledWait(
       phase: .afterFactsBeforeG7, refused: 64, normal: 4,
       retired: false, observationIndex: 7)
   }
 
-  @Test func p2bB17AfterFactsBeforeG7RetiredOwnerRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB17AfterFactsBeforeG7RetiredOwnerRefuses() async throws {
     try await p2bOwnerB17ControlledWait(
       phase: .afterFactsBeforeG7, refused: 64, normal: 4,
       retired: true, observationIndex: 8)
   }
 
-  @Test func p2bB17AfterRollbackBeforeG8SameOwnerAllows() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB17AfterRollbackBeforeG8SameOwnerAllows() async throws {
     try await p2bOwnerB17ControlledWait(
       phase: .afterRollbackBeforeG8, refused: 128, normal: 4,
       retired: false, observationIndex: 9)
   }
 
-  @Test func p2bB17AfterRollbackBeforeG8RetiredOwnerRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB17AfterRollbackBeforeG8RetiredOwnerRefuses() async throws {
     try await p2bOwnerB17ControlledWait(
       phase: .afterRollbackBeforeG8, refused: 128, normal: 4,
       retired: true, observationIndex: 10)
   }
 
-  @Test func p2bB17RealRelationLockWaitSameOwnerAllows() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB17RealRelationLockWaitSameOwnerAllows() async throws {
     try await p2bOwnerB17RelationLockWait(retired: false, observationIndex: 11)
   }
 
-  @Test func p2bB17RealRelationLockWaitRetiredOwnerRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB17RealRelationLockWaitRetiredOwnerRefuses() async throws {
     try await p2bOwnerB17RelationLockWait(retired: true, observationIndex: 12)
   }
 
@@ -116,40 +128,49 @@ import WorkspaceSync
     try await p2bOwnerB18ContextMutation(mutation: 0, observationIndex: 1)
   }
 
-  @Test func p2bB18DatabaseChangedRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB18DatabaseChangedRefuses() async throws {
     try await p2bOwnerB18ContextMutation(mutation: 1, observationIndex: 2)
   }
 
-  @Test func p2bB18HubURLSpellingChangedRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB18HubURLSpellingChangedRefuses() async throws {
     try await p2bOwnerB18ContextMutation(mutation: 2, observationIndex: 3)
   }
 
-  @Test func p2bB18DeviceIDChangedRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB18DeviceIDChangedRefuses() async throws {
     try await p2bOwnerB18ContextMutation(mutation: 3, observationIndex: 4)
   }
 
-  @Test func p2bB18TokenRefChangedRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB18TokenRefChangedRefuses() async throws {
     try await p2bOwnerB18ContextMutation(mutation: 4, observationIndex: 5)
   }
 
-  @Test func p2bB18TokenRefRemovedRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB18TokenRefRemovedRefuses() async throws {
     try await p2bOwnerB18ContextMutation(mutation: 5, observationIndex: 6)
   }
 
-  @Test func p2bB18UnicodeDeviceIDBytesChangedRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB18UnicodeDeviceIDBytesChangedRefuses() async throws {
     try await p2bOwnerB18ContextMutation(mutation: 6, observationIndex: 7)
   }
 
-  @Test func p2bB18UnicodeTokenRefBytesChangedRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB18UnicodeTokenRefBytesChangedRefuses() async throws {
     try await p2bOwnerB18ContextMutation(mutation: 7, observationIndex: 8)
   }
 
-  @Test func p2bB18NativeAbsentTokenNonNilToNilRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB18NativeAbsentTokenNonNilToNilRefuses() async throws {
     try await p2bOwnerB18NativeAbsentContext(
       initiallyNil: false, observationIndex: 9)
   }
 
-  @Test func p2bB18NativeAbsentTokenNilToNewRefuses() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB18NativeAbsentTokenNilToNewRefuses() async throws {
     try await p2bOwnerB18NativeAbsentContext(
       initiallyNil: true, observationIndex: 10)
   }
@@ -364,7 +385,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2bB19NativeABALimitAndAcceptedOwnerABA() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB19NativeABALimitAndAcceptedOwnerABA() async throws {
     try await P2BOwnerFixture.withFixture(linked: true) { f in
       let installed = try await f.install(f.scope)
       let comparison = try installed.carrier.captureInstalledAccountSessionComparison()
@@ -389,7 +411,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2bB20TransientOwnerLifetimeAndNoStrongerAuthority() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2bB20TransientOwnerLifetimeAndNoStrongerAuthority() async throws {
     let lifetime = try await makeP2BComparisonLifetime()
     do {
       // Only the actual in-flight comparison retains these original lifecycle objects now.

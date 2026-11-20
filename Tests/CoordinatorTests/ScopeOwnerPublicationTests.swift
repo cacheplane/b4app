@@ -157,7 +157,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2aA05SameSetPreservesInstalled() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA05SameSetPreservesInstalled() async throws {
     try await ScopeOwnerFixture.withFixture(linked: false) { f in
       let installed = try await f.install(f.scope)
       let baseline = await f.effects()
@@ -179,7 +180,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2aA06ABAInvalidatesWindow() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA06ABAInvalidatesWindow() async throws {
     try await ScopeOwnerFixture.withFixture(linked: false) { f in
       let baseline = await f.effects()
       // A -> other -> A, A -> nil -> A, and nil -> A -> nil each invalidate both values.
@@ -235,7 +237,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2aA08TentativeVersusAccepted() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA08TentativeVersusAccepted() async throws {
     try await ScopeOwnerFixture.withFixture(linked: true) { f in
       let ordinary = try await f.ordinary()
       let baseline = await f.effects()
@@ -279,7 +282,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2aA09LegacyBoundariesInvalidate() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA09LegacyBoundariesInvalidate() async throws {
     try await ScopeOwnerFixture.withFixture(linked: true) { f in
       let baseline = await f.effects()
       let root = try await f.ordinary()
@@ -337,7 +341,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2aA10NilCleanupCompatibility() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA10NilCleanupCompatibility() async throws {
     try await ScopeOwnerFixture.withFixture(linked: true) { f in
       let ordinary = try await f.ordinary()
       let final = try await f.manager.beginDormantHubCleanup(original: ordinary)
@@ -378,7 +383,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2aA11OwnerCounterExhaustion() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA11OwnerCounterExhaustion() async throws {
     try await ScopeOwnerFixture.withFixture(ownerRevision: UInt64.max - 1, linked: false) { f in
       let baseline = await f.effects()
       let installed = try await f.install(f.scope)
@@ -437,7 +443,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2aA12LifecycleCounterExhaustion() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA12LifecycleCounterExhaustion() async throws {
     try await ScopeOwnerFixture.withFixture(lifecycleSerial: UInt64.max - 2, linked: false) { f in
       let baseline = await f.effects()
       scopeOwnerRefusal { try f.slot.seedScopeOwnerCountersForTesting(ownerRevision: 0, lifecycleSerial: 0) }
@@ -511,7 +518,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2aA13ExpiredWeakOwners() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA13ExpiredWeakOwners() async throws {
     let expired = try await makeExpiredScopeOwnerCarrier()
     defer { expired.resources.removeRootIfDrained() }
     let expiredOwners =
@@ -530,7 +538,8 @@ import WorkspaceSync
     #expect(retainedDatabaseDrained)
   }
 
-  @Test func p2aA14DestructorReentersSlot() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA14DestructorReentersSlot() async throws {
     let lifetime = try await makeScopeOwnerLifetimeFixture()
     defer { lifetime.resources.removeRootIfDrained() }
     let soleSlotOwner =
@@ -550,7 +559,8 @@ import WorkspaceSync
     scopeOwnerRefusal { try lifetime.carrier.requireInstalledScopeOwnerMemory() }
   }
 
-  @Test func p2aA15SameCellPairObservation() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA15SameCellPairObservation() async throws {
     try await ScopeOwnerFixture.withFixture(linked: false) { f in
       let baseline = await f.effects()
       let window = try await f.manager.beginDormantScopePreparation()
@@ -601,7 +611,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2aA16DormantNetworkContracts() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA16DormantNetworkContracts() async throws {
     try await ScopeOwnerFixture.withFixture(linked: true) { f in
       let snapshot = try f.capture()
       let origin = try await f.scope.hub.captureConfiguredClientOrigin()
@@ -635,7 +646,8 @@ import WorkspaceSync
     }
   }
 
-  @Test func p2aA17CancellationAndForeignDetach() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func p2aA17CancellationAndForeignDetach() async throws {
     try await ScopeOwnerFixture.withFixture(linked: true) { f in
       try await ScopeOwnerFixture.withFixture(linked: false) { foreign in
         let ordinary = try await f.ordinary()

@@ -63,6 +63,24 @@ private struct NodeProbeFixture {
   }
 }
 
+struct NodeLocatorVersionManagerTests {
+  @Test func newerSupportedInstallsPrecedeTheMinimumAndOldInstallsAreExcluded() throws {
+    let fixture = try NodeProbeFixture()
+    defer { fixture.remove() }
+    let installs = fixture.directory.appendingPathComponent(".nvm/versions/node")
+    for version in ["v23.9.0", "v24.0.0", "v25.1.0", "not-a-version"] {
+      try FileManager.default.createDirectory(
+        at: installs.appendingPathComponent(version), withIntermediateDirectories: true)
+    }
+
+    let candidates = NodeLocator.versionManagerCandidates(home: fixture.directory.path)
+    #expect(candidates.first?.contains("/v25.1.0/") == true)
+    #expect(candidates.contains(installs.appendingPathComponent("v24.0.0/bin/node").path))
+    #expect(!candidates.contains { $0.contains("/v23.9.0/") || $0.contains("/not-a-version/") })
+  }
+}
+
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1"))
 struct NodeVersionProbeObservationTests {
   @Test func explicitFake24ObservesTheSameSingleProbeAndPreservesSelection() async throws {
     let fixture = try NodeProbeFixture()
