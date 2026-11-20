@@ -211,7 +211,7 @@ private struct SlowRespondAdapter: AgentAdapter {
 }
 
 /// A real adapter (the fake Codex runtime) that also delivers the events a test hands it.
-private struct InjectingAdapter: AgentAdapter {
+struct InjectingAdapter: AgentAdapter {
   let inner: any AgentAdapter
   let injected: AsyncStream<AdapterEvent>
   var kind: ConnectionKind { inner.kind }

@@ -1310,10 +1310,28 @@ public actor SessionService {
         thread = try db.thread(connectionId: raw.connectionId, nativeThreadId: nativeThreadId)
       }
       if let thread {
-        if let nativeTurnId = raw.nativeIds["turnId"] {
+        let nativeTurnId = raw.nativeIds["turnId"]
+        if let nativeTurnId {
           turn = try db.turn(threadId: thread.id, nativeTurnId: nativeTurnId)
         }
-        if turn == nil { turn = try db.activeTurn(threadId: thread.id) }
+        if turn == nil {
+          let active = try db.activeTurn(threadId: thread.id)
+          // An event naming a turn the store does not know joins the active turn only when it is an
+          // item, or that turn has not heard its native id yet; a stray state event ends no turn.
+          let isItem: Bool
+          switch raw.kind {
+          case .messageStarted, .messageCompleted, .messageDelta, .toolStarted, .toolCompleted:
+            isItem = true
+          default:
+            isItem = false
+          }
+          if nativeTurnId == nil || isItem || active?.nativeTurnId == nil {
+            turn = active
+          } else if let nativeTurnId {
+            logger.info(
+              "\(raw.kind.rawValue, privacy: .public) names unknown turn \(nativeTurnId, privacy: .public)")
+          }
+        }
       }
       event.threadId = thread?.id
       event.turnId = turn?.id
@@ -1321,6 +1339,29 @@ public actor SessionService {
       case .connectionChanged:
         try await environmentConnectionChanged(raw)
       case .turnAcknowledged:
+        // A turn the runtime started itself gets a row of its own, never the owner's unfinished turn.
+        if raw.payload["origin"]?.stringValue == "runtime", let thread,
+          let nativeTurnId = raw.nativeIds["turnId"],
+          try db.turn(threadId: thread.id, nativeTurnId: nativeTurnId) == nil
+        {
+          if try db.activeTurn(threadId: thread.id) == nil {
+            let made = try db.insertTurn(
+              Turn(
+                id: UUID().uuidString.lowercased(), threadId: thread.id,
+                operationId: "runtime:\(nativeTurnId)", nativeTurnId: nativeTurnId, status: .running,
+                submission: .acknowledged, origin: "runtime"))
+            turn = made
+            event.turnId = made.id
+            event.payload = merge(raw.payload, ["turn": try JSONValue(encoding: made)])
+            break
+          }
+          turn = nil
+          event.turnId = nil
+          logger.error(
+            "runtime turn \(nativeTurnId, privacy: .public) acknowledged while a turn is unfinished; no row made"
+          )
+          break
+        }
         // A late acknowledgement of a turn that ended changes nothing, and `updateTurn` would still move
         // `updatedAt`, which is when the turn ended (the line's duration reads it).
         if let turn, let thread, turn.status != .terminal {
@@ -1360,6 +1401,7 @@ public actor SessionService {
           if $0.nativeTurnId == nil { $0.nativeTurnId = raw.nativeIds["turnId"] }
           $0.status = .terminal
           $0.outcome = outcome
+          if $0.origin != nil, let origin = raw.payload["origin"]?.stringValue { $0.origin = origin }
         }
         if let updated { event.payload = merge(raw.payload, ["turn": try JSONValue(encoding: updated)]) }
         if let touched = try db.updateThread(id: thread.id, { _ in }), touched.userDeletedAt == nil {
