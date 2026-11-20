@@ -1579,16 +1579,21 @@ public actor SessionService {
     do {
       try await closeOpenWork(threadId: threadId, reason: reason, items: items)
     } catch {
-      logger.error("open work close failed: \(String(describing: error), privacy: .public)")
-      await context.diagnostics.recordError(
-        scope: "projection", code: "internal", message: String(describing: error))
+      await recordOpenWorkFailure(error)
     }
+  }
+
+  private func recordOpenWorkFailure(_ error: any Error) async {
+    logger.error("open work close failed: \(String(describing: error), privacy: .public)")
+    await context.diagnostics.recordError(
+      scope: "projection", code: "internal", message: String(describing: error))
   }
 
   private func startOpenWorkClose(_ leftBehind: [String: [String]]) {
     guard !leftBehind.isEmpty else { return }
     pumps["open-work-close"] = Task { [weak self] in
       for (threadId, items) in leftBehind {
+        guard !Task.isCancelled else { return }
         await self?.closeOpenWorkLoggingFailure(
           threadId: threadId, reason: "coordinator_started", items: items)
       }
@@ -1727,9 +1732,13 @@ public actor SessionService {
       else { continue }
       await publishTurn(.turnStateChanged, updated, thread: thread, payload: ["reason": "runtime_exited"])
     }
-    let threads = (try? db.turnsWithOpenWork().map(\.threadId)) ?? []
-    for threadId in Set(threads) where (try? db.thread(id: threadId)?.connectionId) == raw.connectionId {
-      await closeOpenWorkLoggingFailure(threadId: threadId, reason: "runtime_exited")
+    do {
+      for threadId in Set(try db.turnsWithOpenWork().map(\.threadId))
+      where try db.thread(id: threadId)?.connectionId == raw.connectionId {
+        await closeOpenWorkLoggingFailure(threadId: threadId, reason: "runtime_exited")
+      }
+    } catch {
+      await recordOpenWorkFailure(error)
     }
   }
 

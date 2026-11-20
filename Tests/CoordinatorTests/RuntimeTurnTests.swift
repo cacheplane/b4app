@@ -35,6 +35,10 @@ func injecting() async throws -> (Harness, AsyncStream<AdapterEvent>.Continuatio
       let thread = try await h.newThread(connection)
       let turn = try await h.send(thread, "hello there")
       _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+      // The fake runtime then reports the thread idle; a test that counts events must not take it for its own.
+      _ = try await h.events.waitFor {
+        $0.kind == .turnStateChanged && $0.payload["nativeStatus"]?.stringValue == "idle"
+      }
       return Fixture(h: h, deliver: deliver, connection: connection, thread: thread)
     }
 
@@ -515,6 +519,10 @@ func agent(
     let second = try await f.h.newThread(f.connection)
     let turn2 = try await f.h.send(second, "and here")
     _ = try await f.h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn2.id }
+    _ = await f.h.events.until {
+      $0.filter { $0.kind == .turnStateChanged && $0.payload["nativeStatus"]?.stringValue == "idle" }.count
+        >= 2
+    }
     let one = try await open(f, f.thread, id: "a1")
     let two = try await open(f, second, id: "a2")
     let before = await completions(f)
@@ -548,9 +556,9 @@ func agent(
     let paths = f.h.coordinator.paths
     #expect(try f.h.coordinator.database.turn(id: turn.id)?.openWork == 1)
     await f.h.stop()
-    // Shutting the first coordinator down closed nothing (it published no completion), so the close
-    // that follows is start()'s.
-    #expect(await completions(f) == 0)
+    // The close below is start()'s only if it is stamped after the restart began; one made while the
+    // first coordinator shut down would carry an earlier stamp.
+    let restartedAt = Date()
     let back = try await Harness.start(paths: paths)
     for _ in 0..<600 {
       if try back.coordinator.database.turn(id: turn.id)?.openWork == 0 { break }
@@ -560,7 +568,8 @@ func agent(
     let item = try #require(
       try back.coordinator.database.displayItems(threadId: f.thread.id).first { $0.nativeItemId == "a1" })
     #expect(item.payload["status"]?.stringValue == "stopped")
-    #expect(item.payload["endedAt"]?.stringValue != nil)
+    let ended = try #require(item.payload["endedAt"]?.stringValue.flatMap(Timestamp.date(from:)))
+    #expect(ended >= restartedAt.addingTimeInterval(-0.001))
     await back.stop()
   }
 
