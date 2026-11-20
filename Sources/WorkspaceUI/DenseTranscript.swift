@@ -43,6 +43,8 @@ enum DenseTranscript {
     var group: String
     /// What the closed line hides, in sequence order.
     var folded: [DisplayItem]
+    /// The agent's own messages among `folded`: ones with text, and not a sub-agent's.
+    var messages: Int
     /// Counted steps, whatever their status.
     var counted: Int
     /// Counted steps whose status is "failed".
@@ -70,6 +72,13 @@ enum DenseTranscript {
       }
     }
 
+    /// An ended line names the messages folded behind it: "2 messages" / "1 message" (D-261). While
+    /// the turn runs its messages are drawn, so there is nothing to name.
+    var messagesText: String? {
+      guard state == .ended, messages > 0 else { return nil }
+      return messages == 1 ? "1 message" : "\(messages) messages"
+    }
+
     var failedText: String? { failed > 0 ? "\(failed) failed" : nil }
     var declinedText: String? { declined > 0 ? "\(declined) declined" : nil }
 
@@ -85,16 +94,17 @@ enum DenseTranscript {
     /// The working mark is drawn: the turn is running or stopping, not waiting for the owner.
     var marked: Bool { state == .running || state == .stopping }
 
-    /// "Show" / "Hide"; "Show working" / "Hide working" when `text` is nil; nil when nothing folds.
+    /// "Show" / "Hide"; "Show working" / "Hide working" when the line names nothing (no `text` and no
+    /// `messagesText`); nil when nothing folds.
     func action(open: Bool) -> String? {
       guard canOpen else { return nil }
       let verb = open ? "Hide" : "Show"
-      return text == nil ? "\(verb) working" : verb
+      return text == nil && messagesText == nil ? "\(verb) working" : verb
     }
 
-    /// text, failedText, declinedText, durationText and the action, joined by ", ".
+    /// messagesText, text, failedText, declinedText, durationText and the action, joined by ", ".
     func spoken(open: Bool) -> String {
-      [text, failedText, declinedText, durationText, action(open: open)].compactMap { $0 }
+      [messagesText, text, failedText, declinedText, durationText, action(open: open)].compactMap { $0 }
         .joined(separator: ", ")
     }
   }
@@ -335,8 +345,20 @@ enum DenseTranscript {
       entries += visible.map(Entry.item)
     }
     entries += systems.map(Entry.item)
-    if let turn, hasNote(turn) { entries.append(.note(turn)) }
+    // "Turn failed." under a line that already reads "N failed" says it twice (D-261). A stopped turn
+    // and one of unknown outcome keep their note: the line never says either.
+    let lineSaysFailed =
+      turn?.outcome == .failed
+      && folded.contains { isCountedStep($0) && $0.payload["status"]?.stringValue == "failed" }
+    if let turn, hasNote(turn), !lineSaysFailed { entries.append(.note(turn)) }
     return entries
+  }
+
+  /// The agent's own words: a message with text that is not a sub-agent's.
+  private static func isOwnMessage(_ item: DisplayItem) -> Bool {
+    item.role == .assistant && item.type == "agentMessage"
+      && item.payload["parentNativeItemId"]?.stringValue == nil
+      && !(item.payload["text"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   /// The line of one group.
@@ -352,7 +374,7 @@ enum DenseTranscript {
     default: state = .ended
     }
     return ActivityLine(
-      group: key, folded: folded, counted: steps.count,
+      group: key, folded: folded, messages: folded.filter(isOwnMessage).count, counted: steps.count,
       failed: steps.filter { $0.payload["status"]?.stringValue == "failed" }.count,
       declined: steps.filter { $0.payload["status"]?.stringValue == "declined" }.count,
       state: state, runningName: state == .running ? runningName(of: steps, tree: tree) : nil,
