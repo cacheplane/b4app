@@ -640,6 +640,10 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
+  public func displayItem(id: String) throws -> DisplayItem? {
+    try read { try byId($0, DisplayItem.self, "displayItems", id) }
+  }
+
   public func updateDisplayItem(
     id: String, _ mutate: @Sendable (inout DisplayItem) -> Void
   ) throws -> DisplayItem? {

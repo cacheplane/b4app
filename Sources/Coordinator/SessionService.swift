@@ -95,6 +95,7 @@ public actor SessionService {
         }
       }
     }
+    var leftBehind: [String: [String]] = [:]
     do {
       _ = try db.expireAllRuntimeRequests()
       for turn in try db.unresolvedTurns() where turn.status != .reconciling {
@@ -106,9 +107,14 @@ public actor SessionService {
     } catch {
       logger.error("startup reconciliation failed: \(String(describing: error), privacy: .public)")
     }
-    // The agents that ran in a process that did not survive can never end; close them as stopped.
-    // `start()` is synchronous, so this runs beside it, before the first command is read.
-    startOpenWorkClose()
+    // The agents that ran in a process that did not survive can never end. They are taken here, before
+    // any session can start, and closed as stopped beside `start()`; an agent opened later is not theirs.
+    do {
+      leftBehind = try openAgentItems()
+    } catch {
+      logger.error("startup open work read failed: \(String(describing: error), privacy: .public)")
+    }
+    startOpenWorkClose(leftBehind)
     startThreadDeleteSweep()
     readMissingCommands()
   }
@@ -1515,53 +1521,77 @@ public actor SessionService {
     await publishTurn(.turnStateChanged, updated, thread: thread)
   }
 
-  /// The session that ran a thread's agents is gone, so none of them will ever end: each agent still in
-  /// progress becomes `stopped`, with its end stamped, is announced as completed, and the turn's count
-  /// is taken again. An agent already closed is left as it is.
-  private func closeOpenWork(threadId: String, reason: String) async throws {
-    guard let thread = try db.thread(id: threadId) else { return }
+  /// The ids of the agent items still in progress, by thread id, for the turns with open work.
+  private func openAgentItems(threadId: String? = nil) throws -> [String: [String]] {
+    var open: [String: [String]] = [:]
     for turn in try db.turnsWithOpenWork(threadId: threadId) {
-      for item in try db.displayItems(threadId: threadId) where item.turnId == turn.id {
-        guard item.payload["agent"]?.boolValue == true,
-          item.payload["status"]?.stringValue == "inProgress",
-          let stored = try db.updateDisplayItem(
-            id: item.id,
-            {
-              var payload = $0.payload.objectValue ?? [:]
-              payload["status"] = "stopped"
-              payload["endedAt"] = .string(Timestamp.now())
-              $0.payload = .object(payload)
-            })
-        else { continue }
-        var ids = ["threadId": thread.nativeThreadId]
-        if let native = stored.nativeItemId { ids["itemId"] = native }
-        if let nativeTurn = turn.nativeTurnId { ids["turnId"] = nativeTurn }
-        await publishVisibleEvent(
-          AdapterEvent(
-            kind: .toolCompleted, connectionId: thread.connectionId, threadId: thread.id,
-            turnId: turn.id, nativeIds: ids,
-            payload: [
-              "displayItem": try JSONValue(encoding: stored), "role": .string(stored.role.rawValue),
-              "reason": .string(reason),
-            ]))
+      for item in try db.displayItems(threadId: turn.threadId)
+      where item.turnId == turn.id && item.payload["agent"]?.boolValue == true
+        && item.payload["status"]?.stringValue == "inProgress"
+      {
+        open[turn.threadId, default: []].append(item.id)
       }
+    }
+    return open
+  }
+
+  /// The session that ran a thread's agents is gone, so none of them will ever end: each agent in
+  /// `items` (by default every one in progress now) that is still in progress when its turn comes
+  /// becomes `stopped`, with its end stamped, and is announced as completed; then the counts are taken
+  /// again. A row is read again just before it is written, with no suspension between, so an agent that
+  /// ended meanwhile, or was closed already, is left as it is.
+  func closeOpenWork(threadId: String, reason: String, items: [String]? = nil) async throws {
+    guard let thread = try db.thread(id: threadId) else { return }
+    let ids = try items ?? openAgentItems(threadId: threadId)[threadId] ?? []
+    for id in ids {
+      guard let current = try db.displayItem(id: id), current.threadId == threadId,
+        current.payload["agent"]?.boolValue == true,
+        current.payload["status"]?.stringValue == "inProgress",
+        let stored = try db.updateDisplayItem(
+          id: id,
+          {
+            var payload = $0.payload.objectValue ?? [:]
+            payload["status"] = "stopped"
+            payload["endedAt"] = .string(Timestamp.now())
+            $0.payload = .object(payload)
+          })
+      else { continue }
+      let turn = try stored.turnId.flatMap { try db.turn(id: $0) }
+      var ids = ["threadId": thread.nativeThreadId]
+      if let native = stored.nativeItemId { ids["itemId"] = native }
+      if let nativeTurn = turn?.nativeTurnId { ids["turnId"] = nativeTurn }
+      await publishVisibleEvent(
+        AdapterEvent(
+          kind: .toolCompleted, connectionId: thread.connectionId, threadId: thread.id,
+          turnId: stored.turnId, nativeIds: ids,
+          payload: [
+            "displayItem": try JSONValue(encoding: stored), "role": .string(stored.role.rawValue),
+            "reason": .string(reason),
+          ]))
+    }
+    for turn in try db.turnsWithOpenWork(threadId: threadId) {
       try await recountOpenWork(turnId: turn.id, thread: thread)
     }
   }
 
-  private func startOpenWorkClose() {
-    pumps["open-work-close"] = Task { [weak self] in
-      await self?.closeOpenWorkLeftBehind()
+  /// One thread's close failing must not stop the others: it is logged and recorded.
+  private func closeOpenWorkLoggingFailure(threadId: String, reason: String, items: [String]? = nil) async {
+    do {
+      try await closeOpenWork(threadId: threadId, reason: reason, items: items)
+    } catch {
+      logger.error("open work close failed: \(String(describing: error), privacy: .public)")
+      await context.diagnostics.recordError(
+        scope: "projection", code: "internal", message: String(describing: error))
     }
   }
 
-  private func closeOpenWorkLeftBehind() async {
-    do {
-      for threadId in Set(try db.turnsWithOpenWork().map(\.threadId)) {
-        try await closeOpenWork(threadId: threadId, reason: "coordinator_started")
+  private func startOpenWorkClose(_ leftBehind: [String: [String]]) {
+    guard !leftBehind.isEmpty else { return }
+    pumps["open-work-close"] = Task { [weak self] in
+      for (threadId, items) in leftBehind {
+        await self?.closeOpenWorkLoggingFailure(
+          threadId: threadId, reason: "coordinator_started", items: items)
       }
-    } catch {
-      logger.error("startup open work close failed: \(String(describing: error), privacy: .public)")
     }
   }
 
@@ -1665,7 +1695,7 @@ public actor SessionService {
       {
         await publishTurn(.turnStateChanged, updated, thread: thread, payload: ["reason": "runtime_exited"])
       }
-      try await closeOpenWork(threadId: thread.id, reason: "runtime_exited")
+      await closeOpenWorkLoggingFailure(threadId: thread.id, reason: "runtime_exited")
       return
     }
     let status = raw.payload["status"]?.stringValue.flatMap(ConnectionStatus.init(rawValue:))
@@ -1697,9 +1727,9 @@ public actor SessionService {
       else { continue }
       await publishTurn(.turnStateChanged, updated, thread: thread, payload: ["reason": "runtime_exited"])
     }
-    let threads = try db.turnsWithOpenWork().map(\.threadId)
-    for threadId in Set(threads) where try db.thread(id: threadId)?.connectionId == raw.connectionId {
-      try await closeOpenWork(threadId: threadId, reason: "runtime_exited")
+    let threads = (try? db.turnsWithOpenWork().map(\.threadId)) ?? []
+    for threadId in Set(threads) where (try? db.thread(id: threadId)?.connectionId) == raw.connectionId {
+      await closeOpenWorkLoggingFailure(threadId: threadId, reason: "runtime_exited")
     }
   }
 

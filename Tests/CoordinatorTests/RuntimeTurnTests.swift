@@ -455,6 +455,7 @@ func agent(
       if try await f.h.read(thread).turns.first(where: { $0.id == turnId })?.openWork == 0 { return }
       try await Task.sleep(for: .milliseconds(50))
     }
+    throw WorkspaceError(.internalError, "the turn's open work never reached 0")
   }
 
   func completions(_ f: RuntimeTurnTests.Fixture) async -> Int {
@@ -545,7 +546,11 @@ func agent(
     let f = try await RuntimeTurnTests.Fixture.make()
     let turn = try await open(f, f.thread, id: "a1")
     let paths = f.h.coordinator.paths
+    #expect(try f.h.coordinator.database.turn(id: turn.id)?.openWork == 1)
     await f.h.stop()
+    // Shutting the first coordinator down closed nothing (it published no completion), so the close
+    // that follows is start()'s.
+    #expect(await completions(f) == 0)
     let back = try await Harness.start(paths: paths)
     for _ in 0..<600 {
       if try back.coordinator.database.turn(id: turn.id)?.openWork == 0 { break }
@@ -557,5 +562,63 @@ func agent(
     #expect(item.payload["status"]?.stringValue == "stopped")
     #expect(item.payload["endedAt"]?.stringValue != nil)
     await back.stop()
+  }
+
+  /// The ids of a thread's agent items that are open now, as `start()` takes them.
+  func openItems(_ f: RuntimeTurnTests.Fixture, _ thread: ConversationThread) throws -> [String: String] {
+    var ids: [String: String] = [:]
+    for item in try f.h.coordinator.database.displayItems(threadId: thread.id)
+    where item.payload["agent"]?.boolValue == true && item.payload["status"]?.stringValue == "inProgress" {
+      ids[item.nativeItemId ?? ""] = item.id
+    }
+    return ids
+  }
+
+  @Test func startUpDoesNotCloseAnAgentOpenedAfterIt() async throws {
+    let f = try await RuntimeTurnTests.Fixture.make()
+    _ = try await open(f, f.thread, id: "a1")
+    let taken = try openItems(f, f.thread)
+    _ = try await open(f, f.thread, id: "a2")
+    let before = await completions(f)
+    try await f.h.coordinator.sessions.closeOpenWork(
+      threadId: f.thread.id, reason: "coordinator_started", items: [try #require(taken["a1"])])
+    _ = await f.h.events.until { $0.filter { $0.kind == .toolCompleted }.count > before }
+    let items = try await f.h.read(f.thread).items
+    #expect(items.first { $0.nativeItemId == "a1" }?.payload["status"]?.stringValue == "stopped")
+    let later = try #require(items.first { $0.nativeItemId == "a2" })
+    #expect(later.payload["status"]?.stringValue == "inProgress")
+    #expect(later.payload["endedAt"] == nil)
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(try await f.turns().last?.openWork == 1)
+    await f.h.stop()
+  }
+
+  /// The list a close works from is a snapshot; `a2` ends for real after it was taken, so when the
+  /// close reaches it the stored row is no longer open.
+  @Test func aCloseDoesNotOverwriteAnAgentThatEndedMeanwhile() async throws {
+    let f = try await RuntimeTurnTests.Fixture.make()
+    let turn = try await open(f, f.thread, id: "a1")
+    _ = try await open(f, f.thread, id: "a2")
+    let taken = try openItems(f, f.thread)
+    #expect(taken.count == 2)
+    let native = try #require(turn.nativeTurnId)
+    await f.send(agent(.toolCompleted, f.connection, f.thread, id: "a2", turn: native, status: "completed"))
+    let ended = try #require(try await f.h.read(f.thread).items.first { $0.nativeItemId == "a2" })
+    let before = await completions(f)
+    try await f.h.coordinator.sessions.closeOpenWork(
+      threadId: f.thread.id, reason: "runtime_exited", items: Array(taken.values))
+    _ = await f.h.events.until { $0.filter { $0.kind == .toolCompleted }.count > before }
+    try await Task.sleep(for: .milliseconds(300))
+    let items = try await f.h.read(f.thread).items
+    let kept = try #require(items.first { $0.nativeItemId == "a2" })
+    #expect(kept.payload == ended.payload)
+    #expect(kept.payload["status"]?.stringValue == "completed")
+    #expect(items.first { $0.nativeItemId == "a1" }?.payload["status"]?.stringValue == "stopped")
+    let published = await f.h.events.events.filter {
+      $0.event.kind == .toolCompleted
+        && $0.event.payload["displayItem"]?["payload"]?["status"]?.stringValue == "stopped"
+    }
+    #expect(published.count == 1)
+    await f.h.stop()
   }
 }
