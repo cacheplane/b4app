@@ -6,6 +6,7 @@ import WorkspaceProtocol
 @testable import Coordinator
 
 /// Source-only controls: these exercise synthetic adapters, never a coordinator or native runtime.
+@Suite(.enabled(if: protocolFullMatrixEnabled))
 struct InspectionObservationTests {
   @Test(.timeLimit(.minutes(1)), arguments: ObservationMask.allCases)
   func preservesCapabilitiesAndEveryCoreForward(_ mask: ObservationMask) async throws {
@@ -535,6 +536,7 @@ private final class ObservationAllFake: ObservationCommandFake, LoginCapable, Us
 }
 
 /// Inert diagnostic controls only. They exercise no process, socket, account, or native fixture.
+@Suite(.enabled(if: protocolFullMatrixEnabled))
 struct NarrowTimingObservationTests {
   @Test func commandBoundsSaturateWithoutReusingSlotsAndSnapshotIsOneShot() throws {
     let collector = NarrowTimingObservation(.inspectionCommands)

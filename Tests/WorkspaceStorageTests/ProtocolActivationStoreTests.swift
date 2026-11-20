@@ -51,7 +51,7 @@ struct ProtocolActivationStoreTests {
       binding: binding, reportedMinimum: 2, reportedVersion: version, healthy: true)
   }
   private static func withFixture(_ body: @Sendable (Fixture) async throws -> Void) async throws {
-    let endpoint = try AgentProtocolResourceFixture.endpoint()
+    let endpoint = try AgentProtocolResourceFixture.currentSchemaEndpoint()
     let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "activation-store-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])

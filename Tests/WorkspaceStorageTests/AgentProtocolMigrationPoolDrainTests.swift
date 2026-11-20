@@ -99,7 +99,8 @@ private final class MigrationPoolObservation: Sendable {
   let bodyCalls = Mutex(0)
 }
 
-@Suite(NativeDBResources(), .serialized) struct AgentProtocolMigrationPoolDrainTests {
+@Suite(NativeDBResources(runBlockingCaseInOrdinarySuite: true), .serialized)
+struct AgentProtocolMigrationPoolDrainTests {
   private struct Fixture: Sendable {
     let endpoint: PostgresEndpoint
     let inspector: PostgresConnection

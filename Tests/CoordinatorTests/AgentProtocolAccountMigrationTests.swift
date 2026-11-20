@@ -192,7 +192,8 @@ final class L1FactoryCalls: Sendable {
   var value: Int { count.withLock { $0 } }
 }
 
-@Suite(NativeDBResources(), .serialized) struct AgentProtocolAccountMigrationTests {
+@Suite(NativeDBResources(runBlockingCaseInOrdinarySuite: true), .serialized)
+struct AgentProtocolAccountMigrationTests {
   static let hubURL = "https://fixture.invalid"
   static let accountValue = "L1_FAKE_OLD_ACCOUNT_VALUE"
   static let endpointValue = "L1_FAKE_ENDPOINT_VALUE"
@@ -1136,7 +1137,8 @@ final class L1FactoryCalls: Sendable {
     }
   }
 
-  @Test func pendingPoolTimeoutLeavesUnavailableWithoutDDLOrCredentialReset() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func pendingPoolTimeoutLeavesUnavailableWithoutDDLOrCredentialReset() async throws {
     try await Self.withFixture { fixture, cleanup in
       let releaseSemaphore = DispatchSemaphore(value: 0)
       let release = cleanup.release { releaseSemaphore.signal() }
@@ -1170,7 +1172,8 @@ final class L1FactoryCalls: Sendable {
     }
   }
 
-  @Test func currentAndDifferentAccountOpenPreserveFallbackControls() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func currentAccountOpenWithHeldLeasePreservesFallback() async throws {
     try await Self.withFixture(pending: false) { fixture, cleanup in
       let semaphore = DispatchSemaphore(value: 0)
       let release = cleanup.release { semaphore.signal() }
@@ -1195,6 +1198,9 @@ final class L1FactoryCalls: Sendable {
       release.run()
       _ = try await borrower.value
     }
+  }
+
+  @Test func differentAccountWithFutureSchemaPreservesActiveScope() async throws {
     try await Self.withFixture(pending: false) { fixture, cleanup in
       let endpoint = try AgentProtocolResourceFixture.endpoint()
       let future = try Self.connection(endpoint)

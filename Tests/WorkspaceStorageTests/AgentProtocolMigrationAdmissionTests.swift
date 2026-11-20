@@ -9,7 +9,8 @@ import WorkspaceProtocol
 
 /// Real storage-only admission tests. No account lifecycle, production migration bypass, application server,
 /// listener or runtime is introduced to reach the old schema; each method owns its PostgreSQL cluster.
-@Suite(NativeDBResources(), .serialized) struct AgentProtocolMigrationAdmissionTests {
+@Suite(NativeDBResources(runBlockingCaseInOrdinarySuite: true), .serialized)
+struct AgentProtocolMigrationAdmissionTests {
   private struct Fixture: Sendable {
     let endpoint: PostgresEndpoint
     let raw: PostgresConnection

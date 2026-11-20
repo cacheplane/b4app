@@ -11,7 +11,7 @@ import WorkspaceSync
 private typealias H = AgentProtocolAccountMigrationTests
 
 private final class L2Observation: Sendable {
-  enum Case: String { case explicitRetry, retainedCurrent, oldCallbacks }
+  enum Case: String { case explicitRetry, retainedCurrent, oldCallbacks, heldDisposalCallbacks }
   enum Stage: String {
     case retryLeaseReady, retryFirstSignInCompletion, retrySecondSignInCompletion
     case retryReleasedSignInCompletion, currentLeaseReady, currentFirstSignInCompletion
@@ -445,7 +445,8 @@ private struct L2AccountAPI: HubAPI {
   func endSession() async throws { try await fake().endSession() }
 }
 
-@Suite(NativeDBResources(), .serialized) struct AgentProtocolAccountMigrationRetentionTests {
+@Suite(NativeDBResources(runBlockingCaseInOrdinarySuite: true), .serialized)
+struct AgentProtocolAccountMigrationRetentionTests {
   @Test func explicitRetryMustRedrainHeldIdentity() async throws {
     let observation = L2Observation(.explicitRetry)
     let retryTiming = L2RetryTiming()
@@ -498,7 +499,8 @@ private struct L2AccountAPI: HubAPI {
     }
   }
 
-  @Test func retainedDrainStillRequiredWhenPreflightCurrent() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func retainedDrainStillRequiredWhenPreflightCurrent() async throws {
     let observation = L2Observation(.retainedCurrent)
     let timing = NativeTimingBoundary(.a3CurrentFirstSignIn)
     defer { observation.emitAfterFixtureCleanup() }
@@ -824,7 +826,8 @@ private final class L2LifetimeOwner: Sendable {
   }
 }
 
-@Suite(NativeDBResources(), .serialized) struct AgentProtocolAccountMigrationControlTests {
+@Suite(NativeDBResources(runBlockingCaseInOrdinarySuite: true), .serialized)
+struct AgentProtocolAccountMigrationControlTests {
   @Test func authHandlerVerifiesBeforeQuiescence() async throws {
     for rejects in [true, false] {
       let hub = CommandHub()
@@ -878,11 +881,7 @@ private final class L2LifetimeOwner: Sendable {
 
   @Test func oldInstanceCallbacksCannotMutateReplacement() async throws {
     let observation = L2Observation(.oldCallbacks)
-    let secondFixtureTiming = NarrowTimingObservation(.l2SecondFixture)
-    defer {
-      observation.emitAfterFixtureCleanup()
-      secondFixtureTiming.emitAfterCleanup()
-    }
+    defer { observation.emitAfterFixtureCleanup() }
     let firstExecutor = H.AccountMigrationTestExecutor()
     try await H.withFixture(migrationCloseTaskExecutor: firstExecutor) { fixture, cleanup in
       let writer = try H.connection(fixture.endpoint)
@@ -956,6 +955,16 @@ private final class L2LifetimeOwner: Sendable {
       let tokenRef = try #require(try fixture.registry.active()?.tokenRef.flatMap(SecretRef.init(rawValue:)))
       #expect(try await fixture.secrets.read(tokenRef) == H.session().token)
     }
+  }
+
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func oldInstanceProfileCannotMutateNilSlotDuringHeldDisposal() async throws {
+    let observation = L2Observation(.heldDisposalCallbacks)
+    let secondFixtureTiming = NarrowTimingObservation(.l2SecondFixture)
+    defer {
+      observation.emitAfterFixtureCleanup()
+      secondFixtureTiming.emitAfterCleanup()
+    }
     // Separate REAL async-close boundary: in-flight push is NOT such a barrier, because
     // HubSync.close cancels it without joining. Hold actual fake adapter disposal instead.
     let adapters = StubbornAdapters()
@@ -1026,7 +1035,8 @@ private final class L2LifetimeOwner: Sendable {
     }
   }
 
-  @Test func oldWriterCompletionsUseClosedOrDrainedPool() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func oldWriterCompletionsUseClosedOrDrainedPool() async throws {
     let factory = L2Factory()
     try await factory.configure()
     try await H.withFixture(
@@ -1155,7 +1165,7 @@ private final class L2LifetimeOwner: Sendable {
 
 private final class L2ObservationSentinel: Error {}
 
-@Suite private struct AgentProtocolL2ObservationMechanicalTests {
+@Suite(.enabled(if: protocolFullMatrixEnabled)) private struct AgentProtocolL2ObservationMechanicalTests {
   @Test func forwardingPreservesValuesErrorsAndDefersBoundedReporting() async throws {
     let sentinel = L2ObservationSentinel()
     let observation = L2Observation(.explicitRetry)

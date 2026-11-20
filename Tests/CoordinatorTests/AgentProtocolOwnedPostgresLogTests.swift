@@ -5,6 +5,7 @@ import Testing
 import WorkspacePlatform
 
 /// Only owned scratch files: no environment mutation, database, subprocess or signals.
+@Suite(.enabled(if: protocolFullMatrixEnabled))
 struct AgentProtocolOwnedPostgresLogTests {
   private typealias Log = AgentProtocolOwnedPostgresLog
   private typealias Configuration = Log.Configuration

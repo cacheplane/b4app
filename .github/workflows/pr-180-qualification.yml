@@ -127,13 +127,13 @@ jobs:
               "Sources/Coordinator/Accounts/AccountManager.swift": "2f8d3f7c8dbf2469e7366530737532a3c41991a795f13f46b8d01155dfb6aa25",
               "Sources/Coordinator/HubSync/HubSync.swift": "65ef4d84c37d1f70485e6052bb71b8e5626c5348334ecef9a9e53f330146f3d5",
               "Sources/WorkspaceStorage/ProtocolActivation.swift": "f2b28e208e58686cc95954255643af14240042ceeb4092980cc68177ad7dd421",
-              "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "847e4a80425fe8bd9a46401a1e349c7481351bbece4ab86d04dd70bb4b40ba08",
+              "Tests/CoordinatorTests/HubOwnerCarrierTests.swift": "fc2308738e3f207b0e17b13a4033ba59ee1158573bd728bdcafc2e151c417d57",
           }
 
-          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': 'f2b28e208e58686cc95954255643af14240042ceeb4092980cc68177ad7dd421', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '23cdadd43dde87fc7be9ce0c957a48d72bd528d95c301b66ad92bf3358ff8c7d', 'Sources/WorkspaceStorage/PostgresClient.swift': 'e129b7fcf315bccb5659461cc7cbc16c0132b90e253568bd8e2942ff668106e2', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': 'e16729e5ca13a9250fbe8fb2d63f3d545d50979bf61e3a2d985fae4482ec35ad'}
+          RECEIPT_SOURCE_PINS = {'Sources/WorkspaceStorage/ProtocolActivation.swift': 'f2b28e208e58686cc95954255643af14240042ceeb4092980cc68177ad7dd421', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '23cdadd43dde87fc7be9ce0c957a48d72bd528d95c301b66ad92bf3358ff8c7d', 'Sources/WorkspaceStorage/PostgresClient.swift': 'e129b7fcf315bccb5659461cc7cbc16c0132b90e253568bd8e2942ff668106e2', 'Tests/WorkspaceStorageTests/OwnedProtocolProofWriteTests.swift': '5b0453fe82e9ef9d24b889b21c5b2ab5b0fdf01b6d9e462a925434c11139c0a7'}
           ACCOUNT_SESSION_SOURCE_PINS = {'Sources/WorkspaceStorage/LibPQ.swift': '054d7d50a95231af518dbebce4162f7a9284c8c1f3b7596bb62f930edcc88513', 'Sources/WorkspaceStorage/PostgresClient.swift': 'e129b7fcf315bccb5659461cc7cbc16c0132b90e253568bd8e2942ff668106e2', 'Sources/WorkspaceStorage/WorkspaceDatabase.swift': '23cdadd43dde87fc7be9ce0c957a48d72bd528d95c301b66ad92bf3358ff8c7d', 'Sources/WorkspaceStorage/ProtocolActivation.swift': 'f2b28e208e58686cc95954255643af14240042ceeb4092980cc68177ad7dd421', 'Sources/Coordinator/HubSync/HubOwnerCarrier.swift': '61233c33d04d8a2318f025e727aec08107feb0dc72218f3d6fe2d1994c1d28b4', 'Sources/WorkspaceStorage/AccountSessionComparison.swift': '3209f1d507b6d40be025d6b6eadf3604fef76c6469600701a1dd6ecffc8b0598', 'Tests/WorkspaceStorageTests/AccountSessionComparisonTests.swift': '630efff4764297717e3fbc7f6bab0db2a2884da641ab631bde4b7e13dddfc844', 'Tests/CoordinatorTests/AccountSessionComparisonOwnerTests.swift': '0df2ce3f8dc3e72db2f7a9ff8359243302dd9cb280416f7e578397c57edca360'}
           HELPER_RELATIVE = "Scripts/check-owner-carrier-compiler-controls.py"
-          HELPER_SHA256 = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+          HELPER_SHA256 = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
 
           class Rejected(Exception):
               pass
@@ -403,7 +403,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -454,7 +454,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -505,7 +505,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -556,7 +556,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -607,7 +607,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -658,7 +658,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -709,7 +709,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -760,7 +760,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -811,7 +811,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -862,7 +862,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())
@@ -913,7 +913,7 @@ jobs:
               if helper_path != checkout / relative or not helper_path.is_relative_to(checkout):
                   raise ValueError()
               cap = 262144
-              expected = "8dc8b5920c7caf19517fdc69614fafda5d34c700a22a442fbf597c486f9e0224"
+              expected = "a805f91c4b524b6c6dab105b515e7bfd75ea6029b3d37b2d4883bd4f3dd559d6"
               fd = os.open(helper_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
               with os.fdopen(fd, "rb") as stream:
                   before = os.fstat(stream.fileno())

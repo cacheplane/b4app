@@ -10,7 +10,8 @@ import WorkspaceSync
 
 // Dormant component controls. Scripted HubAPI responses do not authenticate a request, and
 // cancellation/status receipts are not joins of production tasks whose handles are unavailable.
-@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(1))) struct AgentProtocolHubOwnerCarrierTests {
+@Suite(NativeDBResources(runBlockingCaseInOrdinarySuite: true), .serialized, .timeLimit(.minutes(1)))
+struct AgentProtocolHubOwnerCarrierTests {
   @Test func actualCurrentLinkedScopeIssuesRedactedOriginalCarrier() async throws {
     try await OwnerFixture.withLinked { f in
       let origin = try await f.scope.hub.captureConfiguredClientOrigin()

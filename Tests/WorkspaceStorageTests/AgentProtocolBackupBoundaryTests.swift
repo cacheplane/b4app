@@ -36,7 +36,8 @@ private final class ConcurrentBackupWork<Value: Sendable> {
 
 /// Real PostgreSQL controls for the shared migration admission core. Faults are injected at observed
 /// durability boundaries, not reported as actual kernel syscall failures. No account/runtime starts.
-@Suite(NativeDBResources(), .serialized) struct AgentProtocolBackupBoundaryTests {
+@Suite(NativeDBResources(runBlockingCaseInOrdinarySuite: true), .serialized)
+struct AgentProtocolBackupBoundaryTests {
   private struct Fixture: Sendable {
     let endpoint: PostgresEndpoint
     let raw: PostgresConnection

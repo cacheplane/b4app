@@ -305,7 +305,7 @@ struct OwnedProtocolProofWriteTests {
   }
 
   private static func withNativeFixture(_ root: String, _ body: (Fixture) throws -> Void) throws {
-    let endpoint = try AgentProtocolResourceFixture.endpoint()
+    let endpoint = try AgentProtocolResourceFixture.currentSchemaEndpoint()
     let database = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
     defer { try? database.close() }

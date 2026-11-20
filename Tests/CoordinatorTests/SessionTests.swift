@@ -77,7 +77,9 @@ final class FakeB4: Sendable {
 private func temporaryPaths() throws -> PlatformPaths {
   let base = AgentProtocolResourceFixture.temporaryDirectory + "b4s-\(UUID().uuidString.prefix(8))"
   try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
-  return try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
+  var paths = PlatformPaths(runtimeDir: base + "/rt", dataDir: base + "/data")
+  paths.postgres = try EphemeralPostgres.endpoint(migrated: TestAccount.ordinaryFixture)
+  return paths
 }
 
 struct Harness {
@@ -88,12 +90,17 @@ struct Harness {
   let inspectionObservation: InspectionRequestObservation?
 
   static func start(
-    paths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:],
+    paths suppliedPaths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:],
     secretStore: any SecretStore = MemorySecretStore(), checkRetryDelays: [Duration] = [.zero, .zero],
     adapterFactory: SessionService.AdapterFactory? = nil, threadDeleteSweep: Duration = .zero,
     inspectionObservation: InspectionRequestObservation? = nil
   ) async throws -> Harness {
-    let paths = try paths ?? temporaryPaths()
+    let paths: PlatformPaths
+    if let suppliedPaths {
+      paths = suppliedPaths
+    } else {
+      paths = try await TestAccount.prepare { try temporaryPaths() }
+    }
     // The fixture is a Python script, so the child needs the real PATH; Node lookups stay isolated.
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"

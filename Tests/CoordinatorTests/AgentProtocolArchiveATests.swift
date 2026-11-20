@@ -968,7 +968,9 @@ import WorkspaceProtocol
     try await Self.withFixture { f in
       let original = try Self.document(f.raw)
       try await Self.withTarget(f, populated: true, forensicPhase: .malformed) { target in
-        for variant in 0..<17 {
+        // Always check malformed syntax, a future format, and a private reference containing NUL.
+        let variants = protocolFullMatrixEnabled ? Array(0..<17) : [0, 7, 9]
+        for variant in variants {
           var doc = original
           switch variant {
           case 3: doc.header["requiredTables"] = Self.dataTables + ["unsupportedRequiredTable"]; doc.recount()
@@ -1229,7 +1231,8 @@ import WorkspaceProtocol
     return body()
   }
 
-  @Test(NativeDBResources()) func archiveA4HeaderBarrierSnapshotIsConsistentWhileSharedWriterCommits()
+  @Test(NativeDBResources(), .enabled(if: protocolFullMatrixEnabled))
+  func archiveA4HeaderBarrierSnapshotIsConsistentWhileSharedWriterCommits()
     async throws
   {
     try await Self.withFixture { f in
@@ -1391,7 +1394,7 @@ import WorkspaceProtocol
       return try settings(c)
     }
   }
-  @Test(NativeDBResources())
+  @Test(NativeDBResources(), .enabled(if: protocolFullMatrixEnabled))
   func archiveA6CommitFailureRollsBackApplicationSequenceAndMasksPrivateDiagnostics() async throws {
     try await Self.withFixture { f in
       let document = try Self.document(f.raw), log = try AgentProtocolOwnedPostgresLog(f.endpoint)
@@ -1592,7 +1595,8 @@ import WorkspaceProtocol
   }
 
   // PURE arithmetic/routing checks only: supplied cancellation/late facts do not exercise native work.
-  @Test func archiveCloseInitialReadFailureNeverAdmitsEmptyOrFollowup() {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func archiveCloseInitialReadFailureNeverAdmitsEmptyOrFollowup() {
     let closeReturned = ContinuousClock.now
     let deadline = closeReturned + .seconds(1)
     for noBackends in [false, true] {
@@ -1617,7 +1621,8 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func archiveCloseInitialSuccessAndFixedOwnersPreserveFacts() {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func archiveCloseInitialSuccessAndFixedOwnersPreserveFacts() {
     let closeReturned = ContinuousClock.now
     let deadline = closeReturned + .seconds(1)
     for noBackends in [false, true] {

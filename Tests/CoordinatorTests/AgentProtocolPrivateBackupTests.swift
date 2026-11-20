@@ -436,7 +436,8 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func genuineOldNineBackupIsCompleteBeforeDdlAndBoundaryFaultsRefuse() async throws {
+  @Test(.enabled(if: protocolFullMatrixEnabled))
+  func oldNineBackupBoundaryFaultsRefuseBeforeDdl() async throws {
     for fault in [MigrationBackupStage.contentsWritten, .fileSynchronized, .renamed] {
       try await Self.withFixture(current: false) { f in
         let stages = Mutex<[MigrationBackupStage]>([])
@@ -463,6 +464,9 @@ import WorkspaceProtocol
         }
       }
     }
+  }
+
+  @Test func genuineOldNineBackupIsCompleteBeforeDdl() async throws {
     try await Self.withFixture(current: false) { f in
       let stages = Mutex<[MigrationBackupStage]>([]), reachedDdl = Mutex(false)
       try WorkspaceDatabase.migrateWithBackup(f.raw, endpoint: f.endpoint, backupDirectory: f.backup) {

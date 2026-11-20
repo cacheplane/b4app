@@ -46,6 +46,14 @@ enum AgentProtocolResourceFixture {
   // The shared ephemeral test utility owns the same opt-in guard/registration/ACK for all callers.
   static func endpoint() throws -> PostgresEndpoint { try EphemeralPostgres.endpoint() }
 
+  static func currentSchemaEndpoint() throws -> PostgresEndpoint {
+    let environment = ProcessInfo.processInfo.environment
+    if environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1" || environment["B4APP_A3_NONCE"] != nil {
+      return try endpoint()
+    }
+    return try EphemeralPostgres.endpoint(migrated: true)
+  }
+
   static func database() throws -> WorkspaceDatabase {
     let endpoint = try endpoint()
     return try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
@@ -187,17 +195,19 @@ struct OrdinaryProtocolStorageSuite: SuiteTrait, TestScoping {
 }
 
 struct NativeDBResources: TestTrait, SuiteTrait, TestScoping {
+  var runBlockingCaseInOrdinarySuite = false
   var isRecursive: Bool { true }
+
+  func scopeProvider(for test: Test, testCase: Test.Case?) -> Self? {
+    guard testCase != nil else { return nil }
+    let fullMatrix = ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1"
+    return runBlockingCaseInOrdinarySuite || fullMatrix ? self : nil
+  }
 
   func provideScope(
     for test: Test, testCase: Test.Case?,
     performing function: @concurrent @Sendable () async throws -> Void
   ) async throws {
-    // Keep the enclosing executor in everyday tests. Qualification observes per-case scheduling.
-    guard ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1" else {
-      try await function()
-      return
-    }
     let executor = NativeDBCaseExecutor()
     defer { withExtendedLifetime(executor) {} }
     try await withTaskExecutorPreference(executor) {

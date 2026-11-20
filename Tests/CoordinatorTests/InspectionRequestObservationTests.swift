@@ -2,6 +2,7 @@ import Synchronization
 import Testing
 
 /// Mechanical request-envelope controls only; no coordinator, adapter, or native runtime.
+@Suite(.enabled(if: protocolFullMatrixEnabled))
 struct InspectionRequestObservationTests {
   @Test func requestEnvelopeReturnsOriginalResultOnceAndReportsAtReturn() async throws {
     let envelope = InspectionRequestObservation(caseID: .expiredLogin)

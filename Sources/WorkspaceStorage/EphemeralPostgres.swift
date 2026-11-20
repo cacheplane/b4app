@@ -17,6 +17,7 @@ import WorkspaceProtocol
 /// that a single test starts first, and a local run skips the start.
 public enum EphemeralPostgres {
   private static let state = Mutex<Shared?>(nil)
+  private static let migratedTemplate = Mutex<String?>(nil)
   /// Suites run in parallel; the one-time initdb and start happen under this lock.
   private static let startLock = NSLock()
   /// A directory for a cluster that outlives the test process (see above). It is never swept, and
@@ -36,21 +37,89 @@ public enum EphemeralPostgres {
 
   /// A fresh database on the shared cluster.
   public static func endpoint() throws -> PostgresEndpoint {
+    try endpoint(migrated: false)
+  }
+
+  /// A migrated fixture starts with the current ledger and empty workspace tables.
+  /// The template is private to this process, even when several processes share a cluster.
+  package static func endpoint(migrated: Bool) throws -> PostgresEndpoint {
     try OwnedEphemeralTestResources.prepare()
     let shared = try ensureStarted()
-    let name = "t_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(20)
-    let lib = try LibPQ.load(binDir: shared.cluster.binDir)
-    let admin = try PostgresConnection(
-      lib: lib,
+    let admin = try adminConnection(shared.cluster)
+    let template = try migrated ? templateName(cluster: shared.cluster, admin: admin) : nil
+    return try makeDatabase(cluster: shared.cluster, admin: admin, template: template)
+  }
+
+  private static func adminConnection(_ cluster: PostgresCluster) throws -> PostgresConnection {
+    try PostgresConnection(
+      lib: LibPQ.load(binDir: cluster.binDir),
       connectionString:
-        "host=\(shared.cluster.socketDir) port=\(shared.cluster.port) dbname=postgres user=\(shared.cluster.user)"
+        "host=\(cluster.socketDir) port=\(cluster.port) dbname=postgres user=\(cluster.user)"
     )
-    try admin.execute("CREATE DATABASE \(Rows.quote(String(name)))")
+  }
+
+  private static func makeDatabase(
+    cluster: PostgresCluster, admin: PostgresConnection, template: String?
+  ) throws -> PostgresEndpoint {
+    let suffix = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(20)
+    let name = "t_" + String(suffix)
+    let source = template.map { " TEMPLATE " + Rows.quote($0) } ?? ""
+    try admin.execute("CREATE DATABASE \(Rows.quote(name))\(source)")
     let endpoint = PostgresEndpoint(
-      socketDir: shared.cluster.socketDir, port: shared.cluster.port, database: String(name), dataDir: nil,
-      logPath: shared.cluster.logPath, binDir: shared.cluster.binDir)
+      socketDir: cluster.socketDir, port: cluster.port, database: name, dataDir: nil,
+      logPath: cluster.logPath, binDir: cluster.binDir)
     try OwnedEphemeralTestResources.acknowledge(endpoint)
     return endpoint
+  }
+
+  private static func templateName(cluster: PostgresCluster, admin: PostgresConnection) throws -> String {
+    try migratedTemplate.withLock { cached in
+      if let cached { return cached }
+      let endpoint = try makeDatabase(cluster: cluster, admin: admin, template: nil)
+      let name = Rows.quote(endpoint.database)
+      do {
+        try prepareTemplate(endpoint, binDir: cluster.binDir)
+        try admin.execute("ALTER DATABASE \(name) ALLOW_CONNECTIONS false")
+      } catch {
+        _ = try? admin.execute("DROP DATABASE \(name)")
+        throw error
+      }
+      cached = endpoint.database
+      // The private cluster is removed on exit. A persistent cluster needs the template dropped.
+      if let directory = ProcessInfo.processInfo.environment[persistentVariable], !directory.isEmpty {
+        atexit {
+          if let cluster = EphemeralPostgres.state.withLock({ $0?.cluster }),
+            let name = EphemeralPostgres.migratedTemplate.withLock({ $0 })
+          {
+            _ = try? EphemeralPostgres.adminConnection(cluster).execute("DROP DATABASE \(Rows.quote(name))")
+          }
+        }
+      }
+      return endpoint.database
+    }
+  }
+
+  private static func prepareTemplate(_ endpoint: PostgresEndpoint, binDir: String) throws {
+    let database = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir, createIfMissing: false)
+    var closed = false
+    defer {
+      if !closed { try? database.close() }
+    }
+    try database.read { connection in
+      guard try Migrator.recorded(connection) == Migrator.files().map(\.name) else {
+        throw WorkspaceError(.internalError, "The test template has an incomplete migration ledger.")
+      }
+      let tables = try connection.execute(
+        "SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public' AND tablename <> $1",
+        [Migrator.table])
+      for table in tables.rows {
+        guard let name = table.text("tablename"),
+          try connection.execute("SELECT 1 FROM public.\(Rows.quote(name)) LIMIT 1").rows.isEmpty
+        else { throw WorkspaceError(.internalError, "The test template contains workspace state.") }
+      }
+    }
+    try database.close()
+    closed = true
   }
 
   private static func ensureStarted() throws -> Shared {

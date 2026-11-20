@@ -927,17 +927,19 @@ final class NativeDBCaseExecutor: TaskExecutor {
 }
 
 struct NativeDBResources: TestTrait, SuiteTrait, TestScoping {
+  var runBlockingCaseInOrdinarySuite = false
   var isRecursive: Bool { true }
+
+  func scopeProvider(for test: Test, testCase: Test.Case?) -> Self? {
+    guard testCase != nil else { return nil }
+    let fullMatrix = ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1"
+    return runBlockingCaseInOrdinarySuite || fullMatrix ? self : nil
+  }
 
   func provideScope(
     for test: Test, testCase: Test.Case?,
     performing function: @concurrent @Sendable () async throws -> Void
   ) async throws {
-    // Everyday tests use Swift Testing's executor. Qualification observes native queue scheduling.
-    guard ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1" else {
-      try await function()
-      return
-    }
     let executor = NativeDBCaseExecutor()
     defer { withExtendedLifetime(executor) {} }
     try await withTaskExecutorPreference(executor) {
