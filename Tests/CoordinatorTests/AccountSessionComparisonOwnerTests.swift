@@ -11,7 +11,8 @@ import WorkspaceSync
 let protocolFullMatrixEnabled = ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1"
 
 // Real native stores and genuine dormant P2a owners; counted fake requests are not HTTP proof.
-@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(1))) struct AccountSessionComparisonOwnerTests {
+@Suite(NativeDBResources(runBlockingCaseInOrdinarySuite: true), .serialized, .timeLimit(.minutes(1)))
+struct AccountSessionComparisonOwnerTests {
   @Test func p2bB16InstalledOwnerOnlyAndZeroNewEffects() async throws {
     for linked in [false, true] {
       try await P2BOwnerFixture.withFixture(linked: linked) { f in
