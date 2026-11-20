@@ -167,6 +167,11 @@ struct NativeDBResources: TestTrait, SuiteTrait, TestScoping {
     for test: Test, testCase: Test.Case?,
     performing function: @concurrent @Sendable () async throws -> Void
   ) async throws {
+    // Everyday tests use Swift Testing's executor. Qualification observes native queue scheduling.
+    guard ProcessInfo.processInfo.environment["B4APP_QUALIFY_NATIVE_DB_EXECUTOR"] == "1" else {
+      try await function()
+      return
+    }
     let executor = NativeDBCaseExecutor()
     defer { withExtendedLifetime(executor) {} }
     try await withTaskExecutorPreference(executor) {

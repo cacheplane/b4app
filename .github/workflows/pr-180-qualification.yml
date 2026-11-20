@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  B4APP_QUALIFY_NATIVE_DB_EXECUTOR: "1"
+
 jobs:
   verify-checkout:
     name: Verify PR 180 checkout
