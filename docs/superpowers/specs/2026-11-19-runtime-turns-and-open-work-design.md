@@ -16,6 +16,7 @@ Today the result is: the agent's row closes as completed with a launch note as i
 
 - Approach B, in full: the runtime's own turns get turn rows, and work that outlasts a turn is a fact of its own, synced to the hub and the phone. Not approach A (holding the owner's turn open in the adapter).
 - The reason: the owner can send a message while a background agent works, as in Claude Code itself.
+- One unfinished turn per thread, kept by folding (approach A of the latest-turn investigation, 2026-11-19): a wake-up turn that runs while the owner's message waits belongs to the owner's turn. See "One unfinished turn".
 - After the prior-art research (summarised below), four revisions: the open set comes from the runtime's own list of live tasks, each turn stores its origin, empty wake-ups are folded, and a send during a running turn is delivered to that turn, not refused.
 
 Everything below this line is the controller's proposal unless marked as decided.
@@ -41,6 +42,7 @@ Everything below this line is the controller's proposal unless marked as decided
 - A thread that says finished, or a "Replied" push, while an agent it started is working.
 - A step drawn under the wrong agent or the wrong turn. Where a link is not exact, the step is drawn unlinked.
 - A turn that can never end. Nothing here holds a turn open.
+- Two unfinished turns on one thread. Every rule that reads the thread's latest turn (state, bands, the reply notification, the read marker, the Mac's one-active-turn-per-thread model) is right only while the latest turn is the unfinished one.
 
 ## Prior art
 
@@ -76,9 +78,20 @@ From a survey of the runtimes' own clients, open-source clients and the agent-to
 A turn row the session service inserts when the runtime acknowledges a turn nobody sent:
 
 - The trigger is a `turn.acknowledged` event whose payload says `origin: "runtime"`, on a known thread, with a native turn id that matches no row. The adapter sets it only for a turn it did not send. Without it the event is a sent turn's acknowledgement, as today.
-- If the owner's own turn is still `submitting` when a runtime turn is acknowledged, both rows exist for a moment; events find their turn by native id, and the owner's turn is acknowledged by its own frame.
+- A runtime turn row is made only when the thread has no unfinished turn. A runtime acknowledgement that arrives while one exists makes no row: its events join that turn, and the session service logs it (the adapters' folding, below, should already have prevented it).
 - The row has `operationId` `runtime:<nativeTurnId>` (the column is unique and required on the Mac and the phone), status `running`, submission `acknowledged`, and no user message.
 - From there it is an ordinary turn: state changes, items, the finish, requests, sync and notification all follow the existing paths.
+
+### One unfinished turn
+
+A thread has at most one turn that has not ended. Both runtimes run one turn at a time (recorded): Claude Code makes a message wait while a wake-up turn runs, folds a task's notification into a turn that is already running, and Codex joins a second `turn/start` to the running turn. So the only way to two unfinished rows is the app's own bookkeeping: the owner's row is made at the send, and a wake-up turn then runs first. On main today that case is mishandled (the wake-up's result ends the owner's turn and the real answer arrives with no turn; `send-meets-wake.jsonl`).
+
+The rule: work the runtime does between the owner's send and the end of the owner's turn belongs to the owner's turn. The transcript then has the shape Claude Code itself gives a notification that lands mid-turn: the wake-up's note, then the answer, under one message. The cost is that the note is not a turn of its own and its time counts in the owner's turn.
+
+Two guards keep a future ordering mistake visible instead of silent:
+
+- The session service falls back to "the active turn" for an event only when that turn has no native id yet (it is the one being submitted). An event naming a native turn id the store does not know, and not marked `runtime`, is logged and changes no turn.
+- The Mac's model clears a thread's running turn, and ends its live text, only for an event of that same turn.
 
 ### Origin
 
@@ -111,8 +124,9 @@ In `ClaudeTurnTracker`:
 - **Whose turn.** A turn the owner sent opens with the replayed user frame carrying the uuid the adapter sent, and its first stream event and first assistant frame carry that uuid as `user_message_uuid`; later frames and the result do not. A wake-up turn has no replayed frame and its first frames carry no uuid (recorded). So a turn's owner is decided at its first top-level frame after `init`: the replayed frame or a frame naming the sent uuid makes it the sent turn; a first stream or assistant frame naming none makes it a runtime turn. The `init` frame's own event waits for that decision. The turn's result confirms it: a sent turn's result carries `user_message_uuid`, a wake-up turn's carries `origin` with `kind` `task-notification` (recorded).
 - **Runtime turns.** Decided that way, at its first top-level stream or assistant frame, a runtime turn gets a new uuid and an acknowledgement marked `runtime`, then the held `turn.state_changed`. Its result finishes it and supplies the origin's kind.
 - **Empty wake-ups.** A result that arrives with no turn begun (no top-level frame since the last result) produces nothing. Claude Code is documented to send such results, with `num_turns` 0, when several completions are answered in one turn; none was recorded.
-- **Acknowledging a send.** Only the replayed frame or a frame naming its uuid, never a parented frame or a wake-up turn's.
-- **A send that meets a wake-up turn.** How Claude Code orders the two was not recorded. The plan records it as the first step of the Claude change (it gates that change only, not the coordinator's); the rule above is built against that recording.
+- **A send that meets a wake-up turn (recorded, `send-meets-wake.jsonl`).** Claude Code runs the wake-up first, then the message as a turn of its own: its replayed frame, then a result naming it. While a send is pending (written to Claude Code, its replayed frame not yet seen), the tracker folds: a wake-up turn's frames are events of the owner's turn, which is acknowledged by the first of them; a result that does not name the sent uuid does not finish the turn; the turn finishes at the result that names it. Several wake-ups before the message starts are all folded. No runtime turn is begun while a send is pending.
+- **Acknowledging a send.** With no wake-up in the way: the replayed frame or a frame naming its uuid. Never a parented frame.
+- **A task that ends during a turn (recorded, `task-ends-during-turn.jsonl`).** Claude Code starts no turn: the notification is a replayed user frame with `origin` inside the running turn. Replayed frames produce nothing, as today.
 - **Stop.** The adapter gains `stopOpenWork(ref)`: for Claude, the same `interrupt` control request, which the recording shows kills a background agent and sends no result. The rows close through their `task_notification`.
 - **A send that would restart the process** (changed directories, a cleared model or permission, entering bypass) is refused while the session has open agents, with reason `open_work` and a message naming what to do: wait, or stop the agents. A restart would kill them.
 
@@ -173,7 +187,7 @@ The last change, and the largest of the four revisions. It can ship after the re
 
 - A send while a turn is `running` or `waiting_for_user` makes no turn row. The message is stored as a user item of the active turn and handed to the adapter's new `steer(ref, turn, text)`.
 - Claude: the adapter writes the user frame, as for a send. Claude Code is documented to deliver it when the running tool calls finish, within the same turn.
-- Codex: `turn/steer` with `expectedTurnId`. It is documented to fail when no turn is active and to emit no `turn/started`.
+- Codex: `turn/steer` with `expectedTurnId`. It is documented to fail when no turn is active and to emit no `turn/started`. Not a second `turn/start`: that joins the running turn too (recorded, `second-turn-start.jsonl`), but in both runs made the first message's command was never run and the turn ended with the second message's answer.
 - **If the turn ends first.** The message then begins a turn of its own in the runtime. The adapter reports it as a sent turn's acknowledgement naming the message (Claude: the replayed frame's uuid; Codex: the adapter falls back to `turn/start`), and the session service makes the turn row then and moves the user item to it.
 - A send while a turn is `submitting`, `stopping` or `reconciling` is still refused.
 - **Transcript.** A turn's later messages are drawn below its first, above the line, in the order sent.
@@ -190,8 +204,8 @@ The last change, and the largest of the four revisions. It can ship after the re
 Six changes, each shippable alone, in this order:
 
 1. The two fields and the state rule: protocol, coordinator store, hub (migration, bands, notification rule, fixtures), mirror. Nothing writes the fields yet.
-2. Coordinator: runtime turn rows, the open-work count, stop with no turn, the start-up close.
-3. Claude adapter, against the five Claude fixtures, plus the recording of a send that meets a wake-up turn.
+2. Coordinator: runtime turn rows (only with no unfinished turn), the two guards, the open-work count, stop with no turn, the start-up close.
+3. Claude adapter, against the seven Claude fixtures, with the fold for a send that meets a wake-up turn.
 4. Codex adapter, against the two Codex fixtures.
 5. Transcript and composer.
 6. Sending during a turn, after its two recordings.
@@ -206,6 +220,9 @@ Six changes, each shippable alone, in this order:
 - The stopped recording's child frames after the notification keep their parent and turn.
 - A send that would restart Claude during open work is refused with `open_work`.
 - A send during open work with no active turn is accepted and starts a turn.
+- The send-meets-wake recording, with the send made where the recording made it: one turn row for the first message, one for the second and no runtime row; the wake-up's note and the answer both in the second turn; that turn running until the result naming it; never two unfinished turns.
+- The task-ends-during-turn recording: two turn rows, no runtime row, nothing drawn for the notification.
+- An event naming an unknown native turn id while another turn runs changes no turn. On the Mac, a turn finishing does not clear another turn's running state or live text.
 - The parallel recording with its live-task frames: the open set follows each frame, and an agent whose notification is removed from the recording is still closed.
 - Each runtime turn row carries `origin` `task-notification` after its result; the sent turn's is nil.
 - A result with no turn begun makes no turn row and no event.
@@ -221,8 +238,9 @@ While a thread has open work, a completed turn sends nothing. What ends the sile
 
 ## Not known
 
-- How Claude Code orders a user message that arrives while a wake-up turn is starting.
-- Either runtime's frames for a message delivered during a running turn.
+- What a Stop does to a message waiting behind a wake-up turn (whether the message still runs).
+- A wake-up turn that fails while a message waits.
+- Claude Code's frames for a message delivered during a running turn, and Codex's for `turn/steer`.
 - An empty wake-up result (`num_turns` 0) on the wire.
 - Whether Codex, with default flags, ever starts a turn on the parent when a child ends; the source says no, and the one recording agrees.
 - Whether the app's own setting sources (`user,project,local`) change any recorded shape.
