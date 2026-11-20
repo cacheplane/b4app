@@ -121,4 +121,39 @@ import WorkspaceProtocol
           && blocks(frame).contains { $0["type"]?.stringValue == "text" }
       })
   }
+
+  /// A message sent as a background task's notification arrives: Claude Code runs the wake-up turn
+  /// first (no replayed frame, a result with `origin`), then the message as a turn of its own (its
+  /// replayed frame, a result naming it). Turns never overlap.
+  @Test func aSendThatMeetsAWakeUpRunsAfterIt() throws {
+    let all = try frames("send-meets-wake")
+    let results = all.indices.filter { all[$0]["type"]?.stringValue == "result" }
+    #expect(results.count == 3)
+    #expect(all[results[1]]["origin"]?["kind"]?.stringValue == "task-notification")
+    #expect(all[results[1]]["user_message_uuid"] == nil)
+    let replays = all.indices.filter {
+      all[$0]["type"]?.stringValue == "user" && all[$0]["isReplay"]?.boolValue == true
+    }
+    #expect(replays.count == 2)
+    // The second message's replayed frame comes only after the wake-up turn's result.
+    #expect(replays[1] > results[1])
+    #expect(all[results[2]]["user_message_uuid"]?.stringValue == all[replays[1]]["uuid"]?.stringValue)
+    #expect(all[results[2]]["origin"] == nil)
+  }
+
+  /// A background task that ends while a turn runs starts no turn: its notification is a replayed user
+  /// frame with `origin` inside that turn, and the turn's one result names the owner's message.
+  @Test func aTaskThatEndsDuringATurnIsFoldedIntoIt() throws {
+    let all = try frames("task-ends-during-turn")
+    let results = all.indices.filter { all[$0]["type"]?.stringValue == "result" }
+    #expect(results.count == 2)
+    let notice = try #require(
+      all.firstIndex {
+        $0["type"]?.stringValue == "user" && $0["origin"]?["kind"]?.stringValue == "task-notification"
+      })
+    #expect(all[notice]["isReplay"]?.boolValue == true)
+    #expect(notice > results[0] && notice < results[1])
+    #expect(all[results[1]]["user_message_uuid"]?.stringValue != nil)
+    #expect(all[results[1]]["origin"] == nil)
+  }
 }

@@ -68,4 +68,23 @@ import WorkspaceProtocol
     #expect(all[activity[1]]["params"]?["turnId"]?.stringValue == rootTurn)
     #expect(all.filter { $0["method"]?.stringValue == "turn/started" }.count == 2)
   }
+
+  /// A second `turn/start` while a turn runs starts no turn: its message is an item of the running
+  /// turn, and one `turn/started` and one `turn/completed` are sent. (Its response, which names the
+  /// running turn's id, is not in the fixture: the scrub keeps notifications only.)
+  @Test func aSecondTurnStartJoinsTheRunningTurn() throws {
+    let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .appendingPathComponent("Fixtures/second-turn-start.jsonl")
+    let all = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map {
+      try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8))
+    }
+    #expect(all.filter { $0["method"]?.stringValue == "turn/started" }.count == 1)
+    #expect(all.filter { $0["method"]?.stringValue == "turn/completed" }.count == 1)
+    let users = all.filter {
+      $0["method"]?.stringValue == "item/completed"
+        && $0["params"]?["item"]?["type"]?.stringValue == "userMessage"
+    }
+    #expect(users.count == 2)
+    #expect(Set(users.compactMap { $0["params"]?["turnId"]?.stringValue }).count == 1)
+  }
 }
