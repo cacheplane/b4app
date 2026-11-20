@@ -147,6 +147,13 @@ final class TokenSequence: @unchecked Sendable {
     #expect(sent.request.value(forHTTPHeaderField: "B4-Protocol") == "2")
     #expect(sent.request.value(forHTTPHeaderField: "Authorization") == nil)
     #expect(sent.body.isEmpty)
+
+    let phone = HTTPHubAPI(
+      baseURL: URL(string: "https://\(host)/deployment")!, token: { nil }, session: session,
+      client: .phoneMirror)
+    let phoneFacts = try await phone.readiness()
+    #expect(phoneFacts.minClientProtocol == 1)
+    #expect(recorder.all.last?.request.value(forHTTPHeaderField: "B4-Protocol") == "1")
   }
 
   @Test func activeReadinessIsOnlyATypedServerFact() async throws {
@@ -163,6 +170,9 @@ final class TokenSequence: @unchecked Sendable {
     let facts = try await api.readiness()
     #expect(facts.reportsActiveProtocolTwo)
     #expect(facts.maintenance == "read_only")
+    let phone = HTTPHubAPI(
+      baseURL: URL(string: "https://\(host)")!, token: { nil }, session: session, client: .phoneMirror)
+    await #expect(throws: HubError.self) { try await phone.readiness() }
     // No account binding, persistence or write admission is constructed by this HTTP fact.
   }
 

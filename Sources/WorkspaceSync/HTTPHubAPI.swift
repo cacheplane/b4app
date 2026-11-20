@@ -11,13 +11,16 @@ public final class HTTPHubAPI: HubAPI {
   private let baseURL: URL
   private let token: @Sendable () async throws -> String?
   private let session: URLSession
+  private let client: HubSyncClient
 
   public init(
-    baseURL: URL, token: @escaping @Sendable () async throws -> String?, session: URLSession = .shared
+    baseURL: URL, token: @escaping @Sendable () async throws -> String?, session: URLSession = .shared,
+    client: HubSyncClient = .coordinator
   ) {
     self.baseURL = baseURL
     self.token = token
     self.session = session
+    self.client = client
   }
 
   public func enroll(_ request: EnrollRequest) async throws -> EnrollResponse {
@@ -30,7 +33,7 @@ public final class HTTPHubAPI: HubAPI {
 
   public func readiness() async throws -> HubReadiness {
     let facts: HubReadiness = try await send(.get, "readyz", authenticated: false, confinedResponse: true)
-    guard facts.hasSupportedMinimum else {
+    guard facts.hasSupportedMinimum, facts.minClientProtocol <= client.advertisedVersion else {
       throw HubError(
         kind: "request_error", code: "protocol_invalid",
         message: "The hub's protocol minimum is not supported.", status: 200)
@@ -284,7 +287,7 @@ public final class HTTPHubAPI: HubAPI {
     var request = URLRequest(url: try url(path, query: query), timeoutInterval: timeout)
     request.httpMethod = method.rawValue
     request.setValue("application/json", forHTTPHeaderField: "Accept")
-    request.setValue(String(HubReadiness.clientProtocolVersion), forHTTPHeaderField: "B4-Protocol")
+    request.setValue(String(client.advertisedVersion), forHTTPHeaderField: "B4-Protocol")
     if let body {
       request.httpBody = body
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")

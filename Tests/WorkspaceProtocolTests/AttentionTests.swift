@@ -21,6 +21,7 @@ struct AttentionFixture {
     case latestTurnByUpdatedAt
     case tieBreakLeastId
     case threadUpdatedAt
+    case ignoresOpenWork
   }
 
   var connections: [Connection]
@@ -84,7 +85,8 @@ struct AttentionFixture {
 
   /// Reference `activity`: latest turn by `createdAt` (ties by greatest `id`), `lastActivityAt` = max of
   /// the thread's `createdAt` and its latest turn's and requests' `updatedAt`; never the thread's own
-  /// `updatedAt`. The other variants are deliberate mistakes.
+  /// `updatedAt`. `openWork` is the sum over all the thread's turns, not the latest turn's. The other
+  /// variants are deliberate mistakes.
   func threadsWithActivity(_ variant: Variant) -> [ConversationThread] {
     threads.map { thread in
       let own = turns.filter { $0.threadId == thread.id }
@@ -106,6 +108,7 @@ struct AttentionFixture {
         latestTurnId: latest?.id, latestTurnStatus: latest?.status, latestTurnOutcome: latest?.outcome,
         pendingRequests: requests.filter { $0.state == .pending }.count,
         pendingApprovals: requests.filter { $0.state == .pending && $0.kind.isApproval }.count,
+        openWork: variant == .ignoresOpenWork ? 0 : own.reduce(0) { $0 + $1.openWork },
         lastActivityAt: stamps.max()!)
       return copy
     }
@@ -290,6 +293,36 @@ struct AttentionFixture {
     #expect(roundTrip.pendingApprovals == 2)
   }
 
+  @Test func openWorkKeepsAnEndedThreadWorking() {
+    struct Row {
+      var outcome: TurnOutcome
+      var read: Bool
+      var approvals: Int
+      var openWork: Int
+      var state: ThreadState
+      var badge: Bool
+    }
+    let rows = [
+      Row(outcome: .completed, read: false, approvals: 0, openWork: 1, state: .working, badge: false),
+      Row(outcome: .completed, read: true, approvals: 0, openWork: 1, state: .working, badge: false),
+      Row(outcome: .failed, read: false, approvals: 0, openWork: 1, state: .failed, badge: true),
+      Row(outcome: .completed, read: false, approvals: 1, openWork: 1, state: .approve, badge: true),
+      Row(outcome: .completed, read: false, approvals: 0, openWork: 0, state: .finished, badge: true),
+    ]
+    for (i, row) in rows.enumerated() {
+      let t = thread(
+        approvals: row.approvals, openWork: row.openWork, status: .terminal, outcome: row.outcome,
+        read: row.read)
+      #expect(Attention.state(of: t) == row.state, "row \(i)")
+      #expect(Attention.countsTowardBadge(t) == row.badge, "row \(i)")
+    }
+  }
+
+  @Test func aThreadActivityWithoutOpenWorkDecodesAsZero() throws {
+    let json = Data(#"{"pendingRequests":0,"lastActivityAt":"2026-11-19T10:00:00Z"}"#.utf8)
+    #expect(try JSONCoding.decoder.decode(ThreadActivity.self, from: json).openWork == 0)
+  }
+
   // MARK: - Order (decision 5)
 
   @Test func orderIsStateThenPinThenRecency() {
@@ -354,13 +387,14 @@ struct AttentionFixture {
 /// A thread whose `activity` is built from the arguments; `read` marks its latest turn read.
 private func thread(
   _ id: String = "t", pinned: Bool = false, at: String = "2026-10-31T09:00:00Z", pending: Int = 0,
-  approvals: Int = 0, status: TurnStatus? = nil, outcome: TurnOutcome? = nil, read: Bool = false
+  approvals: Int = 0, openWork: Int = 0, status: TurnStatus? = nil, outcome: TurnOutcome? = nil,
+  read: Bool = false
 ) -> ConversationThread {
   var t = ConversationThread(id: id, connectionId: "c", nativeThreadId: id, pinned: pinned, createdAt: at)
   let turnId = status == nil ? nil : "turn-" + id
   t.activity = ThreadActivity(
     latestTurnId: turnId, latestTurnStatus: status, latestTurnOutcome: outcome, pendingRequests: pending,
-    pendingApprovals: approvals, lastActivityAt: at)
+    pendingApprovals: approvals, openWork: openWork, lastActivityAt: at)
   if read { t.readTurnId = turnId }
   return t
 }

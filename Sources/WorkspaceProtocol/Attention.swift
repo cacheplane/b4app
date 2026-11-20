@@ -47,24 +47,29 @@ public struct ThreadActivity: Codable, Sendable, Equatable {
   /// The pending requests whose kind `isApproval`; the rest of `pendingRequests` are questions. Absent
   /// on the wire reads as 0.
   public var pendingApprovals: Int
+  /// The agents the thread's turns started that are still running, summed over its turns. Absent on
+  /// the wire reads as 0.
+  public var openWork: Int
   /// The newest of the thread's `createdAt` and its latest turn's and requests' `updatedAt`. Never
   /// the thread's own `updatedAt`, which moves on renames and pins.
   public var lastActivityAt: String
 
   public init(
     latestTurnId: String? = nil, latestTurnStatus: TurnStatus? = nil, latestTurnOutcome: TurnOutcome? = nil,
-    pendingRequests: Int = 0, pendingApprovals: Int = 0, lastActivityAt: String
+    pendingRequests: Int = 0, pendingApprovals: Int = 0, openWork: Int = 0, lastActivityAt: String
   ) {
     self.latestTurnId = latestTurnId
     self.latestTurnStatus = latestTurnStatus
     self.latestTurnOutcome = latestTurnOutcome
     self.pendingRequests = pendingRequests
     self.pendingApprovals = pendingApprovals
+    self.openWork = openWork
     self.lastActivityAt = lastActivityAt
   }
 
   private enum CodingKeys: String, CodingKey {
-    case latestTurnId, latestTurnStatus, latestTurnOutcome, pendingRequests, pendingApprovals, lastActivityAt
+    case latestTurnId, latestTurnStatus, latestTurnOutcome, pendingRequests, pendingApprovals, openWork,
+      lastActivityAt
   }
 
   public init(from decoder: any Decoder) throws {
@@ -74,6 +79,7 @@ public struct ThreadActivity: Codable, Sendable, Equatable {
     latestTurnOutcome = try c.decodeIfPresent(TurnOutcome.self, forKey: .latestTurnOutcome)
     pendingRequests = try c.decode(Int.self, forKey: .pendingRequests)
     pendingApprovals = try c.decodeIfPresent(Int.self, forKey: .pendingApprovals) ?? 0
+    openWork = try c.decodeIfPresent(Int.self, forKey: .openWork) ?? 0
     lastActivityAt = try c.decode(String.self, forKey: .lastActivityAt)
   }
 }
@@ -82,7 +88,8 @@ public enum Attention {
   /// The first rule that holds: no `activity` is quiet; a pending approval is approve (it wins over a
   /// pending question); any other pending request is reply; no turn is quiet; a latest turn waiting
   /// for the user is reply; one that has not ended is working; one that failed is failed, read or
-  /// not; one the owner has not read is finished (completed or cancelled); else quiet.
+  /// not; one that ended while agents it started are still running (`openWork`) is working; one the
+  /// owner has not read is finished (completed or cancelled); else quiet.
   public static func state(of thread: ConversationThread) -> ThreadState {
     guard let activity = thread.activity else { return .quiet }
     if activity.pendingApprovals > 0 { return .approve }
@@ -91,6 +98,7 @@ public enum Attention {
     if status == .waitingForUser { return .reply }
     if status != .terminal { return .working }
     if activity.latestTurnOutcome == .failed { return .failed }
+    if activity.openWork > 0 { return .working }
     return turnId != thread.readTurnId ? .finished : .quiet
   }
 

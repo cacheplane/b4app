@@ -441,7 +441,7 @@
         createdAt: "2026-11-11T10:00:00Z", updatedAt: "2026-11-11T10:00:00Z")
     }
 
-    /// A reply of `count` paragraphs, one line each: a single newline is a soft break, read as a space.
+    /// A reply of `count` paragraphs, one line each, a blank line between them.
     private func lines(_ count: Int) -> String {
       (1...count).map { "Line \($0) of the streamed reply." }.joined(separator: "\n\n")
     }
@@ -453,6 +453,8 @@
       let streams: MessageStreamStore
       /// The reader's own sends in this thread (`WorkspaceModel.ownSends`).
       var sent = 0
+      /// The height of what is docked under the transcript (a request card, an error, the composer).
+      var dock: CGFloat = 0
       /// Immediate reveal unless a ticker is given: then the reveal is paced and the test fires it.
       init(_ detail: ThreadDetail, ticker: ManualTicker? = nil) {
         self.detail = detail
@@ -473,7 +475,10 @@
       let host: Host
       let folds: TranscriptFolds
       var body: some View {
-        TranscriptView(detail: host.detail, streams: host.streams, sent: host.sent, folds: folds)
+        VStack(spacing: 0) {
+          TranscriptView(detail: host.detail, streams: host.streams, sent: host.sent, folds: folds)
+          Color.clear.frame(height: host.dock)
+        }
       }
     }
 
@@ -919,6 +924,41 @@
       view.host.detail.turns.append(turn(13, .running))
       view.host.detail.items.append(user("u13", turn: "t13", sequence: 130))
       try await view.until("the message is drawn") { view.documentHeight > height + 1 }
+      try await view.settle()
+      #expect(view.folds.holds)
+      #expect(abs(view.origin - origin) <= 0.5, "moved by \(view.origin - origin)")
+    }
+
+    /// A request card, an error or a taller draft takes height from the transcript: a reader at the end
+    /// still sees the end.
+    @Test func theEndStaysInViewWhenTheDockGrows() async throws {
+      let view = try Hosted(twelveTurns())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.settle()
+      #expect(view.atEnd)
+      let viewport = view.viewportHeight
+
+      view.host.dock = 160
+      try await view.until("the transcript is shorter") { view.viewportHeight < viewport - 100 }
+      try await view.settle()
+      #expect(view.atEnd, "below the viewport: \(view.below)")
+      #expect(!view.folds.holds)
+    }
+
+    /// A reader who scrolled back is reading: the dock growing does not take them to the end.
+    @Test func aGrowingDockLeavesAReaderWhoScrolledBack() async throws {
+      let view = try Hosted(twelveTurns())
+      defer { view.close() }
+      try await view.scrollToEnd()
+      try await view.scroll(to: view.origin - 300)
+      try await view.settle()
+      #expect(view.folds.holds)
+      let origin = view.origin
+      let viewport = view.viewportHeight
+
+      view.host.dock = 160
+      try await view.until("the transcript is shorter") { view.viewportHeight < viewport - 100 }
       try await view.settle()
       #expect(view.folds.holds)
       #expect(abs(view.origin - origin) <= 0.5, "moved by \(view.origin - origin)")

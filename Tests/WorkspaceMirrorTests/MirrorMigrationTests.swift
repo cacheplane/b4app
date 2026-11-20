@@ -97,8 +97,8 @@ private func writeVersion1File(_ path: String) throws {
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
     #expect(try raw.integer("PRAGMA user_version") == MirrorSchema.version)
-    #expect(MirrorSchema.version == 10)
-    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    #expect(MirrorSchema.version == 11)
+    #expect(MirrorSchema.migrations.map(\.version) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
     for table in ["environments", "environmentFolders", "devices", "outbox", "columnClocks"] {
       #expect(try raw.integer("SELECT count(*) FROM sqlite_master WHERE name = '\(table)'") == 1, "\(table)")
     }
@@ -337,7 +337,7 @@ private func writeVersion1File(_ path: String) throws {
       try raw.exec("PRAGMA user_version = 7")
       try raw.exec("COMMIT")
     }
-    #expect(MirrorSchema.version == 10)
+    #expect(MirrorSchema.version == 11)
 
     let store = try MirrorStore(path: path)
     #expect(try store.thread(id: "thread-1")?.title == "Kept")
@@ -408,7 +408,9 @@ private func writeVersion1File(_ path: String) throws {
       try raw.exec(#"UPDATE "viewSettings" SET "density" = '\#(density)'"#)
       // Run version 10 without its `ALTER`, which the column now already answers.
       try raw.exec("BEGIN")
-      for statement in try #require(MirrorSchema.migrations.last?.statements).dropFirst() {
+      for statement in try #require(MirrorSchema.migrations.first { $0.version == 10 }?.statements)
+        .dropFirst()
+      {
         try raw.exec(statement)
       }
       try raw.exec("PRAGMA user_version = 10")
@@ -444,7 +446,7 @@ private func writeVersion1File(_ path: String) throws {
     }
     let raw = try RawSQLite(path: path)
     defer { raw.close() }
-    #expect(try raw.integer("PRAGMA user_version") == 10)
+    #expect(try raw.integer("PRAGMA user_version") == 11)
   }
 
   /// A version 9 file with no view settings row opens at version 10 with none, and an empty outbox.
@@ -473,6 +475,27 @@ private func writeVersion1File(_ path: String) throws {
     SELECT count(*) FROM sqlite_master m WHERE m.type = 'index' AND m.tbl_name = 'displayItems'
       AND (SELECT group_concat(name, ',') FROM pragma_index_info(m.name)) = 'threadId,nativeItemId'
     """
+
+  @Test func version11AddsOpenWorkAndOriginToTurns() throws {
+    let path = temporaryPath()
+    defer { MirrorStoreTests.remove(path) }
+    try writeVersion1File(path)
+    do {
+      let raw = try RawSQLite(path: path)
+      defer { raw.close() }
+      try raw.exec("BEGIN")
+      for migration in MirrorSchema.migrations where (2...10).contains(migration.version) {
+        for statement in migration.statements { try raw.exec(statement) }
+      }
+      try raw.exec("PRAGMA user_version = 10")
+      try raw.exec("COMMIT")
+    }
+    let store = try MirrorStore(path: path)
+    let turn = try #require(try store.turns(threadId: "thread-1").first)
+    #expect(turn.id == "turn-1")
+    #expect(turn.openWork == 0)
+    #expect(turn.origin == nil)
+  }
 
   @Test func aNewFileHasTheNativeItemIndex() throws {
     let path = temporaryPath()

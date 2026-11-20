@@ -161,14 +161,14 @@ private final class ConcurrentBackupWork<Value: Sendable> {
       before.archiveFacts,
       after: after.archiveFacts, tables: Array(before.rows.keys).filter { $0 != "changes" })
     for (table, original) in before.rows {
-      try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+      try AgentProtocolFoundationFixture.requireIntroducedSQLDefaults(
         raw, source: source,
         table: table, originalRows: original)
       let currentTable = AgentProtocolFoundationFixture.currentTable(old: table)
       let restored = try #require(after.rows[currentTable])
       if table == Migrator.table {
         #expect(Set(original).isSubset(of: Set(restored)))  // Preserve each original appliedAt exactly.
-        #expect(restored.count == original.count + 8)
+        #expect(restored.count == original.count + 9)
         let addedNames = try Set(restored).subtracting(original).map { text in
           let row = try #require(
             try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
@@ -178,7 +178,8 @@ private final class ConcurrentBackupWork<Value: Sendable> {
           Set(addedNames)
             == Set([
               "0009_thread_runtime_choice", "0010_owned_rows", "0011_environments", "0012_app_folders",
-              "0013_view_settings", "0014_connection_commands", "0015_density", "0016_agent_protocol",
+              "0013_view_settings", "0014_connection_commands", "0015_density", "0016_turn_open_work",
+              "0017_agent_protocol",
             ]))
         continue
       }
@@ -189,7 +190,11 @@ private final class ConcurrentBackupWork<Value: Sendable> {
           for column in renameLegacy
             ? [] : AgentProtocolFoundationFixture.projectionColumns(after: source, table: table)
           {
-            if let value = object[column] { #expect(value is NSNull) }
+            if table == "turns", column == "openWork" {
+              #expect(object[column] as? Int == 0)
+            } else if let value = object[column] {
+              #expect(value is NSNull)
+            }
             object.removeValue(forKey: column)
           }
           if renameLegacy {

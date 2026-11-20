@@ -134,6 +134,8 @@ const TABLES: [TableSpec; 10] = [
             "outcome",
             "createdAt",
             "updatedAt",
+            "openWork",
+            "origin",
         ],
         parent: Some(("threadId", "threads")),
     },

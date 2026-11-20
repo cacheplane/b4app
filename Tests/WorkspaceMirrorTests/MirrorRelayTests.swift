@@ -185,6 +185,7 @@ struct MirrorRelayTests {
     _ = try store.apply(try fixtureAsStored())
     let h = RelayHarness()
     let socket = try await h.connect()
+    #expect(socket.protocolVersion == 1)
     let client = WorkspaceClient(transport: MirrorTransport(store: store, version: "0.2.0", relay: h.relay))
     _ = try await client.ready()
 

@@ -824,6 +824,27 @@ actor EventCollector {
     await h.stop()
   }
 
+  /// Claude Code says nothing between the answer and the tool's result: the answer itself ends the wait.
+  @Test func anAnsweredTurnIsRunningBeforeTheRuntimeSaysSo() async throws {
+    let h = try await Harness.start()
+    let claude = try await h.addClaude()
+    let thread = try await h.newThread(claude)
+    let turn = try await h.send(thread, "use a tool, quiet")
+    let opened = try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == thread.id }
+    let request = try #require(try opened.payload["runtimeRequest"]?.decode(RuntimeRequest.self))
+    #expect(try await h.read(thread).turns.first?.status == .waitingForUser)
+    _ = try await h.client.request(
+      RequestRespond.self, RequestRespond.Params(requestId: request.id, decision: .allowOnce),
+      options: RequestOptions(operationId: UUID().uuidString))
+    #expect(try await h.read(thread).turns.first?.status == .running)
+    let changed = try await h.events.waitFor {
+      $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["source"]?.stringValue == "answer"
+    }
+    #expect(try changed.payload["turn"]?.decode(Turn.self).status == .running)
+    _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    await h.stop()
+  }
+
   /// The CLI's flag and a phone's relayed answer come here too: a wider allow on a request that
   /// offers none is refused before the adapter hears of it, and the request can still be answered.
   @Test func aWiderAllowOnARequestThatOffersNoneIsRefused() async throws {

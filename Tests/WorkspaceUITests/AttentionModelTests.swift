@@ -360,6 +360,7 @@ private struct AttentionDocument: Decodable {
         latestTurnId: latest?.id, latestTurnStatus: latest?.status, latestTurnOutcome: latest?.outcome,
         pendingRequests: requests.filter { $0.state == .pending }.count,
         pendingApprovals: requests.filter { $0.state == .pending && $0.kind.isApproval }.count,
+        openWork: own.reduce(0) { $0 + $1.openWork },
         lastActivityAt: stamps.max()!)
       return copy
     }
@@ -376,14 +377,15 @@ private struct AttentionDocument: Decodable {
     transport.set(connections: document.connections, threads: document.threadsWithActivity.reversed())
     let model = try await connected(transport)
     let expected = [
-      "t-ask-request-late", "t-ask-turn-late", "t-failed-unread", "t-unread-b", "t-unread-a",
-      "t-pinned-working", "t-equal-created", "t-latest-created", "t-working", "t-pinned-quiet",
-      "t-completed-read", "t-no-turns", "t-tie-a", "t-tie-b", "t-stale-updated",
+      "t-ask-request-late", "t-ask-turn-late", "t-open-work-failed", "t-failed-unread", "t-unread-b",
+      "t-unread-a", "t-pinned-working", "t-equal-created", "t-open-work-unread", "t-latest-created",
+      "t-open-work-earlier", "t-open-work-read", "t-working", "t-pinned-quiet", "t-completed-read",
+      "t-no-turns", "t-tie-a", "t-tie-b", "t-stale-updated",
     ]
     #expect(model.orderedThreads.map(\.id) == expected)
     #expect(
-      model.orderedThreads.prefix(5).map { model.state(of: $0) } == [
-        .approve, .approve, .failed, .finished, .finished,
+      model.orderedThreads.prefix(6).map { model.state(of: $0) } == [
+        .approve, .approve, .failed, .failed, .finished, .finished,
       ])
   }
 

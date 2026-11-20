@@ -84,7 +84,7 @@ import WorkspaceProtocol
         present.contains(oldTable) ? oldTable : AgentProtocolFoundationFixture.currentTable(old: oldTable)
       if let source {
         let destination = AgentProtocolFoundationFixture.currentTable(old: oldTable)
-        try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+        try AgentProtocolFoundationFixture.requireIntroducedSQLDefaults(
           c, source: source,
           table: table, originalRows: originalRows[destination] ?? [])
       }
@@ -125,7 +125,7 @@ import WorkspaceProtocol
     let db = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backupDirectory(endpoint))
     defer { try? db.close() }
-    #expect(try db.appliedMigrations().last == "0016_agent_protocol")
+    #expect(try db.appliedMigrations().last == "0017_agent_protocol")
     try db.read { (raw: PostgresConnection) throws -> Void in
       #expect(try raw.execute(#"SELECT 1 FROM connections WHERE models IS NOT NULL"#).rows.isEmpty)
       #expect(

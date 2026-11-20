@@ -413,7 +413,8 @@ extension MirrorAccount: @retroactive AccountHost {}
       let base = try? HubURL.validate(link.hubURL), let ref = SecretRef(rawValue: link.tokenRef),
       let bundleId = Bundle.main.bundleIdentifier
     else { return }
-    let api = HTTPHubAPI(baseURL: base, token: { [secrets] in try await secrets.read(ref) })
+    let api = HTTPHubAPI(
+      baseURL: base, token: { [secrets] in try await secrets.read(ref) }, client: .phoneMirror)
     let environment = Self.pushEnvironment
     Task {
       do {

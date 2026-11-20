@@ -219,6 +219,48 @@ async fn an_insert_upserts_only_the_columns_it_carries(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn a_turn_carries_open_work_and_origin(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let device = common::enrolled(&admin, &app, "blove").await;
+    thread_fixture(&app, &device, 1).await;
+    let batch = vec![
+        insert(
+            3,
+            "turns",
+            "turn-1",
+            json!({"id": "turn-1", "threadId": "thread-1", "status": "terminal",
+                   "openWork": 2, "origin": "task-notification"}),
+        ),
+        update(4, "turns", "turn-1", "openWork", Some(json!(1))),
+    ];
+    push_through(&app, &device, &batch).await.unwrap();
+    let turn = row(&app, &device, "turns", "id", "turn-1").await.unwrap();
+    assert_eq!(turn["openWork"], 1);
+    assert_eq!(turn["origin"], "task-notification");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_turn_without_the_new_columns_is_accepted(pool: PgPool) {
+    let (admin, app) = common::migrated(&pool).await;
+    let device = common::enrolled(&admin, &app, "blove").await;
+    thread_fixture(&app, &device, 1).await;
+    let old = insert(
+        3,
+        "turns",
+        "turn-1",
+        json!({"id": "turn-1", "threadId": "thread-1", "operationId": "op-1",
+               "nativeTurnId": "n-1", "inputRef": "i-1", "status": "terminal",
+               "submission": "accepted", "outcome": "completed",
+               "createdAt": "2026-11-19T10:00:00Z", "updatedAt": "2026-11-19T10:00:01Z"}),
+    );
+    push_through(&app, &device, &[old]).await.unwrap();
+    let turn = row(&app, &device, "turns", "id", "turn-1").await.unwrap();
+    assert_eq!(turn["status"], "terminal");
+    assert_eq!(turn["openWork"], Value::Null);
+    assert_eq!(turn["origin"], Value::Null);
+}
+
+#[sqlx::test(migrations = false)]
 async fn updates_set_one_column_and_null_clears_it(pool: PgPool) {
     let (admin, app) = common::migrated(&pool).await;
     let device = common::enrolled(&admin, &app, "blove").await;

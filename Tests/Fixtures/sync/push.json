@@ -561,6 +561,34 @@
    "outcome": "superseded",
    "recent": false,
    "reason": null
+  },
+  {
+   "status": "terminal",
+   "outcome": "completed",
+   "recent": true,
+   "atRest": false,
+   "reason": null
+  },
+  {
+   "status": "terminal",
+   "outcome": "failed",
+   "recent": true,
+   "atRest": false,
+   "reason": "failed"
+  },
+  {
+   "status": "terminal",
+   "outcome": "completed",
+   "recent": false,
+   "atRest": true,
+   "reason": null
+  },
+  {
+   "status": "running",
+   "outcome": null,
+   "recent": true,
+   "atRest": false,
+   "reason": null
   }
  ],
  "titles": [

@@ -35,6 +35,7 @@ public enum RelayLinkState: Sendable, Equatable {
 public actor RelayLink {
   /// The link protocol this build speaks, sent as `B4-Protocol`.
   public static let protocolVersion = HubReadiness.clientProtocolVersion
+  private let client: HubSyncClient
 
   /// How many `409 relocated` upgrades in a row are retried at once before the backoff applies.
   public static let maxImmediateRelocations = 3
@@ -102,6 +103,7 @@ public actor RelayLink {
     url: URL,
     token: @escaping @Sendable () async throws -> String?,
     connection: any HubLinkConnection = URLSessionHubLinkConnection(),
+    client: HubSyncClient = .coordinator,
     maxBackoff: Duration = .seconds(30),
     clock: any Clock<Duration> = ContinuousClock(),
     jitter: @escaping @Sendable () -> Double = { Double.random(in: 0...1) },
@@ -111,6 +113,7 @@ public actor RelayLink {
     self.url = url
     self.tokenProvider = token
     self.connection = connection
+    self.client = client
     self.maxBackoff = maxBackoff
     self.clock = clock
     self.jitter = jitter
@@ -237,7 +240,7 @@ public actor RelayLink {
     let socket: any HubLinkSocket
     do {
       socket = try await connection.open(
-        url: url, token: token, protocolVersion: Self.protocolVersion, cookies: cookies)
+        url: url, token: token, protocolVersion: client.advertisedVersion, cookies: cookies)
     } catch HubLinkError.refused(let status) where status == 401 {
       return .stop("unauthorized")
     } catch HubLinkError.rateLimited(let after) {
@@ -309,7 +312,7 @@ public actor RelayLink {
       switch message {
       case .hello(let version, let minimum, let deviceId, let role, let heartbeat, let hubTime):
         guard !connected, (1...Self.protocolVersion).contains(version),
-          (1...version).contains(minimum), minimum <= Self.protocolVersion,
+          (1...version).contains(minimum), minimum <= client.advertisedVersion,
           !deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           heartbeat == RelayLimits.heartbeatSeconds, Self.parse(hubTime) != nil
         else { return .stop("protocol_invalid") }

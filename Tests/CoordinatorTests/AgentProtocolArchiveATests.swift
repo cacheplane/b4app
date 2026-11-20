@@ -403,7 +403,7 @@ import WorkspaceProtocol
         "format": "b4app-export", "version": 4, "at": stamp, "purpose": purpose,
         "migrations": try Migrator.recorded(raw), "requiredTables": data, "sourceContextTables": context,
       ], records: records, footer: [:])
-    if let names = result.header["migrations"] as? [String], names.count == 16 {
+    if let names = result.header["migrations"] as? [String], names.count == 17 {
       result.header["protocolSchema"] = "generation_epochs_v1"
     }
     result.recount()
@@ -721,7 +721,7 @@ import WorkspaceProtocol
       return name
     }.sorted()
     let migrationNamesMatch = document.header["migrations"] as? [String] == sourceNames
-    if sourceNames.count == 16 {
+    if sourceNames.count == 17 {
       #expect(document.header["protocolSchema"] as? String == "generation_epochs_v1")
     } else {
       #expect(document.header["protocolSchema"] == nil)
@@ -984,7 +984,7 @@ import WorkspaceProtocol
             doc.header["migrations"] =
               Self.canonicalNine + [
                 "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
-                "0014_connection_commands", "0015_density", "0016_agent_protocol",
+                "0014_connection_commands", "0015_density", "0016_turn_open_work", "0017_agent_protocol",
                 "9999_future",
               ]
             doc.records.append([
@@ -998,7 +998,7 @@ import WorkspaceProtocol
             // The prefix is the ACTUAL valid owner/reference/material. libpq truncation would
             // otherwise target a valid prefix and could falsely pass via an unrelated FK refusal.
             try Self.editRow(&doc, table: "protocolGrantSecrets", key: key, value: prefix + "\0suffix")
-          case 15: doc.header["migrations"] = Self.canonicalNine  // Context ledger still claims protocol14.
+          case 15: doc.header["migrations"] = Self.canonicalNine  // Context ledger still claims Store17.
           case 16: doc.header["requiredTables"] = Self.dataTables + ["connections"]; doc.recount()
           default: break
           }

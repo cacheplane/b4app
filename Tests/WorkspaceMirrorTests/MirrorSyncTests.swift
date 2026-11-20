@@ -210,6 +210,43 @@ private let link = MirrorLink(
     #expect(calls.withLock { $0 } == 0)
   }
 
+  @Test(arguments: [false, true])
+  func aRaisedFloorPreservesTheCachedMirrorAndCursor(startFromSnapshot: Bool) async throws {
+    let store = try MirrorStore.inMemory()
+    try store.saveLink(link)
+    _ = try store.apply(try fixtureAsStored())
+    try store.setCursor(15)
+    let cachedThread = try #require(try store.thread(id: "thread-1"))
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [MirrorFloorProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+    let api = HTTPHubAPI(
+      baseURL: URL(string: "https://mirror-floor.test")!, token: { "fixture-token" },
+      session: session, client: .phoneMirror)
+    let signal = SyncSignal()
+    let batches = BatchRecorder()
+    let sync = MirrorSync(
+      store: store, api: api, onBatch: { await batches.record($0) }, onStatus: { _ in signal.fire() },
+      initialBackoff: .seconds(60), startFromSnapshot: startFromSnapshot)
+    let running = Task { await sync.run() }
+    do {
+      try await signal.until("phone sync refusal") { try store.link()?.lastError != nil }
+    } catch {
+      await sync.stop()
+      await running.value
+      throw error
+    }
+    await sync.stop()
+    await running.value
+
+    let endpoint = startFromSnapshot ? "snapshot" : "changes"
+    #expect(try store.link()?.lastError == "Hub error 409 client_too_old: refused \(endpoint)")
+    #expect(store.cursor == 15)
+    #expect(try store.thread(id: "thread-1") == cachedThread)
+    #expect(await batches.batches.isEmpty)
+  }
+
   @Test func resyncUsesTheSnapshot() async throws {
     let store = try MirrorStore.inMemory()
     try store.saveLink(link)
@@ -839,4 +876,42 @@ extension MirrorStore {
       try run(#"UPDATE "syncState" SET "lastDeviceSeq" = ? WHERE "id" = 1"#, [.integer(Int64(deviceSeq))])
     }
   }
+}
+
+/// The sequence handshake succeeds at floor 1. The next protected read observes a raised floor.
+private final class MirrorFloorProtocol: URLProtocol, @unchecked Sendable {
+  override class func canInit(with request: URLRequest) -> Bool { true }
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+  override func startLoading() {
+    guard let url = request.url else { return }
+    let status: Int
+    let body: String
+    switch (request.value(forHTTPHeaderField: "B4-Protocol"), request.httpMethod, url.path) {
+    case ("1", "POST", "/v1/changes"):
+      status = 200
+      body = #"{"acceptedThrough":0,"rejected":[]}"#
+    case ("1", "GET", "/v1/devices"):
+      status = 200
+      body = #"{"devices":[]}"#
+    case ("1", "GET", "/v1/changes"), ("1", "GET", "/v1/snapshot"):
+      status = 409
+      let endpoint = url.lastPathComponent
+      body = """
+        {"error":{"kind":"request_error","message":"refused \(endpoint)",
+        "details":{"code":"client_too_old","minClientProtocol":2}}}
+        """
+    default:
+      status = 400
+      body = "{}"
+    }
+    let response = HTTPURLResponse(
+      url: url, statusCode: status, httpVersion: "HTTP/1.1",
+      headerFields: ["Content-Type": "application/json"])!
+    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    client?.urlProtocol(self, didLoad: Data(body.utf8))
+    client?.urlProtocolDidFinishLoading(self)
+  }
+
+  override func stopLoading() {}
 }

@@ -8,7 +8,7 @@ import WorkspaceProtocol
 
 /// Only real private PostgreSQL storage; no account, service, provider, listener or adapter starts.
 @Suite(NativeDBResources(), .serialized) struct AgentProtocolProfileSchemaTests {
-  private static let migration = "0016_agent_protocol"
+  private static let migration = "0017_agent_protocol"
   private static let profileColumns = [
     "peerProfile", "agentId", "authMode", "authHeaderName", "protocolRetiredAt", "protocolRetiredReason",
   ]
@@ -220,7 +220,7 @@ import WorkspaceProtocol
       tables: Array(fixture.before.rows.keys).filter { $0 != "changes" })
     #expect(try Migrator.recorded(fixture.raw) == AgentProtocolFoundationFixture.migrations)
     for (table, before) in fixture.before.rows {
-      try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+      try AgentProtocolFoundationFixture.requireIntroducedSQLDefaults(
         fixture.raw, source: source,
         table: table, originalRows: before)
       let currentTable = AgentProtocolFoundationFixture.currentTable(old: table)
@@ -243,7 +243,7 @@ import WorkspaceProtocol
       }
       if table == Migrator.table {
         #expect(Set(normalizedBefore).isSubset(of: Set(normalizedAfter)))
-        #expect(normalizedAfter.count == before.count + 7)
+        #expect(normalizedAfter.count == before.count + 8)
         let addedNames = try Set(normalizedAfter).subtracting(normalizedBefore).map { text in
           let row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
           return try #require(row["name"] as? String)
@@ -252,7 +252,7 @@ import WorkspaceProtocol
           Set(addedNames)
             == Set([
               "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
-              "0014_connection_commands", "0015_density", "0016_agent_protocol",
+              "0014_connection_commands", "0015_density", "0016_turn_open_work", "0017_agent_protocol",
             ]))
       } else if allowNewRows {
         #expect(Set(normalizedBefore).isSubset(of: Set(normalizedAfter)))

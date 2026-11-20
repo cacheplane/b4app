@@ -219,6 +219,19 @@ public struct EnrollResponse: Codable, Sendable, Equatable, CustomStringConverti
   public var debugDescription: String { description }
 }
 
+/// The coordinator can retain protocol-2 data. The current phone mirror can retain protocol 1.
+public enum HubSyncClient: Sendable {
+  case coordinator
+  case phoneMirror
+
+  var advertisedVersion: Int {
+    switch self {
+    case .coordinator: HubReadiness.clientProtocolVersion
+    case .phoneMirror: 1
+    }
+  }
+}
+
 /// Facts from the configured hub's public `/readyz`. Even active server facts confer no account,
 /// owner, credential or execution authority; Coordinator must bind and durably verify those.
 public struct HubReadiness: Codable, Sendable, Equatable {

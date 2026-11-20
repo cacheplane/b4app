@@ -14,7 +14,8 @@ import WorkspaceProtocol
   private static let thirteen = twelve + ["0013_view_settings"]
   private static let fourteen = thirteen + ["0014_connection_commands"]
   private static let fifteen = fourteen + ["0015_density"]
-  private static let sixteen = fifteen + ["0016_agent_protocol"]
+  private static let sixteen = fifteen + ["0016_turn_open_work"]
+  private static let seventeen = sixteen + ["0017_agent_protocol"]
   private static let publishedTables = [
     "localServers", "environments", "environmentFolders", "connections", "threads", "appFolders",
     "turns", "displayItems", "runtimeRequests", "drafts", "devices", "changes", "columnClocks",
@@ -27,7 +28,7 @@ import WorkspaceProtocol
 
   @Test func publishedTwelveAndProtocolFourteenHaveDistinctClosedManifests() throws {
     let published = try WorkspaceArchive.schema(Self.twelve)
-    let successor = try WorkspaceArchive.schema(Self.sixteen)
+    let successor = try WorkspaceArchive.schema(Self.seventeen)
     #expect(published.data == Self.publishedTables)
     #expect(successor.data == Self.publishedTables + ["viewSettings"] + Self.protocolTables)
     #expect(successor.data.count == 26)
@@ -47,10 +48,10 @@ import WorkspaceProtocol
     #expect(try WorkspaceArchive.columns("appFolders", at: 12) == Set(["path", "threadId", "createdAt"]))
     for table in Self.protocolTables {
       #expect(try WorkspaceArchive.columns(table, at: 12).isEmpty)
-      #expect(try !WorkspaceArchive.columns(table, at: 16).isEmpty)
+      #expect(try !WorkspaceArchive.columns(table, at: 17).isEmpty)
     }
     #expect(try !WorkspaceArchive.columns("connections", at: 12).contains("authMode"))
-    #expect(try WorkspaceArchive.columns("connections", at: 16).contains("authMode"))
+    #expect(try WorkspaceArchive.columns("connections", at: 17).contains("authMode"))
     #expect(try WorkspaceArchive.schema(Self.fourteen).data == Self.publishedTables + ["viewSettings"])
     #expect(try WorkspaceArchive.columns("connections", at: 14).contains("commands"))
     #expect(try !WorkspaceArchive.columns("connections", at: 13).contains("commands"))
@@ -64,7 +65,7 @@ import WorkspaceProtocol
     for table in Self.protocolTables { #expect(try WorkspaceArchive.columns(table, at: 15).isEmpty) }
     for (prefixCount, draft) in [
       (10, "0011_agent_protocol"), (11, "0012_agent_protocol"), (13, "0014_agent_protocol"),
-      (14, "0015_agent_protocol"),
+      (14, "0015_agent_protocol"), (15, "0016_agent_protocol"),
     ] {
       let names = Array(Self.fifteen.prefix(prefixCount)) + [draft]
       #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.schema(names) }
@@ -186,16 +187,18 @@ import WorkspaceProtocol
       .init(prefix: 15, quiet: "hidden", density: "", hasRow: true),
       .init(prefix: 15, quiet: nil, density: nil, hasRow: true),
       .init(prefix: 15, quiet: nil, density: nil, hasRow: false),
+      .init(prefix: 16, quiet: "shown", density: "dense", hasRow: true),
     ]
   private final class ArchivePayloadWitness {
     enum Prefix {
-      case twelve, thirteen, fourteen, fifteen, other
+      case twelve, thirteen, fourteen, fifteen, sixteen, other
       var label: String {
         switch self {
         case .twelve: return "prefix12"
         case .thirteen: return "prefix13"
         case .fourteen: return "prefix14"
         case .fifteen: return "prefix15"
+        case .sixteen: return "prefix16"
         case .other: return "prefixOther"
         }
       }
@@ -298,6 +301,7 @@ import WorkspaceProtocol
       case 13: self.prefix = .thirteen
       case 14: self.prefix = .fourteen
       case 15: self.prefix = .fifteen
+      case 16: self.prefix = .sixteen
       default: self.prefix = .other
       }
     }
@@ -340,7 +344,7 @@ import WorkspaceProtocol
       ? Self.twelve
       : prefix == 13
         ? Self.thirteen
-        : prefix == 14 ? Self.fourteen : Self.fifteen
+        : prefix == 14 ? Self.fourteen : (prefix == 15 ? Self.fifteen : Self.sixteen)
     let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "ap-app-folders-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -384,6 +388,12 @@ import WorkspaceProtocol
           VALUES ('fixture',1,'displayItems','i','update','payload','{"projectId":"external","n":1e-400}','000000001000-0000-fixture');
         RESET b4app.replaying;
         """)
+      if prefix == 16 {
+        try raw.execute("SET b4app.replaying='on'")
+        let updated = try raw.execute(#"UPDATE turns SET "openWork"=3, origin='runtime-fixture' WHERE id='u'"#)
+        try #require(updated.affected == 1)
+        try raw.execute("RESET b4app.replaying")
+      }
       if prefix >= 13, fixture.hasRow {
         try raw.execute("SET b4app.replaying='on'")
         try raw.execute(
@@ -422,9 +432,12 @@ import WorkspaceProtocol
         [
           "localServers", "connections", "environments", "environmentFolders", "threads", "appFolders",
           "turns",
-          "displayItems", "runtimeRequests", "drafts", "devices", "changes", "columnClocks",
-        ] + (prefix >= 13 ? ["viewSettings"] : [])
-      var records: [[String: Any]] = [["format": "b4app-export", "version": 3, "migrations": sourceNames]]
+          "displayItems", "runtimeRequests", "drafts",
+        ] + (prefix >= 13 ? ["viewSettings"] : []) + ["devices", "changes", "columnClocks"]
+      let header: [String: Any] = [
+        "format": "b4app-export", "version": 3, "at": "2026-11-19T00:00:00Z", "migrations": sourceNames,
+      ]
+      var records = [header]
       for table in legacyTables {
         for row in try raw.execute("SELECT * FROM \(Rows.quote(table)) ORDER BY 1").rows {
           var values: [String: Any] = [:]
@@ -461,6 +474,11 @@ import WorkspaceProtocol
       }
       let outcome = Result<Void, any Error> { () throws -> Void in
         try target.restore(from: path)
+        let restoredTurn = try target.read { raw in
+          try #require(try raw.execute(#"SELECT "openWork",origin FROM turns WHERE id='u'"#).rows.first)
+        }
+        #expect(restoredTurn.int("openWork") == (prefix == 16 ? 3 : 0))
+        #expect(restoredTurn.text("origin") == (prefix == 16 ? "runtime-fixture" : nil))
         #expect(
           try target.read {
             try $0.execute(#"SELECT to_jsonb(m)::text AS row FROM "schemaMigrations" m ORDER BY name"#).rows
@@ -512,14 +530,14 @@ import WorkspaceProtocol
           }
           #expect(try target.read { try Self.snapshot($0, includeViewSettings: true) } == rawBeforeRead)
         }
-        let currentPath = root + "/restored-current16-" + URL(fileURLWithPath: path).lastPathComponent
+        let currentPath = root + "/restored-current17-" + URL(fileURLWithPath: path).lastPathComponent
         try target.export(to: currentPath)
         let again = try AgentProtocolResourceFixture.database()
         let currentOutcome = Result<Void, any Error> { () throws -> Void in
           let currentDensity = try target.read {
             try AgentProtocolFoundationFixture.densityFacts(
               $0,
-              source: AgentProtocolFoundationFixture.preservationPrefix($0, expectedCount: 16))
+              source: AgentProtocolFoundationFixture.preservationPrefix($0, expectedCount: 17))
           }
           try again.restore(from: currentPath)
           try again.read {
@@ -535,7 +553,7 @@ import WorkspaceProtocol
             return result
           }
           let currentAfter = try again.read { raw in
-            _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: 16)
+            _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: 17)
             try AgentProtocolFoundationFixture.requireNativeJSONRetained(
               beforeFacts,
               after: AgentProtocolFoundationFixture.archiveFacts(raw), tables: Array(before.keys))
@@ -554,7 +572,7 @@ import WorkspaceProtocol
         }
         try again.close()
         try currentOutcome.get()
-        #expect(try target.appliedMigrations() == Self.sixteen)
+        #expect(try target.appliedMigrations() == Self.seventeen)
         try target.read {
           if prefix < 14 { try AgentProtocolFoundationFixture.assertAdditionsNullAndPrivateEmpty($0) }
           try Self.assertFixturePrivateEmpty($0)
@@ -571,7 +589,7 @@ import WorkspaceProtocol
     let source = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
     let outcome: Result<Void, any Error>
     do {
-      #expect(try source.appliedMigrations() == Self.sixteen)
+      #expect(try source.appliedMigrations() == Self.seventeen)
       #expect(
         try source.read {
           try $0.execute(
@@ -585,7 +603,7 @@ import WorkspaceProtocol
           beforeFacts,
           after: AgentProtocolFoundationFixture.archiveFacts($0), tables: Array(before.keys))
         let ledger = try $0.execute(
-          #"SELECT to_jsonb(m)::text AS row FROM "schemaMigrations" m WHERE name<'0016' ORDER BY name"#
+          #"SELECT to_jsonb(m)::text AS row FROM "schemaMigrations" m WHERE name<'0017' ORDER BY name"#
         )
         .rows.compactMap { $0.text("row") }
         #expect(Set(beforeLedger).isSubset(of: Set(ledger)))
@@ -640,9 +658,9 @@ import WorkspaceProtocol
       witness.outsideEquality =
         backupPayload.map { Data($0.utf8) } == nativePayload.map { Data($0.utf8) } ? .equal : .unequal
       #expect(backupPayload.map { Data($0.utf8) } == nativePayload.map { Data($0.utf8) })
-      try source.export(to: root + "/current16.jsonl")
+      try source.export(to: root + "/current17.jsonl")
       let exported = try WorkspaceArchive.read(
-        Data(contentsOf: URL(fileURLWithPath: root + "/current16.jsonl")))
+        Data(contentsOf: URL(fileURLWithPath: root + "/current17.jsonl")))
       #expect(exported.records["appFolders"]?.first?.row["threadId"] as? String == "t")
       let migratedRestore = try AgentProtocolResourceFixture.database()
       let migratedOutcome = Result<Void, any Error> { () throws -> Void in
@@ -653,15 +671,15 @@ import WorkspaceProtocol
         let currentDensity = try source.read {
           try AgentProtocolFoundationFixture.densityFacts(
             $0,
-            source: AgentProtocolFoundationFixture.preservationPrefix($0, expectedCount: 16))
+            source: AgentProtocolFoundationFixture.preservationPrefix($0, expectedCount: 17))
         }
-        try migratedRestore.restore(from: root + "/current16.jsonl")
+        try migratedRestore.restore(from: root + "/current17.jsonl")
         try migratedRestore.read {
           try AgentProtocolFoundationFixture.requireDensity(
             $0, original: currentDensity, path: .archiveRestore)
         }
         try migratedRestore.read {
-          _ = try AgentProtocolFoundationFixture.preservationPrefix($0, expectedCount: 16)
+          _ = try AgentProtocolFoundationFixture.preservationPrefix($0, expectedCount: 17)
           _ = try ProtocolActivationRestoreOracle.inactive($0, revision: 0)
           try Self.assertFixturePrivateEmpty($0)
           try AgentProtocolFoundationFixture.requireNativeJSONRetained(
@@ -712,7 +730,7 @@ import WorkspaceProtocol
             $0, includeViewSettings: prefix >= 13, source: sourcePrefix, originalRows: before,
             density: beforeDensity, densityPath: .nativeMigration)
         }.mapValues { $0.map { Data($0.utf8) } } == migratedExpected.mapValues { $0.map { Data($0.utf8) } })
-      #expect(try reopened.appliedMigrations() == Self.sixteen)
+      #expect(try reopened.appliedMigrations() == Self.seventeen)
       #expect(
         try reopened.read {
           try $0.execute(
@@ -817,7 +835,7 @@ import WorkspaceProtocol
 
   @Test(NativeDBResources()) func everyEmptyOriginalPrefixRequiresItsLiteralLedgerAndPhysicalBoundary() throws
   {
-    for count in 8...16 {
+    for count in 8...17 {
       let endpoint = try AgentProtocolResourceFixture.endpoint()
       let raw = try PostgresConnection(
         lib: LibPQ.load(binDir: endpoint.binDir!),
@@ -846,8 +864,8 @@ import WorkspaceProtocol
     }
     for malformed in [
       Self.thirteen + ["0014_agent_protocol"], Self.fourteen + ["0015_agent_protocol"],
-      Self.fifteen + ["0016_unknown"], Self.fifteen + ["0015_density"],
-      Array(Self.sixteen.reversed()),
+      Self.fifteen + ["0016_agent_protocol"], Self.fifteen + ["0016_unknown"], Self.fifteen + ["0015_density"],
+      Array(Self.seventeen.reversed()),
     ] {
       var refused = false
       do {
@@ -877,7 +895,7 @@ import WorkspaceProtocol
       try raw.execute(
         #"INSERT INTO "viewSettings" (id,arrangement,"quietThreads") VALUES ('view','future-arrangement',$1)"#,
         [fixture.quiet])
-      if fixture.prefix == 15 {
+      if fixture.prefix >= 15 {
         try raw.execute(#"UPDATE "viewSettings" SET density=$1 WHERE id='view'"#, [fixture.density])
       }
       try raw.execute("RESET b4app.replaying")
@@ -1177,7 +1195,7 @@ import WorkspaceProtocol
     var result: [String: [String]] = [:]
     for table in publishedTables + (includeViewSettings ? ["viewSettings"] : []) {
       if let source {
-        try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+        try AgentProtocolFoundationFixture.requireIntroducedSQLDefaults(
           raw, source: source,
           table: table, originalRows: originalRows[table] ?? [])
       }

@@ -237,7 +237,7 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
     let outcome = Result<Void, any Error> { () throws -> Void in
       let ledger = try db.appliedMigrations()
-      #expect(ledger.contains("0015_density") && ledger.last == "0016_agent_protocol")
+      #expect(ledger.contains("0015_density") && ledger.last == "0017_agent_protocol")
       #expect(ledger == AgentProtocolFoundationFixture.migrations)
       let stored = try #require(try storedRow(db))
       #expect(stored["quietThreads"] == .some(row.quietThreads))

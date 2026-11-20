@@ -112,13 +112,15 @@ struct LinkHarness {
   let recorder = LinkRecorder()
   let link: RelayLink
 
-  init(token: @escaping @Sendable () async throws -> String? = { "tok" }, maxBackoff: Duration = .seconds(30))
-  {
+  init(
+    token: @escaping @Sendable () async throws -> String? = { "tok" }, maxBackoff: Duration = .seconds(30),
+    client: HubSyncClient = .coordinator
+  ) {
     let connection = connection
     let clock = clock
     let recorder = recorder
     link = RelayLink(
-      url: URL(string: "https://hub.example.com")!, token: token, connection: connection,
+      url: URL(string: "https://hub.example.com")!, token: token, connection: connection, client: client,
       maxBackoff: maxBackoff, clock: clock, jitter: { 1.0 },
       onMessage: { await recorder.message($0) }, onState: { await recorder.state($0) })
   }
@@ -159,8 +161,10 @@ struct LinkHarness {
 
 @Suite(.timeLimit(.minutes(1)))
 struct RelayLinkTests {
-  private func withLink(_ body: (LinkHarness) async throws -> Void) async throws {
-    let h = LinkHarness()
+  private func withLink(
+    client: HubSyncClient = .coordinator, _ body: (LinkHarness) async throws -> Void
+  ) async throws {
+    let h = LinkHarness(client: client)
     do { try await body(h) } catch { await h.link.stop(); throw error }
     await h.link.stop()
   }
@@ -185,17 +189,22 @@ struct RelayLinkTests {
 
   @Test(arguments: [
     "zero", "negative", "future-min", "above-server", "future-server", "zero-server", "empty-device",
-    "bad-heartbeat", "bad-time",
+    "bad-heartbeat", "bad-time", "phone-floor-two",
   ])
   func invalidHelloStopsBeforeConnectedOrApplicationCallbacks(_ variant: String) async throws {
-    try await withLink { h in
+    try await withLink(client: variant == "phone-floor-two" ? .phoneMirror : .coordinator) { h in
       await h.link.start()
       let socket = try await h.connection.nextSocket()
       let version =
         variant == "future-server" ? 3 : variant == "zero-server" ? 0 : variant == "above-server" ? 1 : 2
       let minimum =
-        variant == "zero"
-        ? 0 : variant == "negative" ? -1 : variant == "future-min" ? 3 : variant == "above-server" ? 2 : 1
+        switch variant {
+        case "zero": 0
+        case "negative": -1
+        case "future-min": 3
+        case "above-server", "phone-floor-two": 2
+        default: 1
+        }
       socket.deliver(
         .hello(
           protocol: version, minClientProtocol: minimum, deviceId: variant == "empty-device" ? "" : "d1",

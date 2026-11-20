@@ -88,13 +88,13 @@ public enum Migrator {
     guard names == Array(files.prefix(names.count).map(\.name)) else {
       throw EnvironmentHistoryMigrationGuard.failure()
     }
-    // Unpublished16 changed shape before release. Its name alone cannot admit an older draft,
+    // Unpublished17 changed shape before release. Its name alone cannot admit an older draft,
     // even on a no-pending reopen. This is catalog-only and never reads protocol row material.
-    if done.contains("0016_agent_protocol") { try validateProtocolGenerationSchema(connection) }
+    if done.contains("0017_agent_protocol") { try validateProtocolGenerationSchema(connection) }
     return Plan(files: files, done: done)
   }
 
-  /// The authoritative changed16 tables only; pre16 preparation does not touch these catalogs.
+  /// The authoritative changed17 tables only; pre17 preparation does not touch these catalogs.
   /// Kept independent of archive capture to avoid prepare/capture recursion or row traversal.
   static func validateProtocolGenerationSchema(_ connection: PostgresConnection) throws {
     struct Column {
@@ -299,7 +299,7 @@ public enum Migrator {
         try connection.execute("BEGIN")
         do {
           try connection.execute(file.sql())
-          if file.name == "0016_agent_protocol" { try validateProtocolGenerationSchema(connection) }
+          if file.name == "0017_agent_protocol" { try validateProtocolGenerationSchema(connection) }
           try connection.execute(
             "INSERT INTO public.\"schemaMigrations\" (\"name\", \"appliedAt\") VALUES ($1, $2)",
             [file.name, Timestamp.now()])

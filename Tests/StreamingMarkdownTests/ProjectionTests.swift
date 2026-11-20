@@ -46,7 +46,7 @@ import Testing
     #expect(open("| a | b |\n|---|---|\n| 1") == "table - -\n  head \"a\" | \"b\"\n  row \"1\" | \"\"")
   }
   @Test func aHeaderWhoseNextLineIsNotADelimiterRevertsToAParagraph() {
-    #expect(open("| a | b |\nplain\n\n") == "p \"| a | b | plain\"")
+    #expect(open("| a | b |\nplain\n\n") == "p \"| a | b |\\nplain\"")
   }
   @Test func unfinishedInlineMarkupIsClosedInTheOpenLeafOnly() {
     #expect(open("done **b\n\nnow **bo") == "p \"done **b\"\np \"now **bo**\"")
@@ -81,7 +81,7 @@ import Testing
     var whole = MarkdownParser()
     whole.push("one two **three** four\nfive")
     #expect(pieces.document == whole.document)
-    #expect(outline(pieces.document) == "p \"one two **three** four five\"")
+    #expect(outline(pieces.document) == "p \"one two **three** four\\nfive\"")
     pieces.finish()
     whole.finish()
     #expect(pieces.document == whole.document)

@@ -5,14 +5,18 @@ import Testing
   private func parsed(_ text: String) -> String { outline(MarkdownParser.parse(text)) }
   private let fence = "```"
 
-  @Test func paragraphsAreSplitByBlankLinesAndSoftBreaksAreSpaces() {
-    #expect(parsed("one\ntwo\n\nthree") == "p \"one two\"\np \"three\"")
+  @Test func paragraphsAreSplitByBlankLinesAndALineBreakInOneIsKept() {
+    #expect(parsed("one\ntwo\n\nthree") == "p \"one\\ntwo\"\np \"three\"")
   }
-  @Test func aHardBreakKeepsTheLineBreak() {
+  /// Numbers, an address, a verse: lines a reply sets apart with nothing but a line break.
+  @Test func linesSetApartByLineBreaksStayApart() {
+    #expect(parsed("1\n2\n3") == "p \"1\\n2\\n3\"")
+  }
+  @Test func aHardBreaksMarkerIsDroppedAndItsLineBreakKept() {
     #expect(parsed("one  \ntwo\\\nthree") == "p \"one\\ntwo\\nthree\"")
   }
   @Test func headingsTakeTheirLevelAndDropClosingHashes() {
-    #expect(parsed("# A\n###### B ##\n####### C\n#D") == "h1 \"A\"\nh6 \"B\"\np \"####### C #D\"")
+    #expect(parsed("# A\n###### B ##\n####### C\n#D") == "h1 \"A\"\nh6 \"B\"\np \"####### C\\n#D\"")
   }
   @Test func threeOrMoreMarksAloneAreAThematicBreak() {
     #expect(parsed("a\n\n---\n***\n_ _ _\n--") == "p \"a\"\nhr\nhr\nhr\np \"--\"")
@@ -63,7 +67,7 @@ import Testing
     split.push("a\r")
     split.push("\nb")
     split.finish()
-    #expect(outline(split.document) == "p \"a b\"")
+    #expect(outline(split.document) == "p \"a\\nb\"")
   }
   @Test func theLastLineIsNotDroppedWithoutATrailingNewline() {
     #expect(parsed("a\n\nb") == "p \"a\"\np \"b\"")

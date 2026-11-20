@@ -464,7 +464,15 @@ final class L1FactoryCalls: Sendable {
       density[0].text("nspname") == "pg_catalog", density[0].text("not_null") == "false",
       density[0].text("no_default") == "true", density[0].text("typmod") == "-1",
       density[0].text("generated") == "", density[0].text("identity") == "",
-      allApplied["0015_density"] != nil,
+      allApplied["0015_density"] != nil, allApplied["0016_turn_open_work"] != nil,
+      try c.execute(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='turns' AND (
+          (column_name='openWork' AND data_type='integer' AND is_nullable='NO' AND column_default='0')
+          OR (column_name='origin' AND data_type='text' AND is_nullable='YES' AND column_default IS NULL))
+        """
+      ).rows.count == 2,
       let thirteenth = files.first(where: { $0.name == "0013_view_settings" })?.sql,
       let oldStart = thirteenth.range(of: "CREATE OR REPLACE FUNCTION b4app_record_change()"),
       let oldEnd = thirteenth[oldStart.lowerBound...].range(of: "\n$$;"),
@@ -555,7 +563,10 @@ final class L1FactoryCalls: Sendable {
       try c.execute(
         #"ALTER TABLE "connections" ADD CONSTRAINT "connections_kind_check" CHECK ("kind" IN ('codex', 'claude', 'b4'))"#
       )
-      guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0016_agent_protocol'"#).affected == 1
+      guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0017_agent_protocol'"#).affected == 1
+      else { throw SetupFailure.malformedLedger }
+      try c.execute(#"ALTER TABLE turns DROP COLUMN "openWork", DROP COLUMN origin"#)
+      guard try c.execute(#"DELETE FROM "schemaMigrations" WHERE "name"='0016_turn_open_work'"#).affected == 1
       else { throw SetupFailure.malformedLedger }
       try c.execute(#"ALTER TABLE "viewSettings" DROP COLUMN "density""#)
       try c.execute(oldViewFunction)
@@ -738,7 +749,7 @@ final class L1FactoryCalls: Sendable {
     if pending { try reconstructOldStore(raw, files: files) }
     try seedHistory(
       raw, accountRef: accountRef, endpointRef: endpointRef, hubURL: hubURL, currentSchema: !pending)
-    _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: pending ? 8 : 16)
+    _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: pending ? 8 : 17)
     reopenSetupGate.run()
     let expected: WorkspaceDatabase.MigrationState = pending ? .pending : .current
     guard try WorkspaceDatabase.preflightMigration(endpoint: endpoint, binDir: endpoint.binDir!) == expected
@@ -961,7 +972,7 @@ final class L1FactoryCalls: Sendable {
       let beforeTable =
         before.rows[table] == nil ? AgentProtocolFoundationFixture.currentTable(old: table) : table
       let currentTable = AgentProtocolFoundationFixture.currentTable(old: beforeTable)
-      try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+      try AgentProtocolFoundationFixture.requireIntroducedSQLDefaults(
         raw, source: source,
         table: beforeTable, originalRows: before.rows[beforeTable] ?? [])
       func normalize(_ values: [String], table: String, renameLegacy: Bool) throws -> [String] {
@@ -970,7 +981,11 @@ final class L1FactoryCalls: Sendable {
           for column in renameLegacy
             ? [] : AgentProtocolFoundationFixture.projectionColumns(after: source, table: table)
           {
-            if let value = row[column] { #expect(value is NSNull) }
+            if table == "turns", column == "openWork" {
+              #expect(row[column] as? Int == 0)
+            } else if let value = row[column] {
+              #expect(value is NSNull)
+            }
             row.removeValue(forKey: column)
           }
           if renameLegacy {

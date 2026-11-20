@@ -14,7 +14,7 @@ enum AgentProtocolFoundationFixture {
     "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay",
     "0006_usage", "0007_connection_usage", "0008_thread_delete", "0009_thread_runtime_choice",
     "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
-    "0014_connection_commands", "0015_density", "0016_agent_protocol",
+    "0014_connection_commands", "0015_density", "0016_turn_open_work", "0017_agent_protocol",
   ]
   static let protocolTables = [
     "protocolSubscriptions", "protocolRunSegments", "protocolOperations",
@@ -256,7 +256,8 @@ enum AgentProtocolFoundationFixture {
     }
     let header = try object(try #require(lines.first)), footer = try object(try #require(lines.last))
     let expectedContext = [Migrator.table, "hubLink"]
-    // Through10 project names;11 environments;12 appFolders;13 viewSettings;14 commands;15 density;16 AP tables.
+    // Store11 switches to environment names. Stores12–17 add app folders, view settings, commands,
+    // density, turn open work/origin, and finally the protocol tables.
     // Never infer a smaller schema from missing tables; unknown or absent tables are failures.
     let baseTables =
       canonicalPrefixCount >= 13
@@ -264,16 +265,16 @@ enum AgentProtocolFoundationFixture {
       : canonicalPrefixCount >= 12
         ? appFolderDataTables
         : (canonicalPrefixCount >= 11 ? legacyDataTables.map { currentTable(old: $0) } : legacyDataTables)
-    let expectedData = baseTables + (canonicalPrefixCount == 16 ? protocolTables : [])
+    let expectedData = baseTables + (canonicalPrefixCount == 17 ? protocolTables : [])
     var headerFields: Set<String> = [
       "format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables",
     ]
-    if canonicalPrefixCount == 16 { headerFields.insert("protocolSchema") }
-    guard (8...16).contains(canonicalPrefixCount),
+    if canonicalPrefixCount == 17 { headerFields.insert("protocolSchema") }
+    guard (8...17).contains(canonicalPrefixCount),
       expectedMigrations == Array(migrations.prefix(canonicalPrefixCount)),
       Set(expectedRows.keys) == Set(expectedData + expectedContext),
       Set(header.keys) == headerFields,
-      canonicalPrefixCount != 16 || header["protocolSchema"] as? String == "generation_epochs_v1",
+      canonicalPrefixCount != 17 || header["protocolSchema"] as? String == "generation_epochs_v1",
       header["format"] as? String == "b4app-export", header["version"] as? Int == 4,
       header["purpose"] as? String == "preMigration", !(header["at"] as? String ?? "").isEmpty,
       header["migrations"] as? [String] == expectedMigrations,
@@ -335,7 +336,7 @@ enum AgentProtocolFoundationFixture {
     fileprivate init(names: [String]) { self.names = names }
   }
   static func preservationPrefix(_ originalNames: [String], expectedCount: Int) throws -> PreservationPrefix {
-    guard (8...16).contains(expectedCount), originalNames.count == expectedCount,
+    guard (8...17).contains(expectedCount), originalNames.count == expectedCount,
       Set(originalNames).count == expectedCount,
       originalNames == Array(migrations.prefix(expectedCount))
     else { throw Failure.canonicalSet }
@@ -352,9 +353,10 @@ enum AgentProtocolFoundationFixture {
   }
   private static let introduction: [String: [String: Int]] = [
     "connections": [
-      "models": 9, "commands": 14, "peerProfile": 16, "agentId": 16,
-      "authMode": 16, "authHeaderName": 16, "protocolRetiredAt": 16, "protocolRetiredReason": 16,
+      "models": 9, "commands": 14, "peerProfile": 17, "agentId": 17,
+      "authMode": 17, "authHeaderName": 17, "protocolRetiredAt": 17, "protocolRetiredReason": 17,
     ],
+    "turns": ["openWork": 16, "origin": 16],
     "threads": ["model": 9, "permission": 9], "hubLink": ["ownedAs": 10],
   ]
   static func introducedColumns(after source: PreservationPrefix, table: String) -> [String] {
@@ -388,29 +390,29 @@ enum AgentProtocolFoundationFixture {
         ? appFolderDataTables
         : source.count >= 11 ? legacyDataTables.map { currentTable(old: $0) } : legacyDataTables
     let expectedTables =
-      sourceTables + (source.count == 16 ? protocolTables : [])
+      sourceTables + (source.count == 17 ? protocolTables : [])
       + ["schemaMigrations", "hubLink"]
     guard tables == Set(expectedTables) else { throw Failure.schema }
     for table in protocolTables {
-      guard tables.contains(table) == (source.count == 16) else { throw Failure.schema }
+      guard tables.contains(table) == (source.count == 17) else { throw Failure.schema }
     }
     guard tables.contains("appFolders") == (source.count >= 12),
       tables.contains("viewSettings") == (source.count >= 13)
     else { throw Failure.schema }
     return source
   }
-  /// Prove each new cell is native SQL NULL on each retained original ID before subtraction.
+  /// Verify each introduced cell against its SQL default on the retained original ID before subtraction.
   /// A jsonb null yields is_null=false and text="null" and must refuse.
-  static func requireIntroducedSQLNull(
+  static func requireIntroducedSQLDefaults(
     _ raw: PostgresConnection, source: PreservationPrefix, table: String, originalRows: [String]
   ) throws {
-    _ = try preservationPrefix(raw, expectedCount: 16)
+    _ = try preservationPrefix(raw, expectedCount: 17)
     let destination = currentTable(old: table)
     let columns = introducedColumns(after: source, table: table)
     guard !columns.isEmpty else { return }
     let key: String
     switch destination {
-    case "connections", "threads", "hubLink": key = "id"
+    case "connections", "threads", "turns", "hubLink": key = "id"
     default: throw Failure.schema
     }
     var ids: Set<String> = []
@@ -423,7 +425,9 @@ enum AgentProtocolFoundationFixture {
           "SELECT (\(Rows.quote(column)) IS NULL)::text AS is_null, \(Rows.quote(column))::text AS value FROM \(Rows.quote(destination)) WHERE \(Rows.quote(key))=$1",
           [id]
         ).rows
-        guard found.count == 1, found[0].text("is_null") == "true", found[0].text("value") == nil
+        let expectsZero = destination == "turns" && column == "openWork"
+        guard found.count == 1, found[0].text("is_null") == (expectsZero ? "false" : "true"),
+          found[0].text("value") == (expectsZero ? "0" : nil)
         else { throw Failure.row }
       }
     }
@@ -487,9 +491,9 @@ enum AgentProtocolFoundationFixture {
     return result
   }
   static func requireDensity(
-    _ raw: PostgresConnection, original: DensityFacts, path: DensityPath, targetCount: Int = 16
+    _ raw: PostgresConnection, original: DensityFacts, path: DensityPath, targetCount: Int = 17
   ) throws {
-    guard targetCount == 15 || targetCount == 16 else { throw Failure.canonicalSet }
+    guard (15...17).contains(targetCount) else { throw Failure.canonicalSet }
     let current = try preservationPrefix(raw, expectedCount: targetCount)
     let actual = try densityFacts(raw, source: current)
     guard Set(actual.rows.keys) == Set(original.rows.keys) else { throw Failure.row }
@@ -567,7 +571,7 @@ enum AgentProtocolFoundationFixture {
   static func projectedRows(
     _ c: PostgresConnection, table: String, source: PreservationPrefix, originalRows: [String]
   ) throws -> [String] {
-    try requireIntroducedSQLNull(c, source: source, table: table, originalRows: originalRows)
+    try requireIntroducedSQLDefaults(c, source: source, table: table, originalRows: originalRows)
     let columns = projectionColumns(after: source, table: table)
     let expression = columns.isEmpty ? "to_jsonb(t)" : "to_jsonb(t) - $1::text[]"
     let params: [String?] = columns.isEmpty ? [] : ["{" + columns.joined(separator: ",") + "}"]
@@ -624,7 +628,7 @@ enum AgentProtocolFoundationFixture {
       }.sorted()
     }
     let oldNames = try names(oldLedger)
-    guard (8...16).contains(oldNames.count),
+    guard (8...17).contains(oldNames.count),
       oldNames == Array(migrations.prefix(oldNames.count))
     else {
       throw Failure.canonicalSet

@@ -44,7 +44,7 @@ import WorkspaceProtocol
     try Migrator.ensureLedger(f.raw, table: Migrator.table)
     for file in try Migrator.files().prefix(count) {
       try f.raw.execute(
-        oldThirteen && file.name == "0016_agent_protocol" ? oldThirteenSQL : file.sql)
+        oldThirteen && file.name == "0017_agent_protocol" ? oldThirteenSQL : file.sql)
       try f.raw.execute(
         "INSERT INTO public.\"schemaMigrations\" (name,\"appliedAt\") VALUES ($1,'fixed-source')",
         [file.name])
@@ -127,7 +127,7 @@ import WorkspaceProtocol
 
   @Test(NativeDBResources()) func segmentKeysSeparateGenerationLocalEpochAndNamespace() throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 16)
+      try Self.seed(f, count: 17)
       try Self.seedOwner(f)
       let identities = [
         ("b4", "generation-a", #"["a/b"]"#),
@@ -164,7 +164,7 @@ import WorkspaceProtocol
 
   @Test(NativeDBResources()) func subscriptionsRequireExactlyOneNativeOrLocalEpoch() throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 16)
+      try Self.seed(f, count: 17)
       try Self.seedOwner(f)
       let insert =
         #"INSERT INTO public."protocolSubscriptions" ("threadId","connectionId","nativeThreadId","generation","localObservationEpoch","channels","namespaces","coverage","updatedAt") VALUES ('t','c','raw-native-thread',$1,$2,'[]','[[]]','{}','then')"#
@@ -223,6 +223,17 @@ import WorkspaceProtocol
         #"INSERT INTO "schemaMigrations" (name,"appliedAt") VALUES ('0015_agent_protocol','old-private15')"#)
       try Self.assertRefusal(f, oldAlias: true)
     }
+    try Self.withFixture { f in
+      try Self.seed(f, count: 15)
+      let oldProtocol = try #require(try Migrator.files().first { $0.name == "0017_agent_protocol" })
+      try f.raw.execute(oldProtocol.sql)
+      try f.raw.execute(
+        #"INSERT INTO "schemaMigrations" (name,"appliedAt") VALUES ('0016_agent_protocol','old-private16')"#)
+      try Self.assertRefusal(f, oldAlias: true)
+    }
+    let oldSixteen = String(decoding: try Self.archive(prefix: 16), as: UTF8.self)
+      .replacingOccurrences(of: "0016_turn_open_work", with: "0016_agent_protocol")
+    #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(Data(oldSixteen.utf8)) }
     let archive = String(decoding: try Self.archive(prefix: 15), as: UTF8.self)
       .replacingOccurrences(of: "0015_density", with: "0015_agent_protocol")
     #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(Data(archive.utf8)) }
@@ -230,7 +241,7 @@ import WorkspaceProtocol
 
   @Test(NativeDBResources()) func oldGenerationShapeUnderCanonicalFourteenRefusesWithoutMutation() throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 16, oldThirteen: true)
+      try Self.seed(f, count: 17, oldThirteen: true)
       try Self.seedOwner(f)
       #expect(try Migrator.recorded(f.raw) == AgentProtocolFoundationFixture.migrations)
       try Self.assertRefusal(f)
@@ -245,7 +256,7 @@ import WorkspaceProtocol
     ])
   func currentFourteenShapeDamageRefusesWithoutMutation(damage: String) throws {
     try Self.withFixture { f in
-      try Self.seed(f, count: 16)
+      try Self.seed(f, count: 17)
       switch damage {
       case "old-primary":
         try f.raw.execute(
@@ -273,7 +284,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test(NativeDBResources(), arguments: [0, 12, 13, 14, 15, 16])
+  @Test(NativeDBResources(), arguments: [0, 12, 13, 14, 15, 16, 17])
   func freshPublishedTwelveThirteenAndCurrentReopensRemainValid(prefix: Int) throws {
     try Self.withFixture { f in
       if prefix > 0 { try Self.seed(f, count: prefix) }
@@ -295,7 +306,7 @@ import WorkspaceProtocol
         try outcome.get()
       }
       #expect(
-        try Self.files(f).count == ((prefix == 12 || prefix == 13 || prefix == 14 || prefix == 15) ? 1 : 0))
+        try Self.files(f).count == ((12...16).contains(prefix) ? 1 : 0))
     }
   }
 
@@ -338,20 +349,20 @@ import WorkspaceProtocol
 
   @Test func v4ProtocolSchemaMarkerHasExactValue() throws {
     #expect(throws: WorkspaceArchive.Rejection.self) {
-      try WorkspaceArchive.read(Self.archive(prefix: 16))
+      try WorkspaceArchive.read(Self.archive(prefix: 17))
     }
     for wrong in ["", "unknown", 1, NSNull()] as [Any] {
       #expect(throws: WorkspaceArchive.Rejection.self) {
-        try WorkspaceArchive.read(Self.archive(prefix: 16, marker: wrong))
+        try WorkspaceArchive.read(Self.archive(prefix: 17, marker: wrong))
       }
     }
-    let input = try WorkspaceArchive.read(Self.archive(prefix: 16, marker: "generation_epochs_v1"))
+    let input = try WorkspaceArchive.read(Self.archive(prefix: 17, marker: "generation_epochs_v1"))
     #expect(input.version == 4)
     #expect(input.dataCount == 0)
   }
 
   @Test func publishedThroughThirteenArchivesKeepTheirClosedHeader() throws {
-    for prefix in [8, 9, 10, 11, 12, 13, 14, 15] {
+    for prefix in [8, 9, 10, 11, 12, 13, 14, 15, 16] {
       #expect(try WorkspaceArchive.read(Self.archive(prefix: prefix)).dataCount == 0)
       #expect(throws: WorkspaceArchive.Rejection.self) {
         try WorkspaceArchive.read(Self.archive(prefix: prefix, marker: "generation_epochs_v1"))

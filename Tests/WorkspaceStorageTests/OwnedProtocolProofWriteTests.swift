@@ -5645,7 +5645,7 @@ extension OwnedProtocolProofWriteTests {
 
   private static func ownedDeferredCatalog(_ c: PostgresConnection) throws -> [Data] {
     // Every current public/private table, column, constraint, index, trigger, function and
-    // sequence definition participates, including Store16's empty protocol tables and density.
+    // sequence definition participates, including Store17's protocol tables and the published turn columns.
     // Mutable sequence position is checked independently, never mistaken for catalog shape.
     try ownedDeferredRows(
       c,

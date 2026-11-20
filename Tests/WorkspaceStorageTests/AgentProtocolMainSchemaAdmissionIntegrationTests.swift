@@ -137,7 +137,7 @@ private enum MainSchemaAdmissionFixture {
     ten + [
       "0011_environments", "0012_app_folders", "0013_view_settings", "0014_connection_commands",
       "0015_density",
-      "0016_agent_protocol",
+      "0016_turn_open_work", "0017_agent_protocol",
     ]
   static let oldTables = [
     "localServers", "projects", "projectFolders", "connections", "threads", "turns", "displayItems",
@@ -352,16 +352,19 @@ private enum MainSchemaAdmissionFixture {
       after: after.archiveFacts, tables: (oldTables + ["hubLink"]).filter { $0 != "changes" })
     #expect(Set(after.rows.keys) == Set(allTables + ["schemaMigrations", "hubLink"]))
     for table in oldTables + ["hubLink"] {
-      try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+      try AgentProtocolFoundationFixture.requireIntroducedSQLDefaults(
         raw, source: source,
         table: table, originalRows: before.rows[table] ?? [])
       let currentTable = AgentProtocolFoundationFixture.currentTable(old: table)
       let rows = try #require(after.rows[currentTable]).map { text -> String in
         var row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
-        if table == "connections" {
-          for field in AgentProtocolFoundationFixture.projectionColumns(after: source, table: table) {
-            #expect(row[field] is NSNull); row.removeValue(forKey: field)
+        for field in AgentProtocolFoundationFixture.projectionColumns(after: source, table: table) {
+          if table == "turns", field == "openWork" {
+            #expect(row[field] as? Int == 0)
+          } else {
+            #expect(row[field] is NSNull)
           }
+          row.removeValue(forKey: field)
         }
         // Normalize only the spelling of SQL-text JSON. Current schema names must already be exact.
         if table == "changes", row["op"] as? String == "insert",
@@ -384,7 +387,7 @@ private enum MainSchemaAdmissionFixture {
     let oldLedger = try #require(before.rows["schemaMigrations"])
     let newLedger = try #require(after.rows["schemaMigrations"])
     #expect(Set(oldLedger).isSubset(of: Set(newLedger)))
-    #expect(newLedger.count == oldLedger.count + 6)
+    #expect(newLedger.count == oldLedger.count + 7)
     let addedNames = try Set(newLedger).subtracting(oldLedger).map { text in
       let row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
       return try #require(row["name"] as? String)
@@ -394,7 +397,7 @@ private enum MainSchemaAdmissionFixture {
         == Set([
           "0011_environments", "0012_app_folders", "0013_view_settings", "0014_connection_commands",
           "0015_density",
-          "0016_agent_protocol",
+          "0016_turn_open_work", "0017_agent_protocol",
         ]))
     #expect(after.sequences == before.sequences)
     for table in protocolTables { #expect(after.rows[table]?.isEmpty == true) }
@@ -432,7 +435,7 @@ private enum MainSchemaAdmissionFixture {
     var headerFields: Set<String> = [
       "format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables",
     ]
-    if migrations.count == 16 {
+    if migrations.count == 17 {
       headerFields.insert("protocolSchema")
       #expect(header["protocolSchema"] as? String == "generation_epochs_v1")
     }

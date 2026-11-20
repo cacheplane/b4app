@@ -131,7 +131,7 @@ import WorkspaceProtocol
       try raw.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'")
         .rows.compactMap { $0.text("tablename") })
     guard actualTables == expectedTables else { throw FixtureFailure.unexpectedSchema }
-    _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: current ? 16 : 9)
+    _ = try AgentProtocolFoundationFixture.preservationPrefix(raw, expectedCount: current ? 17 : 9)
     let before = try snapshot(raw)
     guard before.rows.values.allSatisfy({ !$0.isEmpty }) else { throw FixtureFailure.unexpectedSchema }
     let fixture = Fixture(
@@ -340,7 +340,7 @@ import WorkspaceProtocol
     let purpose = header["purpose"] as? String == "preMigration"
     #expect(purpose)
     let migrations = try Migrator.recorded(f.raw)
-    if migrations.count == 16 {
+    if migrations.count == 17 {
       #expect(header["protocolSchema"] as? String == "generation_epochs_v1")
     } else {
       #expect(header["protocolSchema"] == nil)
@@ -481,7 +481,7 @@ import WorkspaceProtocol
       #expect(
         recorded == Self.canonicalNine + [
           "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
-          "0014_connection_commands", "0015_density", "0016_agent_protocol",
+          "0014_connection_commands", "0015_density", "0016_turn_open_work", "0017_agent_protocol",
         ])
       let after = try Self.snapshot(f.raw)
       let source = try AgentProtocolFoundationFixture.preservationPrefix(
@@ -491,7 +491,7 @@ import WorkspaceProtocol
         after: AgentProtocolFoundationFixture.archiveFacts(f.raw),
         tables: Array(f.before.rows.keys).filter { $0 != "changes" })
       for (table, expected) in f.before.rows {
-        try AgentProtocolFoundationFixture.requireIntroducedSQLNull(
+        try AgentProtocolFoundationFixture.requireIntroducedSQLDefaults(
           f.raw, source: source,
           table: table, originalRows: expected)
         let currentTable = AgentProtocolFoundationFixture.currentTable(old: table)
@@ -510,6 +510,12 @@ import WorkspaceProtocol
               object.removeValue(forKey: name)
             }
           }
+          if table == "turns" {
+            #expect(object["openWork"] as? Int == 0)
+            #expect(object["origin"] is NSNull)
+            object.removeValue(forKey: "openWork")
+            object.removeValue(forKey: "origin")
+          }
           if table == "hubLink" {
             #expect(object["ownedAs"] is NSNull)
             object.removeValue(forKey: "ownedAs")
@@ -518,7 +524,7 @@ import WorkspaceProtocol
         }.sorted()
         let valuesRetained =
           table == Migrator.table
-          ? Set(expected).isSubset(of: Set(rows)) && rows.count == expected.count + 7 : rows == expectedRows
+          ? Set(expected).isSubset(of: Set(rows)) && rows.count == expected.count + 8 : rows == expectedRows
         if table == Migrator.table {
           let addedNames = try Set(rows).subtracting(expected).map { text in
             let row = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
@@ -528,7 +534,7 @@ import WorkspaceProtocol
             Set(addedNames)
               == Set([
                 "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
-                "0014_connection_commands", "0015_density", "0016_agent_protocol",
+                "0014_connection_commands", "0015_density", "0016_turn_open_work", "0017_agent_protocol",
               ]))
         }
         #expect(valuesRetained, "Original values changed for \(table)")

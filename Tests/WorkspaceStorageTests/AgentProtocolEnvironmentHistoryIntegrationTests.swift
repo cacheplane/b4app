@@ -219,7 +219,7 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
       """
       CREATE SCHEMA history_integration;
       CREATE SEQUENCE history_integration.probe;
-      CREATE FUNCTION history_integration.refuse_fourteen() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+      CREATE FUNCTION history_integration.refuse_seventeen() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
       BEGIN
         IF to_regclass('public."appFolders"') IS NULL OR to_regclass('public."protocolSubscriptions"') IS NULL
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0011_environments')
@@ -228,6 +228,7 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0014_connection_commands')
           OR NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='connections' AND column_name='commands')
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0015_density')
+          OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0016_turn_open_work')
           OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
             WHERE t.tgrelid='public."viewSettings"'::regclass AND t.tgname='viewSettingsChanges'
               AND NOT t.tgisinternal AND t.tgtype=29 AND t.tgenabled='O' AND t.tgnargs=1
@@ -238,25 +239,25 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name=NEW.name AND "appliedAt"=NEW."appliedAt")
           OR NOT EXISTS (SELECT 1 FROM public.changes WHERE "rowId"='opaque'
             AND value='{"projectId":"external","environmentId":"keep","nested":{"projectId":"inside"}}'::jsonb)
-        THEN RAISE EXCEPTION 'Fourteen COMMIT stage was not reached'; END IF;
+        THEN RAISE EXCEPTION 'Seventeen COMMIT stage was not reached'; END IF;
         PERFORM nextval('history_integration.probe');
-        RAISE EXCEPTION 'Deliberate fourteen COMMIT refusal';
+        RAISE EXCEPTION 'Deliberate seventeen COMMIT refusal';
       END $$;
-      CREATE CONSTRAINT TRIGGER history_integration_fourteen AFTER INSERT ON public."schemaMigrations"
-        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.name='0016_agent_protocol')
-        EXECUTE FUNCTION history_integration.refuse_fourteen();
+      CREATE CONSTRAINT TRIGGER history_integration_seventeen AFTER INSERT ON public."schemaMigrations"
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.name='0017_agent_protocol')
+        EXECUTE FUNCTION history_integration.refuse_seventeen();
       """
     )
     let failed = Result {
       try WorkspaceDatabase(
         endpoint: f.endpoint, binDir: f.endpoint.binDir!, createIfMissing: false, backupDirectory: f.backup)
     }
-    if case .success(let db) = failed { try db.close(); Issue.record("Actual fourteen COMMIT must fail") }
+    if case .success(let db) = failed { try db.close(); Issue.record("Actual seventeen COMMIT must fail") }
     #expect(throws: WorkspaceError.self) { try failed.get() }
     #expect(
       try f.raw.execute("SELECT last_value::text AS n FROM history_integration.probe WHERE is_called").rows
         .first?.text("n") == "1")
-    #expect(try Migrator.recorded(f.raw) == Array(AgentProtocolFoundationFixture.migrations.prefix(15)))
+    #expect(try Migrator.recorded(f.raw) == Array(AgentProtocolFoundationFixture.migrations.prefix(16)))
     #expect(
       try f.raw.execute("SELECT to_regclass('public.\"protocolSubscriptions\"')::text AS name").rows.first?
         .text("name") == nil)
@@ -284,15 +285,15 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
       ).rows.first?.text("value"))
     let committedRows = try currentRows(f.raw)
     let committedFacts = try AgentProtocolFoundationFixture.archiveFacts(f.raw)
-    _ = try AgentProtocolFoundationFixture.preservationPrefix(f.raw, expectedCount: 15)
-    try f.raw.execute("DROP TRIGGER history_integration_fourteen ON public.\"schemaMigrations\"")
+    _ = try AgentProtocolFoundationFixture.preservationPrefix(f.raw, expectedCount: 16)
+    try f.raw.execute("DROP TRIGGER history_integration_seventeen ON public.\"schemaMigrations\"")
     let db = try WorkspaceDatabase(
       endpoint: f.endpoint, binDir: f.endpoint.binDir!, createIfMissing: false, backupDirectory: f.backup)
     try db.close()
     #expect(try Migrator.recorded(f.raw) == Migrator.files().map(\.name))
     #expect(
       try f.raw.execute(
-        "SELECT jsonb_agg(to_jsonb(m) ORDER BY name)::text AS value FROM public.\"schemaMigrations\" m WHERE name<'0016'"
+        "SELECT jsonb_agg(to_jsonb(m) ORDER BY name)::text AS value FROM public.\"schemaMigrations\" m WHERE name<'0017'"
       ).rows.first?.text("value") == priorLedger)
     #expect(try Data(contentsOf: oldFile) == oldBytes)
     #expect(try archives(f).count == 2)
@@ -308,8 +309,8 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
     let retryBackup = try #require(try archives(f).first { $0 != oldFile })
     let retryDocument = try AgentProtocolFoundationFixture.readV4(
       String(contentsOf: retryBackup, encoding: .utf8), expectedRows: committedRows,
-      expectedMigrations: Array(AgentProtocolFoundationFixture.migrations.prefix(15)),
-      facts: committedFacts, canonicalPrefixCount: 15)
+      expectedMigrations: Array(AgentProtocolFoundationFixture.migrations.prefix(16)),
+      facts: committedFacts, canonicalPrefixCount: 16)
     try AgentProtocolFoundationFixture.assertArchiveRows(
       retryDocument, oldRows: committedRows, facts: committedFacts)
     #expect(retryDocument.header["protocolSchema"] == nil)
@@ -325,8 +326,8 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
   @Test func publishedFourteenCommandsSurviveDeferredFifteenCommitFaultAndRetry() throws {
     let f = try fixture()
     defer { try? FileManager.default.removeItem(atPath: (f.backup as NSString).deletingLastPathComponent) }
-    // Build a genuine published14 source before installing the16 fault; the command value is never
-    // seeded in the doomed16 transaction. The existing prefix10 case above remains independent.
+    // Build a genuine published14 source before installing the Store17 fault; the command value is never
+    // seeded in the rejected Store17 transaction. The existing prefix10 case above remains independent.
     try Migrator.withMigrationLock(f.raw) {
       for file in try Migrator.files() where file.name >= "0011" && file.name < "0015" {
         if file.name == "0011_environments" {
@@ -387,11 +388,12 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
       """
       CREATE SCHEMA history_commands_fault;
       CREATE SEQUENCE history_commands_fault.probe;
-      CREATE FUNCTION history_commands_fault.refuse_fifteen() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+      CREATE FUNCTION history_commands_fault.refuse_seventeen() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
       BEGIN
         IF NOT EXISTS (SELECT 1 FROM public.connections WHERE id='retained-commands' AND commands='[{"name":"retained","unknown":{"n":1e400}}]'::jsonb)
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0014_connection_commands' AND "appliedAt"='published14-source')
           OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0015_density')
+          OR NOT EXISTS (SELECT 1 FROM public."schemaMigrations" WHERE name='0016_turn_open_work')
           OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
             WHERE t.tgrelid='public."viewSettings"'::regclass AND t.tgname='viewSettingsChanges'
               AND NOT t.tgisinternal AND t.tgtype=29 AND t.tgenabled='O' AND t.tgnargs=1
@@ -400,31 +402,41 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
           OR NOT EXISTS (SELECT 1 FROM public."viewSettings" WHERE id='view' AND "quietThreads"='shown' AND density='dense')
           OR NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='viewSettings' AND column_name='density' AND data_type='text' AND is_nullable='YES' AND column_default IS NULL)
           OR to_regclass('public."protocolSubscriptions"') IS NULL
-        THEN RAISE EXCEPTION 'Published14 command source and committed15 were not reached'; END IF;
+        THEN RAISE EXCEPTION 'Published14 command source and committed16 were not reached'; END IF;
         PERFORM nextval('history_commands_fault.probe');
-        RAISE EXCEPTION 'Deliberate16 COMMIT refusal';
+        RAISE EXCEPTION 'Deliberate17 COMMIT refusal';
       END $$;
-      CREATE CONSTRAINT TRIGGER history_commands_fifteen AFTER INSERT ON public."schemaMigrations"
-        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.name='0016_agent_protocol')
-        EXECUTE FUNCTION history_commands_fault.refuse_fifteen();
+      CREATE CONSTRAINT TRIGGER history_commands_seventeen AFTER INSERT ON public."schemaMigrations"
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.name='0017_agent_protocol')
+        EXECUTE FUNCTION history_commands_fault.refuse_seventeen();
       """)
     let failed = Result {
       try WorkspaceDatabase(
         endpoint: f.endpoint, binDir: f.endpoint.binDir!, createIfMissing: false, backupDirectory: f.backup)
     }
-    if case .success(let db) = failed { try db.close(); Issue.record("Actual16 COMMIT must fail") }
+    if case .success(let db) = failed { try db.close(); Issue.record("Actual17 COMMIT must fail") }
     #expect(throws: WorkspaceError.self) { try failed.get() }
     #expect(
       try f.raw.execute("SELECT last_value::text AS n FROM history_commands_fault.probe WHERE is_called").rows
         .first?.text("n") == "1")
-    let committedNames = names + ["0015_density"]
+    let committedNames = names + ["0015_density", "0016_turn_open_work"]
     #expect(try Migrator.recorded(f.raw) == committedNames)
     try AgentProtocolFoundationFixture.requireDensity(
-      f.raw, original: density, path: .nativeMigration, targetCount: 15)
+      f.raw, original: density, path: .nativeMigration, targetCount: 16)
     let committedRows = try rows()
     #expect(Set(committedRows.keys) == Set(before.keys))
     for (table, original) in before where table != "schemaMigrations" && table != "viewSettings" {
-      #expect(committedRows[table]?.map { Data($0.utf8) } == original.map { Data($0.utf8) })
+      if table == "turns" {
+        let retained = try f.raw.execute(
+          #"SELECT (to_jsonb(t) - 'openWork' - 'origin')::text AS row FROM turns t ORDER BY 1"#
+        ).rows.compactMap { $0.text("row") }
+        #expect(retained.map { Data($0.utf8) } == original.map { Data($0.utf8) })
+        let invalid = try f.raw.execute(
+          #"SELECT 1 FROM turns WHERE "openWork" IS DISTINCT FROM 0 OR origin IS NOT NULL"#)
+        #expect(invalid.rows.isEmpty)
+      } else {
+        #expect(committedRows[table]?.map { Data($0.utf8) } == original.map { Data($0.utf8) })
+      }
     }
     let expectedView = try (before["viewSettings"] ?? []).map { text -> String in
       guard var row = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
@@ -444,7 +456,7 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
     #expect(actualView.map { Data($0.utf8) } == expectedView.map { Data($0.utf8) })
     let oldLedger = before["schemaMigrations"] ?? []
     let committedLedger = committedRows["schemaMigrations"] ?? []
-    #expect(Set(oldLedger).isSubset(of: Set(committedLedger)) && committedLedger.count == oldLedger.count + 1)
+    #expect(Set(oldLedger).isSubset(of: Set(committedLedger)) && committedLedger.count == oldLedger.count + 2)
     for table in AgentProtocolFoundationFixture.protocolTables {
       #expect(
         try f.raw.execute("SELECT to_regclass($1)::text AS name", ["public." + Rows.quote(table)])
@@ -462,7 +474,7 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
     let committedImages = try archiveImages(f.raw, facts: committedFacts)
     let committedDensity = try AgentProtocolFoundationFixture.densityFacts(
       f.raw,
-      source: AgentProtocolFoundationFixture.preservationPrefix(f.raw, expectedCount: 15))
+      source: AgentProtocolFoundationFixture.preservationPrefix(f.raw, expectedCount: 16))
     try AgentProtocolFoundationFixture.requireNativeJSONRetained(
       facts,
       after: AgentProtocolFoundationFixture.archiveFacts(f.raw), tables: Array(before.keys))
@@ -476,13 +488,13 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
     #expect(document.header["protocolSchema"] == nil)
     #expect(document.rows["viewSettings"]?.first?["quietThreads"] as? String == "tiny")
     #expect(document.rows["viewSettings"]?.first?["density"] == nil)
-    try f.raw.execute("DROP TRIGGER history_commands_fifteen ON public.\"schemaMigrations\"")
+    try f.raw.execute("DROP TRIGGER history_commands_seventeen ON public.\"schemaMigrations\"")
     let db = try WorkspaceDatabase(
       endpoint: f.endpoint, binDir: f.endpoint.binDir!, createIfMissing: false, backupDirectory: f.backup)
     try db.close()
     #expect(try Migrator.recorded(f.raw) == AgentProtocolFoundationFixture.migrations)
     let retainedLedger = try f.raw.execute(
-      #"SELECT to_jsonb(m)::text AS row FROM "schemaMigrations" m WHERE name<'0016' ORDER BY name"#
+      #"SELECT to_jsonb(m)::text AS row FROM "schemaMigrations" m WHERE name<'0017' ORDER BY name"#
     ).rows.compactMap { $0.text("row") }
     #expect(retainedLedger == committedRows["schemaMigrations"])
     try AgentProtocolFoundationFixture.requireDensity(
@@ -491,7 +503,7 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
       committedFacts, after: AgentProtocolFoundationFixture.archiveFacts(f.raw),
       tables: Array(committedRows.keys))
     for (table, original) in committedRows where table != "schemaMigrations" {
-      let source = try AgentProtocolFoundationFixture.preservationPrefix(committedNames, expectedCount: 15)
+      let source = try AgentProtocolFoundationFixture.preservationPrefix(committedNames, expectedCount: 16)
       let retained = try AgentProtocolFoundationFixture.projectedRows(
         f.raw, table: table, source: source, originalRows: original)
       #expect(retained.map { Data($0.utf8) } == original.map { Data($0.utf8) })
@@ -517,7 +529,7 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
     let retry = try #require(try archives(f).first { $0 != saved })
     let retryDocument = try AgentProtocolFoundationFixture.readV4(
       String(contentsOf: retry, encoding: .utf8), expectedRows: committedRows,
-      expectedMigrations: committedNames, facts: committedFacts, canonicalPrefixCount: 15)
+      expectedMigrations: committedNames, facts: committedFacts, canonicalPrefixCount: 16)
     try requireArchiveImages(retryDocument, expected: committedImages)
     #expect(retryDocument.header["protocolSchema"] == nil)
     #expect(retryDocument.rows["viewSettings"]?.first?["quietThreads"] as? String == "shown")
@@ -608,7 +620,7 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
 
   @Test(arguments: [
     "0012_agent_protocol", "0013_agent_protocol", "0014_agent_protocol", "0015_agent_protocol",
-    "0000_unknown",
+    "0016_agent_protocol", "0000_unknown",
   ])
   func currentStoreWithUnknownLedgerRefusesWithoutBackupOrMutation(extra: String) throws {
     let f = try fixture()

@@ -45,7 +45,7 @@ private func remove(_ path: String) {
     let glance = try MirrorGlance.load(store: store)
     #expect(glance.linked)
     // State first (decision 5): the two approvals and the failure come before the pinned threads.
-    #expect(glance.rows.map(\.threadId) == ["t-ask-request-late", "t-ask-turn-late", "t-failed-unread"])
+    #expect(glance.rows.map(\.threadId) == ["t-ask-request-late", "t-ask-turn-late", "t-open-work-failed"])
     #expect(glance.rows.map(\.state) == [.approve, .approve, .failed])
     #expect(glance.rows.map(\.pinned) == [false, false, false])
     #expect(glance.rows.map(\.environmentName) == ["beta", nil, nil])
@@ -63,7 +63,7 @@ private func remove(_ path: String) {
     #expect(MirrorGlance.load(path: path).rows.first?.threadId == "t-ask-request-late")
     _ = try store.apply([change("threads", "t-ask-request-late", "update", column: "archived", value: true)])
     let glance = try MirrorGlance.load(store: store)
-    #expect(glance.rows.map(\.threadId) == ["t-ask-turn-late", "t-failed-unread", "t-unread-b"])
+    #expect(glance.rows.map(\.threadId) == ["t-ask-turn-late", "t-open-work-failed", "t-failed-unread"])
     #expect(MirrorGlance.load(path: path) == glance)
   }
 

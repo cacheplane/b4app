@@ -101,7 +101,11 @@ const PINNED: &[(&str, &str)] = &[
         "8837d9fbfb7f8d68fb52e2b9855480b0b06ff3648d87fcd6140c55f47d2a1141",
     ),
     (
-        "0023_client_protocol.sql",
+        "0023_turn_open_work.sql",
+        "b4a647cb85c778bd43aa62c9cee0aaca977791ffb61f4dceadcd43f8faa03ed5",
+    ),
+    (
+        "0024_client_protocol.sql",
         "b2473aa8454ad3a1e5eab733032788fcf3be886111e53a2a9d23dbd0f559e526",
     ),
 ];

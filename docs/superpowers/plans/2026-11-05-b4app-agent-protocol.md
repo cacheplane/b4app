@@ -1,5 +1,7 @@
 # b4app Agent Protocol Implementation Plan
 
+[D-261](../../decisions/D-261-protocol-foundation-qualification.md) supersedes the historical migration allocations and pre-merge qualification instructions below.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the legacy B4 client with standard Agent Protocol and negotiated B4 recovery while preserving cached history and owner-device execution.

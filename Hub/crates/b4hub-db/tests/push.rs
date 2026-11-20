@@ -127,6 +127,25 @@ fn turn(seq: i64, id: &str, status: &str, outcome: Option<&str>, updated_at: &st
     )
 }
 
+/// A turn with an explicit creation time and open work.
+fn turn_at(
+    seq: i64,
+    id: &str,
+    status: &str,
+    outcome: Option<&str>,
+    created_at: &str,
+    updated_at: &str,
+    open_work: i64,
+) -> Change {
+    insert(
+        seq,
+        "turns",
+        id,
+        json!({"id": id, "threadId": "thread-1", "status": status, "outcome": outcome,
+               "createdAt": created_at, "updatedAt": updated_at, "openWork": open_work}),
+    )
+}
+
 fn delete(seq: i64, table: &str, row: &str) -> Change {
     Change {
         op: ChangeOp::Delete,
@@ -912,16 +931,18 @@ async fn read_withdraws_earlier_turns_once(pool: PgPool) {
     let w = world(&pool).await;
     with_thread(&w, "Ship it").await;
     let now = stamp(&w.app, &w.mac, "0 seconds").await;
-    let outcome = push_batch(
-        &w,
-        &[
-            turn_in(3, "turn-1", "thread-1", "2026-11-02T10:00:00Z", &now),
-            turn_in(4, "turn-2", "thread-1", "2026-11-02T10:05:00Z", &now),
-            turn_in(5, "turn-3", "thread-1", "2026-11-02T10:10:00Z", &now),
-        ],
-    )
-    .await;
-    assert_eq!(outcome.notifications.len(), 6);
+    // One batch each: a reply notifies for the thread's latest turn, so turns pushed together
+    // would send one notification between them.
+    let mut told = 0;
+    for (seq, id, created_at) in [
+        (3, "turn-1", "2026-11-02T10:00:00Z"),
+        (4, "turn-2", "2026-11-02T10:05:00Z"),
+        (5, "turn-3", "2026-11-02T10:10:00Z"),
+    ] {
+        let outcome = push_batch(&w, &[turn_in(seq, id, "thread-1", created_at, &now)]).await;
+        told += outcome.notifications.len();
+    }
+    assert_eq!(told, 6);
 
     // Reading turn-2 on the Mac withdraws turn-1 and turn-2, not turn-3.
     let read = push_batch(
@@ -1328,4 +1349,520 @@ async fn delete_token_spares_a_newer_token(pool: PgPool) {
     ];
     expected.sort();
     assert_eq!(told, expected);
+}
+
+#[sqlx::test(migrations = false)]
+async fn open_work_keeps_an_ended_thread_working(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Plan").await;
+    let at = stamp(&w.app, &w.mac, "0 seconds").await;
+    push_batch(
+        &w,
+        &[turn_at(
+            3,
+            "turn-1",
+            "terminal",
+            Some("completed"),
+            &at,
+            &at,
+            1,
+        )],
+    )
+    .await;
+    assert_eq!(bands_of(&w).await["thread-1"], "working");
+    assert_eq!(needs_you(&w).await, 0);
+
+    push_batch(&w, &[update(4, "turns", "turn-1", "openWork", json!(0))]).await;
+    assert_eq!(bands_of(&w).await["thread-1"], "unread");
+    assert_eq!(needs_you(&w).await, 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn open_work_on_an_earlier_turn_counts(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Plan").await;
+    let first = stamp(&w.app, &w.mac, "-2 minutes").await;
+    let second = stamp(&w.app, &w.mac, "-1 minutes").await;
+    push_batch(
+        &w,
+        &[
+            turn_at(
+                3,
+                "turn-1",
+                "terminal",
+                Some("completed"),
+                &first,
+                &first,
+                1,
+            ),
+            turn_at(
+                4,
+                "turn-2",
+                "terminal",
+                Some("completed"),
+                &second,
+                &second,
+                0,
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(bands_of(&w).await["thread-1"], "working");
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_failed_latest_turn_stays_unread_despite_open_work(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Plan").await;
+    let first = stamp(&w.app, &w.mac, "-2 minutes").await;
+    let second = stamp(&w.app, &w.mac, "-1 minutes").await;
+    push_batch(
+        &w,
+        &[
+            turn_at(
+                3,
+                "turn-1",
+                "terminal",
+                Some("completed"),
+                &first,
+                &first,
+                1,
+            ),
+            turn_at(4, "turn-2", "terminal", Some("failed"), &second, &second, 0),
+        ],
+    )
+    .await;
+    assert_eq!(bands_of(&w).await["thread-1"], "unread");
+    assert_eq!(needs_you(&w).await, 1);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_deleted_turns_open_work_does_not_count(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Plan").await;
+    let first = stamp(&w.app, &w.mac, "-2 minutes").await;
+    let second = stamp(&w.app, &w.mac, "-1 minutes").await;
+    push_batch(
+        &w,
+        &[
+            turn_at(
+                3,
+                "turn-1",
+                "terminal",
+                Some("completed"),
+                &first,
+                &first,
+                1,
+            ),
+            turn_at(
+                4,
+                "turn-2",
+                "terminal",
+                Some("completed"),
+                &second,
+                &second,
+                0,
+            ),
+            delete(5, "turns", "turn-1"),
+        ],
+    )
+    .await;
+    assert_eq!(bands_of(&w).await["thread-1"], "unread");
+}
+
+/// An update of `turn-1`'s open work and `updatedAt` together, as the Mac writes them.
+fn open_work_to(seq: i64, id: &str, open_work: i64, updated_at: &str) -> [Change; 2] {
+    [
+        update(seq, "turns", id, "openWork", json!(open_work)),
+        update(seq + 1, "turns", id, "updatedAt", json!(updated_at)),
+    ]
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_completed_turn_with_open_work_waits_for_rest(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Plan").await;
+    let at = stamp(&w.app, &w.mac, "0 seconds").await;
+    let first = push_batch(
+        &w,
+        &[turn_at(3, "T", "terminal", Some("completed"), &at, &at, 1)],
+    )
+    .await;
+    assert!(first.notifications.is_empty());
+    assert!(ledger(&w).await.is_empty());
+
+    let later = stamp(&w.app, &w.mac, "1 second").await;
+    let rest = push_batch(&w, &open_work_to(4, "T", 0, &later)).await;
+    assert_eq!(
+        summary(&rest.notifications),
+        expect(&w, "Plan", Reason::Replied)
+    );
+    assert_eq!(
+        ledger(&w).await,
+        vec![("turn".into(), "T".into(), "replied".into())]
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn the_wake_up_turn_is_the_one_that_notifies(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Wake").await;
+    let early = stamp(&w.app, &w.mac, "0 seconds").await;
+    let late = stamp(&w.app, &w.mac, "2 seconds").await;
+    push_batch(
+        &w,
+        &[turn_at(
+            3,
+            "T",
+            "terminal",
+            Some("completed"),
+            &early,
+            &early,
+            1,
+        )],
+    )
+    .await;
+    let mut batch = vec![turn_at(5, "R", "running", None, &late, &late, 0)];
+    batch.extend(open_work_to(6, "T", 0, &late));
+    let woke = push_batch(&w, &batch).await;
+    assert!(woke.notifications.is_empty());
+    assert!(ledger(&w).await.is_empty());
+
+    let done = push_batch(
+        &w,
+        &[
+            update(8, "turns", "R", "status", json!("terminal")),
+            update(9, "turns", "R", "outcome", json!("completed")),
+        ],
+    )
+    .await;
+    assert_eq!(
+        summary(&done.notifications),
+        expect(&w, "Wake", Reason::Replied)
+    );
+    assert_eq!(
+        ledger(&w).await,
+        vec![("turn".into(), "R".into(), "replied".into())]
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_turn_that_ends_while_another_has_open_work_does_not_notify(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Busy").await;
+    let early = stamp(&w.app, &w.mac, "0 seconds").await;
+    let late = stamp(&w.app, &w.mac, "2 seconds").await;
+    push_batch(
+        &w,
+        &[turn_at(
+            3,
+            "T",
+            "terminal",
+            Some("completed"),
+            &early,
+            &early,
+            1,
+        )],
+    )
+    .await;
+    let ended = push_batch(
+        &w,
+        &[turn_at(
+            4,
+            "R",
+            "terminal",
+            Some("completed"),
+            &late,
+            &late,
+            0,
+        )],
+    )
+    .await;
+    assert!(ended.notifications.is_empty());
+    assert!(ledger(&w).await.is_empty());
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_failed_turn_notifies_despite_open_work(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Broke").await;
+    let early = stamp(&w.app, &w.mac, "0 seconds").await;
+    let late = stamp(&w.app, &w.mac, "2 seconds").await;
+    push_batch(
+        &w,
+        &[turn_at(
+            3,
+            "T",
+            "terminal",
+            Some("completed"),
+            &early,
+            &early,
+            1,
+        )],
+    )
+    .await;
+    let failed = push_batch(
+        &w,
+        &[turn_at(4, "R", "terminal", Some("failed"), &late, &late, 0)],
+    )
+    .await;
+    assert_eq!(
+        summary(&failed.notifications),
+        expect(&w, "Broke", Reason::Failed)
+    );
+    assert_eq!(
+        ledger(&w).await,
+        vec![("turn".into(), "R".into(), "failed".into())]
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn open_work_ending_long_after_the_latest_turn_still_notifies(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Slow").await;
+    let created = stamp(&w.app, &w.mac, "-2 hours").await;
+    let later = stamp(&w.app, &w.mac, "-1 hour").await;
+    let old = stamp(&w.app, &w.mac, "-1 hour").await;
+    push_batch(
+        &w,
+        &[
+            turn_at(3, "T", "terminal", Some("completed"), &created, &created, 1),
+            turn_at(4, "L", "terminal", Some("completed"), &later, &old, 0),
+        ],
+    )
+    .await;
+    assert!(ledger(&w).await.is_empty());
+
+    let fresh = stamp(&w.app, &w.mac, "0 seconds").await;
+    let rest = push_batch(&w, &open_work_to(5, "T", 0, &fresh)).await;
+    assert_eq!(
+        summary(&rest.notifications),
+        expect(&w, "Slow", Reason::Replied)
+    );
+    assert_eq!(
+        ledger(&w).await,
+        vec![("turn".into(), "L".into(), "replied".into())]
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn rest_notifies_once(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Once").await;
+    let at = stamp(&w.app, &w.mac, "0 seconds").await;
+    push_batch(
+        &w,
+        &[turn_at(3, "T", "terminal", Some("completed"), &at, &at, 1)],
+    )
+    .await;
+    let later = stamp(&w.app, &w.mac, "1 second").await;
+    let rest = push_batch(&w, &open_work_to(4, "T", 0, &later)).await;
+    assert_eq!(rest.notifications.len(), 2);
+
+    let fresher = stamp(&w.app, &w.mac, "2 seconds").await;
+    let again = push_batch(&w, &[update(6, "turns", "T", "updatedAt", json!(fresher))]).await;
+    assert!(again.notifications.is_empty());
+    assert_eq!(ledger(&w).await.len(), 1);
+}
+
+/// A timestamp that passes the hub's shape check but that the cast refuses costs only the turn
+/// that carries it: the well-formed turn in the same batch still notifies.
+#[sqlx::test(migrations = false)]
+async fn a_malformed_timestamp_costs_only_its_row(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Mixed").await;
+    let now = stamp(&w.app, &w.mac, "0 seconds").await;
+    push_batch(
+        &w,
+        &[insert(
+            3,
+            "threads",
+            "thread-2",
+            json!({"id": "thread-2", "connectionId": "conn-1", "title": "Other"}),
+        )],
+    )
+    .await;
+    let outcome = push_batch(
+        &w,
+        &[
+            turn_at(
+                4,
+                "bad",
+                "terminal",
+                Some("completed"),
+                &now,
+                "2026-13-45T99:99:99Z",
+                0,
+            ),
+            insert(
+                5,
+                "turns",
+                "good",
+                json!({"id": "good", "threadId": "thread-2", "status": "terminal",
+                       "outcome": "completed", "createdAt": now, "updatedAt": now}),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(outcome.accepted_through, 5);
+    assert_eq!(
+        alerts(&outcome),
+        [("turn:good".to_string(), Reason::Replied)]
+    );
+    assert_eq!(
+        ledger(&w).await,
+        vec![("turn".into(), "good".into(), "replied".into())]
+    );
+}
+
+/// `T` completed with open work, `L` (later) completed at rest, and the thread read up to `read`;
+/// then `T`'s open work ends.
+async fn open_work_ends_after_read(w: &World, read: &str) -> PushOutcome {
+    let early = stamp(&w.app, &w.mac, "0 seconds").await;
+    let late = stamp(&w.app, &w.mac, "2 seconds").await;
+    push_batch(
+        w,
+        &[
+            turn_at(3, "T", "terminal", Some("completed"), &early, &early, 1),
+            turn_at(4, "L", "terminal", Some("completed"), &late, &late, 0),
+            update(5, "threads", "thread-1", "readTurnId", json!(read)),
+        ],
+    )
+    .await;
+    let fresh = stamp(&w.app, &w.mac, "3 seconds").await;
+    push_batch(w, &open_work_to(6, "T", 0, &fresh)).await
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_reply_already_read_does_not_alert_when_open_work_ends(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Read").await;
+    let rest = open_work_ends_after_read(&w, "L").await;
+    assert!(rest.notifications.is_empty());
+    assert_eq!(
+        ledger(&w).await,
+        vec![("turn".into(), "L".into(), "replied".into())]
+    );
+    assert_eq!(withdrawn_in_ledger(&w).await, ["turn:L"]);
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_newer_reply_than_the_read_turn_alerts_when_open_work_ends(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Newer").await;
+    let rest = open_work_ends_after_read(&w, "T").await;
+    assert_eq!(
+        summary(&rest.notifications),
+        expect(&w, "Newer", Reason::Replied)
+    );
+    assert_eq!(
+        ledger(&w).await,
+        vec![("turn".into(), "L".into(), "replied".into())]
+    );
+}
+
+/// Each distinct notification of a push, as its key and reason, in the order they were decided.
+fn alerts(outcome: &PushOutcome) -> Vec<(String, Reason)> {
+    let mut found: Vec<(String, Reason)> = Vec::new();
+    for n in &outcome.notifications {
+        let entry = (n.key.clone(), n.reason);
+        if !found.contains(&entry) {
+            found.push(entry);
+        }
+    }
+    found
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_reply_is_not_lost_when_an_earlier_failed_turns_open_work_ends(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Lost").await;
+    let early = stamp(&w.app, &w.mac, "0 seconds").await;
+    let late = stamp(&w.app, &w.mac, "2 seconds").await;
+    // `T` fails while its agent still runs: the failure is told at once.
+    let failed = push_batch(
+        &w,
+        &[turn_at(
+            3,
+            "T",
+            "terminal",
+            Some("failed"),
+            &early,
+            &early,
+            1,
+        )],
+    )
+    .await;
+    assert_eq!(alerts(&failed), [("turn:T".to_string(), Reason::Failed)]);
+    // The owner's `R` completes while `T`'s agent runs: silent, the thread has open work.
+    let replied = push_batch(
+        &w,
+        &[turn_at(
+            4,
+            "R",
+            "terminal",
+            Some("completed"),
+            &late,
+            &late,
+            0,
+        )],
+    )
+    .await;
+    assert!(replied.notifications.is_empty());
+
+    // The agent ends: the only touched row is `T`, already notified, and `R`'s reply is told.
+    let fresh = stamp(&w.app, &w.mac, "3 seconds").await;
+    let rest = push_batch(&w, &open_work_to(5, "T", 0, &fresh)).await;
+    assert_eq!(alerts(&rest), [("turn:R".to_string(), Reason::Replied)]);
+    assert_eq!(rest.notifications.len(), 2);
+    assert_eq!(
+        ledger(&w).await,
+        vec![
+            ("turn".into(), "R".into(), "replied".into()),
+            ("turn".into(), "T".into(), "failed".into()),
+        ]
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn a_failed_turn_and_the_reply_after_it_both_notify_in_one_push(pool: PgPool) {
+    let w = world(&pool).await;
+    with_thread(&w, "Both").await;
+    let early = stamp(&w.app, &w.mac, "0 seconds").await;
+    let late = stamp(&w.app, &w.mac, "2 seconds").await;
+    // `T` runs holding open work; `R`, created later, completes and waits for rest.
+    let setup = push_batch(
+        &w,
+        &[
+            turn_at(3, "T", "running", None, &early, &early, 1),
+            turn_at(4, "R", "terminal", Some("completed"), &late, &late, 0),
+        ],
+    )
+    .await;
+    assert!(setup.notifications.is_empty());
+    assert!(ledger(&w).await.is_empty());
+
+    // One batch: `T` fails and its open work ends.
+    let fresh = stamp(&w.app, &w.mac, "3 seconds").await;
+    let mut batch = vec![
+        update(5, "turns", "T", "status", json!("terminal")),
+        update(6, "turns", "T", "outcome", json!("failed")),
+    ];
+    batch.extend(open_work_to(7, "T", 0, &fresh));
+    let both = push_batch(&w, &batch).await;
+    assert_eq!(
+        alerts(&both),
+        [
+            ("turn:T".to_string(), Reason::Failed),
+            ("turn:R".to_string(), Reason::Replied),
+        ]
+    );
+    assert_eq!(both.notifications.len(), 4);
+    assert_eq!(
+        ledger(&w).await,
+        vec![
+            ("turn".into(), "R".into(), "replied".into()),
+            ("turn".into(), "T".into(), "failed".into()),
+        ]
+    );
 }
