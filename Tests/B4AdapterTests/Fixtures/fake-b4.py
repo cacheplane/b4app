@@ -2,7 +2,7 @@
 """A stand-in for a B4 Agent Protocol server (`@b4run/cli` 0.15.8, `runtime-fetch-core.ts`) used by
 fixture tests. Endpoint shapes follow docs/research/2026-10-30-b4-runtime.md and the M3 design.
 Behavior is scripted by the user text: "tool" runs a tool call, "approve" parks on a command
-permission, "hang" waits for POST /cancel, "fail" ends with an error, "drop" closes the response
+permission ("linger" holds the run open for a second after the prompt, before it ends), "hang" waits for POST /cancel, "fail" ends with an error, "drop" closes the response
 mid-run while the run continues (reattach with GET /runs/stream; the rest is held until a reattach
 subscribes, since a live attach gets only later frames, as in b4-http), "slow" streams for three
 seconds, "held" waits for POST /threads/<id>/release (a fixture control, not a B4 endpoint) and then
@@ -220,6 +220,9 @@ def execute(run):
                 thread["updated_at"] = now()
                 save_state()
             run.emit("interrupt", value)
+            if "linger" in text:
+                # The prompt is out but the run has not ended yet: a stop now lands before the park.
+                time.sleep(1.0)
             run.emit("done", {"output": None})
             with LOCK:
                 if LIVE.get(run.thread_id) is run:
