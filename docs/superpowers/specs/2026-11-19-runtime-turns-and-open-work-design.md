@@ -79,7 +79,7 @@ A turn row the session service inserts when the runtime acknowledges a turn nobo
 
 - The trigger is a `turn.acknowledged` event whose payload says `origin: "runtime"`, on a known thread, with a native turn id that matches no row. The adapter sets it only for a turn it did not send. Without it the event is a sent turn's acknowledgement, as today.
 - A runtime turn row is made only when the thread has no unfinished turn. A runtime acknowledgement that arrives while one exists makes no row: its events join that turn, and the session service logs it (the adapters' folding, below, should already have prevented it).
-- The row has `operationId` `runtime:<nativeTurnId>` (the column is unique and required on the Mac and the phone), status `running`, submission `acknowledged`, and no user message.
+- The row has `operationId` `runtime:<thread id>:<nativeTurnId>` (the column is unique across all threads, and some runtimes number turns per thread) (the column is unique and required on the Mac and the phone), status `running`, submission `acknowledged`, and no user message.
 - From there it is an ordinary turn: state changes, items, the finish, requests, sync and notification all follow the existing paths.
 
 ### One unfinished turn

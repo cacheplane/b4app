@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- A runtime turn row: `operationId` `runtime:<nativeTurnId>`, `nativeTurnId` set, `status` `.running`, `submission` `.acknowledged`, `origin` `"runtime"`, no user message.
+- A runtime turn row: `operationId` `runtime:<thread id>:<nativeTurnId>` (the column is unique across all threads, and some runtimes number turns per thread), `nativeTurnId` set, `status` `.running`, `submission` `.acknowledged`, `origin` `"runtime"`, no user message.
 - The trigger is a `turn.acknowledged` event whose payload has `origin` equal to the string `runtime`. Nothing infers a runtime turn from anything else.
 - A thread has at most one unfinished turn. A runtime acknowledgement that arrives while one exists makes no row and is logged.
 - Turn-state events (`turn.acknowledged`, `turn.state_changed`, `turn.finished`) that name a native turn id the store does not know apply to the active turn only when that turn has no native id yet. Otherwise they change no turn. Item events keep today's fallback, so nothing drawn is lost. An event that names no turn id keeps today's fallback.
@@ -46,7 +46,7 @@
 
 - [ ] **Step 1: Write the failing tests** in `RuntimeTurnTests.swift`, suite `RuntimeTurnTests`. Each starts a Codex thread, sends "hello there" and waits for that turn to finish, as the existing injecting tests do.
 
-  - `aRuntimeAcknowledgementMakesATurnRow`: inject `runtimeAck(turn: "rt-1")`. The thread then reads two turns; the new one has `origin == "runtime"`, `operationId == "runtime:rt-1"`, `nativeTurnId == "rt-1"`, `status == .running`, `submission == .acknowledged`. The published `turn.acknowledged` event carries that turn in its payload, and the thread has no new user item.
+  - `aRuntimeAcknowledgementMakesATurnRow`: inject `runtimeAck(turn: "rt-1")`. The thread then reads two turns; the new one has `origin == "runtime"`, `operationId == "runtime:\(thread.id):rt-1"`, `nativeTurnId == "rt-1"`, `status == .running`, `submission == .acknowledged`. The published `turn.acknowledged` event carries that turn in its payload, and the thread has no new user item.
   - `aRuntimeTurnTakesItsItemsAndItsEnd`: after the acknowledgement, inject a `message.completed` item naming turn `rt-1` (role `assistant`, type `agentMessage`, text "done"), then `turn.finished` naming `rt-1` with payload `["outcome": "completed", "origin": "task-notification"]`. The item's `turnId` is the runtime turn's; the turn is `.terminal`, `.completed`, and its `origin` is `"task-notification"`.
   - `aRepeatedRuntimeAcknowledgementMakesOneRow`: the same acknowledgement injected twice gives two turns in all, not three, and no error is recorded.
   - `aRuntimeAcknowledgementDuringAnUnfinishedTurnMakesNoRow`: acknowledge `rt-1`, then `rt-2` while `rt-1` runs. Still two turns. An item naming `rt-2` is stored with `rt-1`'s turn id (the item fallback). A `turn.finished` naming `rt-2` leaves `rt-1` running.
