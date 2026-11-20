@@ -306,9 +306,10 @@ func waitUntil(
   @Test func aTurnEndingDoesNotClearAnotherTurnThatIsRunning() async throws {
     let (model, transport) = try await open(clock: TestClock())
     model.stopStates["t1"] = .waiting
-    for kind in [EventKind.turnFinished, .turnStateChanged] {
-      transport.emit(PhoneFixture.turnEvent(kind, ended("B")))
-      try await waitUntil("B seen") { model.detail?.turns.contains { $0.id == "B" } == true }
+    // A turn of its own for each kind, so each wait is on the event that iteration sent.
+    for (kind, id) in [(EventKind.turnFinished, "B"), (.turnStateChanged, "C")] {
+      transport.emit(PhoneFixture.turnEvent(kind, ended(id)))
+      try await waitUntil("\(id) seen") { model.detail?.turns.contains { $0.id == id } == true }
       #expect(model.activeTurns["t1"]?.id == "A")
       #expect(model.stopStates["t1"] == .waiting)
     }
