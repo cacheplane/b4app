@@ -37,10 +37,11 @@ import Testing
     #expect(try WorkspaceArchive.schema(F.sixteen).data == F.viewSettingsTables)
     for table in F.protocolTables { #expect(try WorkspaceArchive.columns(table, at: 16).isEmpty) }
     func legacyTurn(_ ledger: [String], _ fields: [String: Any]) throws -> WorkspaceArchive.Input {
-      try WorkspaceArchive.read(F.lines([
-        ["format": "b4app-export", "version": 3, "migrations": ledger],
-        ["table": "turns", "row": fields],
-      ]))
+      try WorkspaceArchive.read(
+        F.lines([
+          ["format": "b4app-export", "version": 3, "migrations": ledger],
+          ["table": "turns", "row": fields],
+        ]))
     }
     let validTurn: [String: Any] = ["id": "t", "openWork": Int32.min, "origin": NSNull()]
     #expect(try legacyTurn(F.sixteen, validTurn).dataCount == 1)

@@ -390,7 +390,8 @@ import WorkspaceProtocol
         """)
       if prefix == 16 {
         try raw.execute("SET b4app.replaying='on'")
-        let updated = try raw.execute(#"UPDATE turns SET "openWork"=3, origin='runtime-fixture' WHERE id='u'"#)
+        let updated = try raw.execute(
+          #"UPDATE turns SET "openWork"=3, origin='runtime-fixture' WHERE id='u'"#)
         try #require(updated.affected == 1)
         try raw.execute("RESET b4app.replaying")
       }
@@ -864,8 +865,8 @@ import WorkspaceProtocol
     }
     for malformed in [
       Self.thirteen + ["0014_agent_protocol"], Self.fourteen + ["0015_agent_protocol"],
-      Self.fifteen + ["0016_agent_protocol"], Self.fifteen + ["0016_unknown"], Self.fifteen + ["0015_density"],
-      Array(Self.seventeen.reversed()),
+      Self.fifteen + ["0016_agent_protocol"], Self.fifteen + ["0016_unknown"],
+      Self.fifteen + ["0015_density"], Array(Self.seventeen.reversed()),
     ] {
       var refused = false
       do {

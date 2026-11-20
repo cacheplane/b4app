@@ -1093,6 +1093,11 @@ import WorkspaceProtocol
   }
   private static func historicalRow(table: String, row input: [String: Any]) throws -> [String: Any] {
     var row = input
+    if table == "turns" {
+      guard row.removeValue(forKey: "openWork") as? Int == 0,
+        row.removeValue(forKey: "origin") is NSNull
+      else { throw FixtureFailure.invalidRecord }
+    }
     let references = ["connections", "threads", "environmentFolders", "projectFolders"]
     if references.contains(table), let value = row.removeValue(forKey: "environmentId") {
       guard row["projectId"] == nil else { throw FixtureFailure.invalidRecord }
