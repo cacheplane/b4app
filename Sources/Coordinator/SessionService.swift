@@ -1082,28 +1082,40 @@ public actor SessionService {
 
   public func turnInterrupt(_ params: TurnInterrupt.Params) async throws -> TurnSend.Result {
     let (thread, _, adapter) = try threadContext(id: params.threadId)
-    guard let active = try db.activeTurn(threadId: thread.id) else {
+    let active = try db.activeTurn(threadId: thread.id)
+    let openWork = try db.turnsWithOpenWork(threadId: thread.id)
+    guard active != nil || !openWork.isEmpty else {
       throw WorkspaceError(.notFound, "No turn is active on this thread.")
     }
-    guard let nativeTurnId = active.nativeTurnId else {
-      throw WorkspaceError(
-        .cancellationUnconfirmed,
-        "The turn has not been acknowledged by the runtime yet; try again in a moment.")
-    }
     let ref = NativeSessionRef(nativeSessionId: thread.nativeThreadId, nativeScope: thread.nativeScope)
-    let receipt = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: nativeTurnId))
-    let turn =
-      try db.updateTurn(id: active.id) {
-        if $0.status != .terminal {
-          $0.status = .stopping
-          if let outcome = receipt.outcome {
-            $0.status = .terminal
-            $0.outcome = outcome
+    var result: Turn?
+    if let active {
+      guard let nativeTurnId = active.nativeTurnId else {
+        throw WorkspaceError(
+          .cancellationUnconfirmed,
+          "The turn has not been acknowledged by the runtime yet; try again in a moment.")
+      }
+      let receipt = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: nativeTurnId))
+      let turn =
+        try db.updateTurn(id: active.id) {
+          if $0.status != .terminal {
+            $0.status = .stopping
+            if let outcome = receipt.outcome {
+              $0.status = .terminal
+              $0.outcome = outcome
+            }
           }
-        }
-      } ?? active
-    await publishTurn(turn.status == .terminal ? .turnFinished : .turnStateChanged, turn, thread: thread)
-    return TurnSend.Result(turn: turn)
+        } ?? active
+      await publishTurn(turn.status == .terminal ? .turnFinished : .turnStateChanged, turn, thread: thread)
+      result = turn
+    }
+    // The agents close when the adapter's events say so, not here. An error is thrown only now, after the
+    // active turn's update is stored and published.
+    if !openWork.isEmpty { try await adapter.stopOpenWork(ref) }
+    guard let result = result ?? openWork.last else {
+      throw WorkspaceError(.notFound, "No turn is active on this thread.")
+    }
+    return TurnSend.Result(turn: result)
   }
 
   // MARK: - Lifecycle (spec 10.3)

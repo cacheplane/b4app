@@ -631,3 +631,196 @@ func agent(
     await f.h.stop()
   }
 }
+
+/// What a wrapped adapter was asked, for the Stop tests.
+actor StopLog {
+  private(set) var interrupts: [String] = []
+  private(set) var stops: [NativeSessionRef] = []
+  func interrupted(_ nativeTurnId: String) { interrupts.append(nativeTurnId) }
+  func stopped(_ ref: NativeSessionRef) { stops.append(ref) }
+}
+
+/// Answers `interrupt` itself (the fake runtime knows nothing of a runtime turn) and records
+/// `stopOpenWork`, optionally throwing from it.
+struct StoppingAdapter: AgentAdapter {
+  let inner: InjectingAdapter
+  let log: StopLog
+  var failure: WorkspaceError?
+  var kind: ConnectionKind { inner.kind }
+  func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
+  func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
+    try await inner.createSession(input)
+  }
+  func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot {
+    try await inner.loadSession(ref)
+  }
+  func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
+    try await inner.sendTurn(ref, input: input)
+  }
+  func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
+    await log.interrupted(turn.nativeTurnId)
+    return StopReceipt(confirmed: true, outcome: nil)
+  }
+  func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
+    try await inner.respond(ref, response: response)
+  }
+  func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
+    try await inner.reconcile(ref, turn: turn)
+  }
+  func events() -> AsyncStream<AdapterEvent> { inner.events() }
+  func dispose() async { await inner.dispose() }
+  func stopOpenWork(_ ref: NativeSessionRef) async throws {
+    await log.stopped(ref)
+    if let failure { throw failure }
+  }
+}
+
+/// The same, with the protocol's own `stopOpenWork`.
+struct UnstoppableAdapter: AgentAdapter {
+  let inner: InjectingAdapter
+  let log: StopLog
+  var kind: ConnectionKind { inner.kind }
+  func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
+  func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
+    try await inner.createSession(input)
+  }
+  func loadSession(_ ref: NativeSessionRef) async throws -> SessionSnapshot {
+    try await inner.loadSession(ref)
+  }
+  func sendTurn(_ ref: NativeSessionRef, input: TurnInput) async throws -> SubmissionReceipt {
+    try await inner.sendTurn(ref, input: input)
+  }
+  func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
+    await log.interrupted(turn.nativeTurnId)
+    return StopReceipt(confirmed: true, outcome: nil)
+  }
+  func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
+    try await inner.respond(ref, response: response)
+  }
+  func reconcile(_ ref: NativeSessionRef, turn: ActiveTurnRef?) async throws -> ReconcileResult {
+    try await inner.reconcile(ref, turn: turn)
+  }
+  func events() -> AsyncStream<AdapterEvent> { inner.events() }
+  func dispose() async { await inner.dispose() }
+}
+
+@Suite struct StopOpenWorkTests {
+  let log = StopLog()
+
+  func make(
+    _ wrap: @escaping @Sendable (InjectingAdapter, StopLog) -> any AgentAdapter
+  ) async throws -> RuntimeTurnTests.Fixture {
+    let log = log
+    let (injected, deliver) = AsyncStream<AdapterEvent>.makeStream()
+    let h = try await Harness.start(adapterFactory: { connection, environment, version, secrets in
+      wrap(
+        InjectingAdapter(
+          inner: try SessionService.defaultAdapterFactory(connection, environment, version, secrets),
+          injected: injected), log)
+    })
+    let connection = try await h.addCodex()
+    let thread = try await h.newThread(connection)
+    let turn = try await h.send(thread, "hello there")
+    _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    _ = try await h.events.waitFor {
+      $0.kind == .turnStateChanged && $0.payload["nativeStatus"]?.stringValue == "idle"
+    }
+    return .init(h: h, deliver: deliver, connection: connection, thread: thread)
+  }
+
+  func recording(failure: WorkspaceError? = nil) async throws -> RuntimeTurnTests.Fixture {
+    try await make { StoppingAdapter(inner: $0, log: $1, failure: failure) }
+  }
+
+  /// Opens an agent on the thread's last turn and waits until its count is stored.
+  func openAgent(_ f: RuntimeTurnTests.Fixture) async throws -> Turn {
+    let turn = try #require(try await f.turns().last)
+    let before = await f.h.events.events.filter { $0.event.kind == .turnStateChanged }.count
+    f.deliver.yield(
+      agent(
+        .toolStarted, f.connection, f.thread, id: "a1", turn: try #require(turn.nativeTurnId),
+        status: "inProgress"))
+    _ = await f.h.events.until { $0.filter { $0.kind == .turnStateChanged }.count > before }
+    return turn
+  }
+
+  func stop(_ f: RuntimeTurnTests.Fixture) async throws -> Turn {
+    try await f.h.client.request(
+      TurnInterrupt.self, TurnInterrupt.Params(threadId: f.thread.id),
+      options: RequestOptions(operationId: UUID().uuidString)
+    ).turn
+  }
+
+  func ref(_ f: RuntimeTurnTests.Fixture) -> NativeSessionRef {
+    NativeSessionRef(nativeSessionId: f.thread.nativeThreadId, nativeScope: f.thread.nativeScope)
+  }
+
+  @Test func stopWithNoTurnStopsOpenWork() async throws {
+    let f = try await recording()
+    let holder = try await openAgent(f)
+    let result = try await stop(f)
+    #expect(result.id == holder.id)
+    #expect(await log.stops == [ref(f)])
+    #expect(await log.interrupts.isEmpty)
+    let after = try #require(try await f.turns().first { $0.id == holder.id })
+    #expect(after.openWork == 1)
+    #expect(after.status == .terminal)
+    await f.h.stop()
+  }
+
+  @Test func stopWithNeitherIsRefusedAsBefore() async throws {
+    let f = try await recording()
+    do {
+      _ = try await stop(f)
+      Issue.record("Stop with nothing to stop must be refused")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .notFound)
+      #expect(error.message == "No turn is active on this thread.")
+    }
+    #expect(await log.stops.isEmpty)
+    await f.h.stop()
+  }
+
+  @Test func stopWithATurnAndOpenWorkStopsBoth() async throws {
+    let f = try await recording()
+    let holder = try await openAgent(f)
+    await f.send(runtimeAck(f.connection, f.thread, turn: "rt-1"))
+    let running = try #require(try await f.turns().first { $0.nativeTurnId == "rt-1" })
+    let result = try await stop(f)
+    #expect(result.id == running.id)
+    #expect(await log.interrupts == ["rt-1"])
+    #expect(await log.stops == [ref(f)])
+    let stored = try #require(try await f.turns().first { $0.id == running.id })
+    #expect(stored.status == .stopping)
+    let earlier = try #require(try await f.turns().first { $0.id == holder.id })
+    #expect(earlier.openWork == 1)
+    await f.h.stop()
+  }
+
+  @Test func stopSaysSoWhenTheAdapterCannotStopOpenWork() async throws {
+    let f = try await make { UnstoppableAdapter(inner: $0, log: $1) }
+    _ = try await openAgent(f)
+    await f.send(runtimeAck(f.connection, f.thread, turn: "rt-1"))
+    do {
+      _ = try await stop(f)
+      Issue.record("The default stopOpenWork must throw")
+    } catch let error as WorkspaceError {
+      #expect(error.code == .unsupportedCapability)
+    }
+    #expect(await log.interrupts == ["rt-1"])
+    let stored = try #require(try await f.turns().first { $0.nativeTurnId == "rt-1" })
+    #expect(stored.status == .stopping)
+    await f.h.stop()
+  }
+
+  @Test func stopWithOnlyATurnDoesNotCallStopOpenWork() async throws {
+    let f = try await recording()
+    await f.send(runtimeAck(f.connection, f.thread, turn: "rt-1"))
+    let running = try #require(try await f.turns().first { $0.nativeTurnId == "rt-1" })
+    let result = try await stop(f)
+    #expect(result.id == running.id)
+    #expect(await log.interrupts == ["rt-1"])
+    #expect(await log.stops.isEmpty)
+    await f.h.stop()
+  }
+}
