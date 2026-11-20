@@ -23,7 +23,7 @@ The second part of the runtime turns design: the coordinator makes a row for a t
 
 ### Review
 
-Each of the five code tasks had a task review. Task 1 had one fix round: the operation id was made per thread, the fallback was kept for requests, and refused runtime ids are remembered. Task 3 had two: the start-up close takes its list at start-up, and each agent is read again before it is stopped; then a fixture race, where the fake Codex's trailing idle status satisfied a wait early, found through a one-off failure of `theItemIsPublishedBeforeTheTurnsCount` and fixed in the fixture, followed by ten clean runs of the three suites. Deferred minors still open are listed in D-262, "Known gaps".
+Each of the five code tasks had a task review. Task 1 had one fix round: the operation id was made per thread, the fallback was kept for requests, and refused runtime ids are remembered. Task 3 had two: the start-up close takes its list at start-up, and each agent is read again before it is stopped; then a fixture race, where the fake Codex's trailing idle status satisfied a wait early, found through a one-off failure of `theItemIsPublishedBeforeTheTurnsCount` and fixed in the fixture, followed by ten clean runs of the three suites. Deferred minors still open are listed in D-262, "Known gaps". One more gap, found in the records review: quit and log-out do not stop open work on a thread that has no running turn. The session's process ending is what ends those agents, and the coordinator closes them as stopped on the reported exit or at the next start-up.
 
 ### Not checked
 
