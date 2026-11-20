@@ -101,6 +101,8 @@ struct TranscriptView: View {
   /// How many messages the reader has sent in this thread from this app (`WorkspaceModel.ownSends`).
   var sent = 0
   @State private var folds: TranscriptFolds
+  /// The viewport just got shorter under a reader at the end, and the view is on its way back there.
+  @State private var repinning = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   init(
@@ -140,8 +142,21 @@ struct TranscriptView: View {
       .onScrollGeometryChange(for: TranscriptEnd.self, of: TranscriptEnd.init) { old, end in
         switch TranscriptEnd.intent(from: old, to: end) {
         case .following: folds.release()
-        case .reading: folds.hold()
+        // The layout pass that shortens the viewport moves the view up and down again; that is not
+        // the reader.
+        case .reading: if !repinning { folds.hold() }
         case .unchanged: break
+        }
+      }
+      // What is docked under the transcript grew (a request card, an error, a taller draft) and took
+      // the height from the viewport's bottom edge: a reader at the end still sees the end. The size
+      // anchor above covers the content's size, not the viewport's.
+      .onScrollGeometryChange(for: CGFloat.self, of: { $0.containerSize.height }) { old, new in
+        guard new < old - 0.5, !folds.holds else { return }
+        repinning = true
+        Task { @MainActor in
+          repinning = false
+          follow(proxy)
         }
       }
       // While the view is held, the latest content is out of sight below: one press goes back to it
