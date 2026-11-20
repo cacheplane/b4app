@@ -13,7 +13,7 @@ What the activity line (D-255) meets from the real runtimes. Ten runs were made 
 - `Tests/CodexAdapterTests/Fixtures/subagent-not-awaited.jsonl` (24 notifications): one the parent does not wait for.
 - `Tests/ClaudeAdapterTests/Fixtures/send-meets-wake.jsonl` (47 frames): a message sent as a background task's notification arrives.
 - `Tests/ClaudeAdapterTests/Fixtures/task-ends-during-turn.jsonl` (47 frames): a background task that ends while a later turn runs.
-- `Tests/CodexAdapterTests/Fixtures/second-turn-start.jsonl` (10 notifications): a second `turn/start` sent while a turn runs.
+- `Tests/CodexAdapterTests/Fixtures/second-turn-start.jsonl` (11 notifications): a second `turn/start` sent while a turn runs.
 
 The scrub replaced the folder with `/work/proj` and the task output folder with `/work/tasks`, the session id with `session-1`, cut the `init` frame to eight fields, the result to fourteen, and dropped signatures, thinking text, usage, the `initialize` answer, rate-limit and lifecycle frames, and every Codex notification but thread, turn and item ones. A search for the owner's name, home paths, email addresses, organisation and account fields found none. `ClaudeSubAgentRecordingTests` and `CodexSubAgentRecordingTests` hold the shapes below.
 
@@ -45,7 +45,7 @@ The scrub replaced the folder with `/work/proj` and the task output folder with 
 - The sub-agent is a thread of its own. The parent thread gets two `subAgentActivity` items (`kind` `started` and `completed`, `agentThreadId`, `agentPath`, `startedAtMs`) and one `collabAgentToolCall` whose `tool` is `wait` and whose `prompt` is null.
 - The agent's messages and commands are `item/*` notifications on the agent's thread id, inside its own `turn/started` and `turn/completed`.
 - When the parent does not wait, its turn completes while the agent works (31 seconds longer in the recording). The agent's turn names the parent's as `rootTurnId`. The `completed` activity item then arrives on the parent thread, naming the turn that already ended. No turn is started on the parent thread afterwards (`wake_on_agent_messages` is listed as under development and off).
-- A second `turn/start` while a turn runs starts no turn: the response names the running turn's id and the message becomes an item of that turn. In the one run the first message's command was not run and the turn ended with the second message's answer.
+- A second `turn/start` while a turn runs starts no turn: the response names the running turn's id and the message becomes an item of that turn. In both runs made the first message's command was not run and the turn ended with the second message's answer.
 - The app knows no `subAgentActivity` type, and draws the wait call as the agent (D-255 took its title from a prompt it does not carry). Items of a thread the coordinator has no row for are dropped, so the agent's steps are not drawn. Whether the agent's thread later appears in the sidebar through the thread listing was not checked.
 
 ### Not checked
