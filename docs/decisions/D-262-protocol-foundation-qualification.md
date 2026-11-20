@@ -1,6 +1,6 @@
 ## 2026-11-19 (protocol foundation qualification)
 
-- **D-261 Keep everyday CI aligned with main and qualify the protocol foundation separately before merge (amends D-240 and D-260).**
+- **D-262 Keep everyday CI aligned with main and qualify the protocol foundation separately before merge (amends D-240 and D-260).**
 
 D-259 shipped the turn fields at Store16, Hub23 and Mirror11. Keep those migrations intact. The protocol foundation follows at Store17 and Hub24. Mirror12 is reserved for future protocol storage. Format-3 Store16 archives retain the turn fields across restore. The format-4 generation marker starts at Store17.
 
