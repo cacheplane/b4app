@@ -419,3 +419,143 @@ func agent(
     await f.h.stop()
   }
 }
+
+@Suite struct OpenWorkEndsTests {
+  func exit(
+    _ f: RuntimeTurnTests.Fixture, thread: ConversationThread? = nil
+  ) -> AdapterEvent {
+    var ids: [String: String] = [:]
+    if let thread { ids["threadId"] = thread.nativeThreadId }
+    return AdapterEvent(
+      kind: .connectionChanged, connectionId: f.connection.id, nativeIds: ids,
+      payload: ["transport": "disconnected"])
+  }
+
+  /// Opens an agent on the thread's last turn and waits until its count is stored.
+  func open(
+    _ f: RuntimeTurnTests.Fixture, _ thread: ConversationThread, id: String
+  ) async throws -> Turn {
+    let turn = try #require(try await f.h.read(thread).turns.last)
+    let before = await f.h.events.events.filter { $0.event.kind == .turnStateChanged }.count
+    f.deliver.yield(
+      agent(
+        .toolStarted, f.connection, thread, id: id, turn: try #require(turn.nativeTurnId),
+        status: "inProgress"))
+    _ = await f.h.events.until { $0.filter { $0.kind == .turnStateChanged }.count > before }
+    return turn
+  }
+
+  /// The count follows the item's announcement, so wait until the turn's is stored.
+  func settled(
+    _ f: RuntimeTurnTests.Fixture, _ thread: ConversationThread, _ turnId: String
+  )
+    async throws
+  {
+    for _ in 0..<600 {
+      if try await f.h.read(thread).turns.first(where: { $0.id == turnId })?.openWork == 0 { return }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+  }
+
+  func completions(_ f: RuntimeTurnTests.Fixture) async -> Int {
+    await f.h.events.events.filter { $0.event.kind == .toolCompleted }.count
+  }
+
+  func expectStopped(
+    _ f: RuntimeTurnTests.Fixture, _ thread: ConversationThread, _ id: String
+  )
+    async throws
+  {
+    let item = try #require(try await f.h.read(thread).items.first { $0.nativeItemId == id })
+    #expect(item.payload["status"]?.stringValue == "stopped")
+    #expect(item.payload["endedAt"]?.stringValue != nil)
+    #expect(item.payload["agent"]?.boolValue == true)
+  }
+
+  @Test func aSessionThatExitsClosesItsOpenWork() async throws {
+    let f = try await RuntimeTurnTests.Fixture.make()
+    let turn = try await open(f, f.thread, id: "a1")
+    #expect(try await f.turns().first { $0.id == turn.id }?.openWork == 1)
+    let before = await completions(f)
+    f.deliver.yield(exit(f, thread: f.thread))
+    _ = await f.h.events.until { $0.filter { $0.kind == .toolCompleted }.count > before }
+    try await expectStopped(f, f.thread, "a1")
+    let done = try #require(await f.h.events.events.last { $0.event.kind == .toolCompleted }?.event)
+    #expect(done.payload["displayItem"]?["payload"]?["status"]?.stringValue == "stopped")
+    try await settled(f, f.thread, turn.id)
+    let stored = try #require(try await f.turns().first { $0.id == turn.id })
+    #expect(stored.openWork == 0)
+    await f.h.stop()
+  }
+
+  @Test func anAgentAlreadyClosedIsNotRewritten() async throws {
+    let f = try await RuntimeTurnTests.Fixture.make()
+    let turn = try await open(f, f.thread, id: "a1")
+    let native = try #require(turn.nativeTurnId)
+    f.deliver.yield(
+      agent(.toolCompleted, f.connection, f.thread, id: "a1", turn: native, status: "completed"))
+    _ = await f.h.events.until { $0.contains { $0.kind == .toolCompleted } }
+    let closed = try #require(try await f.h.read(f.thread).items.first { $0.nativeItemId == "a1" })
+    let stamp = try #require(try await f.turns().first { $0.id == turn.id }).updatedAt
+    let before = await completions(f)
+    f.deliver.yield(exit(f, thread: f.thread))
+    f.deliver.yield(f.message(turn: native, id: "sentinel"))
+    _ = await f.h.events.until { $0.contains { $0.nativeIds["itemId"] == "sentinel" } }
+    let after = try #require(try await f.h.read(f.thread).items.first { $0.nativeItemId == "a1" })
+    #expect(after.payload["status"]?.stringValue == "completed")
+    #expect(after.payload == closed.payload)
+    #expect(await completions(f) == before)
+    #expect(try await f.turns().first { $0.id == turn.id }?.updatedAt == stamp)
+    await f.h.stop()
+  }
+
+  @Test func aConnectionThatDropsClosesEveryThreadsOpenWork() async throws {
+    let f = try await RuntimeTurnTests.Fixture.make()
+    let second = try await f.h.newThread(f.connection)
+    let turn2 = try await f.h.send(second, "and here")
+    _ = try await f.h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn2.id }
+    let one = try await open(f, f.thread, id: "a1")
+    let two = try await open(f, second, id: "a2")
+    let before = await completions(f)
+    f.deliver.yield(exit(f))
+    _ = await f.h.events.until { $0.filter { $0.kind == .toolCompleted }.count >= before + 2 }
+    try await expectStopped(f, f.thread, "a1")
+    try await expectStopped(f, second, "a2")
+    try await settled(f, f.thread, one.id)
+    try await settled(f, second, two.id)
+    #expect(try await f.turns().first { $0.id == one.id }?.openWork == 0)
+    #expect(try await f.h.read(second).turns.first { $0.id == two.id }?.openWork == 0)
+    await f.h.stop()
+  }
+
+  @Test func aRunningTurnGoesToReconcilingAndEarlierOpenWorkIsClosed() async throws {
+    let f = try await RuntimeTurnTests.Fixture.make()
+    let first = try await open(f, f.thread, id: "a1")
+    await f.send(runtimeAck(f.connection, f.thread, turn: "rt-1"))
+    let before = await completions(f)
+    f.deliver.yield(exit(f, thread: f.thread))
+    _ = await f.h.events.until { $0.filter { $0.kind == .toolCompleted }.count > before }
+    let turns = try await f.turns()
+    #expect(turns.first { $0.nativeTurnId == "rt-1" }?.status == .reconciling)
+    #expect(turns.first { $0.id == first.id }?.openWork == 0)
+    await f.h.stop()
+  }
+
+  @Test func startUpClosesOpenWorkLeftBehind() async throws {
+    let f = try await RuntimeTurnTests.Fixture.make()
+    let turn = try await open(f, f.thread, id: "a1")
+    let paths = f.h.coordinator.paths
+    await f.h.stop()
+    let back = try await Harness.start(paths: paths)
+    for _ in 0..<600 {
+      if try back.coordinator.database.turn(id: turn.id)?.openWork == 0 { break }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    #expect(try back.coordinator.database.turn(id: turn.id)?.openWork == 0)
+    let item = try #require(
+      try back.coordinator.database.displayItems(threadId: f.thread.id).first { $0.nativeItemId == "a1" })
+    #expect(item.payload["status"]?.stringValue == "stopped")
+    #expect(item.payload["endedAt"]?.stringValue != nil)
+    await back.stop()
+  }
+}

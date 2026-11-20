@@ -547,6 +547,20 @@ public final class WorkspaceDatabase: Sendable {
     }
   }
 
+  /// The turns that still have agents running (`openWork` above zero), of one thread or of all.
+  public func turnsWithOpenWork(threadId: String? = nil) throws -> [Turn] {
+    try read {
+      if let threadId {
+        return try all(
+          $0, Turn.self,
+          "SELECT * FROM \"turns\" WHERE \"openWork\" > 0 AND \"threadId\" = $1 ORDER BY \"createdAt\"",
+          [threadId])
+      }
+      return try all(
+        $0, Turn.self, "SELECT * FROM \"turns\" WHERE \"openWork\" > 0 ORDER BY \"createdAt\"")
+    }
+  }
+
   public func updateTurn(id: String, _ mutate: @Sendable (inout Turn) -> Void) throws -> Turn? {
     try write { c in
       guard var turn = try byId(c, Turn.self, "turns", id) else { return nil }

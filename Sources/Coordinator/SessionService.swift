@@ -106,6 +106,9 @@ public actor SessionService {
     } catch {
       logger.error("startup reconciliation failed: \(String(describing: error), privacy: .public)")
     }
+    // The agents that ran in a process that did not survive can never end; close them as stopped.
+    // `start()` is synchronous, so this runs beside it, before the first command is read.
+    startOpenWorkClose()
     startThreadDeleteSweep()
     readMissingCommands()
   }
@@ -1512,6 +1515,56 @@ public actor SessionService {
     await publishTurn(.turnStateChanged, updated, thread: thread)
   }
 
+  /// The session that ran a thread's agents is gone, so none of them will ever end: each agent still in
+  /// progress becomes `stopped`, with its end stamped, is announced as completed, and the turn's count
+  /// is taken again. An agent already closed is left as it is.
+  private func closeOpenWork(threadId: String, reason: String) async throws {
+    guard let thread = try db.thread(id: threadId) else { return }
+    for turn in try db.turnsWithOpenWork(threadId: threadId) {
+      for item in try db.displayItems(threadId: threadId) where item.turnId == turn.id {
+        guard item.payload["agent"]?.boolValue == true,
+          item.payload["status"]?.stringValue == "inProgress",
+          let stored = try db.updateDisplayItem(
+            id: item.id,
+            {
+              var payload = $0.payload.objectValue ?? [:]
+              payload["status"] = "stopped"
+              payload["endedAt"] = .string(Timestamp.now())
+              $0.payload = .object(payload)
+            })
+        else { continue }
+        var ids = ["threadId": thread.nativeThreadId]
+        if let native = stored.nativeItemId { ids["itemId"] = native }
+        if let nativeTurn = turn.nativeTurnId { ids["turnId"] = nativeTurn }
+        await publishVisibleEvent(
+          AdapterEvent(
+            kind: .toolCompleted, connectionId: thread.connectionId, threadId: thread.id,
+            turnId: turn.id, nativeIds: ids,
+            payload: [
+              "displayItem": try JSONValue(encoding: stored), "role": .string(stored.role.rawValue),
+              "reason": .string(reason),
+            ]))
+      }
+      try await recountOpenWork(turnId: turn.id, thread: thread)
+    }
+  }
+
+  private func startOpenWorkClose() {
+    pumps["open-work-close"] = Task { [weak self] in
+      await self?.closeOpenWorkLeftBehind()
+    }
+  }
+
+  private func closeOpenWorkLeftBehind() async {
+    do {
+      for threadId in Set(try db.turnsWithOpenWork().map(\.threadId)) {
+        try await closeOpenWork(threadId: threadId, reason: "coordinator_started")
+      }
+    } catch {
+      logger.error("startup open work close failed: \(String(describing: error), privacy: .public)")
+    }
+  }
+
   /// A completion that carries no text keeps what the item streamed (a runtime may complete a stopped
   /// reply empty); one with text is the runtime's final word and is kept as it is.
   private static func withStreamedText(_ payload: JSONValue, _ text: String) -> JSONValue {
@@ -1612,6 +1665,7 @@ public actor SessionService {
       {
         await publishTurn(.turnStateChanged, updated, thread: thread, payload: ["reason": "runtime_exited"])
       }
+      try await closeOpenWork(threadId: thread.id, reason: "runtime_exited")
       return
     }
     let status = raw.payload["status"]?.stringValue.flatMap(ConnectionStatus.init(rawValue:))
@@ -1642,6 +1696,10 @@ public actor SessionService {
           }), let thread = try db.thread(id: turn.threadId)
       else { continue }
       await publishTurn(.turnStateChanged, updated, thread: thread, payload: ["reason": "runtime_exited"])
+    }
+    let threads = try db.turnsWithOpenWork().map(\.threadId)
+    for threadId in Set(threads) where try db.thread(id: threadId)?.connectionId == raw.connectionId {
+      try await closeOpenWork(threadId: threadId, reason: "runtime_exited")
     }
   }
 
