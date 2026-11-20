@@ -1869,8 +1869,13 @@ public final class WorkspaceModel {
       }
     case .turnAcknowledged, .turnStateChanged, .turnFinished:
       if let threadId = event.threadId, let turn = try? event.payload["turn"]?.decode(Turn.self) {
-        activeTurns[threadId] = turn.status == .terminal ? nil : turn
-        if turn.status == .terminal { stopStates[threadId] = nil }
+        if turn.status != .terminal {
+          activeTurns[threadId] = turn
+        } else if activeTurns[threadId].map({ $0.id == turn.id }) ?? true {
+          // Only a turn's own end clears it: another turn's end (or its open-work update) must not.
+          activeTurns[threadId] = nil
+          stopStates[threadId] = nil
+        }
         resolvePendingSends(with: [turn])
       }
       applyToDetail(event)
@@ -1914,7 +1919,7 @@ public final class WorkspaceModel {
     case .turnAcknowledged, .turnStateChanged, .turnFinished:
       if let turn = try? event.payload["turn"]?.decode(Turn.self) { current.upsert(turn) }
       // The turn's end, or a turn event that leaves no turn running (its `turn.finished` was lost).
-      if event.kind == .turnFinished
+      if (event.kind == .turnFinished && current.activeTurn == nil)
         || (current.activeTurn == nil && !predatesRunningTurn(current.thread.id, turns: current.turns))
       {
         streams.turnFinished()

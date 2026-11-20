@@ -286,3 +286,56 @@ func waitUntil(
     #expect(model.lastError == nil)
   }
 }
+
+/// One turn's end must not clear a different turn of the thread that is running (the design keeps one
+/// unfinished turn per thread; this makes a future ordering mistake visible instead of silent).
+@Suite(.serialized) @MainActor struct TurnEndGuardTests {
+  private func open(clock: TestClock) async throws -> (WorkspaceModel, ScriptedTransport) {
+    let running = PhoneFixture.turn("A", operationId: "op-a")
+    let transport = PhoneFixture.transport(turns: [running])
+    let model = try await PhoneFixture.model(transport, clock: clock)
+    transport.emit(PhoneFixture.turnEvent(.turnStateChanged, running))
+    try await waitUntil("A running") { model.activeTurns["t1"]?.id == "A" }
+    return (model, transport)
+  }
+
+  private func ended(_ id: String) -> Turn {
+    PhoneFixture.turn(id, operationId: "op-\(id)", status: .terminal)
+  }
+
+  @Test func aTurnEndingDoesNotClearAnotherTurnThatIsRunning() async throws {
+    let (model, transport) = try await open(clock: TestClock())
+    model.stopStates["t1"] = .waiting
+    for kind in [EventKind.turnFinished, .turnStateChanged] {
+      transport.emit(PhoneFixture.turnEvent(kind, ended("B")))
+      try await waitUntil("B seen") { model.detail?.turns.contains { $0.id == "B" } == true }
+      #expect(model.activeTurns["t1"]?.id == "A")
+      #expect(model.stopStates["t1"] == .waiting)
+    }
+    await model.disconnect()
+  }
+
+  @Test func aTurnEndingClearsItself() async throws {
+    let (model, transport) = try await open(clock: TestClock())
+    model.stopStates["t1"] = .waiting
+    transport.emit(PhoneFixture.turnEvent(.turnFinished, ended("A")))
+    try await waitUntil("A cleared") { model.activeTurns["t1"] == nil }
+    #expect(model.stopStates["t1"] == nil)
+    await model.disconnect()
+  }
+
+  @Test func aTurnEndingKeepsTheLiveTextOfAnotherRunningTurn() async throws {
+    let (model, transport) = try await open(clock: TestClock())
+    transport.emit(
+      AdapterEvent(
+        kind: .messageDelta, connectionId: "c1", threadId: "t1", nativeIds: ["itemId": "i1"],
+        payload: ["delta": "x"]))
+    try await waitUntil("streaming") { model.streams.isStreaming("i1") }
+    transport.emit(PhoneFixture.turnEvent(.turnFinished, ended("B")))
+    try await waitUntil("B seen") { model.detail?.turns.contains { $0.id == "B" } == true }
+    #expect(model.streams.isStreaming("i1"))
+    transport.emit(PhoneFixture.turnEvent(.turnFinished, ended("A")))
+    try await waitUntil("ended") { !model.streams.isStreaming("i1") }
+    await model.disconnect()
+  }
+}
