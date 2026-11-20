@@ -1294,6 +1294,35 @@ public actor SessionService {
     }
   }
 
+  /// The native turn ids of runtime turns that were refused a row (an unfinished turn existed), per
+  /// thread, so the turn-state events that follow them join no turn. Dropped when the thread has no
+  /// unfinished turn left.
+  private var refusedRuntimeTurns: [String: Set<String>] = [:]
+
+  /// The turn an adapter event belongs to: the one with its native id, else (when the event names no
+  /// turn, is an item, is not a turn-state event, or the active turn has no native id yet and the id
+  /// was not refused a row) the active turn. A stray turn-state event ends no turn.
+  private func resolveTurn(for raw: AdapterEvent, thread: ConversationThread) throws -> Turn? {
+    let nativeTurnId = raw.nativeIds["turnId"]
+    if let nativeTurnId, let known = try db.turn(threadId: thread.id, nativeTurnId: nativeTurnId) {
+      return known
+    }
+    let active = try db.activeTurn(threadId: thread.id)
+    if active == nil { refusedRuntimeTurns[thread.id] = nil }
+    guard let nativeTurnId else { return active }
+    switch raw.kind {
+    case .turnAcknowledged, .turnStateChanged, .turnFinished:
+      if active?.nativeTurnId == nil, refusedRuntimeTurns[thread.id]?.contains(nativeTurnId) != true {
+        return active
+      }
+      logger.info(
+        "\(raw.kind.rawValue, privacy: .public) names unknown turn \(nativeTurnId, privacy: .public)")
+      return nil
+    default:
+      return active
+    }
+  }
+
   private func environment(_ incoming: AdapterEvent) async {
     // D-035: the coordinator is the redaction boundary. Adapters forward what runtimes say (stderr
     // tails, error messages); nothing of that leaves here unmasked.
@@ -1309,30 +1338,7 @@ public actor SessionService {
       if let nativeThreadId = raw.nativeIds["threadId"] {
         thread = try db.thread(connectionId: raw.connectionId, nativeThreadId: nativeThreadId)
       }
-      if let thread {
-        let nativeTurnId = raw.nativeIds["turnId"]
-        if let nativeTurnId {
-          turn = try db.turn(threadId: thread.id, nativeTurnId: nativeTurnId)
-        }
-        if turn == nil {
-          let active = try db.activeTurn(threadId: thread.id)
-          // An event naming a turn the store does not know joins the active turn only when it is an
-          // item, or that turn has not heard its native id yet; a stray state event ends no turn.
-          let isItem: Bool
-          switch raw.kind {
-          case .messageStarted, .messageCompleted, .messageDelta, .toolStarted, .toolCompleted:
-            isItem = true
-          default:
-            isItem = false
-          }
-          if nativeTurnId == nil || isItem || active?.nativeTurnId == nil {
-            turn = active
-          } else if let nativeTurnId {
-            logger.info(
-              "\(raw.kind.rawValue, privacy: .public) names unknown turn \(nativeTurnId, privacy: .public)")
-          }
-        }
-      }
+      if let thread { turn = try resolveTurn(for: raw, thread: thread) }
       event.threadId = thread?.id
       event.turnId = turn?.id
       switch raw.kind {
@@ -1348,15 +1354,16 @@ public actor SessionService {
             let made = try db.insertTurn(
               Turn(
                 id: UUID().uuidString.lowercased(), threadId: thread.id,
-                operationId: "runtime:\(nativeTurnId)", nativeTurnId: nativeTurnId, status: .running,
+                operationId: "runtime:\(thread.id):\(nativeTurnId)", nativeTurnId: nativeTurnId,
+                status: .running,
                 submission: .acknowledged, origin: "runtime"))
             turn = made
             event.turnId = made.id
             event.payload = merge(raw.payload, ["turn": try JSONValue(encoding: made)])
             break
           }
-          turn = nil
-          event.turnId = nil
+          refusedRuntimeTurns[thread.id, default: []].insert(nativeTurnId)
+          event.turnId = nil  // the owner's turn is the active one, but this acknowledgement is not its
           logger.error(
             "runtime turn \(nativeTurnId, privacy: .public) acknowledged while a turn is unfinished; no row made"
           )
