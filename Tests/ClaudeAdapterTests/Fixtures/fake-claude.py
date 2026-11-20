@@ -288,7 +288,11 @@ while True:
         response = wait_control_response(request_id)
         behavior = (response.get("response") or {}).get("behavior")
         granted = (response.get("response") or {}).get("updatedPermissions")
-        send({"type": "system", "subtype": "session_state_changed", "state": "running", "uuid": next_id("uuid")})
+        if "quiet" in text:
+            # As 2.1.282 runs live: nothing is sent between the answer and the tool's result.
+            time.sleep(2)
+        else:
+            send({"type": "system", "subtype": "session_state_changed", "state": "running", "uuid": next_id("uuid")})
         message = {"id": next_id("msg"), "role": "assistant", "model": "claude-fake",
                    "content": [{"type": "tool_use", "id": tool_use_id, "name": "Bash", "input": {"command": "ls -la"}}], "stop_reason": "tool_use"}
         send({"type": "assistant", "message": message, "parent_tool_use_id": None, "uuid": next_id("uuid"), "user_message_uuid": user_uuid})
