@@ -234,6 +234,16 @@ public actor B4Adapter: AgentAdapter {
   public func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
     let client = try requireClient()
     let threadId = ref.nativeSessionId
+    if hasPendingPrompt(threadId), runs[threadId]?.translator.phase != .parked {
+      // The prompt is out but its run has not ended yet, so the turn is not parked and a cancel would
+      // find nothing to stop. Let the stream end first; resuming before then would be refused.
+      await streamEnd(threadId: threadId, within: .seconds(5))
+      if runs[threadId]?.consuming == true, hasPendingPrompt(threadId) {
+        throw WorkspaceError(
+          .cancellationUnconfirmed, "The turn is asking for permission but has not paused yet; stop it again."
+        )
+      }
+    }
     if let run = runs[threadId], run.translator.phase == .parked {
       // Stop on a parked turn: the only way to end it is to answer its prompt, so decline it. The
       // route then finishes on its own and the stream reports the real outcome.
@@ -277,6 +287,26 @@ public actor B4Adapter: AgentAdapter {
       let failure = B4Protocol.error(status: status, body: body, operation: "cancel")
       if failure.code == .nativeSessionMissing { throw failure }
       throw WorkspaceError(.cancellationUnconfirmed, failure.message, details: failure.details)
+    }
+  }
+
+  private func hasPendingPrompt(_ threadId: String) -> Bool {
+    pending.values.contains { $0.threadId == threadId }
+  }
+
+  /// Wait until no stream is being consumed for `threadId` (one that ends may hand over to a reattach,
+  /// which is waited for too), or until `within` has passed. Never cancels the stream.
+  private func streamEnd(threadId: String, within: Duration) async {
+    let deadline = ContinuousClock.now + within
+    var awaited: Set<Task<Void, Never>> = []
+    while let task = runs[threadId]?.task, !awaited.contains(task), ContinuousClock.now < deadline {
+      awaited.insert(task)
+      await withTaskGroup(of: Void.self) { group in
+        group.addTask { await task.value }
+        group.addTask { try? await Task.sleep(until: deadline) }
+        await group.next()
+        group.cancelAll()
+      }
     }
   }
 

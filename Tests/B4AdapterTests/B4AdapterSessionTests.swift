@@ -228,6 +228,22 @@ private struct Rig {
     await rig.stop()
   }
 
+  /// Stop just after the prompt arrives, while the run has not yet ended and the turn is not yet
+  /// parked: the stop still declines the prompt once the run parks, so the turn finishes.
+  @Test func stopAsThePromptArrivesDeclinesItOnceTheTurnParks() async throws {
+    let rig = try await Rig.start()
+    let ref = try await rig.adapter.createSession(NewSessionInput())
+    let receipt = try await rig.turn(ref, "please approve, linger")
+    try await rig.collector.waitFor { $0.kind == .runtimeRequestOpened }
+    let stop = try await rig.adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: "turn-1"))
+    #expect(stop.confirmed)
+    #expect(stop.outcome == nil)
+    let finished = try await rig.finished(receipt)
+    #expect(finished.payload["outcome"]?.stringValue == "completed")
+    #expect(await rig.collector.deltas(turnId: "turn-1").contains("Cancelled by the user."))
+    await rig.stop()
+  }
+
   @Test func cancelsAHangingRun() async throws {
     let rig = try await Rig.start()
     let ref = try await rig.adapter.createSession(NewSessionInput())
