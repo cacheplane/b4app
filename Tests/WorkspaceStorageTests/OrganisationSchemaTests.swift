@@ -372,7 +372,7 @@ private func clocks(_ db: WorkspaceDatabase, table: String, rowId: String) throw
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: backups)
     defer { try? db.close() }
     #expect(
-      Array(try db.appliedMigrations().suffix(6)) == [
+      Array(try db.appliedMigrations().dropFirst(10)) == [
         "0011_environments", "0012_app_folders", "0013_view_settings", "0014_connection_commands",
         "0015_density",
         "0016_turn_open_work", "0017_agent_protocol",
