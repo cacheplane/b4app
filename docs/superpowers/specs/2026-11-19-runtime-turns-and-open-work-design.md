@@ -90,7 +90,7 @@ The rule: work the runtime does between the owner's send and the end of the owne
 
 Two guards keep a future ordering mistake visible instead of silent:
 
-- The session service falls back to "the active turn" for an event only when that turn has no native id yet (it is the one being submitted). An event naming a native turn id the store does not know, and not marked `runtime`, is logged and changes no turn.
+- For a turn-state event (acknowledged, state changed, finished), the session service falls back to "the active turn" only when that turn has no native id yet (it is the one being submitted). One naming a native turn id the store does not know, and not marked `runtime`, is logged and changes no turn. Item events keep the fallback, so nothing drawn is lost.
 - The Mac's model clears a thread's running turn, and ends its live text, only for an event of that same turn.
 
 ### Origin
@@ -109,7 +109,7 @@ An adapter-neutral contract, read by the session service and the transcript:
 
 An agent's own messages are rows under it, in both runtimes, and its last text message is also its `output`.
 
-Open agents are closed as `stopped`, and the count returns to 0, in three places: the adapter, when a session's process exits or the adapter itself restarts or drops the session (the Claude restart path reports no exit today, so it must emit the closes itself); and the coordinator at start-up, for open work on a thread with no live session.
+Open agents are closed as `stopped`, and the count returns to 0, in three places: the coordinator, when an adapter reports a session's or a connection's exit; the coordinator at start-up, for any open work left behind; and the adapter, when it restarts or drops a session itself (the Claude restart path reports no exit today, so it must emit the closes).
 
 ## Claude Code
 
