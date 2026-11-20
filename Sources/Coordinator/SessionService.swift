@@ -1334,6 +1334,7 @@ public actor SessionService {
     var event = raw
     var thread: ConversationThread?
     var turn: Turn?
+    var recount: String?  // the turn whose open work an agent item just changed
     do {
       if let nativeThreadId = raw.nativeIds["threadId"] {
         thread = try db.thread(connectionId: raw.connectionId, nativeThreadId: nativeThreadId)
@@ -1392,6 +1393,10 @@ public actor SessionService {
         }
         if let item = try environmentItem(raw, thread: thread, turn: turn) {
           event.payload = merge(raw.payload, ["displayItem": try JSONValue(encoding: item)])
+          if raw.kind == .toolStarted || raw.kind == .toolCompleted, item.payload["agent"]?.boolValue == true
+          {
+            recount = item.turnId
+          }
         } else {
           return
         }
@@ -1482,8 +1487,29 @@ public actor SessionService {
         scope: "projection", code: "internal", message: String(describing: error))
     }
     // A deleted thread's rows still follow its runtime, but nothing about it reaches a client.
-    if thread?.userDeletedAt != nil { return }
-    await publishVisibleEvent(event)
+    if thread?.userDeletedAt == nil { await publishVisibleEvent(event) }
+    // After the item's own event, so a client sees the agent before the turn's count of it.
+    if let thread, let recount {
+      do {
+        try await recountOpenWork(turnId: recount, thread: thread)
+      } catch {
+        logger.error("open work recount failed: \(String(describing: error), privacy: .public)")
+        await context.diagnostics.recordError(
+          scope: "projection", code: "internal", message: String(describing: error))
+      }
+    }
+  }
+
+  /// A turn's open work is how many of its agent items are still in progress, counted from the stored
+  /// items every time so it never drifts. Written, and published, only when the number changes.
+  private func recountOpenWork(turnId: String, thread: ConversationThread) async throws {
+    let open = try db.displayItems(threadId: thread.id).filter {
+      $0.turnId == turnId && $0.payload["agent"]?.boolValue == true
+        && $0.payload["status"]?.stringValue == "inProgress"
+    }.count
+    guard let current = try db.turn(id: turnId), current.openWork != open else { return }
+    guard let updated = try db.updateTurn(id: turnId, { $0.openWork = open }) else { return }
+    await publishTurn(.turnStateChanged, updated, thread: thread)
   }
 
   /// A completion that carries no text keeps what the item streamed (a runtime may complete a stopped

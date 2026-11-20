@@ -285,3 +285,137 @@ struct HeldSendAdapter: AgentAdapter {
   func events() -> AsyncStream<AdapterEvent> { inner.events() }
   func dispose() async { await inner.dispose() }
 }
+
+func agent(
+  _ kind: EventKind, _ connection: Connection, _ thread: ConversationThread, id: String, turn: String?,
+  status: String
+) -> AdapterEvent {
+  var ids = ["threadId": thread.nativeThreadId, "itemId": .init(id)]
+  if let turn { ids["turnId"] = .init(turn) }
+  return AdapterEvent(
+    kind: kind, connectionId: connection.id, nativeIds: ids,
+    payload: [
+      "type": "toolUse", "role": "tool",
+      "item": ["agent": true, "title": "Look", "status": .string(status)],
+    ])
+}
+
+@Suite struct OpenWorkTests {
+  let f: RuntimeTurnTests.Fixture
+  let first: Turn
+  let native: String
+
+  init() async throws {
+    f = try await .make()
+    first = try #require(try await f.turns().first)
+    native = try #require(first.nativeTurnId)
+  }
+
+  func turnNow() async throws -> Turn {
+    try #require(try await f.turns().first { $0.id == first.id })
+  }
+
+  /// Sends an agent event and waits for the turn event that follows when the count changes.
+  func change(_ kind: EventKind, _ id: String, status: String, turn: String? = nil) async {
+    let before = await f.h.events.events.filter { $0.event.kind == .turnStateChanged }.count
+    await f.send(agent(kind, f.connection, f.thread, id: id, turn: turn ?? native, status: status))
+    _ = await f.h.events.until { $0.filter { $0.kind == .turnStateChanged }.count > before }
+  }
+
+  /// Sends an event that changes nothing, then a message behind it, so the event is handled by the time this returns.
+  func settle(_ event: AdapterEvent) async {
+    await f.send(event)
+    await f.send(f.message(turn: native, id: "sentinel-\(UUID().uuidString)"))
+  }
+
+  @Test func anAgentStillRunningIsOpenWork() async throws {
+    await change(.toolStarted, "a1", status: "inProgress")
+    let turn = try await turnNow()
+    #expect(turn.status == .terminal)
+    #expect(turn.openWork == 1)
+    let published = try #require(
+      await f.h.events.events.last { $0.event.kind == .turnStateChanged }?.event)
+    #expect(published.turnId == turn.id)
+    #expect(published.payload["turn"]?["openWork"]?.numberValue == 1)
+    let listed = try await f.h.client.request(ThreadList.self, ThreadList.Params()).threads
+    let summary = try #require(listed.first { $0.id == f.thread.id })
+    #expect(summary.activity?.openWork == 1)
+    #expect(Attention.state(of: summary) == .working)
+    await f.h.stop()
+  }
+
+  @Test func theItemIsPublishedBeforeTheTurnsCount() async throws {
+    await change(.toolStarted, "a1", status: "inProgress")
+    let kinds = await f.h.events.events.map(\.event.kind)
+    let item = try #require(kinds.lastIndex(of: .toolStarted))
+    let turn = try #require(kinds.lastIndex(of: .turnStateChanged))
+    #expect(item < turn)
+    await f.h.stop()
+  }
+
+  @Test func openWorkFollowsEachAgent() async throws {
+    var stamps = [try await turnNow().updatedAt]
+    await change(.toolStarted, "a1", status: "inProgress")
+    await change(.toolStarted, "a2", status: "inProgress")
+    #expect(try await turnNow().openWork == 2)
+    stamps.append(try await turnNow().updatedAt)
+    await change(.toolCompleted, "a1", status: "completed")
+    #expect(try await turnNow().openWork == 1)
+    stamps.append(try await turnNow().updatedAt)
+    await change(.toolCompleted, "a2", status: "failed")
+    #expect(try await turnNow().openWork == 0)
+    stamps.append(try await turnNow().updatedAt)
+    for (earlier, later) in zip(stamps, stamps.dropFirst()) { #expect(later > earlier) }
+    await f.h.stop()
+  }
+
+  @Test func anAgentCompletedTwiceCountsOnce() async throws {
+    await change(.toolStarted, "a1", status: "inProgress")
+    await change(.toolCompleted, "a1", status: "completed")
+    let before = try await turnNow()
+    await settle(agent(.toolCompleted, f.connection, f.thread, id: "a1", turn: native, status: "completed"))
+    let after = try await turnNow()
+    #expect(after.openWork == 0)
+    #expect(after.updatedAt == before.updatedAt)
+    await f.h.stop()
+  }
+
+  @Test func anAgentSeenOnlyAtItsEndCountsNothing() async throws {
+    await settle(agent(.toolCompleted, f.connection, f.thread, id: "a1", turn: native, status: "completed"))
+    let turn = try await turnNow()
+    #expect(turn.openWork == 0)
+    #expect(turn.updatedAt == first.updatedAt)
+    #expect(try await f.h.read(f.thread).items.contains { $0.nativeItemId == "a1" })
+    await f.h.stop()
+  }
+
+  @Test func aStepThatIsNotAnAgentIsNotOpenWork() async throws {
+    await settle(
+      AdapterEvent(
+        kind: .toolStarted, connectionId: f.connection.id,
+        nativeIds: ["threadId": f.thread.nativeThreadId, "turnId": .init(native), "itemId": "t1"],
+        payload: ["type": "toolUse", "role": "tool", "item": ["title": "Look", "status": "inProgress"]]))
+    let turn = try await turnNow()
+    #expect(turn.openWork == 0)
+    #expect(turn.updatedAt == first.updatedAt)
+    await f.h.stop()
+  }
+
+  @Test func anAgentWithNoTurnCountsNowhere() async throws {
+    await settle(agent(.toolStarted, f.connection, f.thread, id: "a1", turn: nil, status: "inProgress"))
+    let turns = try await f.turns()
+    #expect(turns.allSatisfy { $0.openWork == 0 })
+    let item = try #require(try await f.h.read(f.thread).items.first { $0.nativeItemId == "a1" })
+    #expect(item.turnId == nil)
+    await f.h.stop()
+  }
+
+  @Test func aRunningTurnsAgentCountsToo() async throws {
+    await f.send(runtimeAck(f.connection, f.thread, turn: "rt-1"))
+    await change(.toolStarted, "a1", status: "inProgress", turn: "rt-1")
+    let made = try #require(try await f.turns().first { $0.nativeTurnId == "rt-1" })
+    #expect(made.status == .running)
+    #expect(made.openWork == 1)
+    await f.h.stop()
+  }
+}
