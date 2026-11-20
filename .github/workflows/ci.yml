@@ -134,6 +134,9 @@ jobs:
   # never save, so a stale cache can touch only those runs and main is proven from clean every merge.
   # Scripts/restore_mtimes.py sets each file's time from its content first: a checkout gives every
   # file the checkout's time, which would make a restored build rebuild everything.
+  # The SwiftPM key carries a version (`v2`): bump it when a restored build links stale objects. Adding
+  # parameters to `Turn`'s initialiser (D-259) left test objects from main's build naming the old
+  # symbol, since their own sources had not changed, and the test bundle failed to link.
   package:
     name: Package build and tests
     runs-on: macos-26
@@ -153,8 +156,8 @@ jobs:
           path: |
             .build
             ~/Library/Caches/org.swift.swiftpm
-          key: spm-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
-          restore-keys: spm-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-
+          key: spm-v2-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: spm-v2-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-
       - name: Format lint
         run: swift format lint --strict --recursive Sources Tests Apps Package.swift
       - name: Cache the pinned PostgreSQL archive
@@ -193,7 +196,7 @@ jobs:
           path: |
             .build
             ~/Library/Caches/org.swift.swiftpm
-          key: spm-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          key: spm-v2-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
 
   # The debug iOS and macOS app builds, in one DerivedData, beside the test jobs. The beta builds
   # differ only in Config/Flavor-beta.xcconfig and are built at release, not here (D-244).
