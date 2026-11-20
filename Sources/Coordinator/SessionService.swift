@@ -109,8 +109,13 @@ public actor SessionService {
     }
     // The agents that ran in a process that did not survive can never end. They are taken here, before
     // any session can start, and closed as stopped beside `start()`; an agent opened later is not theirs.
+    // Every thread with a turn that counts open work is taken, even with no agent in progress (a count
+    // left behind by a recount that never ran), so the close's recount brings that count back to zero.
     do {
       leftBehind = try openAgentItems()
+      for turn in try db.turnsWithOpenWork() where leftBehind[turn.threadId] == nil {
+        leftBehind[turn.threadId] = []
+      }
     } catch {
       logger.error("startup open work read failed: \(String(describing: error), privacy: .public)")
     }
@@ -1089,30 +1094,49 @@ public actor SessionService {
     }
     let ref = NativeSessionRef(nativeSessionId: thread.nativeThreadId, nativeScope: thread.nativeScope)
     var result: Turn?
+    var failure: (any Error)?
     if let active {
       guard let nativeTurnId = active.nativeTurnId else {
         throw WorkspaceError(
           .cancellationUnconfirmed,
           "The turn has not been acknowledged by the runtime yet; try again in a moment.")
       }
-      let receipt = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: nativeTurnId))
-      let turn =
-        try db.updateTurn(id: active.id) {
-          if $0.status != .terminal {
-            $0.status = .stopping
-            if let outcome = receipt.outcome {
-              $0.status = .terminal
-              $0.outcome = outcome
+      var receipt: StopReceipt?
+      do {
+        receipt = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: nativeTurnId))
+      } catch {
+        // With nothing open the interrupt's error is the whole answer, as before.
+        guard try !db.turnsWithOpenWork(threadId: thread.id).isEmpty else { throw error }
+        failure = error
+      }
+      if let receipt {
+        let turn =
+          try db.updateTurn(id: active.id) {
+            if $0.status != .terminal {
+              $0.status = .stopping
+              if let outcome = receipt.outcome {
+                $0.status = .terminal
+                $0.outcome = outcome
+              }
             }
-          }
-        } ?? active
-      await publishTurn(turn.status == .terminal ? .turnFinished : .turnStateChanged, turn, thread: thread)
-      result = turn
+          } ?? active
+        await publishTurn(turn.status == .terminal ? .turnFinished : .turnStateChanged, turn, thread: thread)
+        result = turn
+      }
     }
-    // The agents close when the adapter's events say so, not here. An error is thrown only now, after the
-    // active turn's update is stored and published.
-    if !openWork.isEmpty { try await adapter.stopOpenWork(ref) }
-    guard let result = result ?? openWork.last else {
+    // The agents close when the adapter's events say so, not here. Whether any are open is read again
+    // after the interrupt, which may have taken a while. A failed interrupt still asks them to stop, and
+    // the first error is thrown only now, after the active turn's update (if any) is stored and published.
+    let openNow = try db.turnsWithOpenWork(threadId: thread.id)
+    if !openNow.isEmpty {
+      do {
+        try await adapter.stopOpenWork(ref)
+      } catch {
+        if failure == nil { failure = error }
+      }
+    }
+    if let failure { throw failure }
+    guard let result = result ?? openNow.last ?? openWork.last else {
       throw WorkspaceError(.notFound, "No turn is active on this thread.")
     }
     return TurnSend.Result(turn: result)
@@ -1316,8 +1340,8 @@ public actor SessionService {
   }
 
   /// The native turn ids of runtime turns that were refused a row (an unfinished turn existed), per
-  /// thread, so the turn-state events that follow them join no turn. Dropped when the thread has no
-  /// unfinished turn left.
+  /// thread, so the turn-state events that follow them join no turn. A thread's set is dropped lazily,
+  /// in `resolveTurn`, when an event that names no known turn arrives while the thread has no active turn.
   private var refusedRuntimeTurns: [String: Set<String>] = [:]
 
   /// The turn an adapter event belongs to: the one with its native id, else (when the event names no
@@ -1414,9 +1438,11 @@ public actor SessionService {
         }
         if let item = try environmentItem(raw, thread: thread, turn: turn) {
           event.payload = merge(raw.payload, ["displayItem": try JSONValue(encoding: item)])
-          if raw.kind == .toolStarted || raw.kind == .toolCompleted, item.payload["agent"]?.boolValue == true
-          {
-            recount = item.turnId
+          // A completion replaces the payload, so one that leaves out `agent` still recounts a turn
+          // whose count is above zero.
+          if raw.kind == .toolStarted || raw.kind == .toolCompleted, let turnId = item.turnId {
+            let counted = try db.turn(id: turnId)?.openWork ?? 0
+            if item.payload["agent"]?.boolValue == true || counted > 0 { recount = turnId }
           }
         } else {
           return

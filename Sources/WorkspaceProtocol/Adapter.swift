@@ -203,6 +203,8 @@ public protocol AgentAdapter: Sendable {
   /// Delete the runtime's copy of a thread the owner deleted (settings: deleting threads).
   func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion
   /// Stop every background agent the session still runs. The agents' ends arrive as ordinary item events.
+  /// An implementation must be safe to call when nothing is open, and right after `interrupt` (the
+  /// coordinator asks again after an interrupt, from its own count, which may lag the runtime's).
   func stopOpenWork(_ ref: NativeSessionRef) async throws
 }
 

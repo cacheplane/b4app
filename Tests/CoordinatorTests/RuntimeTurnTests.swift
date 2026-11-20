@@ -384,6 +384,23 @@ func agent(
     await f.h.stop()
   }
 
+  /// A completion replaces the item's payload; one that leaves out `agent` must still bring the count down.
+  @Test func aCompletionWithoutTheAgentFlagStillClosesTheCount() async throws {
+    await change(.toolStarted, "a1", status: "inProgress")
+    #expect(try await turnNow().openWork == 1)
+    let before = await f.h.events.events.filter { $0.event.kind == .turnStateChanged }.count
+    await f.send(
+      AdapterEvent(
+        kind: .toolCompleted, connectionId: f.connection.id,
+        nativeIds: ["threadId": f.thread.nativeThreadId, "turnId": .init(native), "itemId": "a1"],
+        payload: ["type": "toolUse", "role": "tool", "item": ["title": "Look", "status": "completed"]]))
+    _ = await f.h.events.until(timeout: .seconds(5)) {
+      $0.filter { $0.kind == .turnStateChanged }.count > before
+    }
+    #expect(try await turnNow().openWork == 0)
+    await f.h.stop()
+  }
+
   @Test func anAgentSeenOnlyAtItsEndCountsNothing() async throws {
     await settle(agent(.toolCompleted, f.connection, f.thread, id: "a1", turn: native, status: "completed"))
     let turn = try await turnNow()
@@ -573,6 +590,25 @@ func agent(
     await back.stop()
   }
 
+  /// A count above zero with no agent item in progress (the coordinator died between an item's write and
+  /// its recount) is written straight to the turn's row before the restart; start-up recounts it.
+  @Test func startUpHealsACountWithNoOpenAgent() async throws {
+    let f = try await RuntimeTurnTests.Fixture.make()
+    let turn = try #require(try await f.turns().last)
+    let paths = f.h.coordinator.paths
+    _ = try f.h.coordinator.database.updateTurn(id: turn.id) { $0.openWork = 1 }
+    #expect(try f.h.coordinator.database.turnsWithOpenWork(threadId: f.thread.id).map(\.id) == [turn.id])
+    #expect(try openItems(f, f.thread).isEmpty)
+    await f.h.stop()
+    let back = try await Harness.start(paths: paths)
+    for _ in 0..<100 {
+      if try back.coordinator.database.turn(id: turn.id)?.openWork == 0 { break }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    #expect(try back.coordinator.database.turn(id: turn.id)?.openWork == 0)
+    await back.stop()
+  }
+
   /// The ids of a thread's agent items that are open now, as `start()` takes them.
   func openItems(_ f: RuntimeTurnTests.Fixture, _ thread: ConversationThread) throws -> [String: String] {
     var ids: [String: String] = [:]
@@ -641,11 +677,12 @@ actor StopLog {
 }
 
 /// Answers `interrupt` itself (the fake runtime knows nothing of a runtime turn) and records
-/// `stopOpenWork`, optionally throwing from it.
+/// `stopOpenWork`, optionally throwing from either.
 struct StoppingAdapter: AgentAdapter {
   let inner: InjectingAdapter
   let log: StopLog
   var failure: WorkspaceError?
+  var interruptFailure: WorkspaceError?
   var kind: ConnectionKind { inner.kind }
   func inspectConnection() async throws -> ConnectionInspection { try await inner.inspectConnection() }
   func createSession(_ input: NewSessionInput) async throws -> NativeSessionRef {
@@ -659,6 +696,7 @@ struct StoppingAdapter: AgentAdapter {
   }
   func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
     await log.interrupted(turn.nativeTurnId)
+    if let interruptFailure { throw interruptFailure }
     return StopReceipt(confirmed: true, outcome: nil)
   }
   func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
@@ -810,6 +848,23 @@ struct UnstoppableAdapter: AgentAdapter {
     #expect(await log.interrupts == ["rt-1"])
     let stored = try #require(try await f.turns().first { $0.nativeTurnId == "rt-1" })
     #expect(stored.status == .stopping)
+    await f.h.stop()
+  }
+
+  @Test func stopStillStopsOpenWorkWhenTheInterruptFails() async throws {
+    let refused = WorkspaceError(.endpointUnavailable, "the runtime did not answer")
+    let f = try await make { StoppingAdapter(inner: $0, log: $1, interruptFailure: refused) }
+    _ = try await openAgent(f)
+    await f.send(runtimeAck(f.connection, f.thread, turn: "rt-1"))
+    do {
+      _ = try await stop(f)
+      Issue.record("The interrupt's error must reach the caller")
+    } catch let error as WorkspaceError {
+      #expect(error.code == refused.code)
+      #expect(error.message == refused.message)
+    }
+    #expect(await log.interrupts == ["rt-1"])
+    #expect(await log.stops == [ref(f)])
     await f.h.stop()
   }
 
