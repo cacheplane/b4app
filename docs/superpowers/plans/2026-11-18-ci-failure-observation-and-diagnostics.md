@@ -203,7 +203,7 @@ The PR-only serial job will use the package job’s D-244 content-based file tim
 
 In run 44561587442 the compiler reported 227.53 and 383.70 seconds for the two serial builds. The corresponding package builds took 98.89 and 257.33 seconds on a separate runner. These observations motivate testing the cache change. Even with shorter preparation, the 35-minute aggregate limit would have allowed only 81 additional seconds on the recorded timeline. The 92 unobserved methods have unknown cost. Acceptance requires a terminal serial summary and complete method and parameter coverage.
 
-The branch inventory above describes the candidate based on 97bc. Main later assigned D-256 to paragraph line breaks in PR 237. The first bounded branch used D-257 for the CI decision. Main subsequently assigned D-257 to answered turns in PR 238. D-258 records the CI policy on this branch. Qualify the actual pull-request checkout against its ordered parents, including the changed Markdown tests on main.
+The branch inventory above describes the candidate based on 97bc. Main later assigned D-256 to paragraph line breaks in PR 237. The first bounded branch used D-257 for the CI decision. Main subsequently assigned D-257 to answered turns in PR 238. PR 239 then took D-258 for the transcript dock, and D-260 records the CI policy on this branch. Qualify the actual pull-request checkout against its ordered parents, including the changed Markdown tests on main.
 
 ### Package deadline on the first bounded run
 
