@@ -180,7 +180,7 @@ import WorkspaceProtocol
           Invocation(id: "k3", title: "migrate up", outcome: "Completed"),
         ],
         dense: [
-          "user: Migrate staging.", "line: 2 steps, 1 failed, Show", "note: Turn failed.", "user: Try again.",
+          "user: Migrate staging.", "line: 2 steps, 1 failed, Show", "user: Try again.",
           "line: 1 step, Show", "reply: The migration is applied.",
         ]))
   }

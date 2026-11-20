@@ -381,14 +381,21 @@ struct ActivityLineRow: View {
     var tone: Tone
   }
 
-  /// The text, "N failed" (danger, and only it) and "N declined", with a muted ", " between the parts
-  /// that are present, then an ended line's duration after " · ". The action word and the clock are not
-  /// part of it.
+  /// "N messages" and " · " when messages fold (D-261), then the text, "N failed" (danger, and only it)
+  /// and "N declined", with a muted ", " between the parts that are present, then an ended line's
+  /// duration after " · ". The action word and the clock are not part of it.
   var segments: [Segment] {
     var segments: [Segment] = []
+    if let messages = line.messagesText {
+      segments.append(Segment(text: messages, tone: .muted))
+      if line.text != nil || line.failedText != nil || line.declinedText != nil {
+        segments.append(Segment(text: " · ", tone: .muted))
+      }
+    }
+    let lead = segments.count
     func add(_ text: String?, _ tone: Segment.Tone) {
       guard let text else { return }
-      if !segments.isEmpty { segments.append(Segment(text: ", ", tone: .muted)) }
+      if segments.count > lead { segments.append(Segment(text: ", ", tone: .muted)) }
       segments.append(Segment(text: text, tone: tone))
     }
     add(line.text, .muted)
@@ -415,7 +422,7 @@ struct ActivityLineRow: View {
     } else {
       HStack(spacing: 0) {
         ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
-          if index == 0, line.text != nil {
+          if index == shrinking {
             styled(segment).lineLimit(1).truncationMode(.tail)
           } else {
             styled(segment).fixedSize()
@@ -428,9 +435,15 @@ struct ActivityLineRow: View {
     }
   }
 
+  /// Where `line.text` stands in `segments`: after "N messages · " when the line names messages.
+  private var shrinking: Int? {
+    guard line.text != nil else { return nil }
+    return line.messagesText == nil ? 0 : 2
+  }
+
   /// The line's words, as the screen reader has them ahead of the clock and the action.
   private var spokenWords: String {
-    [line.text, line.failedText, line.declinedText, line.durationText].compactMap { $0 }
+    [line.messagesText, line.text, line.failedText, line.declinedText, line.durationText].compactMap { $0 }
       .joined(separator: ", ")
   }
 }

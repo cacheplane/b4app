@@ -107,8 +107,56 @@ import WorkspaceProtocol
     #expect(steps.failedText == "1 failed")
     #expect(steps.declinedText == nil)
     #expect(steps.action(open: false) == "Show")
-    #expect(steps.spoken(open: false) == "4 steps, 1 failed, 1s, Show")
+    #expect(steps.messagesText == "1 message")
+    #expect(steps.spoken(open: false) == "1 message, 4 steps, 1 failed, 1s, Show")
     #expect(steps.folded.map(\.id) == ["r1", "c1", "c2", "c3", "a1", "k1"])
+  }
+
+  /// The line says when the agent's own words are folded behind it (D-261).
+  @Test func theLineCountsTheMessagesItFolds() throws {
+    let result = entries(
+      [user("u1"), message("a1"), command("c1"), message("a2"), toolUse("k1"), message("a3")],
+      turns: [turn()])
+    #expect(ids(result) == ["u1", "steps-t1", "a3"])
+    let steps = try #require(line(result))
+    #expect(steps.messages == 2)
+    #expect(steps.messagesText == "2 messages")
+    #expect(steps.text == "2 steps")
+    #expect(steps.spoken(open: false) == "2 messages, 2 steps, 1s, Show")
+  }
+
+  @Test func foldedMessagesAloneAreNamedAndNotShowWorking() throws {
+    let result = entries(
+      [user("u1"), message("a1"), reasoning("r1"), message("a2")], turns: [turn()])
+    let steps = try #require(line(result))
+    #expect(steps.text == nil)
+    #expect(steps.messagesText == "1 message")
+    #expect(steps.action(open: false) == "Show")
+    #expect(steps.action(open: true) == "Hide")
+  }
+
+  /// Not counted: a message with no text, a sub-agent's message, a thought and a plan.
+  @Test func onlyTheAgentsOwnWordsAreCounted() throws {
+    let result = entries(
+      [
+        user("u1"), message("e1", text: "  "), reasoning("r1"),
+        item(
+          "s1", role: .assistant, type: "agentMessage",
+          payload: ["text": "From the sub-agent.", "parentNativeItemId": "gone"]),
+        command("c1"), message("a1"),
+      ], turns: [turn()])
+    let steps = try #require(line(result))
+    #expect(steps.messages == 0)
+    #expect(steps.messagesText == nil)
+    #expect(steps.spoken(open: false) == "1 step, 1s, Show")
+  }
+
+  /// While a turn runs its messages are drawn, so the line names none.
+  @Test func aRunningLineNamesNoMessages() throws {
+    let result = entries(
+      [user("u1"), message("a1"), command("c1", status: "inProgress")],
+      turns: [turn("t1", .running, nil)])
+    #expect(try #require(line(result)).messagesText == nil)
   }
 
   @Test func oneStepIsSingular() throws {
@@ -187,6 +235,28 @@ import WorkspaceProtocol
     let result = entries(
       [user("u1"), message("a1"), tool("k1")], turns: [turn("t1", .terminal, .failed)])
     #expect(ids(result) == ["u1", "steps-t1", "note-t1"])
+  }
+
+  /// The line already says "1 failed": "Turn failed." under it says it twice (D-261).
+  @Test func aFailedTurnWhoseLineSaysFailedHasNoNote() throws {
+    let result = entries(
+      [user("u1"), command("c1"), command("c2", status: "failed"), message("a1")],
+      turns: [turn("t1", .terminal, .failed)])
+    #expect(ids(result) == ["u1", "steps-t1", "a1"])
+    #expect(try #require(line(result)).failedText == "1 failed")
+    // Opened, the same.
+    let open = entries(
+      [user("u1"), command("c1"), command("c2", status: "failed"), message("a1")],
+      turns: [turn("t1", .terminal, .failed)], open: ["t1"])
+    #expect(!ids(open).contains("note-t1"))
+  }
+
+  /// A stopped turn keeps its note whatever its steps did: the line never says "stopped".
+  @Test func aStoppedTurnWithAFailedStepKeepsItsNote() {
+    let result = entries(
+      [user("u1"), command("c1", status: "failed"), message("a1")],
+      turns: [turn("t1", .terminal, .cancelled)])
+    #expect(ids(result) == ["u1", "steps-t1", "a1", "note-t1"])
   }
 
   @Test func aStoppedTurnWithAnAnswerEndsWithItsNote() {
@@ -340,8 +410,10 @@ import WorkspaceProtocol
     let result = entries(items, turns: [])
     #expect(ids(result) == ["u1", "steps-h-u1", "m1", "u2", "steps-h-u2", "m3"])
     #expect(try #require(line(result, "h-u1")).text == "2 steps")
+    // The second group folds a thought and a message: the message is what the line names.
     #expect(try #require(line(result, "h-u2")).text == nil)
-    #expect(try #require(line(result, "h-u2")).action(open: false) == "Show working")
+    #expect(try #require(line(result, "h-u2")).messagesText == "1 message")
+    #expect(try #require(line(result, "h-u2")).action(open: false) == "Show")
   }
 
   @Test func aTurnlessItemJoinsTheGroupBeforeIt() throws {
@@ -629,12 +701,13 @@ import WorkspaceProtocol
     let items = [
       user("u1"), tool("k1", status: "inProgress"),
       user("u2", turn: "t2"), tool("k2", turn: "t2"), message("m2", turn: "t2"),
+      // Its line says "1 failed", so it has no note.
       user("u3", turn: "t3"), tool("k3", turn: "t3", status: "failed"),
     ]
     let turns = [turn("t1", .terminal, .cancelled), turn("t2"), turn("t3", .terminal, .failed)]
     #expect(
       ids(entries(items, turns: turns))
-        == ["u1", "steps-t1", "note-t1", "u2", "steps-t2", "m2", "u3", "steps-t3", "note-t3"])
+        == ["u1", "steps-t1", "note-t1", "u2", "steps-t2", "m2", "u3", "steps-t3"])
   }
 
   @Test func theStateWordsAreWordsAndUnknownStatusesAreSpokenAsTheyAre() {

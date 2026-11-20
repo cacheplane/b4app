@@ -89,13 +89,13 @@
 
     private func line(
       counted: Int = 4, failed: Int = 0, state: DenseTranscript.ActivityLine.State = .ended,
-      name: String? = nil, folded: Int = 1, duration: Int? = nil
+      name: String? = nil, folded: Int = 1, duration: Int? = nil, messages: Int = 0
     ) -> DenseTranscript.ActivityLine {
       DenseTranscript.ActivityLine(
         group: "t1",
         folded: (0..<folded).map {
           item("f\($0)", role: .assistant, type: "reasoning")
-        }, counted: counted, failed: failed, declined: 0, state: state, runningName: name,
+        }, messages: messages, counted: counted, failed: failed, declined: 0, state: state, runningName: name,
         startedAt: state == .ended ? nil : Timestamp.now(), duration: duration)
     }
 
@@ -191,6 +191,22 @@
       #expect(height(lineRow(line(state: .stopping, folded: 0)), width: 320) == plain)
       // The action word is part of the label whatever the name's length.
       #expect(cut.label.hasSuffix(", Show"))
+    }
+
+    /// "2 messages · 4 steps, 1 failed · 1m 12s", and "1 message" alone when only a message folds: a
+    /// line with no counted step has no duration, as before.
+    @Test func foldedMessagesLeadTheLine() {
+      typealias Segment = ActivityLineRow.Segment
+      let both = line(counted: 4, failed: 1, duration: 72, messages: 2)
+      #expect(
+        lineRow(both).segments.map(\.text) == [
+          "2 messages", " · ", "4 steps", ", ", "1 failed", " · ", "1m 12s",
+        ])
+      #expect(lineRow(both).segments.first == Segment(text: "2 messages", tone: .muted))
+      let alone = line(counted: 0, duration: 9, messages: 1)
+      #expect(lineRow(alone).segments.map(\.text) == ["1 message"])
+      // A running line names none.
+      #expect(lineRow(line(counted: 0, state: .running, messages: 2)).segments.map(\.text) == ["Working"])
     }
 
     @Test func onlyTheFailedCountIsInDanger() {
