@@ -78,8 +78,8 @@ From a survey of the runtimes' own clients, open-source clients and the agent-to
 A turn row the session service inserts when the runtime acknowledges a turn nobody sent:
 
 - The trigger is a `turn.acknowledged` event whose payload says `origin: "runtime"`, on a known thread, with a native turn id that matches no row. The adapter sets it only for a turn it did not send. Without it the event is a sent turn's acknowledgement, as today.
-- A runtime turn row is made only when the thread has no unfinished turn. A runtime acknowledgement that arrives while one exists makes no row: its events join that turn, and the session service logs it (the adapters' folding, below, should already have prevented it).
-- The row has `operationId` `runtime:<thread id>:<nativeTurnId>` (the column is unique across all threads, and some runtimes number turns per thread) (the column is unique and required on the Mac and the phone), status `running`, submission `acknowledged`, and no user message.
+- A runtime turn row is made only when the thread has no unfinished turn. A runtime acknowledgement that arrives while one exists makes no row: its item and request events join that turn, its turn-state events change no turn, and the session service logs it (the adapters' folding, below, should already have prevented it).
+- The row has status `running`, submission `acknowledged`, no user message, and `operationId` `runtime:<thread id>:<nativeTurnId>`. The thread id is in it because the column is required and unique across all threads on the Mac and the phone, and some runtimes number turns per thread.
 - From there it is an ordinary turn: state changes, items, the finish, requests, sync and notification all follow the existing paths.
 
 ### One unfinished turn
@@ -108,6 +108,13 @@ An adapter-neutral contract, read by the session service and the transcript:
 - Every item the agent produces carries `parentNativeItemId` naming the agent's item, and the native turn id of the turn that started the agent, whichever turn is active when it arrives.
 
 An agent's own messages are rows under it, in both runtimes, and its last text message is also its `output`.
+
+What an adapter owes the coordinator:
+
+- Agent items arrive as `tool.started` and `tool.completed`; only those two kinds recount a turn's open work.
+- An agent left in progress by a turn that was interrupted or failed is closed by the adapter.
+- A background agent's permission request is resolved by the adapter when the agent ends or is stopped; otherwise only a session exit expires it.
+- `stopOpenWork` is safe to call when nothing is open.
 
 Open agents are closed as `stopped`, and the count returns to 0, in three places: the coordinator, when an adapter reports a session's or a connection's exit; the coordinator at start-up, for any open work left behind; and the adapter, when it restarts or drops a session itself (the Claude restart path reports no exit today, so it must emit the closes).
 
