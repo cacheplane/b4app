@@ -291,7 +291,7 @@ nonisolated struct HistoricalActionCase: Sendable {
 /// Model-only regressions. Immediate scripted errors bound baseline execution; no provider, store,
 /// filesystem, network, holds, retries or production guard changes. The first managed run must show
 /// assertion RED for the unavailable predicates/action commands before their implementation changes.
-@MainActor @Suite struct AgentProtocolHistoricalActionTests {
+@MainActor @Suite(.serialized) struct AgentProtocolHistoricalActionTests {
   @Test(arguments: [false, true], HistoricalActionFixture.unavailableIds)
   func historicalAndStagedControlsAreUnavailableWithoutAHostFailure(phone: Bool, id: String) async throws {
     try await HistoricalActionFixture.withModel(phone: phone, selected: id) { model, _, _ in

@@ -9,7 +9,8 @@ import WorkspaceProtocol
 
 /// Dormant comparison facts only. Native fixtures are not authenticated Hub observations, an
 /// account lease, an adapter admission, or permission to activate Agent Protocol.
-@Suite struct ProtocolActivationStoreTests {
+@Suite(OrdinaryProtocolStorageSuite.scheduling, OrdinaryProtocolStorageSuite())
+struct ProtocolActivationStoreTests {
   private static let key = "__b4app_agent_protocol_activation_v1"
   private static let message = "The protocol verification comparison could not be completed."
   private static let base = "https://example.invalid/Deployment"

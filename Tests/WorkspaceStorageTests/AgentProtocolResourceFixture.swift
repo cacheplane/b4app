@@ -112,7 +112,7 @@ enum NativeDBCaseExecutorScope {
   @TaskLocal static var current: NativeDBCaseExecutor? = nil
 }
 
-/// One concurrent resource per executing test case; actor isolation and runner ownership remain intact.
+/// A concurrent queue for a native test scope; actor isolation and runner ownership remain intact.
 /// This is an executor preference, not a deadline or a join of unstructured descendants.
 final class NativeDBCaseExecutor: TaskExecutor {
   private struct QueueState: Sendable {
@@ -160,6 +160,32 @@ final class NativeDBCaseExecutor: TaskExecutor {
   }
 }
 
+/// The two large storage suites each run one everyday case at a time. Their blocking database
+/// calls share a suite executor, while concurrent work within each case can still make progress.
+struct OrdinaryProtocolStorageSuite: SuiteTrait, TestScoping {
+  static var scheduling: any SuiteTrait {
+    if ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1" {
+      return ConditionTrait.enabled(if: true)
+    }
+    return ParallelizationTrait.serialized
+  }
+
+  func scopeProvider(for test: Test, testCase: Test.Case?) -> Self? {
+    guard test.isSuite, testCase == nil,
+      ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] != "1"
+    else { return nil }
+    return self
+  }
+
+  func provideScope(
+    for test: Test, testCase: Test.Case?,
+    performing function: @concurrent @Sendable () async throws -> Void
+  ) async throws {
+    let executor = NativeDBCaseExecutor()
+    try await withTaskExecutorPreference(executor) { try await function() }
+  }
+}
+
 struct NativeDBResources: TestTrait, SuiteTrait, TestScoping {
   var isRecursive: Bool { true }
 
@@ -167,7 +193,7 @@ struct NativeDBResources: TestTrait, SuiteTrait, TestScoping {
     for test: Test, testCase: Test.Case?,
     performing function: @concurrent @Sendable () async throws -> Void
   ) async throws {
-    // Everyday tests use Swift Testing's executor. Qualification observes native queue scheduling.
+    // Keep the enclosing executor in everyday tests. Qualification observes per-case scheduling.
     guard ProcessInfo.processInfo.environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1" else {
       try await function()
       return

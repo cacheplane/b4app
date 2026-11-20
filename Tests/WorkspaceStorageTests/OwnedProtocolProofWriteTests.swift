@@ -16,7 +16,8 @@ extension Trait where Self == ConditionTrait {
 
 /// Native fixture and dormant owned-bind expectations. These comparisons establish no HTTP,
 /// authenticated owner, account lease, runtime admission, or native quiescence authority.
-@Suite struct OwnedProtocolProofWriteTests {
+@Suite(OrdinaryProtocolStorageSuite.scheduling, OrdinaryProtocolStorageSuite())
+struct OwnedProtocolProofWriteTests {
   private static let key = "__b4app_agent_protocol_activation_v1"
   private static let base = "https://example.invalid/OwnedProof"
   private static let stamp = "2026-11-13T00:00:00.000Z"
