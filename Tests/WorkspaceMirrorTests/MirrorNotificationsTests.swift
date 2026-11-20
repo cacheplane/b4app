@@ -99,7 +99,7 @@ private func turnRow(_ id: String, thread: String, created: String) throws -> JS
     let fixture = try AttentionFixture.load()
     let store = try fixture.store()
     let expected = fixture.expected.bands.values.filter { $0 == "needsInput" || $0 == "unread" }.count
-    #expect(expected == 5)
+    #expect(expected == 6)
     #expect(try store.needsYouCount() == expected)
     #expect(try MirrorStore.inMemory().needsYouCount() == 0)
   }

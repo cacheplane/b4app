@@ -9,7 +9,7 @@
 //! notified turn its thread's `readTurnId` now covers, and everything notified in a thread that
 //! was deleted. Each ledger row is withdrawn once (`withdrawn_at`). Every alert carries the
 //! badge, the number of threads that need the user, from the attention rules in SQL
-//! ([`bands`]), which follow `Attention.band(of:)` and are checked by the shared fixture.
+//! ([`bands`]), a coarser reading of `Attention.state(of:)` checked by the shared fixture.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -100,7 +100,7 @@ impl fmt::Debug for Refresh {
     }
 }
 
-/// Where a thread sits in the list, as `Attention.band(of:)` decides it.
+/// Where a thread sits in the list: four bands, a coarser reading of `Attention.state(of:)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Band {
     NeedsInput,
@@ -402,24 +402,31 @@ async fn withdraw(
 
 /// Every live thread of the user with its band and whether it is archived. A thread is left out
 /// when it is deleted (`deleted_at`) or the owner deleted it (`userDeletedAt`); deleted turns and
-/// requests do not count. The rule is `Attention.band(of:)`: needs input when any request of the
-/// thread is pending; else quiet with no turn; else working when the latest turn (greatest
-/// `createdAt`, ties by greatest `id`, timestamps compared bytewise) has not finished; else unread
-/// when that turn is not the thread's `readTurnId`; else quiet.
+/// requests do not count. The four bands are a coarser reading of the Swift rule,
+/// `Attention.state(of:)` (D-204, D-259): needs input when any request of the thread is pending;
+/// else quiet with no turn; else working when the latest turn (greatest `createdAt`, ties by
+/// greatest `id`, timestamps compared bytewise) has not finished; else working when the thread's
+/// live turns hold open work (the sum of their `openWork` above zero) unless the latest turn's
+/// outcome is `failed`; else unread when that turn is not the thread's `readTurnId`; else quiet.
 const BANDS: &str = "\
     SELECT t.\"id\" AS thread_id, COALESCE(t.\"archived\", false) AS archived, \
            CASE WHEN pr.n > 0 THEN 'needsInput' \
                 WHEN lt.\"status\" IS NULL THEN 'quiet' \
                 WHEN lt.\"status\" <> 'terminal' THEN 'working' \
+                WHEN ow.n > 0 AND lt.\"outcome\" IS DISTINCT FROM 'failed' THEN 'working' \
                 WHEN t.\"readTurnId\" IS DISTINCT FROM lt.\"id\" THEN 'unread' \
                 ELSE 'quiet' END AS band \
     FROM \"threads\" t \
     LEFT JOIN LATERAL ( \
-        SELECT u.\"id\", u.\"status\" FROM \"turns\" u \
+        SELECT u.\"id\", u.\"status\", u.\"outcome\" FROM \"turns\" u \
         WHERE u.org_id = t.org_id AND u.user_id = t.user_id AND u.\"threadId\" = t.\"id\" \
           AND u.deleted_at IS NULL \
         ORDER BY u.\"createdAt\" COLLATE \"C\" DESC NULLS LAST, u.\"id\" COLLATE \"C\" DESC \
         LIMIT 1) lt ON true \
+    CROSS JOIN LATERAL ( \
+        SELECT COALESCE(sum(u.\"openWork\"), 0) AS n FROM \"turns\" u \
+        WHERE u.org_id = t.org_id AND u.user_id = t.user_id AND u.\"threadId\" = t.\"id\" \
+          AND u.deleted_at IS NULL) ow \
     CROSS JOIN LATERAL ( \
         SELECT count(*) AS n FROM \"runtimeRequests\" r \
         WHERE r.org_id = t.org_id AND r.user_id = t.user_id AND r.\"threadId\" = t.\"id\" \
@@ -461,15 +468,19 @@ pub async fn needs_you_count(conn: &mut PgConnection, org_id: Uuid, user_id: Uui
 /// What the rules need to know about one changed row.
 struct Subject {
     reason: Reason,
+    /// The row the notification is keyed by: the touched row, or for a reply the thread's latest
+    /// turn.
+    row_id: String,
     thread_id: String,
     title: String,
 }
 
 /// Decides, for each row a push applied (`touched`, in batch order and without repeats), whether
 /// it notifies, records the decision in the ledger, and returns one [`Notification`] per
-/// registered phone of the user (other than the pusher's own device) for every row the ledger
-/// had not seen (its badge still 0), with the keys of those new ledger rows and the threads of
-/// the turns the rules say notify (without repeats). Runs in the push's transaction. A row whose
+/// registered phone of the user (other than the pusher's own device) for every notification the
+/// ledger had not seen (its badge still 0; a touched turn can cause two, see [`subjects`]), with
+/// the keys of those new ledger rows and the threads of the turns the rules say notify (without
+/// repeats). Runs in the push's transaction. A row whose
 /// time cannot be read is treated as not recent rather than failing the batch.
 async fn detect(
     tx: &mut Transaction<'_, Postgres>,
@@ -483,8 +494,8 @@ async fn detect(
     for (kind, row_id) in touched {
         // A savepoint per row, so a timestamp the cast refuses costs that row only.
         let mut savepoint = tx.begin().await?;
-        let subject = match subject(&mut savepoint, auth, *kind, row_id).await {
-            Ok(subject) => subject,
+        let subjects = match subjects(&mut savepoint, auth, *kind, row_id).await {
+            Ok(subjects) => subjects,
             Err(Error::Sqlx(error)) if is_data_error(&error) => {
                 savepoint.rollback().await?;
                 continue;
@@ -492,12 +503,12 @@ async fn detect(
             Err(error) => return Err(error),
         };
         savepoint.commit().await?;
-        let Some(subject) = subject else { continue };
-        if *kind == Kind::Turn && !turn_threads.contains(&subject.thread_id) {
-            turn_threads.push(subject.thread_id.clone());
-        }
+        for subject in subjects {
+            if *kind == Kind::Turn && !turn_threads.contains(&subject.thread_id) {
+                turn_threads.push(subject.thread_id.clone());
+            }
 
-        let fresh: Option<i32> = sqlx::query_scalar(
+            let fresh: Option<i32> = sqlx::query_scalar(
             "INSERT INTO notifications_sent (org_id, kind, row_id, user_id, thread_id, reason) \
              VALUES ($1, $2, $3, $4, $5, $6) \
              ON CONFLICT (org_id, kind, row_id) DO NOTHING \
@@ -505,49 +516,56 @@ async fn detect(
         )
         .bind(auth.org_id)
         .bind(kind.as_str())
-        .bind(row_id)
+        .bind(&subject.row_id)
         .bind(auth.user_id)
         .bind(&subject.thread_id)
         .bind(subject.reason.as_str())
         .fetch_optional(&mut **tx)
         .await?;
-        if fresh.is_none() {
-            continue;
-        }
-        let key = key(*kind, row_id);
-        fresh_keys.push(key.clone());
+            if fresh.is_none() {
+                continue;
+            }
+            let key = key(*kind, &subject.row_id);
+            fresh_keys.push(key.clone());
 
-        if told.is_none() {
-            told = Some(phones(tx, auth, Some(auth.device_id)).await?);
-        }
-        for phone in told.iter().flatten() {
-            notifications.push(Notification {
-                device_id: phone.device_id,
-                token: phone.token.clone(),
-                environment: phone.environment.clone(),
-                bundle_id: phone.bundle_id.clone(),
-                thread_id: subject.thread_id.clone(),
-                title: subject.title.clone(),
-                reason: subject.reason,
-                key: key.clone(),
-                badge: 0,
-            });
+            if told.is_none() {
+                told = Some(phones(tx, auth, Some(auth.device_id)).await?);
+            }
+            for phone in told.iter().flatten() {
+                notifications.push(Notification {
+                    device_id: phone.device_id,
+                    token: phone.token.clone(),
+                    environment: phone.environment.clone(),
+                    bundle_id: phone.bundle_id.clone(),
+                    thread_id: subject.thread_id.clone(),
+                    title: subject.title.clone(),
+                    reason: subject.reason,
+                    key: key.clone(),
+                    badge: 0,
+                });
+            }
         }
     }
     Ok((notifications, fresh_keys, turn_threads))
 }
 
-/// Reads the row (scoped to the org and the pushing user) with its thread's title and applies
-/// the rules. `None` when the row is gone or deleted (D-089: `deleted_at` set), has no thread to
-/// open, or the rules say no. A row whose thread is deleted (`deleted_at`, or the owner's
-/// `userDeletedAt`, D-119) never notifies either: a deleted thread cannot be opened, so the alert
-/// would lead nowhere.
-async fn subject(
+/// Reads the touched row (scoped to the org and the pushing user) with its thread's title and
+/// applies the rules, returning the notifications it may cause, in order. Empty when the row is
+/// gone or deleted (D-089: `deleted_at` set), has no thread to open, or the rules say no. A row
+/// whose thread is deleted (`deleted_at`, or the owner's `userDeletedAt`, D-119) never notifies
+/// either: a deleted thread cannot be opened, so the alert would lead nowhere. A request is keyed
+/// by the touched row. A touched turn has two candidates, each keyed and ledgered on its own:
+/// its own failure (terminal, failed and recent), keyed by the touched row, first; then a reply,
+/// keyed by the thread's latest live turn when that is a different row or the touched row did not
+/// fail: it needs that turn terminal and completed and the thread's summed open work to be zero,
+/// and the touched row supplies `recent`. So an earlier failed turn whose open work ends still
+/// announces the later reply it was holding back.
+async fn subjects(
     conn: &mut sqlx::postgres::PgConnection,
     auth: &AuthedDevice,
     kind: Kind,
     row_id: &str,
-) -> Result<Option<Subject>> {
+) -> Result<Vec<Subject>> {
     match kind {
         Kind::Request => {
             let row: Option<RequestRow> = sqlx::query_as(
@@ -574,7 +592,7 @@ async fn subject(
                 thread_deleted: false,
             }) = row
             else {
-                return Ok(None);
+                return Ok(Vec::new());
             };
             Ok(request_reason(
                 request_kind.as_deref().unwrap_or(""),
@@ -582,9 +600,12 @@ async fn subject(
             )
             .map(|reason| Subject {
                 reason,
+                row_id: row_id.to_string(),
                 thread_id,
                 title: alert_title(title.as_deref()),
-            }))
+            })
+            .into_iter()
+            .collect())
         }
         Kind::Turn => {
             let row: Option<TurnRow> = sqlx::query_as(
@@ -594,10 +615,23 @@ async fn subject(
                             AS thread_deleted, \
                         CASE WHEN u.\"updatedAt\" ~ '^\\d{4}-\\d{2}-\\d{2}T' \
                              THEN u.\"updatedAt\"::timestamptz > now() - make_interval(secs => $4) \
-                             ELSE false END AS recent \
+                             ELSE false END AS recent, \
+                        lt.\"id\" AS latest_id, lt.\"status\" AS latest_status, \
+                        lt.\"outcome\" AS latest_outcome, ow.n AS open_work \
                  FROM \"turns\" u \
                  LEFT JOIN \"threads\" t ON t.org_id = u.org_id AND t.user_id = u.user_id \
                                         AND t.\"id\" = u.\"threadId\" \
+                 LEFT JOIN LATERAL ( \
+                     SELECT l.\"id\", l.\"status\", l.\"outcome\" FROM \"turns\" l \
+                     WHERE l.org_id = u.org_id AND l.user_id = u.user_id \
+                       AND l.\"threadId\" = u.\"threadId\" AND l.deleted_at IS NULL \
+                     ORDER BY l.\"createdAt\" COLLATE \"C\" DESC NULLS LAST, \
+                              l.\"id\" COLLATE \"C\" DESC \
+                     LIMIT 1) lt ON true \
+                 CROSS JOIN LATERAL ( \
+                     SELECT COALESCE(sum(o.\"openWork\"), 0)::bigint AS n FROM \"turns\" o \
+                     WHERE o.org_id = u.org_id AND o.user_id = u.user_id \
+                       AND o.\"threadId\" = u.\"threadId\" AND o.deleted_at IS NULL) ow \
                  WHERE u.org_id = $1 AND u.user_id = $2 AND u.\"id\" = $3 \
                    AND u.deleted_at IS NULL",
             )
@@ -614,19 +648,53 @@ async fn subject(
                 title,
                 thread_deleted: false,
                 recent,
+                latest_id,
+                latest_status,
+                latest_outcome,
+                open_work,
             }) = row
             else {
-                return Ok(None);
+                return Ok(Vec::new());
             };
-            Ok(
-                turn_reason(status.as_deref().unwrap_or(""), outcome.as_deref(), recent).map(
-                    |reason| Subject {
+            let at_rest = open_work == 0;
+            let title = alert_title(title.as_deref());
+            let mut found = Vec::new();
+            // A failure notifies for the turn that failed, open work or not.
+            let failed = turn_reason(
+                status.as_deref().unwrap_or(""),
+                outcome.as_deref(),
+                recent,
+                at_rest,
+            ) == Some(Reason::Failed);
+            if failed {
+                found.push(Subject {
+                    reason: Reason::Failed,
+                    row_id: row_id.to_string(),
+                    thread_id: thread_id.clone(),
+                    title: title.clone(),
+                });
+            }
+            // A reply notifies for the thread's latest turn, once the thread is at rest; recency
+            // is the touched row's, so open work ending late still notifies. A touched turn that
+            // is itself the latest and failed has only its failure.
+            if let Some(latest_id) = latest_id.filter(|id| !(failed && id == row_id)) {
+                let reply = turn_reason(
+                    latest_status.as_deref().unwrap_or(""),
+                    latest_outcome.as_deref(),
+                    recent,
+                    at_rest,
+                )
+                .filter(|reason| *reason == Reason::Replied);
+                if let Some(reason) = reply {
+                    found.push(Subject {
                         reason,
+                        row_id: latest_id,
                         thread_id,
-                        title: alert_title(title.as_deref()),
-                    },
-                ),
-            )
+                        title,
+                    });
+                }
+            }
+            Ok(found)
         }
     }
 }
@@ -648,4 +716,8 @@ struct TurnRow {
     title: Option<String>,
     thread_deleted: bool,
     recent: bool,
+    latest_id: Option<String>,
+    latest_status: Option<String>,
+    latest_outcome: Option<String>,
+    open_work: i64,
 }

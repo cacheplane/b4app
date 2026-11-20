@@ -32,10 +32,13 @@ pub async fn prune(db: &Db, org_id: Uuid, older_than: Duration) -> Result<i64> {
     .fetch_one(&mut *tx)
     .await?;
     // The notification ledger keeps the same retention, whether or not any change was old
-    // enough. A turn notifies only within ten minutes of its last update, so a ledger row
-    // outlives the chance of a duplicate by days. A request has no such window: one still
-    // pending after its ledger row ages out (the retention, 30 days by default) and pushed
-    // again would notify a second time. That is accepted.
+    // enough. A failed turn notifies only within ten minutes of its own last update, so its
+    // ledger row outlives the chance of a duplicate by days. A reply has no such window: it is
+    // keyed by the thread's latest turn while recency is the touched row's, so after its ledger
+    // row ages out a fresh touch of any turn of a thread whose latest reply is still completed,
+    // unread and at rest notifies again. A request has none either: one still pending after its
+    // ledger row ages out (the retention, 30 days by default) and pushed again would notify a
+    // second time. Both are accepted.
     sqlx::query(
         "DELETE FROM notifications_sent \
          WHERE org_id = $1 AND sent_at < now() - make_interval(secs => $2)",

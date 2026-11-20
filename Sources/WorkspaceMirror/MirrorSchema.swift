@@ -80,6 +80,7 @@ enum MirrorSchema {
   static let migrations: [(version: Int, statements: [String])] = [
     (1, version1), (2, version2), (3, version3), (4, version4), (5, version5), (6, version6),
     (7, version7), (8, version8), (9, version9), (10, version10),
+    (11, version11),
   ]
 
   /// M8a's schema.
@@ -352,5 +353,14 @@ enum MirrorSchema {
       "quietThreads" = CASE "quietThreads" WHEN 'small' THEN 'shown' WHEN 'tiny' THEN 'shown' ELSE "quietThreads" END
     WHERE "quietThreads" IN ('small', 'tiny', 'collapsed', 'hidden')
     """,
+  ]
+
+  /// Open work and origin: how many background tasks and sub-agents a turn left running, and what
+  /// started the turn when it was not the owner's message. Both nullable, since a Mac from before them
+  /// does not send them (and an insert that lacks a column sets it to NULL); a null `openWork` reads
+  /// as 0.
+  static let version11 = [
+    #"ALTER TABLE "turns" ADD COLUMN "openWork" INTEGER"#,
+    #"ALTER TABLE "turns" ADD COLUMN "origin" TEXT"#,
   ]
 }

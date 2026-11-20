@@ -112,6 +112,7 @@ private func requestRow(
         latestTurnId: latest?.id, latestTurnStatus: latest?.status, latestTurnOutcome: latest?.outcome,
         pendingRequests: own.filter { $0.state == .pending }.count,
         pendingApprovals: own.filter { $0.state == .pending && $0.kind.isApproval }.count,
+        openWork: turns.filter { $0.threadId == thread.id }.reduce(0) { $0 + $1.openWork },
         lastActivityAt: stamps.max()!)
       #expect(try store.thread(id: thread.id)?.activity == expected, "\(thread.id)")
     }
@@ -147,6 +148,27 @@ private func requestRow(
     }
     #expect(listed?.activity == after)
     #expect(listed.map(Attention.state(of:)) == .approve)
+  }
+
+  @Test func openWorkIsSummedOverTheThreadsTurns() throws {
+    let store = try AttentionFixture.load().store()
+    func openWork(_ thread: String) throws -> Int? { try store.thread(id: thread)?.activity?.openWork }
+    let before = try openWork("t-working")
+    #expect(before == 0)
+    let rows = try [("ow-a", 2), ("ow-b", 0), ("ow-c", 1)].map { id, n in
+      var turn = Turn(
+        id: id, threadId: "t-working", operationId: "op-\(id)", status: .terminal, outcome: .completed,
+        createdAt: "2026-11-01T09:0\(n):00Z", updatedAt: "2026-11-01T09:0\(n):00Z")
+      turn.openWork = n
+      return change("turns", id, "insert", value: try JSONValue(encoding: turn))
+    }
+    _ = try store.apply(rows)
+    #expect(try openWork("t-working") == 3)
+    let listed = try store.threads(includeArchived: true, connectionId: nil, query: nil).first {
+      $0.id == "t-working"
+    }
+    #expect(listed?.activity?.openWork == 3)
+    #expect(try openWork("t-no-turns") == 0)
   }
 
   @Test func threadsFilterByEnvironment() throws {

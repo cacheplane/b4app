@@ -106,6 +106,44 @@ func change(
     #expect(try store.items(threadId: "thread-1").count == 3)
   }
 
+  /// A turn insert with only the ten keys an older Mac sends.
+  private func oldTurnRow(_ id: String) throws -> JSONValue {
+    let turn = Turn(
+      id: id, threadId: "thread-1", operationId: "op-\(id)", status: .terminal, outcome: .completed,
+      createdAt: "2026-11-01T09:00:00Z", updatedAt: "2026-11-01T09:00:00Z")
+    guard case .object(var members) = try JSONValue(encoding: turn) else { return .null }
+    members["openWork"] = nil
+    members["origin"] = nil
+    return .object(members)
+  }
+
+  @Test func aTurnInsertFromAnOlderMacReadsAsNoOpenWork() throws {
+    let store = try MirrorStore.inMemory()
+    _ = try store.apply(try fixtureAsStored())
+    let row = try oldTurnRow("turn-old")
+    #expect(try store.apply([change("turns", "turn-old", "insert", value: row)]).skipped == 0)
+    // The same row again: the conflict path sets the columns it does not carry to NULL.
+    #expect(try store.apply([change("turns", "turn-old", "insert", value: row)]).skipped == 0)
+    let stored = try #require(try store.turns(threadId: "thread-1").first { $0.id == "turn-old" })
+    #expect(stored.openWork == 0)
+    #expect(stored.origin == nil)
+  }
+
+  @Test func aTurnInsertCarriesOpenWorkAndOrigin() throws {
+    let store = try MirrorStore.inMemory()
+    _ = try store.apply(try fixtureAsStored())
+    guard case .object(var members) = try oldTurnRow("turn-new") else { return }
+    members["openWork"] = 2
+    members["origin"] = "task-notification"
+    _ = try store.apply([change("turns", "turn-new", "insert", value: .object(members))])
+    func stored() throws -> Turn? { try store.turns(threadId: "thread-1").first { $0.id == "turn-new" } }
+    #expect(try stored()?.openWork == 2)
+    #expect(try stored()?.origin == "task-notification")
+    _ = try store.apply([change("turns", "turn-new", "update", column: "openWork", value: 0)])
+    #expect(try stored()?.openWork == 0)
+    #expect(try stored()?.origin == "task-notification")
+  }
+
   @Test func connectionRowsNeverCarrySecretsOrPaths() throws {
     let path = NSTemporaryDirectory() + "mirror-\(UUID().uuidString.prefix(8)).sqlite"
     defer { Self.remove(path) }

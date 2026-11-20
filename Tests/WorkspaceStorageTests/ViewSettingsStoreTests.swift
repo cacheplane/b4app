@@ -228,7 +228,7 @@ private func viewChanges(_ db: WorkspaceDatabase) throws -> [ChangeRecord] {
     #expect(before.changes == "1")
 
     let db = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
-    #expect(try db.appliedMigrations().last == "0015_density")
+    #expect(try db.appliedMigrations().last == "0016_turn_open_work")
     let stored = try #require(try storedRow(db))
     #expect(stored["quietThreads"] == .some(row.quietThreads))
     #expect(stored["density"] == .some(row.density))
