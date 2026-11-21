@@ -95,6 +95,7 @@ public actor SessionService {
         }
       }
     }
+    var leftBehind: [String: [String]] = [:]
     do {
       _ = try db.expireAllRuntimeRequests()
       for turn in try db.unresolvedTurns() where turn.status != .reconciling {
@@ -106,6 +107,19 @@ public actor SessionService {
     } catch {
       logger.error("startup reconciliation failed: \(String(describing: error), privacy: .public)")
     }
+    // The agents that ran in a process that did not survive can never end. They are taken here, before
+    // any session can start, and closed as stopped beside `start()`; an agent opened later is not theirs.
+    // Every thread with a turn that counts open work is taken, even with no agent in progress (a count
+    // left behind by a recount that never ran), so the close's recount brings that count back to zero.
+    do {
+      leftBehind = try openAgentItems()
+      for turn in try db.turnsWithOpenWork() where leftBehind[turn.threadId] == nil {
+        leftBehind[turn.threadId] = []
+      }
+    } catch {
+      logger.error("startup open work read failed: \(String(describing: error), privacy: .public)")
+    }
+    startOpenWorkClose(leftBehind)
     startThreadDeleteSweep()
     readMissingCommands()
   }
@@ -1073,28 +1087,59 @@ public actor SessionService {
 
   public func turnInterrupt(_ params: TurnInterrupt.Params) async throws -> TurnSend.Result {
     let (thread, _, adapter) = try threadContext(id: params.threadId)
-    guard let active = try db.activeTurn(threadId: thread.id) else {
+    let active = try db.activeTurn(threadId: thread.id)
+    let openWork = try db.turnsWithOpenWork(threadId: thread.id)
+    guard active != nil || !openWork.isEmpty else {
       throw WorkspaceError(.notFound, "No turn is active on this thread.")
     }
-    guard let nativeTurnId = active.nativeTurnId else {
-      throw WorkspaceError(
-        .cancellationUnconfirmed,
-        "The turn has not been acknowledged by the runtime yet; try again in a moment.")
-    }
     let ref = NativeSessionRef(nativeSessionId: thread.nativeThreadId, nativeScope: thread.nativeScope)
-    let receipt = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: nativeTurnId))
-    let turn =
-      try db.updateTurn(id: active.id) {
-        if $0.status != .terminal {
-          $0.status = .stopping
-          if let outcome = receipt.outcome {
-            $0.status = .terminal
-            $0.outcome = outcome
-          }
-        }
-      } ?? active
-    await publishTurn(turn.status == .terminal ? .turnFinished : .turnStateChanged, turn, thread: thread)
-    return TurnSend.Result(turn: turn)
+    var result: Turn?
+    var failure: (any Error)?
+    if let active {
+      guard let nativeTurnId = active.nativeTurnId else {
+        throw WorkspaceError(
+          .cancellationUnconfirmed,
+          "The turn has not been acknowledged by the runtime yet; try again in a moment.")
+      }
+      var receipt: StopReceipt?
+      do {
+        receipt = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: nativeTurnId))
+      } catch {
+        // With nothing open the interrupt's error is the whole answer, as before.
+        guard try !db.turnsWithOpenWork(threadId: thread.id).isEmpty else { throw error }
+        failure = error
+      }
+      if let receipt {
+        let turn =
+          try db.updateTurn(id: active.id) {
+            if $0.status != .terminal {
+              $0.status = .stopping
+              if let outcome = receipt.outcome {
+                $0.status = .terminal
+                $0.outcome = outcome
+              }
+            }
+          } ?? active
+        await publishTurn(turn.status == .terminal ? .turnFinished : .turnStateChanged, turn, thread: thread)
+        result = turn
+      }
+    }
+    // The agents close when the adapter's events say so, not here. Whether any are open is read again
+    // after the interrupt, which may have taken a while. A failed interrupt still asks them to stop, and
+    // the first error is thrown only now, after the active turn's update (if any) is stored and published.
+    let openNow = try db.turnsWithOpenWork(threadId: thread.id)
+    if !openNow.isEmpty {
+      do {
+        try await adapter.stopOpenWork(ref)
+      } catch {
+        if failure == nil { failure = error }
+      }
+    }
+    if let failure { throw failure }
+    guard let result = result ?? openNow.last ?? openWork.last else {
+      throw WorkspaceError(.notFound, "No turn is active on this thread.")
+    }
+    return TurnSend.Result(turn: result)
   }
 
   // MARK: - Lifecycle (spec 10.3)
@@ -1294,6 +1339,35 @@ public actor SessionService {
     }
   }
 
+  /// The native turn ids of runtime turns that were refused a row (an unfinished turn existed), per
+  /// thread, so the turn-state events that follow them join no turn. A thread's set is dropped lazily,
+  /// in `resolveTurn`, when an event that names no known turn arrives while the thread has no active turn.
+  private var refusedRuntimeTurns: [String: Set<String>] = [:]
+
+  /// The turn an adapter event belongs to: the one with its native id, else (when the event names no
+  /// turn, is an item, is not a turn-state event, or the active turn has no native id yet and the id
+  /// was not refused a row) the active turn. A stray turn-state event ends no turn.
+  private func resolveTurn(for raw: AdapterEvent, thread: ConversationThread) throws -> Turn? {
+    let nativeTurnId = raw.nativeIds["turnId"]
+    if let nativeTurnId, let known = try db.turn(threadId: thread.id, nativeTurnId: nativeTurnId) {
+      return known
+    }
+    let active = try db.activeTurn(threadId: thread.id)
+    if active == nil { refusedRuntimeTurns[thread.id] = nil }
+    guard let nativeTurnId else { return active }
+    switch raw.kind {
+    case .turnAcknowledged, .turnStateChanged, .turnFinished:
+      if active?.nativeTurnId == nil, refusedRuntimeTurns[thread.id]?.contains(nativeTurnId) != true {
+        return active
+      }
+      logger.info(
+        "\(raw.kind.rawValue, privacy: .public) names unknown turn \(nativeTurnId, privacy: .public)")
+      return nil
+    default:
+      return active
+    }
+  }
+
   private func environment(_ incoming: AdapterEvent) async {
     // D-035: the coordinator is the redaction boundary. Adapters forward what runtimes say (stderr
     // tails, error messages); nothing of that leaves here unmasked.
@@ -1305,22 +1379,42 @@ public actor SessionService {
     var event = raw
     var thread: ConversationThread?
     var turn: Turn?
+    var recount: String?  // the turn whose open work an agent item just changed
     do {
       if let nativeThreadId = raw.nativeIds["threadId"] {
         thread = try db.thread(connectionId: raw.connectionId, nativeThreadId: nativeThreadId)
       }
-      if let thread {
-        if let nativeTurnId = raw.nativeIds["turnId"] {
-          turn = try db.turn(threadId: thread.id, nativeTurnId: nativeTurnId)
-        }
-        if turn == nil { turn = try db.activeTurn(threadId: thread.id) }
-      }
+      if let thread { turn = try resolveTurn(for: raw, thread: thread) }
       event.threadId = thread?.id
       event.turnId = turn?.id
       switch raw.kind {
       case .connectionChanged:
         try await environmentConnectionChanged(raw)
       case .turnAcknowledged:
+        // A turn the runtime started itself gets a row of its own, never the owner's unfinished turn.
+        if raw.payload["origin"]?.stringValue == "runtime", let thread,
+          let nativeTurnId = raw.nativeIds["turnId"],
+          try db.turn(threadId: thread.id, nativeTurnId: nativeTurnId) == nil
+        {
+          if try db.activeTurn(threadId: thread.id) == nil {
+            let made = try db.insertTurn(
+              Turn(
+                id: UUID().uuidString.lowercased(), threadId: thread.id,
+                operationId: "runtime:\(thread.id):\(nativeTurnId)", nativeTurnId: nativeTurnId,
+                status: .running,
+                submission: .acknowledged, origin: "runtime"))
+            turn = made
+            event.turnId = made.id
+            event.payload = merge(raw.payload, ["turn": try JSONValue(encoding: made)])
+            break
+          }
+          refusedRuntimeTurns[thread.id, default: []].insert(nativeTurnId)
+          event.turnId = nil  // the owner's turn is the active one, but this acknowledgement is not its
+          logger.error(
+            "runtime turn \(nativeTurnId, privacy: .public) acknowledged while a turn is unfinished; no row made"
+          )
+          break
+        }
         // A late acknowledgement of a turn that ended changes nothing, and `updateTurn` would still move
         // `updatedAt`, which is when the turn ended (the line's duration reads it).
         if let turn, let thread, turn.status != .terminal {
@@ -1344,6 +1438,12 @@ public actor SessionService {
         }
         if let item = try environmentItem(raw, thread: thread, turn: turn) {
           event.payload = merge(raw.payload, ["displayItem": try JSONValue(encoding: item)])
+          // A completion replaces the payload, so one that leaves out `agent` still recounts a turn
+          // whose count is above zero.
+          if raw.kind == .toolStarted || raw.kind == .toolCompleted, let turnId = item.turnId {
+            let counted = try db.turn(id: turnId)?.openWork ?? 0
+            if item.payload["agent"]?.boolValue == true || counted > 0 { recount = turnId }
+          }
         } else {
           return
         }
@@ -1360,6 +1460,7 @@ public actor SessionService {
           if $0.nativeTurnId == nil { $0.nativeTurnId = raw.nativeIds["turnId"] }
           $0.status = .terminal
           $0.outcome = outcome
+          if $0.origin != nil, let origin = raw.payload["origin"]?.stringValue { $0.origin = origin }
         }
         if let updated { event.payload = merge(raw.payload, ["turn": try JSONValue(encoding: updated)]) }
         if let touched = try db.updateThread(id: thread.id, { _ in }), touched.userDeletedAt == nil {
@@ -1433,8 +1534,108 @@ public actor SessionService {
         scope: "projection", code: "internal", message: String(describing: error))
     }
     // A deleted thread's rows still follow its runtime, but nothing about it reaches a client.
-    if thread?.userDeletedAt != nil { return }
-    await publishVisibleEvent(event)
+    if thread?.userDeletedAt == nil { await publishVisibleEvent(event) }
+    // After the item's own event, so a client sees the agent before the turn's count of it.
+    if let thread, let recount {
+      do {
+        try await recountOpenWork(turnId: recount, thread: thread)
+      } catch {
+        logger.error("open work recount failed: \(String(describing: error), privacy: .public)")
+        await context.diagnostics.recordError(
+          scope: "projection", code: "internal", message: String(describing: error))
+      }
+    }
+  }
+
+  /// A turn's open work is how many of its agent items are still in progress, counted from the stored
+  /// items every time so it never drifts. Written, and published, only when the number changes.
+  private func recountOpenWork(turnId: String, thread: ConversationThread) async throws {
+    let open = try db.displayItems(threadId: thread.id).filter {
+      $0.turnId == turnId && $0.payload["agent"]?.boolValue == true
+        && $0.payload["status"]?.stringValue == "inProgress"
+    }.count
+    guard let current = try db.turn(id: turnId), current.openWork != open else { return }
+    guard let updated = try db.updateTurn(id: turnId, { $0.openWork = open }) else { return }
+    await publishTurn(.turnStateChanged, updated, thread: thread)
+  }
+
+  /// The ids of the agent items still in progress, by thread id, for the turns with open work.
+  private func openAgentItems(threadId: String? = nil) throws -> [String: [String]] {
+    var open: [String: [String]] = [:]
+    for turn in try db.turnsWithOpenWork(threadId: threadId) {
+      for item in try db.displayItems(threadId: turn.threadId)
+      where item.turnId == turn.id && item.payload["agent"]?.boolValue == true
+        && item.payload["status"]?.stringValue == "inProgress"
+      {
+        open[turn.threadId, default: []].append(item.id)
+      }
+    }
+    return open
+  }
+
+  /// The session that ran a thread's agents is gone, so none of them will ever end: each agent in
+  /// `items` (by default every one in progress now) that is still in progress when its turn comes
+  /// becomes `stopped`, with its end stamped, and is announced as completed; then the counts are taken
+  /// again. A row is read again just before it is written, with no suspension between, so an agent that
+  /// ended meanwhile, or was closed already, is left as it is.
+  func closeOpenWork(threadId: String, reason: String, items: [String]? = nil) async throws {
+    guard let thread = try db.thread(id: threadId) else { return }
+    let ids = try items ?? openAgentItems(threadId: threadId)[threadId] ?? []
+    for id in ids {
+      guard let current = try db.displayItem(id: id), current.threadId == threadId,
+        current.payload["agent"]?.boolValue == true,
+        current.payload["status"]?.stringValue == "inProgress",
+        let stored = try db.updateDisplayItem(
+          id: id,
+          {
+            var payload = $0.payload.objectValue ?? [:]
+            payload["status"] = "stopped"
+            payload["endedAt"] = .string(Timestamp.now())
+            $0.payload = .object(payload)
+          })
+      else { continue }
+      let turn = try stored.turnId.flatMap { try db.turn(id: $0) }
+      var ids = ["threadId": thread.nativeThreadId]
+      if let native = stored.nativeItemId { ids["itemId"] = native }
+      if let nativeTurn = turn?.nativeTurnId { ids["turnId"] = nativeTurn }
+      await publishVisibleEvent(
+        AdapterEvent(
+          kind: .toolCompleted, connectionId: thread.connectionId, threadId: thread.id,
+          turnId: stored.turnId, nativeIds: ids,
+          payload: [
+            "displayItem": try JSONValue(encoding: stored), "role": .string(stored.role.rawValue),
+            "reason": .string(reason),
+          ]))
+    }
+    for turn in try db.turnsWithOpenWork(threadId: threadId) {
+      try await recountOpenWork(turnId: turn.id, thread: thread)
+    }
+  }
+
+  /// One thread's close failing must not stop the others: it is logged and recorded.
+  private func closeOpenWorkLoggingFailure(threadId: String, reason: String, items: [String]? = nil) async {
+    do {
+      try await closeOpenWork(threadId: threadId, reason: reason, items: items)
+    } catch {
+      await recordOpenWorkFailure(error)
+    }
+  }
+
+  private func recordOpenWorkFailure(_ error: any Error) async {
+    logger.error("open work close failed: \(String(describing: error), privacy: .public)")
+    await context.diagnostics.recordError(
+      scope: "projection", code: "internal", message: String(describing: error))
+  }
+
+  private func startOpenWorkClose(_ leftBehind: [String: [String]]) {
+    guard !leftBehind.isEmpty else { return }
+    pumps["open-work-close"] = Task { [weak self] in
+      for (threadId, items) in leftBehind {
+        guard !Task.isCancelled else { return }
+        await self?.closeOpenWorkLoggingFailure(
+          threadId: threadId, reason: "coordinator_started", items: items)
+      }
+    }
   }
 
   /// A completion that carries no text keeps what the item streamed (a runtime may complete a stopped
@@ -1537,6 +1738,7 @@ public actor SessionService {
       {
         await publishTurn(.turnStateChanged, updated, thread: thread, payload: ["reason": "runtime_exited"])
       }
+      await closeOpenWorkLoggingFailure(threadId: thread.id, reason: "runtime_exited")
       return
     }
     let status = raw.payload["status"]?.stringValue.flatMap(ConnectionStatus.init(rawValue:))
@@ -1567,6 +1769,14 @@ public actor SessionService {
           }), let thread = try db.thread(id: turn.threadId)
       else { continue }
       await publishTurn(.turnStateChanged, updated, thread: thread, payload: ["reason": "runtime_exited"])
+    }
+    do {
+      for threadId in Set(try db.turnsWithOpenWork().map(\.threadId))
+      where try db.thread(id: threadId)?.connectionId == raw.connectionId {
+        await closeOpenWorkLoggingFailure(threadId: threadId, reason: "runtime_exited")
+      }
+    } catch {
+      await recordOpenWorkFailure(error)
     }
   }
 
