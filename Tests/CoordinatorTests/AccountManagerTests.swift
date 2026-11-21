@@ -131,7 +131,7 @@ private struct AccountRig {
   var accounts: AccountManager { coordinator.accounts }
 
   static func paths() throws -> PlatformPaths {
-    let base = NSTemporaryDirectory() + "b4a-\(UUID().uuidString.prefix(8))"
+    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4a-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
     return try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
   }
@@ -240,7 +240,7 @@ private let acme = AuthSession(
   user: UserInfo(username: "brian", displayName: "Brian"), needsOnboarding: false,
   userId: "0197cccc-0000-7000-8000-00000000c003")
 
-@Suite(.serialized, .timeLimit(.minutes(3))) struct AccountManagerTests {
+@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(3))) struct AccountManagerTests {
   @Test func adoptsJoinedWorkspace() async throws {
     let paths = try AccountRig.paths()
     let secrets = MemorySecretStore()
@@ -614,7 +614,7 @@ private let acme = AuthSession(
   }
 
   @Test func aServerStartRacingSignOutLeavesNoServerRunning() async throws {
-    let base = NSTemporaryDirectory() + "b4as-\(UUID().uuidString.prefix(8))"
+    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4as-\(UUID().uuidString.prefix(8))"
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
     var environment = ProcessInfo.processInfo.environment
     environment["B4APP_NODE_PATH"] = fakeNodePath()
@@ -817,7 +817,7 @@ private func seedConnectionSecret(
   return ref
 }
 
-@Suite(.serialized, .timeLimit(.minutes(3))) struct LegacySecretCopyTests {
+@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(3))) struct LegacySecretCopyTests {
   @Test func anAdoptedWorkspacesSecretsAreCopiedAndItStaysSignedIn() async throws {
     let paths = try AccountRig.paths()
     let prod = CountingSecretStore()

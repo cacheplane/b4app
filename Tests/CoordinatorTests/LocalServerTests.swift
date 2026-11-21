@@ -1,13 +1,118 @@
 import Darwin
 import Foundation
 import NIOTransport
+import Synchronization
 import Testing
 import WorkspaceClient
-import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
 
 @testable import Coordinator
+@testable import WorkspacePlatform
+
+/// Closed case labels; neither the collector nor formatter accepts request or executable text.
+enum ServerNodeProbeLabel: String, Sendable {
+  case addsAProjectAndInspectsItsRoutes
+  case startsToReadyInSourceModeAndIsIdempotent
+  case startsInDevelopmentModeWithTheEnvFile
+  case logsAreTailedRedactedAndFollowable
+  case managedConnectionRefusesWhileStopped
+  case removingRefusesWhileATurnIsRunningUnlessForced
+  case localB4ThreadsUseTheServerEnvironmentAndRemoteHaveNone
+}
+
+private func nodeProbeLine(
+  label: ServerNodeProbeLabel, observation: NodeVersionProbeObservation
+) -> String {
+  func flag(_ value: Bool?) -> String {
+    guard let value else { return "unavailable" }
+    return value ? "true" : "false"
+  }
+  func number(_ value: Int32?) -> String {
+    guard let value else { return "unavailable" }
+    return String(value)
+  }
+  return "node-explicit-probe case=\(label.rawValue)"
+    + " commandThrew=\(flag(observation.commandThrew))"
+    + " returnedTimedOut=\(flag(observation.returnedTimedOut))"
+    + " returnedExitCode=\(number(observation.returnedExitCode))"
+    + " returnedSignal=\(number(observation.returnedSignal))"
+    + " returnedSucceeded=\(flag(observation.returnedSucceeded))"
+    + " stdoutShape=\(observation.stdoutShape.rawValue)"
+    + " versionPrefixAccepted=\(flag(observation.versionPrefixAccepted))"
+    + " minimumAccepted=\(flag(observation.minimumAccepted))"
+    + " resolveAccepted=\(flag(observation.resolveAccepted))"
+    + " callerCancelledAtReturn=\(flag(observation.callerCancelledAtReturn))"
+    + " probeParentElapsedMilliseconds=\(observation.probeParentElapsedMilliseconds)"
+    + " selectedOutcomeOrigin=\(observation.selectedOutcomeOrigin?.rawValue ?? "unavailable")"
+}
+
+private final class ServerNodeProbeCollector: Sendable {
+  private let records = Mutex<[NodeVersionProbeObservation]>([])
+  private let label: ServerNodeProbeLabel
+
+  init(label: ServerNodeProbeLabel) { self.label = label }
+
+  func append(_ observation: NodeVersionProbeObservation) {
+    records.withLock { $0.append(observation) }
+  }
+
+  func emitSnapshot() {
+    let snapshot = records.withLock { $0 }
+    for observation in snapshot { print(nodeProbeLine(label: label, observation: observation)) }
+  }
+}
+
+struct NodeProbeDiagnosticFormattingTests {
+  @Test func rawPrivateTextIsDroppedByTheSameProjectionBeforeFixedFormatting() {
+    let rawError = "error: TOKEN=private-example /private/example/stderr"
+    let samples: [(String, NodeVersionProbeObservation.StdoutShape)] = [
+      ("/private/example/node TOKEN=private-example", .other),
+      ("error: private-example --private-argument", .other),
+      ("v/private/example/version", .vPrefixOther),
+      ("v24.0.0\n", .exactFake24),
+    ]
+    for (rawStdout, expectedShape) in samples {
+      let result = CommandResult(stdout: rawStdout, stderr: rawError, exitCode: 0)
+      let shape = NodeVersionProbeObservation.classifyStdout(of: result)
+      #expect(shape == expectedShape)
+      let observation = NodeVersionProbeObservation(
+        commandThrew: false, returnedTimedOut: result.timedOut, returnedExitCode: result.exitCode,
+        returnedSignal: result.signal, returnedSucceeded: result.succeeded, stdoutShape: shape,
+        versionPrefixAccepted: nil, minimumAccepted: nil, resolveAccepted: false,
+        callerCancelledAtReturn: false, probeParentElapsedMilliseconds: 123)
+      let line = nodeProbeLine(label: .addsAProjectAndInspectsItsRoutes, observation: observation)
+      let leakedRawText = line.contains(rawStdout) || line.contains(rawError)
+      #expect(!leakedRawText)
+    }
+  }
+
+  @Test func formatterUsesOnlyClosedLabelsShapesAndPrimitiveFacts() {
+    let shapes: [NodeVersionProbeObservation.StdoutShape] = [
+      .unavailable, .empty, .exactFake24, .vPrefixOther, .other,
+    ]
+    let origins: [CommandRunner.SelectedOutcomeOrigin?] = [
+      nil, .finished, .timerReturned, .workCancellationCaught, .defensiveNoOutcome,
+    ]
+    for shape in shapes {
+      for origin in origins {
+        let observation = NodeVersionProbeObservation(
+          commandThrew: false, returnedTimedOut: false, returnedExitCode: 0, returnedSignal: nil,
+          returnedSucceeded: true, stdoutShape: shape, versionPrefixAccepted: true,
+          minimumAccepted: true, resolveAccepted: true, callerCancelledAtReturn: false,
+          probeParentElapsedMilliseconds: 123, selectedOutcomeOrigin: origin)
+        let line = nodeProbeLine(label: .addsAProjectAndInspectsItsRoutes, observation: observation)
+        #expect(
+          line == "node-explicit-probe case=addsAProjectAndInspectsItsRoutes"
+            + " commandThrew=false returnedTimedOut=false returnedExitCode=0 returnedSignal=unavailable"
+            + " returnedSucceeded=true stdoutShape=\(shape.rawValue) versionPrefixAccepted=true"
+            + " minimumAccepted=true resolveAccepted=true callerCancelledAtReturn=false"
+            + " probeParentElapsedMilliseconds=123"
+            + " selectedOutcomeOrigin=\(origin?.rawValue ?? "unavailable")")
+      }
+    }
+  }
+}
 
 /// A coordinator on scratch directories whose Node is the fake shim, plus a scratch B4 project.
 struct ServerHarness {
@@ -16,8 +121,12 @@ struct ServerHarness {
   let paths: PlatformPaths
   let base: String
   let events: EventCollector
+  private let nodeProbeCollector: ServerNodeProbeCollector?
 
-  static func start(paths existing: PlatformPaths? = nil) async throws -> ServerHarness {
+  static func start(
+    paths existing: PlatformPaths? = nil, nodeProbeLabel: ServerNodeProbeLabel? = nil,
+    adapterFactory: SessionService.AdapterFactory? = nil
+  ) async throws -> ServerHarness {
     let base: String
     let paths: PlatformPaths
     if let existing {
@@ -29,8 +138,11 @@ struct ServerHarness {
     }
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = fakeNodePath()
-    let outcome = try await Coordinator.startSignedIn(
-      options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
+    let collector = nodeProbeLabel.map { ServerNodeProbeCollector(label: $0) }
+    var options = CoordinatorOptions(
+      paths: paths, environment: env, secretStore: MemorySecretStore(), adapterFactory: adapterFactory)
+    if let collector { options.nodeVersionProbeObservation = { collector.append($0) } }
+    let outcome = try await Coordinator.startSignedIn(options: options)
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }
@@ -38,8 +150,13 @@ struct ServerHarness {
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     let events = EventCollector(await client.events())
-    return ServerHarness(coordinator: coordinator, client: client, paths: paths, base: base, events: events)
+    return ServerHarness(
+      coordinator: coordinator, client: client, paths: paths, base: base, events: events,
+      nodeProbeCollector: collector)
   }
+
+  /// Snapshot only; the existing deferred Task cleanup is not joined by this method.
+  func emitNodeProbeObservations() { nodeProbeCollector?.emitSnapshot() }
 
   func project(
     _ name: String = "proj", cliVersion: String? = "0.15.8", withConfig: Bool = true
@@ -103,9 +220,10 @@ struct ServerHarness {
   }
 }
 
-@Suite(.serialized) struct LocalServerRegistryTests {
+@Suite(NativeDBResources(), .serialized) struct LocalServerRegistryTests {
   @Test func addsAProjectAndInspectsItsRoutes() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(nodeProbeLabel: .addsAProjectAndInspectsItsRoutes)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)
@@ -186,7 +304,7 @@ struct ServerHarness {
 }
 
 /// Owned-server lifecycle against the fake project CLI.
-@Suite(.serialized) struct LocalServerLifecycleTests {
+@Suite(NativeDBResources(), .serialized) struct LocalServerLifecycleTests {
   /// The server's row once a `server.changed` event has moved it from the health it had in `server` to
   /// `health` (every change to a managed server is published). Events are ordered, so a match after
   /// the one that reported `server.health` is the change the caller waits for, not an older one.
@@ -210,7 +328,8 @@ struct ServerHarness {
   }
 
   @Test func startsToReadyInSourceModeAndIsIdempotent() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(nodeProbeLabel: .startsToReadyInSourceModeAndIsIdempotent)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let added = try await h.add(try h.project())
     let started = try await h.start(added)
@@ -234,7 +353,8 @@ struct ServerHarness {
   }
 
   @Test func startsInDevelopmentModeWithTheEnvFile() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(nodeProbeLabel: .startsInDevelopmentModeWithTheEnvFile)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let path = try h.project()
     try "FAKE_B4_MARK=mark-1\n".write(toFile: path + "/.env", atomically: true, encoding: .utf8)
@@ -461,9 +581,10 @@ struct ServerHarness {
   }
 }
 
-@Suite(.serialized) struct LocalServerLogTests {
+@Suite(NativeDBResources(), .serialized) struct LocalServerLogTests {
   @Test func logsAreTailedRedactedAndFollowable() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(nodeProbeLabel: .logsAreTailedRedactedAndFollowable)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let path = try h.project()
     try "OPENAI_API_KEY=sk-proj-abcdefghijklmnop\nFAKE_B4_ECHO_ENV=1\n".write(
@@ -482,7 +603,9 @@ struct ServerHarness {
     _ = try await URLSession.shared.data(
       from: URL(string: "http://127.0.0.1:\(started.actualPort ?? 0)/readyz")!)
     let more = try await h.logs(started, afterOffset: first.offset)
-    #expect(more.lines == ["fake-b4: GET /readyz"])
+    // The owned server monitor can append a health poll independently of this explicit request.
+    // Every other incremental line must still be exactly this one readiness request.
+    #expect(more.lines.filter { $0 != "fake-b4: GET /healthz" } == ["fake-b4: GET /readyz"])
     #expect(more.offset > first.offset)
     let two = try await h.logs(started, lines: 2)
     #expect(two.lines.count == 2 && two.truncated)
@@ -504,7 +627,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(.serialized) struct ManagedConnectionTests {
+@Suite(NativeDBResources(), .serialized) struct ManagedConnectionTests {
   private func connect(
     _ h: ServerHarness, _ server: LocalServer, route: String = "/chat#agent"
   ) async throws -> ConnectionAdd.Result {
@@ -526,64 +649,95 @@ struct ServerHarness {
   }
 
   @Test func managedConnectionRefusesWhileStopped() async throws {
-    let h = try await ServerHarness.start()
+    let witness = HistoricalFactoryWitness()
+    let h = try await ServerHarness.start(
+      nodeProbeLabel: .managedConnectionRefusesWhileStopped, adapterFactory: witness.makeFactory())
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let server = try await h.add(try h.project())
-    let result = try await connect(h, server)
-    #expect(result.connection.b4Mode == .managedLocal)
-    #expect(result.connection.localServerId == server.id)
-    #expect(result.connection.target == "http://127.0.0.1:\(server.requestedPort ?? 0)")
-    #expect(result.connection.routeKey == "/chat#agent")
-    #expect(result.connection.status == .offline)
-    #expect(result.inspection.message?.contains("server start proj") == true)
-    let failure = await h.failure { try await thread(h, result.connection) }
-    #expect(failure?.code == .endpointUnavailable)
-    #expect(failure?.message.contains("agent-workspace server start proj") == true)
-    #expect(try await h.client.request(ThreadList.self, ThreadList.Params()).threads.isEmpty)
-    let both = await h.failure {
-      try await h.client.request(
-        ConnectionAdd.self,
-        ConnectionAdd.Params(kind: .b4, url: "http://127.0.0.1:1", route: "/chat#agent", serverId: server.id),
-        options: h.mutation())
+    for mixedURL in [false, true, false] {
+      let refused = await h.failure {
+        try await h.client.request(
+          ConnectionAdd.self,
+          .init(
+            kind: .b4, url: mixedURL ? "http://127.0.0.1:1" : nil, route: "/chat#agent", serverId: server.id),
+          options: h.mutation())
+      }
+      #expect(refused?.code == .unsupportedCapability)
+      #expect(refused?.details?["reason"]?.stringValue == "agent_protocol_cutover")
     }
-    #expect(both?.code == .protocolInvalid)
-    let again = try await connect(h, server)
-    #expect(again.connection.id == result.connection.id)
+    #expect(try h.coordinator.database.listConnections().isEmpty)
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
+    let before = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: connection)
+    try await HistoricalCoordinatorFixture.expectCutover { _ = try await thread(h, connection) }
+    try await HistoricalCoordinatorFixture.expectCutover {
+      _ = try await send(h, before.thread, "never dispatch")
+    }
+    try await HistoricalCoordinatorFixture.expectCutover {
+      _ = try await h.client.request(
+        ConnectionInspect.self, .init(connectionId: connection.id), options: h.mutation())
+    }
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(h.coordinator.database, threadId: before.thread.id) == before
+    #expect(unchanged)
+    #expect(try h.coordinator.database.listThreads().map(\.id) == [before.thread.id])
+    #expect(try h.coordinator.database.listAppFolders().isEmpty)
+    #expect(try await h.status(server).health == .stopped)
+    #expect(witness.count == 0)
   }
 
-  @Test func conversesThroughAManagedServer() async throws {
-    let h = try await ServerHarness.start()
+  @Test func ownedManagedLifecyclePreservesHistoricalCache() async throws {
+    let witness = HistoricalFactoryWitness()
+    let h = try await ServerHarness.start(adapterFactory: witness.makeFactory())
     defer { Task { await h.close() } }
     let server = try await h.start(try await h.add(try h.project()))
-    let result = try await connect(h, server)
-    #expect(result.connection.status == .ready)
-    let inspected = try await h.client.request(
-      ConnectionInspect.self, ConnectionInspect.Params(connectionId: result.connection.id),
-      options: h.mutation()
-    )
-    #expect(inspected.connection.status == .ready)
-    let created = try await thread(h, result.connection)
-    #expect(created.context == "/chat#agent")
-    let turn = try await send(h, created, "hello there")
-    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
-    #expect(finished.payload["outcome"]?.stringValue == "completed")
-    let read = try await h.client.request(ThreadRead.self, ThreadRead.Params(threadId: created.id))
-    #expect(read.items.contains { $0.payload["text"]?.stringValue == "Hello from fake B4." })
-    _ = try await h.stop(server)
-    let offline = try await h.client.request(ConnectionList.self, ConnectionList.Params()).connections
-    #expect(offline.first { $0.id == result.connection.id }?.status == .offline)
+    #expect(server.health == .ready)
+    #expect(server.ownershipVerified)
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: connection)
+    let read = try await h.client.request(ThreadRead.self, .init(threadId: history.thread.id))
+    let retainedFacts1 = read.items == history.items
+    #expect(retainedFacts1)
+    try await HistoricalCoordinatorFixture.expectCutover {
+      _ = try await h.client.request(
+        ConnectionInspect.self, .init(connectionId: connection.id), options: h.mutation())
+    }
+    try await HistoricalCoordinatorFixture.expectCutover {
+      _ = try await send(h, history.thread, "never dispatch")
+    }
+    try await HistoricalCoordinatorFixture.expectCutover {
+      _ = try await h.client.request(
+        RequestRespond.self, .init(requestId: history.requests[0].id, decision: .allowOnce),
+        options: h.mutation())
+    }
+    #expect(try await h.stop(server).health == .stopped)
+    let retainedFacts2 =
+      try await h.client.request(ThreadRead.self, .init(threadId: history.thread.id)).items == history.items
+    #expect(retainedFacts2)
+    let restarted = try await h.start(server)
+    #expect(restarted.health == .ready)
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(h.coordinator.database, threadId: history.thread.id)
+      == history
+    #expect(unchanged)
+    _ = try await h.stop(restarted)
+    // Owned process readiness is real. Historical cache is not a managed conversation integration.
+
+    #expect(witness.count == 0)
   }
 
   @Test func stopRefusesWhileATurnIsRunningUnlessForced() async throws {
-    let h = try await ServerHarness.start()
+    let witness = HistoricalFactoryWitness()
+    let h = try await ServerHarness.start(adapterFactory: witness.makeFactory())
     defer { Task { await h.close() } }
     let server = try await h.start(try await h.add(try h.project()))
-    let connection = try await connect(h, server).connection
-    let created = try await thread(h, connection)
-    let turn = try await send(h, created, "hang around")
-    try await h.events.waitFor {
-      $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
-    }
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: connection, status: .running)
+    let created = history.thread
+    let turn = history.turns[0]
     let refused = await h.failure { try await h.stop(server) }
     #expect(refused?.code == .ownedProcessConflict)
     #expect(refused?.details?["reason"]?.stringValue == "turn_active")
@@ -591,69 +745,98 @@ struct ServerHarness {
     #expect(try await h.status(server).health == .ready)
     let stopped = try await h.stop(server, force: true)
     #expect(stopped.health == .stopped)
-    // The lost turn's next state is published: reconciling (a state change) or a terminal outcome.
-    try await h.events.waitFor {
-      $0.turnId == turn.id
-        && ($0.kind == .turnFinished
-          || ($0.kind == .turnStateChanged && $0.payload["status"]?.stringValue == "reconciling"))
-    }
     let read = try await h.client.request(
-      ThreadRead.self, ThreadRead.Params(threadId: created.id), options: RequestOptions(timeout: .seconds(30))
-    )
+      ThreadRead.self, .init(threadId: created.id), options: RequestOptions(timeout: .seconds(30)))
     let final = try #require(read.turns.first { $0.id == turn.id })
-    #expect(final.outcome != .completed)
-    #expect(final.status == .reconciling || final.outcome == .failed || final.outcome == .cancelled)
-    // Nothing more can be lost: a stopped server stops again without force, and a reconciling turn
-    // does not block a restart.
+    #expect(final.status == .running)
+    #expect(final.submission == .unknown)
+    #expect(final.outcome == nil)
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(h.coordinator.database, threadId: created.id) == history
+    #expect(unchanged)
+    // A stopped registration is idempotent; restart still works with retained unknown history.
     #expect(try await h.stop(server).health == .stopped)
     let restarted = try await h.client.request(
-      ServerRestart.self, ServerLifecycleParams(serverId: server.id), options: h.mutation(.seconds(150))
+      ServerRestart.self, ServerLifecycleParams(serverId: server.id),
+      options: h.mutation(.seconds(150))
     ).server
     #expect(restarted.health == .ready)
     _ = try await h.stop(restarted, force: true)
+    #expect(witness.count == 0)
   }
 
-  @Test func serverExitMarksRouteConnectionsOffline() async throws {
-    let h = try await ServerHarness.start()
+  @Test func serverExitProjectsCurrentNotificationAndLeavesHistoryUntouched() async throws {
+    let witness = HistoricalFactoryWitness()
+    let h = try await ServerHarness.start(adapterFactory: witness.makeFactory())
     defer { Task { await h.close() } }
     let server = try await h.start(try await h.add(try h.project()))
-    let connection = try await connect(h, server).connection
-    let created = try await thread(h, connection)
-    let turn = try await send(h, created, "hang around")
-    try await h.events.waitFor {
-      $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
-    }
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: connection, status: .running)
+    // TEST SEAM, matching AgentProtocolLegacyManagedTests: a synthetic current-kind row linked to
+    // the owned registration exercises the generic notification projection. Shipped Codex does not
+    // execute through a B4 server, and no such routing claim is made here.
+    let current = try h.coordinator.database.insertConnection(
+      Connection(
+        id: "notification-current", kind: .codex, label: "Notification projection fixture",
+        target: "/fixture/codex", localServerId: server.id, commands: [], status: .ready))
+    let currentThread = try h.coordinator.database.insertThread(
+      ConversationThread(
+        id: "notification-thread", connectionId: current.id, nativeThreadId: "notification-native",
+        title: "Projection only"))
+    let currentTurn = try h.coordinator.database.insertTurn(
+      Turn(
+        id: "notification-turn", threadId: currentThread.id, operationId: "notification-op",
+        nativeTurnId: "1", status: .running, submission: .acknowledged))
     kill(server.pid!, SIGKILL)
     try await h.events.waitFor {
-      $0.kind == .connectionChanged && $0.connectionId == connection.id
+      $0.kind == .connectionChanged && $0.connectionId == current.id
         && $0.payload["status"]?.stringValue == "offline"
     }
+    try await h.events.waitFor {
+      $0.kind == .turnStateChanged && $0.turnId == currentTurn.id
+        && $0.payload["status"]?.stringValue == "reconciling"
+    }
     #expect(try await h.status(server).health == .stopped)
-    let read = try await h.client.request(
-      ThreadRead.self, ThreadRead.Params(threadId: created.id), options: RequestOptions(timeout: .seconds(30))
-    )
-    let final = try #require(read.turns.first { $0.id == turn.id })
-    #expect(final.status == .reconciling || final.outcome == .failed)
-    let failure = await h.failure { try await send(h, created, "again") }
-    #expect(failure?.code == .endpointUnavailable)
-    #expect(failure?.details?["reason"]?.stringValue == "server_stopped")
+    #expect(try h.coordinator.database.connection(id: current.id)?.status == .offline)
+    #expect(try h.coordinator.database.turn(id: currentTurn.id)?.status == .reconciling)
+    #expect(try h.coordinator.database.turn(id: currentTurn.id)?.outcome == nil)
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(h.coordinator.database, threadId: history.thread.id)
+      == history
+    #expect(unchanged)
+    #expect(
+      !(await h.events.events.map(\.event)).contains {
+        $0.kind == .connectionChanged && $0.connectionId == connection.id
+      })
+    try await HistoricalCoordinatorFixture.expectCutover {
+      _ = try await send(h, history.thread, "never dispatch")
+    }
+
+    #expect(witness.count == 0)
   }
 
-  @Test func workflowRouteOnAManagedServerIsIncompatible() async throws {
-    let h = try await ServerHarness.start()
+  @Test func managedLegacyRoutesRefuseBeforeCompatibilityDiscovery() async throws {
+    let witness = HistoricalFactoryWitness()
+    let h = try await ServerHarness.start(adapterFactory: witness.makeFactory())
     defer { Task { await h.close() } }
     let server = try await h.start(try await h.add(try h.project()))
-    let result = try await connect(h, server, route: "/dispatch#workflow")
-    #expect(result.connection.status == .incompatible)
-    #expect(result.inspection.message?.contains("workflow") == true)
-    let unknown = await h.failure { try await connect(h, server, route: "/nope#agent") }
-    #expect(unknown?.code == .notFound)
+    for route in ["/dispatch#workflow", "/nope#agent"] {
+      let refused = await h.failure { try await connect(h, server, route: route) }
+      #expect(refused?.code == .unsupportedCapability)
+      #expect(refused?.details?["reason"]?.stringValue == "agent_protocol_cutover")
+    }
+    #expect(try h.coordinator.database.listConnections().isEmpty)
+    #expect(try await h.status(server).health == .ready)
     _ = try await h.stop(server)
+    // Route discovery/parsing remains covered by registry/B4 adapter fixtures, not legacy admission.
+
+    #expect(witness.count == 0)
   }
 }
 
 /// Taking a project off the Mac (D-231).
-@Suite(.serialized) struct LocalServerRemoveTests {
+@Suite(NativeDBResources(), .serialized) struct LocalServerRemoveTests {
   private func connect(_ h: ServerHarness, _ server: LocalServer) async throws -> Connection {
     try await h.client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),
@@ -677,17 +860,17 @@ struct ServerHarness {
   }
 
   @Test func removingARunningProjectStopsItAndDisablesItsConnections() async throws {
-    let h = try await ServerHarness.start()
+    let witness = HistoricalFactoryWitness()
+    let h = try await ServerHarness.start(adapterFactory: witness.makeFactory())
     defer { Task { await h.close() } }
     let path = try h.project()
     let server = try await h.start(try await h.add(path))
     let pid = try #require(server.pid)
     let logPath = try #require(server.logPath)
-    let connection = try await connect(h, server)
-    let thread = try await h.client.request(
-      ThreadCreate.self, ThreadCreate.Params(connectionId: connection.id), options: h.mutation()
-    ).thread
-
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: connection, status: .reconciling)
+    let thread = history.thread
     #expect(try await remove(h, server).serverId == server.id)
 
     #expect(try await h.client.request(ServerList.self, EmptyParams()).servers.isEmpty)
@@ -706,32 +889,48 @@ struct ServerHarness {
     // Its thread is still read, and a message to it says why it cannot go.
     let read = try await h.client.request(ThreadRead.self, ThreadRead.Params(threadId: thread.id))
     #expect(read.thread.id == thread.id)
+    let retainedFacts3 = read.turns == history.turns
+    #expect(retainedFacts3)
+    let retainedFacts4 = read.items == history.items
+    #expect(retainedFacts4)
+    let retainedFacts5 = read.requests == history.requests
+    #expect(retainedFacts5)
+    let retainedFacts6 = try h.coordinator.database.draft(threadId: thread.id) == history.draft
+    #expect(retainedFacts6)
     let refused = await h.failure {
       try await h.client.request(
         TurnSend.self, TurnSend.Params(threadId: thread.id, text: "hello"), options: h.mutation())
     }
-    #expect(refused?.code == .endpointUnavailable)
-    #expect(refused?.details?["reason"]?.stringValue == "server_removed")
+    #expect(refused?.code == .unsupportedCapability)
+    #expect(refused?.details?["reason"]?.stringValue == "agent_protocol_cutover")
     // The same folder can be added again, as a new project with its own connections.
     let again = try await h.add(path)
     #expect(again.id != server.id)
-    #expect(try await connect(h, again).id != connection.id)
+    let retiredAdd = await h.failure { try await connect(h, again) }
+    #expect(retiredAdd?.code == .unsupportedCapability)
+    #expect(try h.coordinator.database.connection(id: connection.id)?.localServerId == nil)
+    var expectedConnection = connection
+    expectedConnection.enabled = false
+    expectedConnection.localServerId = nil
+    expectedConnection.status = .offline
+    expectedConnection.updatedAt = kept.updatedAt
+    let retainedIdentity = kept == expectedConnection
+    #expect(retainedIdentity)
+    #expect(witness.count == 0)
   }
 
   @Test func removingRefusesWhileATurnIsRunningUnlessForced() async throws {
-    let h = try await ServerHarness.start()
+    let witness = HistoricalFactoryWitness()
+    let h = try await ServerHarness.start(
+      nodeProbeLabel: .removingRefusesWhileATurnIsRunningUnlessForced,
+      adapterFactory: witness.makeFactory())
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let server = try await h.start(try await h.add(try h.project()))
-    let connection = try await connect(h, server)
-    let thread = try await h.client.request(
-      ThreadCreate.self, ThreadCreate.Params(connectionId: connection.id), options: h.mutation()
-    ).thread
-    let turn = try await h.client.request(
-      TurnSend.self, TurnSend.Params(threadId: thread.id, text: "hang around"), options: h.mutation()
-    ).turn
-    try await h.events.waitFor {
-      $0.kind == .turnStateChanged && $0.turnId == turn.id && $0.payload["status"]?.stringValue == "running"
-    }
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: connection, status: .running)
+    let thread = history.thread
     let refused = await h.failure { try await remove(h, server) }
     #expect(refused?.code == .ownedProcessConflict)
     #expect(refused?.details?["reason"]?.stringValue == "turn_active")
@@ -742,7 +941,24 @@ struct ServerHarness {
     #expect(try await h.client.request(ServerList.self, EmptyParams()).servers.isEmpty)
     let read = try await h.client.request(
       ThreadRead.self, ThreadRead.Params(threadId: thread.id), options: RequestOptions(timeout: .seconds(30)))
-    #expect(read.turns.first { $0.id == turn.id }?.outcome != .completed)
+    let retainedFacts7 = read.turns == history.turns
+    #expect(retainedFacts7)
+    let retainedFacts8 = read.items == history.items
+    #expect(retainedFacts8)
+    let retainedFacts9 = read.requests == history.requests
+    #expect(retainedFacts9)
+    let retainedFacts10 = try h.coordinator.database.draft(threadId: thread.id) == history.draft
+    #expect(retainedFacts10)
+    let kept = try #require(try h.coordinator.database.connection(id: connection.id))
+    #expect(!kept.enabled && kept.localServerId == nil && kept.status == .offline)
+    var expectedConnection = connection
+    expectedConnection.enabled = false
+    expectedConnection.localServerId = nil
+    expectedConnection.status = .offline
+    expectedConnection.updatedAt = kept.updatedAt
+    let retainedIdentity = kept == expectedConnection
+    #expect(retainedIdentity)
+    #expect(witness.count == 0)
   }
 
   @Test func removingAnUnknownProjectIsNotFound() async throws {

@@ -11,12 +11,22 @@ public final class UnixSocketTransport: WorkspaceTransport, Sendable {
   private let channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>
   private let outbound: NIOAsyncChannelOutboundWriter<ByteBuffer>
   private let group: EventLoopGroup
+  private let shutdownCallbackQueue: DispatchQueue?
   private let readerTask: Task<Void, Never>
-  private let shutdown = SocketShutdown()
+  private let lifecycle = TransportLifecycle()
+  private let lifecycleObserver: TransportLifecycleObserver?
+  private let sendSettlementObserver: TransportSynchronousObserver?
 
-  private init(channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>, group: EventLoopGroup) async throws {
+  private init(
+    channel: NIOAsyncChannel<ByteBuffer, ByteBuffer>, group: EventLoopGroup,
+    lifecycleObserver: TransportLifecycleObserver?, sendSettlementObserver: TransportSynchronousObserver?,
+    shutdownCallbackQueue: DispatchQueue?
+  ) async throws {
     self.channel = channel
     self.group = group
+    self.shutdownCallbackQueue = shutdownCallbackQueue
+    self.lifecycleObserver = lifecycleObserver
+    self.sendSettlementObserver = sendSettlementObserver
     let (stream, continuation) = AsyncStream<Data>.makeStream()
     self.incoming = stream
     // executeThenClose must own the channel's lifetime; the outbound writer is handed out through a box.
@@ -33,6 +43,7 @@ public final class UnixSocketTransport: WorkspaceTransport, Sendable {
         // Connection errors end the stream; the client reports endpoint_unavailable.
       }
       continuation.finish()
+      await lifecycleObserver?(.readerFinished)
     }
     self.readerTask = task
     guard let writer = await box.waitForWriter() else {
@@ -45,6 +56,15 @@ public final class UnixSocketTransport: WorkspaceTransport, Sendable {
   /// Connect to the coordinator socket. Fails fast with `endpoint_unavailable` when nothing listens.
   public static func connect(
     path: String, timeout: Duration = .seconds(3)
+  ) async throws -> UnixSocketTransport {
+    try await connect(
+      path: path, timeout: timeout, lifecycleObserver: nil, sendSettlementObserver: nil,
+      shutdownCallbackQueue: nil)
+  }
+
+  static func connect(
+    path: String, timeout: Duration, lifecycleObserver: TransportLifecycleObserver?,
+    sendSettlementObserver: TransportSynchronousObserver?, shutdownCallbackQueue: DispatchQueue? = nil
   ) async throws -> UnixSocketTransport {
     let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     do {
@@ -60,47 +80,138 @@ public final class UnixSocketTransport: WorkspaceTransport, Sendable {
             return try NIOAsyncChannel<ByteBuffer, ByteBuffer>(wrappingChannelSynchronously: channel)
           }
         }
-      return try await UnixSocketTransport(channel: channel, group: group)
+      return try await UnixSocketTransport(
+        channel: channel, group: group, lifecycleObserver: lifecycleObserver,
+        sendSettlementObserver: sendSettlementObserver, shutdownCallbackQueue: shutdownCallbackQueue)
     } catch let error as WorkspaceError {
-      try? await group.shutdownGracefully()
+      await shutdownGroup(group, callbackQueue: shutdownCallbackQueue)
       throw error
     } catch {
-      try? await group.shutdownGracefully()
+      await shutdownGroup(group, callbackQueue: shutdownCallbackQueue)
       throw WorkspaceError(.endpointUnavailable, "Could not connect to \(path): \(error)")
     }
   }
 
   public func send(_ line: Data) async throws {
+    guard let activeSends = await lifecycle.admitSend() else {
+      await lifecycleObserver?(.sendRejected)
+      throw WorkspaceError(.endpointUnavailable, "Coordinator connection closed.")
+    }
+    await lifecycleObserver?(.sendAdmitted(activeSends: activeSends))
     var bytes = line
     if bytes.last != 0x0A { bytes.append(0x0A) }
     do {
+      await lifecycleObserver?(.writeStarted)
       try await outbound.write(ByteBuffer(bytes: bytes))
+      await lifecycle.finishSend(observer: sendSettlementObserver)
     } catch {
+      await lifecycle.finishSend(observer: sendSettlementObserver)
       throw WorkspaceError(.endpointUnavailable, "Socket write failed: \(error)")
     }
   }
 
   public func close() async {
-    await shutdown.run { [outbound, readerTask, channel, group] in
+    await lifecycle.close(observer: lifecycleObserver) {
+      [
+        outbound, readerTask, channel, group, lifecycle, lifecycleObserver, sendSettlementObserver,
+        shutdownCallbackQueue
+      ] in
+      await lifecycleObserver?(.cleanupStarted)
+      // Interrupt IO before draining writes: a backpressured writer needs the live loop to wake.
       outbound.finish()
       readerTask.cancel()
       try? await channel.channel.close()
-      // executeThenClose still schedules its final channel close after cancellation.
-      // Keep the event loop alive until that scoped owner has finished.
+      await lifecycleObserver?(.ioInterrupted)
+      await lifecycle.drainSends()
       await readerTask.value
-      try? await group.shutdownGracefully()
+      await lifecycleObserver?(.groupShutdownStarted)
+      if let shutdownCallbackQueue {
+        await Self.shutdownGroup(
+          group, callbackQueue: shutdownCallbackQueue, observer: sendSettlementObserver)
+      } else if let sendSettlementObserver {
+        // Same pinned NIO bridge and default global callback queue; no new shutdown authority.
+        try? await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+          sendSettlementObserver(.groupShutdownInvoked)
+          group.shutdownGracefully { error in
+            sendSettlementObserver(.groupShutdownCallbackEntered)
+            if let error = error {
+              cont.resume(throwing: error)
+            } else {
+              cont.resume()
+            }
+          }
+        }
+        sendSettlementObserver(.groupShutdownAwaitReturned)
+      } else {
+        try? await group.shutdownGracefully()
+      }
+      await lifecycleObserver?(.cleanupFinished)
     }
   }
+
+  // Only internal fixtures select a callback queue; nil keeps NIO's original async bridge.
+  private static func shutdownGroup(
+    _ group: EventLoopGroup, callbackQueue: DispatchQueue?,
+    observer: TransportSynchronousObserver? = nil
+  ) async {
+    guard let callbackQueue else {
+      try? await group.shutdownGracefully()
+      return
+    }
+    try? await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+      observer?(.groupShutdownInvoked)
+      group.shutdownGracefully(queue: callbackQueue) { error in
+        observer?(.groupShutdownCallbackEntered)
+        if let error = error {
+          cont.resume(throwing: error)
+        } else {
+          cont.resume()
+        }
+      }
+    }
+    observer?(.groupShutdownAwaitReturned)
+  }
+
 }
 
-/// Every closer waits for the same cleanup; later calls never touch an already stopped event loop.
-private actor SocketShutdown {
-  private var task: Task<Void, Never>?
+/// Admission and retained cleanup completion are separate from peer EOF.
+private actor TransportLifecycle {
+  private var closing: Task<Void, Never>?
+  private var activeSends = 0
+  private var drained: [CheckedContinuation<Void, Never>] = []
 
-  func run(_ cleanup: @escaping @Sendable () async -> Void) async {
-    if let task { await task.value; return }
+  func admitSend() -> Int? {
+    guard closing == nil else { return nil }
+    activeSends += 1
+    return activeSends
+  }
+
+  func finishSend(observer: TransportSynchronousObserver?) {
+    activeSends -= 1
+    // Publish the counter, report synchronously, then wake drainers: no observer Task/reentrancy gap.
+    observer?(.sendSettled(activeSends: activeSends))
+    if activeSends == 0 {
+      let waiting = drained
+      drained = []
+      for waiter in waiting { waiter.resume() }
+    }
+  }
+
+  func drainSends() async {
+    guard activeSends != 0 else { return }
+    await withCheckedContinuation { drained.append($0) }
+  }
+
+  func close(
+    observer: TransportLifecycleObserver?, _ cleanup: @escaping @Sendable () async -> Void
+  ) async {
+    if let closing {
+      await observer?(.existingCompletion)
+      await closing.value
+      return
+    }
     let task = Task { await cleanup() }
-    self.task = task
+    closing = task
     await task.value
   }
 }
@@ -146,3 +257,13 @@ extension UnixSocketTransport {
     }
   }
 }
+
+enum TransportLifecycleEvent: Sendable, Equatable {
+  case sendAdmitted(activeSends: Int)
+  case sendSettled(activeSends: Int)
+  case sendRejected, writeStarted, ioInterrupted, readerFinished, groupShutdownStarted
+  case existingCompletion, cleanupStarted, cleanupFinished
+  case groupShutdownInvoked, groupShutdownCallbackEntered, groupShutdownAwaitReturned
+}
+typealias TransportLifecycleObserver = @Sendable (TransportLifecycleEvent) async -> Void
+typealias TransportSynchronousObserver = @Sendable (TransportLifecycleEvent) -> Void

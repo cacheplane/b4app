@@ -18,9 +18,12 @@ private struct EnvironmentHarness {
   let client: WorkspaceClient
   let events: EventCollector
   let base: String
+  let inspectionObservation: InspectionRequestObservation?
   var db: WorkspaceDatabase { coordinator.database }
 
-  static func start(paths existing: PlatformPaths? = nil) async throws -> EnvironmentHarness {
+  static func start(
+    paths existing: PlatformPaths? = nil, inspectionObservation: InspectionRequestObservation? = nil
+  ) async throws -> EnvironmentHarness {
     let base: String
     let paths: PlatformPaths
     if let existing {
@@ -34,8 +37,16 @@ private struct EnvironmentHarness {
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
     env["ANTHROPIC_API_KEY"] = nil
+    let selectedFactory: SessionService.AdapterFactory?
+    if let inspectionObservation {
+      selectedFactory = inspectionObservation.collector.makeObservedFactory(
+        base: SessionService.defaultAdapterFactory)
+    } else {
+      selectedFactory = nil
+    }
     let outcome = try await Coordinator.startSignedIn(
-      options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
+      options: CoordinatorOptions(
+        paths: paths, environment: env, secretStore: MemorySecretStore(), adapterFactory: selectedFactory))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
     }
@@ -43,7 +54,8 @@ private struct EnvironmentHarness {
     let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     return EnvironmentHarness(
-      coordinator: coordinator, client: client, events: EventCollector(await client.events()), base: base)
+      coordinator: coordinator, client: client, events: EventCollector(await client.events()), base: base,
+      inspectionObservation: inspectionObservation)
   }
 
   func mutation() -> RequestOptions { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
@@ -56,7 +68,18 @@ private struct EnvironmentHarness {
   }
 
   func addCodex() async throws -> Connection {
-    try await client.request(
+    if let inspectionObservation {
+      return try await inspectionObservation.perform(
+        kind: .codex,
+        operation: {
+          try await client.request(
+            ConnectionAdd.self,
+            ConnectionAdd.Params(kind: .codex, label: "Fake Codex", executablePath: fakeCodex),
+            options: mutation()
+          ).connection
+        })
+    }
+    return try await client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .codex, label: "Fake Codex", executablePath: fakeCodex),
       options: mutation()
     ).connection
@@ -131,9 +154,10 @@ private struct EnvironmentHarness {
   }
 }
 
-@Suite(.serialized) struct EnvironmentServiceTests {
+@Suite(NativeDBResources(), .serialized) struct EnvironmentServiceTests {
   @Test func newThreadsShareAEnvironmentAcrossSpellings() async throws {
-    let h = try await EnvironmentHarness.start()
+    let h = try await EnvironmentHarness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .environmentSpellings))
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
     let app = try h.folder("app")
@@ -505,7 +529,9 @@ private struct EnvironmentHarness {
   }
 
   @Test func localB4ThreadsUseTheServerEnvironmentAndRemoteHaveNone() async throws {
-    let h = try await ServerHarness.start()
+    let h = try await ServerHarness.start(
+      nodeProbeLabel: .localB4ThreadsUseTheServerEnvironmentAndRemoteHaveNone)
+    defer { h.emitNodeProbeObservations() }
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)
@@ -636,7 +662,7 @@ private struct EnvironmentHarness {
 
 /// `connections.environmentId` (migration 0005): a local B4 connection belongs to the environment of its managed
 /// server's folder, and follows that folder when an environment edit moves it.
-@Suite(.serialized) struct ConnectionEnvironmentTests {
+@Suite(NativeDBResources(), .serialized) struct ConnectionEnvironmentTests {
   private func connect(_ h: ServerHarness, _ server: LocalServer) async throws -> Connection {
     try await h.client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),
@@ -653,7 +679,7 @@ private struct EnvironmentHarness {
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)
-    let connection = try await connect(h, server)
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
 
     let environmentId = try #require(try stored(h, connection).environmentId)
     #expect(connection.environmentId == environmentId)
@@ -667,6 +693,9 @@ private struct EnvironmentHarness {
       })
     #expect(insert.value?["environmentId"] == .string(environmentId))
     // A second connection on the same server finds the same environment rather than making another.
+    let second = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(
+      h, server: server, id: "historical-second")
+    #expect(second.environmentId == environmentId)
     #expect(try h.coordinator.database.listEnvironments().count == 1)
   }
 
@@ -675,7 +704,9 @@ private struct EnvironmentHarness {
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)
-    let connection = try await connect(h, server)
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: connection)
     let automatic = try #require(try stored(h, connection).environmentId)
 
     // A manual environment takes the folder: the connection follows.
@@ -718,6 +749,10 @@ private struct EnvironmentHarness {
         && $0.rowId == connection.id
     }
     #expect(moves.count >= 3)
+    let retainedFacts1 = try h.coordinator.database.turns(threadId: history.thread.id) == history.turns
+    #expect(retainedFacts1)
+    let retainedFacts2 = try h.coordinator.database.displayItems(threadId: history.thread.id) == history.items
+    #expect(retainedFacts2)
   }
 
   @Test func codexAndRemoteB4ConnectionsHaveNoEnvironment() async throws {

@@ -1,12 +1,13 @@
 import Foundation
 import NIOTransport
+import Synchronization
 import Testing
 import WorkspaceClient
 import WorkspacePlatform
 import WorkspaceProtocol
-import WorkspaceStorage
 
 @testable import Coordinator
+@testable import WorkspaceStorage
 
 /// The fake runtimes shipped with the adapter tests.
 private let fakeCodex =
@@ -74,9 +75,11 @@ final class FakeB4: Sendable {
 }
 
 private func temporaryPaths() throws -> PlatformPaths {
-  let base = NSTemporaryDirectory() + "b4s-\(UUID().uuidString.prefix(8))"
+  let base = AgentProtocolResourceFixture.temporaryDirectory + "b4s-\(UUID().uuidString.prefix(8))"
   try FileManager.default.createDirectory(atPath: base + "/work", withIntermediateDirectories: true)
-  return try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
+  var paths = PlatformPaths(runtimeDir: base + "/rt", dataDir: base + "/data")
+  paths.postgres = try EphemeralPostgres.endpoint(migrated: TestAccount.ordinaryFixture)
+  return paths
 }
 
 struct Harness {
@@ -84,13 +87,20 @@ struct Harness {
   let client: WorkspaceClient
   let workDir: String
   let events: EventCollector
+  let inspectionObservation: InspectionRequestObservation?
 
   static func start(
-    paths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:],
+    paths suppliedPaths: PlatformPaths? = nil, extraEnvironment: [String: String] = [:],
     secretStore: any SecretStore = MemorySecretStore(), checkRetryDelays: [Duration] = [.zero, .zero],
-    adapterFactory: SessionService.AdapterFactory? = nil, threadDeleteSweep: Duration = .zero
+    adapterFactory: SessionService.AdapterFactory? = nil, threadDeleteSweep: Duration = .zero,
+    inspectionObservation: InspectionRequestObservation? = nil
   ) async throws -> Harness {
-    let paths = try paths ?? temporaryPaths()
+    let paths: PlatformPaths
+    if let suppliedPaths {
+      paths = suppliedPaths
+    } else {
+      paths = try await TestAccount.prepare { try temporaryPaths() }
+    }
     // The fixture is a Python script, so the child needs the real PATH; Node lookups stay isolated.
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = "/nonexistent/node"
@@ -98,10 +108,17 @@ struct Harness {
       (paths.dataDir as NSString).deletingLastPathComponent + "/claude-environments"
     env["ANTHROPIC_API_KEY"] = nil
     for (key, value) in extraEnvironment { env[key] = value }
+    let selectedFactory: SessionService.AdapterFactory?
+    if let inspectionObservation {
+      selectedFactory = inspectionObservation.collector.makeObservedFactory(
+        base: adapterFactory ?? SessionService.defaultAdapterFactory)
+    } else {
+      selectedFactory = adapterFactory
+    }
     // A check retries without waiting here, so a failing check costs nothing in other tests.
     let outcome = try await Coordinator.startSignedIn(
       options: CoordinatorOptions(
-        paths: paths, environment: env, secretStore: secretStore, adapterFactory: adapterFactory,
+        paths: paths, environment: env, secretStore: secretStore, adapterFactory: selectedFactory,
         checkRetryDelays: checkRetryDelays, threadDeleteSweep: threadDeleteSweep))
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
@@ -111,10 +128,23 @@ struct Harness {
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     let events = EventCollector(await client.events())
     let workDir = (paths.runtimeDir as NSString).deletingLastPathComponent + "/work"
-    return Harness(coordinator: coordinator, client: client, workDir: workDir, events: events)
+    return Harness(
+      coordinator: coordinator, client: client, workDir: workDir, events: events,
+      inspectionObservation: inspectionObservation)
   }
 
   func addCodex() async throws -> Connection {
+    if let inspectionObservation {
+      let result = try await inspectionObservation.perform(
+        kind: .codex,
+        operation: {
+          try await client.request(
+            ConnectionAdd.self,
+            ConnectionAdd.Params(kind: .codex, label: "Fake Codex", executablePath: fakeCodex),
+            options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+        })
+      return result.connection
+    }
     let result = try await client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .codex, label: "Fake Codex", executablePath: fakeCodex),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
@@ -122,6 +152,17 @@ struct Harness {
   }
 
   func addClaude() async throws -> Connection {
+    if let inspectionObservation {
+      let result = try await inspectionObservation.perform(
+        kind: .claude,
+        operation: {
+          try await client.request(
+            ConnectionAdd.self,
+            ConnectionAdd.Params(kind: .claude, label: "Fake Claude", executablePath: fakeClaude),
+            options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+        })
+      return result.connection
+    }
     let result = try await client.request(
       ConnectionAdd.self,
       ConnectionAdd.Params(kind: .claude, label: "Fake Claude", executablePath: fakeClaude),
@@ -167,9 +208,13 @@ struct Harness {
       ThreadRead.self, ThreadRead.Params(threadId: thread.id), options: RequestOptions(timeout: .seconds(30)))
   }
 
-  func stop() async {
+  func stop(observation: (@Sendable (NarrowTimingObservation.Stage, Bool?) -> Void)? = nil) async {
+    observation?(.clientCloseIssued, nil)
     await client.close()
+    observation?(.clientCloseReturned, nil)
+    observation?(.coordinatorCloseIssued, nil)
     await coordinator.close()
+    observation?(.coordinatorCloseReturned, nil)
   }
 }
 
@@ -298,9 +343,10 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct SessionServiceTests {
+@Suite(NativeDBResources(), .serialized) struct SessionServiceTests {
   @Test func runsAWholeConversationOverTheSocket() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .socketConversation))
     let connection = try await h.addCodex()
     #expect(connection.status == .ready)
     #expect(connection.authStatus == .authenticated)
@@ -629,9 +675,10 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct ClaudeSessionServiceTests {
+@Suite(NativeDBResources(), .serialized) struct ClaudeSessionServiceTests {
   @Test func inspectionModelsReachTheConnection() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .claudeModels))
     let claude = try await h.addClaude()
     let inspected = try await h.client.request(
       ConnectionInspect.self, ConnectionInspect.Params(connectionId: claude.id),
@@ -897,7 +944,7 @@ actor EventCollector {
 }
 
 /// A Claude thread beside folders of its environment: the fake's log shows what each turn handed it.
-@Suite(.serialized) struct ClaudeTurnOptionsTests {
+@Suite(NativeDBResources(), .serialized) struct ClaudeTurnOptionsTests {
   private struct Rig {
     let h: Harness
     let claude: Connection
@@ -905,11 +952,12 @@ actor EventCollector {
     let log: String
     let folderB: String
 
-    static func start() async throws -> Rig {
-      let base = NSTemporaryDirectory() + "b4t-\(UUID().uuidString.prefix(8))"
+    static func start(inspectionObservation: InspectionRequestObservation? = nil) async throws -> Rig {
+      let base = AgentProtocolResourceFixture.temporaryDirectory + "b4t-\(UUID().uuidString.prefix(8))"
       try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
       let log = base + "/fake-claude.log"
-      let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])
+      let h = try await Harness.start(
+        extraEnvironment: ["FAKE_CLAUDE_LOG": log], inspectionObservation: inspectionObservation)
       let claude = try await h.addClaude()
       let thread = try await h.newThread(claude)
       let rig = Rig(h: h, claude: claude, thread: thread, log: log, folderB: try folder(base, "b"))
@@ -954,7 +1002,8 @@ actor EventCollector {
   }
 
   @Test func turnsAttachTheEnvironmentsOtherFolders() async throws {
-    let rig = try await Rig.start()
+    let rig = try await Rig.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .claudeFolders))
     try await rig.finishedTurn("hello")
     let launches = try rig.launches()
     let argv = try #require(launches.last)
@@ -1016,7 +1065,7 @@ actor EventCollector {
 
 /// `thread.start` from the Mac's own app, over the local socket: no environment is required, and the thread
 /// starts with the model, permission, and title it was given.
-@Suite(.serialized) struct LocalThreadStartTests {
+@Suite(NativeDBResources(), .serialized) struct LocalThreadStartTests {
   private func start(
     _ h: Harness, _ params: ThreadStart.Params, operationId: String = UUID().uuidString
   ) async throws -> ThreadStart.Result {
@@ -1025,10 +1074,12 @@ actor EventCollector {
   }
 
   @Test func localThreadStartCreatesThreadAndTurn() async throws {
-    let base = NSTemporaryDirectory() + "b4t-\(UUID().uuidString.prefix(8))"
+    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4t-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
     let log = base + "/fake-claude.log"
-    let h = try await Harness.start(extraEnvironment: ["FAKE_CLAUDE_LOG": log])
+    let h = try await Harness.start(
+      extraEnvironment: ["FAKE_CLAUDE_LOG": log],
+      inspectionObservation: InspectionRequestObservation(caseID: .claudeLocalStart))
     let claude = try await h.addClaude()
     let environment = try await h.client.request(
       EnvironmentCreate.self, EnvironmentCreate.Params(name: "App", folders: [h.workDir]),
@@ -1105,31 +1156,41 @@ actor EventCollector {
     await h.stop()
   }
 
-  @Test func localThreadStartMayUseRemoteB4() async throws {
-    let server = try await FakeB4.start()
-    let h = try await Harness.start()
-    // Remote as far as the thread rules go; the fixture itself listens on loopback.
-    let remote = try h.coordinator.database.insertConnection(
-      Connection(
-        id: "c-remote", kind: .b4, label: "Remote", target: server.baseURL, routeKey: "/chat#agent",
-        b4Mode: .remote, status: .ready))
-    let started = try await start(
-      h,
-      ThreadStart.Params(threadId: UUID().uuidString.lowercased(), connectionId: remote.id, text: "hello b4"))
-    #expect(started.thread.connectionId == remote.id)
-    #expect(started.thread.context == "/chat#agent")
-    #expect(started.thread.title == "hello b4")
-    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
-    #expect(finished.payload["outcome"]?.stringValue == "completed")
+  @Test func localThreadStartRefusesHistoricalAndDormantProfiles() async throws {
+    let witness = HistoricalFactoryWitness()
+    let secrets = FixtureCredentialStore()
+    let h = try await Harness.start(secretStore: secrets, adapterFactory: witness.makeFactory())
+    let db = h.coordinator.database
+    let remote = try HistoricalCoordinatorFixture.seedEarlierConnection(db, mode: .remote)
+    let dormant = try HistoricalCoordinatorFixture.seedDormantConnection(db)
+    let folders = try db.listAppFolders()
+    for connection in [remote, dormant] {
+      let id = UUID().uuidString.lowercased()
+      do {
+        _ = try await start(h, .init(threadId: id, connectionId: connection.id, text: "never dispatch"))
+        Issue.record("Unavailable profiles cannot start local conversations.")
+      } catch let error as WorkspaceError {
+        #expect(error.code == .unsupportedCapability)
+        if connection.kind == .b4 {
+          #expect(error.details?["reason"]?.stringValue == "agent_protocol_cutover")
+        } else {
+          #expect(error.message == "Agent Protocol execution is not available in this build.")
+        }
+      }
+      #expect(try db.thread(id: id) == nil)
+      #expect(try db.turns(threadId: id).isEmpty)
+    }
+    #expect(try db.listThreads().isEmpty)
+    #expect(try db.listAppFolders() == folders)
+    #expect(witness.count == 0)
+    #expect(await secrets.reads == 0)
     await h.stop()
-    await server.stop()
   }
 
   @Test func localThreadStartRefusesAnotherRuntimesPermissionAndB4Choices() async throws {
-    let server = try await FakeB4.start()
     let h = try await Harness.start()
     let codex = try await h.addCodex()
-    let b4 = try await h.addB4(server).connection
+    let b4 = try HistoricalCoordinatorFixture.seedEarlierConnection(h.coordinator.database)
     let refused: [(ThreadStart.Params, String)] = [
       (
         ThreadStart.Params(
@@ -1140,7 +1201,7 @@ actor EventCollector {
       (
         ThreadStart.Params(
           threadId: UUID().uuidString.lowercased(), connectionId: b4.id, text: "hi", model: "opus"),
-        "not_supported_for_b4"
+        "agent_protocol_cutover"
       ),
     ]
     for (params, reason) in refused {
@@ -1148,19 +1209,19 @@ actor EventCollector {
         _ = try await start(h, params)
         Issue.record("expected \(reason)")
       } catch let error as WorkspaceError {
-        #expect(error.code == .protocolInvalid)
+        #expect(error.code == (params.connectionId == b4.id ? .unsupportedCapability : .protocolInvalid))
         #expect(error.details?["reason"]?.stringValue == reason)
       }
       #expect(try h.coordinator.database.thread(id: params.threadId) == nil)
     }
     await h.stop()
-    await server.stop()
+
   }
 }
 
 /// A Codex or Claude thread started with no folder: the coordinator makes one under `threadFoldersDir`,
 /// records it, and the thread has no environment.
-@Suite(.serialized) struct NoFolderStartTests {
+@Suite(NativeDBResources(), .serialized) struct NoFolderStartTests {
   private func start(
     _ h: Harness, _ params: ThreadStart.Params, operationId: String = UUID().uuidString
   ) async throws -> ThreadStart.Result {
@@ -1220,7 +1281,12 @@ actor EventCollector {
 
   @Test(arguments: Runtime.allCases)
   func aStartWithNoFolderMakesOneAndHasNoEnvironment(_ runtime: Runtime) async throws {
-    let h = try await Harness.start()
+    let inspectionObservation: InspectionRequestObservation? =
+      switch runtime {
+      case .codex: InspectionRequestObservation(caseID: .noFolderCodex)
+      case .claude: nil
+      }
+    let h = try await Harness.start(inspectionObservation: inspectionObservation)
     let connection = try await runtime.add(h)
     let before = Date()
     let started = try await start(
@@ -1427,58 +1493,62 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct B4SessionServiceTests {
-  @Test func runsAB4ConversationBesideCodex() async throws {
-    let server = try await FakeB4.start()
-    let h = try await Harness.start()
+@Suite(NativeDBResources(), .serialized) struct B4SessionServiceTests {
+  @Test func runsCurrentConversationBesideUnchangedHistoricalCache() async throws {
+    let witness = HistoricalFactoryWitness()
+    let h = try await Harness.start(
+      adapterFactory: witness.makeFactory(),
+      inspectionObservation: InspectionRequestObservation(caseID: .b4BesideCodex))
     let codex = try await h.addCodex()
-    let added = try await h.addB4(server)
-    let b4 = added.connection
-    #expect(b4.kind == .b4)
-    #expect(b4.status == .ready)
-    #expect(b4.authStatus == .notRequired)
-    #expect(b4.b4Mode == .attachedLocal)
-    #expect(b4.routeKey == "/chat#agent")
-    #expect(b4.target == server.baseURL)
-    #expect(b4.capabilities[.permissionDecisions] == .supported)
-    #expect(added.inspection.message?.contains("not verified") == true)
-    let codexThread = try await h.newThread(codex)
-    let thread = try await h.newB4Thread(b4)
-    #expect(thread.title == "chat")
-    #expect(thread.context == "/chat#agent")
-    #expect(thread.nativeScope == server.baseURL)
-    #expect(thread.nativeThreadId == "thr_1")
-    #expect(
-      thread.nativeThreadId != codexThread.nativeThreadId || thread.nativeScope != codexThread.nativeScope)
-
-    let turn = try await h.send(thread, "hello b4")
+    let b4 = try HistoricalCoordinatorFixture.seedEarlierConnection(h.coordinator.database)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: b4)
+    let thread = try await h.newThread(codex)
+    let retainedFacts1 = thread.nativeThreadId == history.thread.nativeThreadId
+    #expect(retainedFacts1)
+    #expect(thread.nativeScope != history.thread.nativeScope)
+    let turn = try await h.send(thread, "hello there")
     #expect(turn.submission == .acknowledged)
-    #expect(turn.nativeTurnId == "turn-1")
     let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
     #expect(finished.payload["outcome"]?.stringValue == "completed")
     #expect(finished.threadId == thread.id)
     let deltas = await h.events.events.map(\.event).filter {
       $0.kind == .messageDelta && $0.threadId == thread.id
     }
-    #expect(deltas.map { $0.payload["delta"]?.stringValue ?? "" }.joined() == "Hello from fake B4.")
+    #expect(deltas.map { $0.payload["delta"]?.stringValue ?? "" }.joined() == "Hello from fake Codex.")
     let read = try await h.read(thread)
     #expect(read.turns.count == 1)
     #expect(read.turns[0].outcome == .completed)
+    #expect(read.turns[0].nativeTurnId == "turn_1")
     #expect(read.items.map(\.role) == [.user, .assistant])
-    #expect(read.items[1].payload["text"]?.stringValue == "Hello from fake B4.")
-    let listed = try await h.client.request(ThreadList.self, ThreadList.Params())
-    #expect(Set(listed.threads.map(\.id)) == [thread.id, codexThread.id])
-    let again = try await h.addB4(server)
-    #expect(again.connection.id == b4.id)
+    #expect(read.items[0].payload["text"]?.stringValue == "hello there")
+    #expect(read.items[1].payload["text"]?.stringValue == "Hello from fake Codex.")
+    #expect(read.items[1].turnId == turn.id)
+    #expect(read.requests.isEmpty)
+    let cached = try await h.read(history.thread)
+    let retainedFacts2 = cached.items == history.items
+    #expect(retainedFacts2)
+    let retainedFacts3 = cached.turns == history.turns
+    #expect(retainedFacts3)
+    try await HistoricalCoordinatorFixture.expectCutover {
+      _ = try await h.send(history.thread, "never dispatch")
+    }
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(h.coordinator.database, threadId: history.thread.id)
+      == history
+    #expect(unchanged)
+    let listed = try await h.client.request(ThreadList.self, .init())
+    #expect(Set(listed.threads.map(\.id)) == [thread.id, history.thread.id])
+    #expect(witness.count == 0)
     await h.stop()
-    await server.stop()
   }
 
   @Test func threadUpdateRefusesAModelOrPermissionOnAB4Thread() async throws {
-    let server = try await FakeB4.start()
     let h = try await Harness.start()
-    let b4 = try await h.addB4(server).connection
-    let thread = try await h.newB4Thread(b4)
+    let b4 = try HistoricalCoordinatorFixture.seedEarlierConnection(h.coordinator.database)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: b4)
+    let thread = history.thread
     for params in [
       ThreadUpdate.Params(threadId: thread.id, model: "opus"),
       ThreadUpdate.Params(threadId: thread.id, permission: "plan"),
@@ -1493,103 +1563,95 @@ actor EventCollector {
         #expect(error.details?["reason"]?.stringValue == "not_supported_for_b4")
       }
     }
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(h.coordinator.database, threadId: thread.id) == history
+    #expect(unchanged)
     await h.stop()
-    await server.stop()
+
   }
 
-  @Test func answersAB4PermissionThroughTheCoordinator() async throws {
-    let server = try await FakeB4.start()
-    let h = try await Harness.start()
-    let b4 = try await h.addB4(server).connection
-    let thread = try await h.newB4Thread(b4)
-    let turn = try await h.send(thread, "please approve")
-    let opened = try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == thread.id }
-    let request = try #require(try opened.payload["runtimeRequest"]?.decode(RuntimeRequest.self))
+  @Test func historicalPermissionRemainsPendingWhenActionsRefuse() async throws {
+    let witness = HistoricalFactoryWitness()
+    let h = try await Harness.start(adapterFactory: witness.makeFactory())
+    let b4 = try HistoricalCoordinatorFixture.seedEarlierConnection(h.coordinator.database)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: b4, status: .waitingForUser)
+    let request = try #require(history.requests.first)
     #expect(request.kind == .commandApproval)
     #expect(request.payload["request"]?["command"]?.stringValue == "rm -rf tmp")
-    try await h.events.waitFor {
-      $0.kind == .turnStateChanged && $0.turnId == turn.id
-        && $0.payload["status"]?.stringValue == "waiting_for_user"
+    let read = try await h.read(history.thread)
+    #expect(read.turns[0].status == .waitingForUser)
+    #expect(read.requests.map(\.id) == [request.id])
+    for decision in [RuntimeDecision.allowOnce, .deny] {
+      try await HistoricalCoordinatorFixture.expectCutover {
+        _ = try await h.client.request(
+          RequestRespond.self, .init(requestId: request.id, decision: decision),
+          options: RequestOptions(operationId: UUID().uuidString))
+      }
     }
-    let midway = try await h.read(thread)
-    #expect(midway.turns[0].status == .waitingForUser)
-    #expect(midway.requests.map(\.id) == [request.id])
-    let answered = try await h.client.request(
-      RequestRespond.self, RequestRespond.Params(requestId: request.id, decision: .allowAlways),
-      options: RequestOptions(operationId: UUID().uuidString))
-    #expect(answered.request.state == .resolved)
-    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
-    #expect(finished.payload["outcome"]?.stringValue == "completed")
-    let read = try await h.read(thread)
-    #expect(read.requests.isEmpty)
-    #expect(read.items.last?.payload["text"]?.stringValue?.contains("Approved (always)") == true)
     do {
       _ = try await h.client.request(
-        RequestRespond.self, RequestRespond.Params(requestId: request.id, decision: .deny),
+        RequestRespond.self, .init(requestId: request.id, decision: .allowAlways),
         options: RequestOptions(operationId: UUID().uuidString))
-      Issue.record("second answer must be stale")
+      Issue.record("A historical request without a wider scope must refuse wider permission.")
     } catch let error as WorkspaceError {
-      #expect(error.code == .staleRuntimeRequest)
+      #expect(error.code == .unsupportedCapability)
+      #expect(
+        error.message
+          == "This request can be allowed once or denied; its runtime offers nothing wider for it.")
     }
+    try await HistoricalCoordinatorFixture.expectCutover {
+      _ = try await h.send(history.thread, "never dispatch")
+    }
+    try await HistoricalCoordinatorFixture.expectCutover {
+      _ = try await h.client.request(
+        TurnInterrupt.self, .init(threadId: history.thread.id),
+        options: RequestOptions(operationId: UUID().uuidString))
+    }
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(h.coordinator.database, threadId: history.thread.id)
+      == history
+    #expect(unchanged)
+    #expect(witness.count == 0)
+    // Actual approval/duplicate-race/terminal positives remain in answersAnApprovalExactlyOnce,
+    // simultaneousAnswersReachTheRuntimeOnce and answersAClaudeToolPermissionThroughTheCoordinator.
     await h.stop()
-    await server.stop()
   }
 
-  @Test func credentialAddProducesAReferenceTheEndpointAccepts() async throws {
-    let server = try await FakeB4.start(environment: ["FAKE_B4_TOKEN": "s3cret"])
-    let h = try await Harness.start()
+  @Test func credentialAddIsReferenceOnlyAndLegacyAdmissionNeverReadsIt() async throws {
+    let secrets = FixtureCredentialStore()
+    let witness = HistoricalFactoryWitness()
+    let h = try await Harness.start(secretStore: secrets, adapterFactory: witness.makeFactory())
     let stored = try await h.client.request(
-      CredentialAdd.self, CredentialAdd.Params(label: "fake endpoint", value: "s3cret"),
+      CredentialAdd.self, .init(label: "fixture endpoint", value: "s3cret"),
       options: RequestOptions(operationId: UUID().uuidString))
     #expect(stored.reference.hasPrefix("secret:"))
-    #expect(stored.label == "fake endpoint")
-    do {
-      _ = try await h.addB4(server, authReference: "secret:missing")
-      Issue.record("an unknown reference must be refused")
-    } catch let error as WorkspaceError {
-      #expect(error.code == .notFound)
+    #expect(stored.label == "fixture endpoint")
+    #expect(await secrets.value(try #require(SecretRef(rawValue: stored.reference))) == "s3cret")
+    for reference in [stored.reference, nil, "secret:missing"] {
+      try await HistoricalCoordinatorFixture.expectCutover {
+        _ = try await h.client.request(
+          ConnectionAdd.self,
+          .init(kind: .b4, url: "https://example.invalid", route: "/chat#agent", authReference: reference),
+          options: RequestOptions(operationId: UUID().uuidString))
+      }
     }
-    let anonymous = try await h.addB4(server, label: "No auth").connection
-    #expect(anonymous.status == .ready)
-    let anonymousThread = try await h.newB4Thread(anonymous)
-    do {
-      _ = try await h.send(anonymousThread, "hello")
-      Issue.record("the middleware must reject the turn")
-    } catch let error as WorkspaceError {
-      #expect(error.code == .authRequired)
-    }
-    try await h.events.waitFor {
-      $0.kind == .connectionChanged && $0.payload["authStatus"]?.stringValue == "error"
-    }
-    let authorized = try await h.addB4(
-      server, route: "/chat#agent", authReference: stored.reference, label: "With auth")
-    #expect(authorized.connection.id != anonymous.id)
-    #expect(authorized.connection.authReference == stored.reference)
-    #expect(authorized.connection.authStatus == .unknown)
-    let thread = try await h.newB4Thread(authorized.connection)
-    let turn = try await h.send(thread, "hello")
-    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
-    #expect(finished.payload["outcome"]?.stringValue == "completed")
-    let connections = try await h.client.request(ConnectionList.self, ConnectionList.Params())
-    #expect(connections.connections.allSatisfy { $0.authReference != "s3cret" })
+    let connections = try await h.client.request(ConnectionList.self, .init())
+    #expect(connections.connections.isEmpty)
+    let encoded = String(decoding: try JSONCoding.encoder.encode(stored), as: UTF8.self)
+    #expect(!encoded.contains("s3cret"))
+    #expect(await secrets.reads == 0)
+    #expect(await secrets.removals == 0)
+    #expect(witness.count == 0)
+    // Endpoint acceptance is retired under D240; this is the live reference-only command boundary.
     await h.stop()
-    await server.stop()
   }
 
   @Test func routeAndUrlProblemsAreReportedNotSilentlyDegraded() async throws {
-    let server = try await FakeB4.start()
     let h = try await Harness.start()
-    let workflow = try await h.addB4(server, route: "/dispatch#workflow", label: "Workflow")
-    #expect(workflow.connection.status == .incompatible)
-    #expect(workflow.inspection.error?.code == .unsupportedCapability)
-    do {
-      _ = try await h.newB4Thread(workflow.connection)
-      Issue.record("a workflow route must not start a thread")
-    } catch let error as WorkspaceError {
-      #expect(error.code == .unsupportedCapability)
-    }
     for (url, route) in [
-      (server.baseURL, "chat"), ("http://agent.example.com", "/chat#agent"), ("", "/chat#agent"),
+      ("https://example.invalid", "chat"), ("http://agent.example.com", "/chat#agent"), ("", "/chat#agent"),
+      ("https://example.invalid", "/dispatch#workflow"),
     ] {
       do {
         _ = try await h.client.request(
@@ -1597,7 +1659,8 @@ actor EventCollector {
           options: RequestOptions(operationId: UUID().uuidString))
         Issue.record("\(url) \(route) must be rejected")
       } catch let error as WorkspaceError {
-        #expect(error.code == .protocolInvalid)
+        #expect(error.code == .unsupportedCapability)
+        #expect(error.details?["reason"]?.stringValue == "agent_protocol_cutover")
       }
     }
     let codex = try await h.addCodex()
@@ -1610,57 +1673,50 @@ actor EventCollector {
     } catch let error as WorkspaceError {
       #expect(error.code == .protocolInvalid)
     }
+    #expect(try h.coordinator.database.listThreads().isEmpty)
     await h.stop()
-    await server.stop()
+
   }
 
-  @Test func aParkedB4TurnIsAnswerableAfterACoordinatorRestart() async throws {
-    let server = try await FakeB4.start()
-    let h = try await Harness.start()
-    let b4 = try await h.addB4(server).connection
-    let thread = try await h.newB4Thread(b4)
-    let turn = try await h.send(thread, "please approve")
-    try await h.events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == thread.id }
+  @Test func parkedHistoricalFactsSurviveCoordinatorRestartWithoutReattachment() async throws {
+    let witness = HistoricalFactoryWitness()
+    let h = try await Harness.start(adapterFactory: witness.makeFactory())
+    let connection = try HistoricalCoordinatorFixture.seedEarlierConnection(h.coordinator.database)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: connection, status: .waitingForUser)
     let paths = h.coordinator.paths
     await h.stop()
-
-    var env = ProcessInfo.processInfo.environment
-    env["B4APP_NODE_PATH"] = "/nonexistent/node"
-    guard
-      case .running(let restarted) = try await Coordinator.startSignedIn(
-        options: CoordinatorOptions(paths: paths, environment: env, secretStore: MemorySecretStore()))
-    else { throw WorkspaceError(.internalError, "expected running") }
-    let client = try await UnixSocketTransport.client(path: paths.socketPath)
-    let snapshot = try await client.request(EventsSnapshot.self, EmptyParams())
-    await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
-    let events = EventCollector(await client.events())
-    let first = try await client.request(
-      ThreadRead.self, ThreadRead.Params(threadId: thread.id), options: RequestOptions(timeout: .seconds(30)))
-    #expect(first.turns.first { $0.id == turn.id }?.status == .waitingForUser)
-    let reopened = try await events.waitFor { $0.kind == .runtimeRequestOpened && $0.threadId == thread.id }
-    let request = try #require(try reopened.payload["runtimeRequest"]?.decode(RuntimeRequest.self))
-    #expect(request.adapterGeneration == 2)
-    let read = try await client.request(
-      ThreadRead.self, ThreadRead.Params(threadId: thread.id), options: RequestOptions(timeout: .seconds(30)))
-    #expect(read.requests.map(\.id) == [request.id])
-    let answered = try await client.request(
-      RequestRespond.self, RequestRespond.Params(requestId: request.id, decision: .allowOnce),
+    let back = try await Harness.start(paths: paths, adapterFactory: witness.makeFactory())
+    let first = try await back.read(history.thread)
+    let retainedFacts4 = first.turns == history.turns
+    #expect(retainedFacts4)
+    let retainedFacts5 = first.requests == history.requests
+    #expect(retainedFacts5)
+    _ = try await back.client.request(
+      ThreadReconcile.self, .init(threadId: history.thread.id),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
-    #expect(answered.request.state == .resolved)
-    let finished = try await events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
-    #expect(finished.payload["outcome"]?.stringValue == "completed")
-    await client.close()
-    await restarted.close()
-    await server.stop()
+    try await HistoricalCoordinatorFixture.expectCutover {
+      _ = try await back.client.request(
+        RequestRespond.self, .init(requestId: history.requests[0].id, decision: .allowOnce),
+        options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
+    }
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(back.coordinator.database, threadId: history.thread.id)
+      == history
+    #expect(unchanged)
+    #expect(witness.count == 0)
+    #expect(!(await back.events.events.map(\.event)).contains { $0.kind == .runtimeRequestOpened })
+    await back.stop()
   }
 }
 
 // MARK: - M5
 
-@Suite(.serialized) struct ThreadOrganizationTests {
+@Suite(NativeDBResources(), .serialized) struct ThreadOrganizationTests {
   /// Spec A05: rename, pin, archive/unarchive, title search, and draft state survive a restart.
   @Test func organizationAndDraftsSurviveACoordinatorRestart() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .organizationRestart))
     let connection = try await h.addCodex()
     let first = try await h.newThread(connection)
     let second = try await h.newThread(connection)
@@ -1757,13 +1813,14 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct ContinuityTests {
+@Suite(NativeDBResources(), .serialized) struct ContinuityTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
 
   /// A13 and A11: after a restart with the display cache gone, reconciliation rebuilds history from
   /// the runtime; with a partial cache it merges without duplicating the live rows.
   @Test func reconcileMergesNativeHistoryWithoutDuplicates() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .continuityRestart))
     let connection = try await h.addCodex()
     let thread = try await h.newThread(connection)
     let turn = try await h.send(thread, "hello there")
@@ -1991,7 +2048,7 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct RecoveryTests {
+@Suite(NativeDBResources(), .serialized) struct RecoveryTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
 
   private func expectRefusal(
@@ -2015,7 +2072,8 @@ actor EventCollector {
   /// The per-directory lock (D-033, spec 10.1.5) is gone: a turn running in a folder does not keep
   /// another thread there from starting one. Only a thread's own active turn blocks it.
   @Test func twoThreadsMayRunInOneFolder() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .claudeRecovery))
     let claude = try await h.addClaude()
     let first = try await h.newThread(claude)
     let second = try await h.newThread(claude)
@@ -2089,11 +2147,12 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct FailureTests {
+@Suite(NativeDBResources(), .serialized) struct FailureTests {
   /// A15: an expired login during a turn is actionable: the turn fails with `auth_required`, the
   /// connection reports `required`, viewers get `connection.changed`, and nothing is re-sent.
   @Test func expiredLoginFlipsTheConnectionToAuthRequired() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .expiredLogin))
     let connection = try await h.addCodex()
     #expect(connection.authStatus == .authenticated)
     let thread = try await h.newThread(connection)
@@ -2136,20 +2195,21 @@ actor EventCollector {
   }
 }
 
-@Suite(.serialized) struct LifecycleTests {
+@Suite(NativeDBResources(), .serialized) struct LifecycleTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(120)) }
 
   /// Spec 10.3 Quit: local work is named and can be stopped; attached and remote runs are detached,
   /// never cancelled by the app.
   @Test func activeWorkNamesLocalAndRemoteTurnsAndStopLocalWorkDetachesRemote() async throws {
-    let server = try await FakeB4.start()
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .lifecycle))
     let codex = try await h.addCodex()
-    let b4 = try await h.addB4(server).connection
+    let b4 = try HistoricalCoordinatorFixture.seedEarlierConnection(h.coordinator.database)
     let codexThread = try await h.newThread(codex)
-    let b4Thread = try await h.newB4Thread(b4)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: b4, status: .running)
     let localTurn = try await h.send(codexThread, "hang around")
-    let remoteTurn = try await h.send(b4Thread, "hang around")
+    let remoteTurn = history.turns[0]
 
     let work = try await h.client.request(WorkspaceActiveWork.self, EmptyParams())
     #expect(Set(work.turns.map(\.turnId)) == [localTurn.id, remoteTurn.id])
@@ -2164,56 +2224,60 @@ actor EventCollector {
     #expect(stopped.detached.map(\.turnId) == [remoteTurn.id])
     #expect(stopped.unconfirmed.isEmpty)
     #expect(try h.coordinator.database.turn(id: localTurn.id)?.outcome == .cancelled)
-    // The attached B4 run is still in flight on its server until the test stops it itself.
-    #expect(try h.coordinator.database.turn(id: remoteTurn.id)?.status == .running)
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(h.coordinator.database, threadId: history.thread.id)
+      == history
+    #expect(unchanged)
     let after = try await h.client.request(WorkspaceActiveWork.self, EmptyParams())
     #expect(after.turns.map(\.turnId) == [remoteTurn.id])
-    _ = try await h.client.request(
-      TurnInterrupt.self, TurnInterrupt.Params(threadId: b4Thread.id), options: mutation())
-    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == remoteTurn.id }
     await h.stop()
-    await server.stop()
+
   }
 
   /// Spec 10.3 wake: a turn that finished on its server while the coordinator was down is settled by
   /// `workspace.reconcile`, with no re-send.
   @Test func reconcileSettlesATurnThatFinishedWhileTheCoordinatorWasDown() async throws {
-    let server = try await FakeB4.start()
-    let h = try await Harness.start()
-    let b4 = try await h.addB4(server).connection
-    let thread = try await h.newB4Thread(b4)
+    let state = CurrentCoordinatorFixtureState()
+    let factory: SessionService.AdapterFactory = { _, _, _, _ in
+      CurrentCoordinatorFixtureAdapter(state: state)
+    }
+    let h = try await Harness.start(adapterFactory: factory)
+    // Current-kind controlled adapter owns one native invocation across coordinator replacement.
+    let current = try h.coordinator.database.insertConnection(
+      Connection(
+        id: "controlled-current", kind: .codex, label: "Controlled current", target: "/fixture/codex",
+        nativeScope: "fixture-current", commands: [], status: .ready))
+    let thread = try await h.newThread(current)
     let turn = try await h.send(thread, "held please")
     #expect(turn.status == .running)
+    #expect(turn.nativeTurnId == "controlled-turn-1")
     let paths = h.coordinator.paths
     await h.stop()
-    // The run ends on its server only now, with no coordinator attached to see it end.
-    try await server.release(nativeThreadId: thread.nativeThreadId)
-    try await server.waitForRunToEnd(nativeThreadId: thread.nativeThreadId)
-
-    let back = try await Harness.start(paths: paths)
-    let before = try back.coordinator.database.turn(id: turn.id)
-    #expect(before?.status == .reconciling)
+    await state.finish()
+    let back = try await Harness.start(paths: paths, adapterFactory: factory)
+    #expect(try back.coordinator.database.turn(id: turn.id)?.status == .reconciling)
     let result = try await back.client.request(
-      WorkspaceReconcile.self, WorkspaceReconcile.Params(reason: "test-wake"), options: mutation())
+      WorkspaceReconcile.self, .init(reason: "test-wake"), options: mutation())
     #expect(result.reconciled == 1)
     #expect(result.stillUnknown == 0)
     let read = try await back.read(thread)
     #expect(read.turns.map(\.outcome) == [.completed])
-    // Exactly one server-side turn: reconciliation never re-sent the prompt (A12).
-    let (data, _) = try await URLSession.shared.data(
-      from: URL(string: "\(server.baseURL)/threads/\(thread.nativeThreadId)/turns")!)
-    let body = try JSONCoding.decoder.decode(JSONValue.self, from: data)
-    #expect((body["turns"]?["turns"]?.arrayValue ?? body["turns"]?.arrayValue)?.count == 1)
+    #expect(read.turns.map(\.nativeTurnId) == ["controlled-turn-1"])
+    #expect(await state.submissions.count == 1)
+    #expect(await state.submissions.first?.text == "held please")
+    #expect(await state.reconciled == ["controlled-turn-1"])
     await back.stop()
-    await server.stop()
+    // Historical unknown is independently protected by parkedHistoricalFactsSurviveCoordinatorRestartWithoutReattachment.
+
   }
 }
 
-@Suite(.serialized) struct RedactionTests {
+@Suite(NativeDBResources(), .serialized) struct RedactionTests {
   /// A16 and spec 12: runtime error text with credential shapes is masked before it reaches an event,
   /// a thread read, or `doctor`.
   @Test func runtimeErrorsAreRedactedBeforeTheyLeaveTheCoordinator() async throws {
-    let h = try await Harness.start()
+    let h = try await Harness.start(
+      inspectionObservation: InspectionRequestObservation(caseID: .redaction))
     let connection = try await h.addCodex()
     let thread = try await h.newThread(connection)
     let turn = try await h.send(thread, "leak the secrets")
@@ -2238,8 +2302,143 @@ actor EventCollector {
   }
 }
 
+@Suite(.serialized) struct RuntimeCommandProfileFoundationTests {
+  @Test func commandRoundTripRetainsCompleteProfileAuthAndRetirement() throws {
+    let value = Connection(
+      id: "staged-roundtrip", kind: .agentProtocol, label: "Staged",
+      enabled: false, profileRevision: 7, target: "https://example.invalid/deployment",
+      authReference: "secret:roundtrip", nativeScope: "retained-native-scope",
+      peerProfile: .agentProtocol, agentId: "exact-agent", authMode: .header,
+      authHeaderName: "X-Retained-Key", protocolRetiredAt: "retained-at",
+      protocolRetiredReason: .agentProtocolCutover,
+      ownerDeviceId: "retained-owner-device",
+      models: [RuntimeModel(id: "model", label: "Retained model")],
+      commands: [
+        RuntimeCommand(
+          name: "review", description: "Retained description",
+          argumentHint: "<path>", aliases: ["rv"])
+      ], createdAt: "created", updatedAt: "updated")
+    let restored = try JSONDecoder().decode(Connection.self, from: JSONEncoder().encode(value))
+    #expect(restored == value)
+    #expect(restored.commands?.first?.aliases == ["rv"])
+    #expect(restored.ownerDeviceId == "retained-owner-device")
+    #expect(restored.peerProfile == .agentProtocol && restored.agentId == "exact-agent")
+    #expect(restored.authMode == .header && restored.authHeaderName == "X-Retained-Key")
+    #expect(
+      restored.protocolRetiredAt == "retained-at" && restored.protocolRetiredReason == .agentProtocolCutover)
+  }
+
+  @Test(NativeDBResources()) func startupReadsNativeCommandsWithoutInspectingHistoricalOrStagedProfiles()
+    async throws
+  {
+    let h = try await Harness.start()
+    var initialStopped = false
+    do {
+      let codex = try await h.addCodex(), claude = try await h.addClaude()
+      for id in [codex.id, claude.id] {
+        _ = try h.coordinator.database.updateConnection(id: id) { $0.commands = nil }
+      }
+      let historical = Connection(
+        id: "commands-historical", kind: .b4, label: "Retained",
+        target: "https://example.invalid/retained", routeKey: "/old#agent", b4Mode: .remote,
+        nativeScope: "retained-scope", createdAt: "created", updatedAt: "updated")
+      let staged = Connection(
+        id: "commands-staged", kind: .agentProtocol, label: "Staged",
+        target: "https://example.invalid/deployment", nativeScope: "staged-scope",
+        peerProfile: .agentProtocol, agentId: "staged-agent", authMode: ConnectionAuthMode.none,
+        createdAt: "created", updatedAt: "updated")
+      _ = try h.coordinator.database.insertConnection(historical)
+      _ = try h.coordinator.database.insertConnection(staged)
+      try h.coordinator.database.write { raw in
+        try raw.execute(
+          """
+          SET b4app.replaying='on';
+          INSERT INTO threads (id,"connectionId","nativeThreadId",title,"createdAt","updatedAt")
+            VALUES ('commands-old-thread','commands-historical','old-native','Retained history','created','updated'),
+              ('commands-staged-thread','commands-staged','staged-native','Staged history','created','updated');
+          INSERT INTO turns (id,"threadId","operationId",status,submission,"createdAt","updatedAt")
+            VALUES ('commands-old-turn','commands-old-thread','old-operation','reconciling','unknown','created','updated'),
+              ('commands-staged-turn','commands-staged-thread','staged-operation','reconciling','unknown','created','updated');
+          INSERT INTO drafts ("threadId",text,"updatedAt") VALUES
+            ('commands-old-thread','Retained unsent draft','updated'),('commands-staged-thread','Staged draft','updated');
+          RESET b4app.replaying;
+          """)
+      }
+      func retained(_ db: WorkspaceDatabase) throws -> [String: [String]] {
+        try db.read { raw in
+          var result: [String: [String]] = [:]
+          for (table, predicate) in [
+            ("connections", "id IN ('commands-historical','commands-staged')"),
+            ("threads", "id IN ('commands-old-thread','commands-staged-thread')"),
+            ("turns", "id IN ('commands-old-turn','commands-staged-turn')"),
+            ("drafts", "\"threadId\" IN ('commands-old-thread','commands-staged-thread')"),
+          ] {
+            result[table] = try raw.execute(
+              "SELECT to_jsonb(t)::text AS row FROM \(table) t WHERE \(predicate) ORDER BY 1"
+            )
+            .rows.compactMap { $0.text("row") }
+          }
+          return result
+        }
+      }
+      let before = try retained(h.coordinator.database), paths = h.coordinator.paths
+      await h.stop()
+      initialStopped = true
+      let factories = Mutex<[ConnectionKind]>([])
+      var environment = ProcessInfo.processInfo.environment
+      environment["B4APP_NODE_PATH"] = "/nonexistent/node"
+      environment["ANTHROPIC_API_KEY"] = nil
+      let factory: SessionService.AdapterFactory = { connection, env, version, secrets in
+        factories.withLock { $0.append(connection.kind) }
+        return try SessionService.defaultAdapterFactory(connection, env, version, secrets)
+      }
+      let restarted = try await Harness.start(
+        paths: paths, extraEnvironment: environment, adapterFactory: factory)
+      var failure: (any Error)?
+      do {
+        let deadline = ContinuousClock.now + .seconds(60)
+        while ContinuousClock.now < deadline {
+          if try restarted.coordinator.database.connection(id: codex.id)?.commands != nil,
+            try restarted.coordinator.database.connection(id: claude.id)?.commands != nil
+          {
+            break
+          }
+          try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(
+          try restarted.coordinator.database.connection(id: codex.id)?.commands?.map(\.name) == [
+            "review", "compact",
+          ])
+        #expect(
+          try restarted.coordinator.database.connection(id: claude.id)?.commands?.map(\.name) == [
+            "context", "compact", "superpowers:brainstorming",
+          ])
+        #expect(Set(factories.withLock { $0 }).isSuperset(of: [.codex, .claude]))
+        #expect(factories.withLock { !$0.contains(.b4) && !$0.contains(.agentProtocol) })
+        for connection in [historical, staged] {
+          var refusal: WorkspaceError?
+          do {
+            _ = try await restarted.coordinator.sessions.connectionInspect(
+              ConnectionInspect.Params(connectionId: connection.id))
+          } catch { refusal = WorkspaceError.from(error) }
+          #expect(refusal?.code == .unsupportedCapability)
+        }
+        #expect(try retained(restarted.coordinator.database) == before)
+        #expect(try restarted.coordinator.database.connection(id: historical.id)?.commands == nil)
+        #expect(try restarted.coordinator.database.connection(id: staged.id)?.commands == nil)
+        #expect(factories.withLock { !$0.contains(.b4) && !$0.contains(.agentProtocol) })
+      } catch { failure = error }
+      await restarted.stop()
+      if let failure { throw failure }
+    } catch {
+      if !initialStopped { await h.stop() }
+      throw error
+    }
+  }
+}
+
 /// An agent's plan or task list is one `taskList` row per turn, whichever runtime keeps it.
-@Suite(.serialized) struct TaskListSessionTests {
+@Suite(NativeDBResources(), .serialized) struct TaskListSessionTests {
   private let mutation = { RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)) }
 
   private func lists(_ items: [DisplayItem]) -> [TaskList] {
@@ -2269,16 +2468,37 @@ actor EventCollector {
     await h.stop()
   }
 
-  @Test func aB4PlanIsOneRow() async throws {
-    let server = try await FakeB4.start()
-    let h = try await Harness.start()
-    let thread = try await h.newB4Thread(try await h.addB4(server).connection)
-    let turn = try await h.send(thread, "make a plan")
-    try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
-    let items = try await h.read(thread).items
-    #expect(lists(items) == [TaskList(steps: [.init(text: "step one", status: .pending)])])
+  @Test func historicalPlanCacheRemainsOneRowAcrossRestart() async throws {
+    let witness = HistoricalFactoryWitness()
+    let h = try await Harness.start(adapterFactory: witness.makeFactory())
+    let b4 = try HistoricalCoordinatorFixture.seedEarlierConnection(h.coordinator.database)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      h.coordinator.database, connection: b4)
+    let list = TaskList(steps: [.init(text: "step one", status: .pending)])
+    var payload = try #require(list.payload.objectValue)
+    payload["unknownEarlierPlanPayload"] = ["opaque": ["native-shape", 7, true]]
+    _ = try h.coordinator.database.upsertDisplayItem(
+      threadId: history.thread.id, turnId: history.turns[0].id, nativeItemId: "opaque-plan", role: .tool,
+      type: "taskList", payload: .object(payload), provenance: .cache)
+    let before = try HistoricalCoordinatorFixture.snapshot(
+      h.coordinator.database, threadId: history.thread.id)
+    let items = try await h.read(history.thread).items
+    #expect(lists(items) == [list])
+    #expect(items.filter { $0.nativeItemId == "opaque-plan" }.count == 1)
     #expect(!items.contains { $0.type == "plan_update" })
+    _ = try await h.client.request(
+      ThreadReconcile.self, .init(threadId: history.thread.id),
+      options: RequestOptions(operationId: UUID().uuidString))
+    let paths = h.coordinator.paths
     await h.stop()
+    let back = try await Harness.start(paths: paths, adapterFactory: witness.makeFactory())
+    #expect(lists(try await back.read(history.thread).items) == [list])
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(back.coordinator.database, threadId: history.thread.id)
+      == before
+    #expect(unchanged)
+    #expect(witness.count == 0)
+    await back.stop()
   }
 
   @Test func aClaudeTaskListIsOneRowPerTurnAndSurvivesARestartAndAReconcile() async throws {

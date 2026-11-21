@@ -116,30 +116,78 @@ impl PausedClock {
 /// device's socket stops taking them (the device is not reading) and the queue stays full across
 /// two pauses of real time. The device later reads them as `event` frames; returns how many were
 /// queued, so a test can read the whole backlog rather than stop at a pause.
-pub async fn fill_queue(relay: &Relay, device_id: Uuid) -> usize {
+pub async fn fill_queue(relay: &Relay, db: &b4hub_db::Db, device_id: Uuid) -> usize {
     let frame = RelayMessage::Event {
-        event: serde_json::json!({ "kind": "padding", "pad": "x".repeat(16 * 1024) }),
+        event: serde_json::json!({"kind":"padding","pad":"x".repeat(16*1024)}),
     };
     let mut queued = 0;
     assert!(relay.online(device_id), "the device has no link");
     for _ in 0..200 {
-        // Fill the queue in one go (the link task cannot run meanwhile), then give the link a
-        // moment: if it could not drain a single frame, twice, its socket is blocked.
-        while queue_one(relay, device_id, &frame, &mut queued) {}
+        // Each synchronous burst has one real recipient-session admission. Commit before any
+        // sleep, so queue backpressure cannot retain the protocol-floor AS barrier.
+        fill_burst(relay, db, device_id, &frame, &mut queued).await;
         real_sleep(Duration::from_millis(200)).await;
-        if !queue_one(relay, device_id, &frame, &mut queued) {
+        if !queue_one(relay, db, device_id, &frame, &mut queued).await {
             real_sleep(Duration::from_millis(200)).await;
-            if !queue_one(relay, device_id, &frame, &mut queued) {
+            if !queue_one(relay, db, device_id, &frame, &mut queued).await {
                 return queued;
             }
         }
     }
     panic!("the queue never stayed full");
 }
-
-/// Queues `frame` for `device_id` and counts it in `queued`; false when the queue is full.
-fn queue_one(relay: &Relay, device_id: Uuid, frame: &RelayMessage, queued: &mut usize) -> bool {
-    match relay.send(device_id, frame.clone()) {
+async fn fill_burst(
+    relay: &Relay,
+    db: &b4hub_db::Db,
+    device_id: Uuid,
+    frame: &RelayMessage,
+    queued: &mut usize,
+) {
+    let handle = relay
+        .handle(device_id)
+        .expect("native current fixture link");
+    let mut native = b4hub_db::relay::Admission::open(
+        db,
+        handle.session.as_ref().unwrap(),
+        handle.client_protocol,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    loop {
+        match b4hub::relay::admission::try_send_native(relay, &mut native, device_id, frame.clone())
+            .await
+        {
+            Ok(()) => *queued += 1,
+            Err(SendError::Full) => break,
+            Err(SendError::Offline) => panic!("fixture link ended while filling its queue"),
+        }
+    }
+    native.commit().await.unwrap();
+}
+async fn queue_one(
+    relay: &Relay,
+    db: &b4hub_db::Db,
+    device_id: Uuid,
+    frame: &RelayMessage,
+    queued: &mut usize,
+) -> bool {
+    let handle = relay
+        .handle(device_id)
+        .expect("the device has no current link");
+    let mut native = b4hub_db::relay::Admission::open(
+        db,
+        handle.session.as_ref().expect("native fixture session"),
+        handle.client_protocol,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let result =
+        b4hub::relay::admission::try_send_native(relay, &mut native, device_id, frame.clone())
+            .await;
+    native.commit().await.unwrap();
+    match result {
         Ok(()) => {
             *queued += 1;
             true
@@ -371,14 +419,21 @@ impl Hub {
     /// Inserts, as the owner, the thread `thread_id` of `who`, owned by `owner` (as if `owner`
     /// had pushed it).
     pub async fn seed_thread(&self, who: &Seeded, owner: Uuid, thread_id: &str) {
+        self.seed_connection(who, owner, &format!("relay-parent-{owner}"))
+            .await;
         self.seed(
-            "INSERT INTO \"threads\" (\"id\", org_id, user_id, device_id, owner_device_id) \
-             VALUES ($4, $1, $2, $3, $3)",
+            "INSERT INTO \"threads\" (\"id\", org_id, user_id, device_id, owner_device_id,\"connectionId\") \
+             VALUES ($4, $1, $2, $3, $3,$5)",
             who,
             owner,
-            &[thread_id],
+            &[thread_id,&format!("relay-parent-{owner}")],
         )
         .await;
+    }
+
+    /// A real owned legacy connection, required for native target classification.
+    pub async fn seed_connection(&self, who: &Seeded, owner: Uuid, id: &str) {
+        self.seed("INSERT INTO connections (id,org_id,user_id,device_id,owner_device_id,kind) VALUES ($4,$1,$2,$3,$3,'codex') ON CONFLICT (org_id,id) DO NOTHING",who,owner,&[id]).await;
     }
 
     /// Inserts the runtime request `request_id` on `thread_id`, in `state`.
@@ -461,7 +516,7 @@ impl Refused {
 /// A fake Mac or phone: a WebSocket client of the link. Its methods fail the test on anything
 /// unexpected, so a test reads as the conversation it checks.
 pub struct FakeDevice {
-    ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    pub(super) ws: WebSocketStream<MaybeTlsStream<TcpStream>>,
 }
 
 impl FakeDevice {
@@ -614,6 +669,53 @@ impl FakeDevice {
                 Some(Some(Ok(_))) => {}
                 // The hub dropped the connection without a close frame.
                 Some(_) => return 1006,
+            }
+        }
+    }
+
+    /// An actual WebSocket control ping, never an application JSON heartbeat. A revoked session
+    /// may already have been closed by any fresh server-owned boundary; require that close frame,
+    /// rather than treating a failed write/EOF as proof. No application text is skipped.
+    pub async fn transport_ping_or_close(&mut self, nonce: u8) -> Option<u16> {
+        let payload = vec![nonce];
+        // The transport write may race the legitimate close, which must still be read below.
+        let _ = self.ws.send(Message::Ping(payload.clone().into())).await;
+        let deadline = std::time::Instant::now() + FRAME_WAIT;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "no native control outcome within FRAME_WAIT"
+            );
+            match self.next_message(remaining).await {
+                Some(Some(Ok(Message::Pong(actual)))) => {
+                    assert_eq!(actual.as_ref(), payload.as_slice());
+                    return None;
+                }
+                Some(Some(Ok(Message::Ping(_)))) => {}
+                Some(Some(Ok(Message::Close(frame)))) => {
+                    let _ = self.ws.flush().await;
+                    return Some(frame.map_or(1005, |frame| u16::from(frame.code)));
+                }
+                other => panic!("expected only a native control pong or close, got {other:?}"),
+            }
+        }
+    }
+
+    /// Requires a real close frame without accepting any application text/binary frame before it.
+    /// Tungstenite answers native control Ping automatically; this never sends a JSON Pong.
+    pub async fn expect_close_without_text(&mut self) -> u16 {
+        let deadline = std::time::Instant::now() + FRAME_WAIT;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!remaining.is_zero(), "no close within FRAME_WAIT");
+            match self.next_message(remaining).await {
+                Some(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
+                Some(Some(Ok(Message::Close(frame)))) => {
+                    let _ = self.ws.flush().await;
+                    return frame.map_or(1005, |frame| u16::from(frame.code));
+                }
+                other => panic!("expected a close without application content, got {other:?}"),
             }
         }
     }

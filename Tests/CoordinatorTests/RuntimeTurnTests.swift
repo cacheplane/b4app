@@ -22,7 +22,7 @@ func injecting() async throws -> (Harness, AsyncStream<AdapterEvent>.Continuatio
   return (h, deliver)
 }
 
-@Suite struct RuntimeTurnTests {
+@Suite(NativeDBResources()) struct RuntimeTurnTests {
   struct Fixture {
     let h: Harness
     let deliver: AsyncStream<AdapterEvent>.Continuation
@@ -304,7 +304,7 @@ func agent(
     ])
 }
 
-@Suite struct OpenWorkTests {
+@Suite(NativeDBResources()) struct OpenWorkTests {
   let f: RuntimeTurnTests.Fixture
   let first: Turn
   let native: String
@@ -441,7 +441,7 @@ func agent(
   }
 }
 
-@Suite struct OpenWorkEndsTests {
+@Suite(NativeDBResources()) struct OpenWorkEndsTests {
   func exit(
     _ f: RuntimeTurnTests.Fixture, thread: ConversationThread? = nil
   ) -> AdapterEvent {
@@ -742,7 +742,7 @@ struct UnstoppableAdapter: AgentAdapter {
   func dispose() async { await inner.dispose() }
 }
 
-@Suite struct StopOpenWorkTests {
+@Suite(NativeDBResources()) struct StopOpenWorkTests {
   let log = StopLog()
 
   func make(

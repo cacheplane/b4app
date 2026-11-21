@@ -8,7 +8,7 @@ private func seed(_ db: WorkspaceDatabase, _ id: String = "c1", kind: Connection
   _ = try db.insertConnection(Connection(id: id, kind: kind, label: id, target: "/x/\(id)"))
 }
 
-@Suite struct UsageStoreTests {
+@Suite(NativeDBResources()) struct UsageStoreTests {
   @Test func usageReadingIsReplacedPerConnection() throws {
     let db = try WorkspaceDatabase.temporary()
     try seed(db)

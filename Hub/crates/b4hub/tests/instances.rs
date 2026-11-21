@@ -299,7 +299,9 @@ async fn the_probe_passes_on_a_healthy_instance_and_fails_when_the_relay_cannot_
     phone.expect_quiet(Duration::from_millis(300)).await;
 
     // A relay that refuses the hub's own protocol cannot serve a link: the probe fails.
-    hub.state.relay.set_min_client_protocol(2);
+    hub.state
+        .relay
+        .set_min_client_protocol(b4hub_core::protocol::ClientProtocol::SUPPORTED.value() + 1);
     let (status, body) = hub.http("GET", "/readyz", None).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["error"]["details"]["code"], "not_ready");
@@ -343,7 +345,9 @@ async fn readiness_names_the_instance_in_a_cookie(pool: PgPool) {
     let hub = spawn_instance(&pool, BEAT).await;
     assert_eq!(set_cookie_of(&hub, "/readyz").await, Some(cookie_for(&hub)));
     // A failing readiness answer names the instance too.
-    hub.state.relay.set_min_client_protocol(2);
+    hub.state
+        .relay
+        .set_min_client_protocol(b4hub_core::protocol::ClientProtocol::SUPPORTED.value() + 1);
     assert_eq!(set_cookie_of(&hub, "/readyz").await, Some(cookie_for(&hub)));
 }
 

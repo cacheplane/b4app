@@ -102,6 +102,8 @@ final class ConnectionPool: @unchecked Sendable {
   private let idle = Mutex<[PostgresConnection]>([])
   private let slots: DispatchSemaphore
   private let closed = Mutex(false)
+  private let leases = DispatchGroup()
+  private let accountSessionComparisonProbe = Mutex<AccountSessionComparisonTestProbe?>(nil)
 
   init(lib: LibPQ, connectionString: String, size: Int) throws {
     self.lib = lib
@@ -112,23 +114,289 @@ final class ConnectionPool: @unchecked Sendable {
     idle.withLock { $0.append(probe) }
   }
 
-  func withConnection<T>(_ body: (PostgresConnection) throws -> T) throws -> T {
+  func withConnection<T>(
+    beforeWaiting: () -> Void = {}, _ body: (PostgresConnection) throws -> T
+  ) throws -> T {
     if closed.withLock({ $0 }) { throw WorkspaceError(.endpointUnavailable, "The store is closed.") }
+    // An internal observation seam for deterministic checkout/close boundary tests.
+    beforeWaiting()
     slots.wait()
     defer { slots.signal() }
-    var connection = idle.withLock { $0.popLast() }
+    // Close may have run while this caller waited for a slot. Admission and idle access share the
+    // closed -> idle lock order with close and with returning a borrowed connection.
+    var connection = try closed.withLock { isClosed in
+      guard !isClosed else { throw WorkspaceError(.endpointUnavailable, "The store is closed.") }
+      // Register admission while close is excluded. A pre-slot waiter has no lease to drain.
+      leases.enter()
+      return idle.withLock { $0.popLast() }
+    }
+    // Install before lazy creation or the body can throw. Every admitted path leaves exactly once.
+    defer { leases.leave() }
     if connection == nil || connection?.isHealthy == false {
       connection = try PostgresConnection(lib: lib, connectionString: connectionString)
     }
     let live = connection!
     defer {
-      if live.isHealthy { idle.withLock { $0.append(live) } }
+      if live.isHealthy {
+        closed.withLock { isClosed in
+          if !isClosed { idle.withLock { $0.append(live) } }
+        }
+      }
     }
     return try body(live)
   }
 
   func close() {
-    closed.withLock { $0 = true }
-    idle.withLock { $0.removeAll() }
+    closed.withLock {
+      $0 = true
+      idle.withLock { $0.removeAll() }
+    }
+  }
+
+  /// Close admission, then wait only for admitted leases. Ordinary close remains nonwaiting.
+  /// False leaves the pool closed and never authorizes migration capture or DDL.
+  func closeForMigration(timeout: Duration) -> Bool {
+    // Truncate sub-nanosecond fractions, saturate overflow, and start the deadline before close so
+    // time spent closing does not extend the caller's budget. Nonpositive durations check now.
+    let parts = max(timeout, .zero).components
+    let (whole, wholeOverflow) = parts.seconds.multipliedReportingOverflow(by: 1_000_000_000)
+    let (nanos, fractionOverflow) = whole.addingReportingOverflow(parts.attoseconds / 1_000_000_000)
+    let interval = wholeOverflow || fractionOverflow ? Int.max : Int(max(0, nanos))
+    let deadline = DispatchTime.now() + .nanoseconds(interval)
+    close()
+    return leases.wait(timeout: deadline) == .success
+  }
+}
+extension ConnectionPool {
+  func withOwnedProofConnection(
+    onSlotWait: (DispatchTime, DispatchTime) -> Void = { _, _ in },
+    _ body: (PostgresConnection) -> ProtocolOwnedProofWriteReceipt
+  ) throws -> ProtocolOwnedProofWriteReceipt {
+    if closed.withLock({ $0 }) {
+      throw WorkspaceError(.endpointUnavailable, "The store is closed.")
+    }
+    let start = DispatchTime.now()
+    let deadline = start + .seconds(5)
+    onSlotWait(start, deadline)
+    guard slots.wait(timeout: deadline) == .success else {
+      throw WorkspaceError(
+        .endpointUnavailable, "Timed out waiting for a proof-write connection.")
+    }
+    defer { slots.signal() }
+    try admitOwnedProofCheckout()
+    defer { leases.leave() }
+    return try freshOwnedProofReceipt(body)
+  }
+
+  private func admitOwnedProofCheckout() throws {
+    var displaced: PostgresConnection? = try closed.withLock { isClosed in
+      guard !isClosed else {
+        throw WorkspaceError(.endpointUnavailable, "The store is closed.")
+      }
+      leases.enter()
+      return idle.withLock { $0.popLast() }
+    }
+    // Both pool mutex cells have been left before relinquishing this path's old reference.
+    withExtendedLifetime(displaced) {}
+    displaced = nil
+  }
+
+  private func freshOwnedProofReceipt(
+    _ body: (PostgresConnection) -> ProtocolOwnedProofWriteReceipt
+  ) throws -> ProtocolOwnedProofWriteReceipt {
+    let connection = try PostgresConnection(lib: lib, connectionString: connectionString)
+    return body(connection)
+  }
+}
+
+// Synchronous single-stack owner; its raw handle never enters an ordinary pool or DTO.
+fileprivate final class AccountSessionNativeConnection {
+  private let lib: LibPQ
+  private var connection: LibPQ.Conn?
+
+  private init(lib: LibPQ, connection: LibPQ.Conn) {
+    self.lib = lib
+    self.connection = connection
+  }
+
+  fileprivate static func connect(
+    lib: LibPQ, connectionString: String
+  ) throws -> AccountSessionNativeConnection {
+    guard let raw = lib.connectdb(connectionString) else { throw AccountSessionComparisonFailure.value }
+    let holder = AccountSessionNativeConnection(lib: lib, connection: raw)
+    guard lib.status(raw) == LibPQ.connectionOK else {
+      holder.finish()
+      throw AccountSessionComparisonFailure.value
+    }
+    return holder
+  }
+
+  fileprivate func finish() {
+    guard let raw = connection else { return }
+    connection = nil
+    lib.finish(raw)
+  }
+
+  deinit { finish() }
+
+  fileprivate func readFixedFacts(
+    memoryCheck: AccountSessionComparisonCheck, probe: AccountSessionComparisonTestProbe?
+  ) throws -> AccountSessionNativeFacts {
+    /// Only this closed command classification can select SQL. No arbitrary operation is admitted.
+    func execute(_ command: AccountSessionComparisonCommand) throws -> AccountSessionNativeFacts? {
+      guard let connection else { throw AccountSessionComparisonFailure.value }
+      let sql: String
+      switch command {
+      case .begin: sql = "BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY"
+      case .lockBudget: sql = "SET LOCAL lock_timeout='2s'"
+      case .statementBudget: sql = "SET LOCAL statement_timeout='2s'"
+      case .facts: sql = accountSessionComparisonFactsSQL
+      case .rollback: sql = "ROLLBACK"
+      }
+      probe?.recordCommandStart(command)
+      let returned = lib.exec(connection, sql)
+      if command == .facts { probe?.recordSelectReturn() }
+      guard let result = returned else { throw AccountSessionComparisonFailure.value }
+      defer {
+        lib.clear(result)
+        probe?.recordResultClear(command)
+      }
+      if command == .facts {
+        guard lib.resultStatus(result) == LibPQ.tuplesOK else { throw AccountSessionComparisonFailure.value }
+        probe?.recordCommandAcknowledgement(command)
+        let facts = try AccountSessionFactsDecoder.decodeNative(result, lib: lib)
+        probe?.recordFactsDecoded()
+        return facts
+      }
+      guard lib.resultStatus(result) == LibPQ.commandOK, lib.ntuples(result) == 0,
+        lib.nfields(result) == 0
+      else { throw AccountSessionComparisonFailure.value }
+      probe?.recordCommandAcknowledgement(command)
+      return nil
+    }
+
+    var beginSent = false
+    var rollbackSent = false
+    var rollbackAcknowledged = false
+    do {
+      try probe?.recordPhase(.afterConnectBeforeG3)
+      try requireAccountSessionComparisonGuard(3, memoryCheck: memoryCheck, probe: probe)
+      beginSent = true
+      _ = try execute(.begin)
+      try probe?.recordPhase(.afterBeginBeforeG4)
+      try requireAccountSessionComparisonGuard(4, memoryCheck: memoryCheck, probe: probe)
+      _ = try execute(.lockBudget)
+      try probe?.recordPhase(.afterLockBudgetBeforeG5)
+      try requireAccountSessionComparisonGuard(5, memoryCheck: memoryCheck, probe: probe)
+      _ = try execute(.statementBudget)
+      try probe?.recordPhase(.afterStatementBudgetBeforeG6)
+      try requireAccountSessionComparisonGuard(6, memoryCheck: memoryCheck, probe: probe)
+      guard let facts = try execute(.facts) else { throw AccountSessionComparisonFailure.value }
+      // The SELECT's result-clear defer has returned before this phase and G7.
+      try probe?.recordPhase(.afterFactsBeforeG7)
+      try requireAccountSessionComparisonGuard(7, memoryCheck: memoryCheck, probe: probe)
+      rollbackSent = true
+      _ = try execute(.rollback)
+      rollbackAcknowledged = true
+      guard rollbackAcknowledged else { throw AccountSessionComparisonFailure.value }
+      try probe?.recordPhase(.afterRollbackBeforeG8)
+      try requireAccountSessionComparisonGuard(8, memoryCheck: memoryCheck, probe: probe)
+      return facts
+    } catch {
+      if beginSent && !rollbackSent {
+        rollbackSent = true
+        // Cleanup is unconditional: neither a stale check nor an expired hold may veto it.
+        do {
+          _ = try execute(.rollback)
+          rollbackAcknowledged = true
+        } catch {
+          // Native error text is deliberately discarded; explicit fresh finish still follows.
+        }
+      }
+      throw AccountSessionComparisonFailure.value
+    }
+  }
+}
+
+extension ConnectionPool {
+  func installAccountSessionComparisonTestProbe(_ probe: AccountSessionComparisonTestProbe) -> Bool {
+    accountSessionComparisonProbe.withLock {
+      guard $0 == nil else { return false }
+      $0 = probe
+      return true
+    }
+  }
+
+  func clearAccountSessionComparisonTestProbe(_ expected: AccountSessionComparisonTestProbe) -> Bool {
+    let displaced: AccountSessionComparisonTestProbe? = accountSessionComparisonProbe.withLock {
+      guard $0 === expected else { return nil }
+      let previous = $0
+      $0 = nil
+      return previous
+    }
+    let cleared = displaced != nil
+    withExtendedLifetime(displaced) {}
+    return cleared
+  }
+
+  func readAccountSessionNativeFacts(
+    memoryCheck: AccountSessionComparisonCheck
+  ) throws -> AccountSessionNativeFacts {
+    // Capture once; clearing or installing another probe can affect only future operations.
+    let probe = accountSessionComparisonProbe.withLock { $0 }
+    let result = Swift.Result<AccountSessionNativeFacts, any Error> {
+      try performAccountSessionNativeFacts(memoryCheck: memoryCheck, probe: probe)
+    }
+    // Every performing-helper defer has unwound before inspecting sticky cleanup failure.
+    guard probe?.hasExpired != true else { throw AccountSessionComparisonFailure.value }
+    do { return try result.get() } catch { throw AccountSessionComparisonFailure.value }
+  }
+
+  private func performAccountSessionNativeFacts(
+    memoryCheck: AccountSessionComparisonCheck, probe: AccountSessionComparisonTestProbe?
+  ) throws -> AccountSessionNativeFacts {
+    guard !closed.withLock({ $0 }) else { throw AccountSessionComparisonFailure.value }
+    let start = DispatchTime.now()
+    let deadline = start + .seconds(5)
+    probe?.recordWait(start: start, deadline: deadline)
+    try probe?.recordPhase(.beforeSlotWait)
+    guard slots.wait(timeout: deadline) == .success else { throw AccountSessionComparisonFailure.value }
+    defer {
+      slots.signal()
+      probe?.recordSlotSignalled()
+      try? probe?.recordPhase(.afterSlotSignal)
+    }
+    var displaced: PostgresConnection? = try closed.withLock { isClosed in
+      guard !isClosed else { throw AccountSessionComparisonFailure.value }
+      leases.enter()
+      return idle.withLock { $0.popLast() }
+    }
+    defer {
+      leases.leave()
+      probe?.recordLeaseLeft()
+      try? probe?.recordPhase(.afterLeaseLeave)
+    }
+    defer { relinquishAccountSessionOldReference(&displaced) }
+    probe?.recordLeaseEntered()
+    try probe?.recordPhase(.afterAdmissionBeforeG1)
+    try requireAccountSessionComparisonGuard(1, memoryCheck: memoryCheck, probe: probe)
+    relinquishAccountSessionOldReference(&displaced)
+    try probe?.recordPhase(.afterOldReferenceReleaseBeforeG2)
+    try requireAccountSessionComparisonGuard(2, memoryCheck: memoryCheck, probe: probe)
+    let fresh = try AccountSessionNativeConnection.connect(lib: lib, connectionString: connectionString)
+    defer {
+      // These holds may fail stickily, but they cannot skip direct synchronous PQfinish.
+      try? probe?.recordPhase(.beforeFreshFinish)
+      fresh.finish()
+      probe?.recordFreshFinishReturned()
+      try? probe?.recordPhase(.afterFreshFinishBeforeLeaseLeave)
+    }
+    return try fresh.readFixedFacts(memoryCheck: memoryCheck, probe: probe)
+  }
+
+  /// G2 acknowledges lexical relinquishment only, not an old-PQfinish-return theorem.
+  private func relinquishAccountSessionOldReference(_ old: inout PostgresConnection?) {
+    withExtendedLifetime(old) {}
+    old = nil
   }
 }

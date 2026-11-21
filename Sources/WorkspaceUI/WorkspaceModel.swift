@@ -341,6 +341,15 @@ public final class WorkspaceModel {
   /// Bumped by `forgetWorkspace()` whenever the signed-in account ends or changes. A read sent under
   /// an older generation belongs to that account: its answer is dropped, not stored.
   @ObservationIgnored var accountGeneration = 0
+  /// Routing identities only: never duplicate request payloads, answers or grants here.
+  struct PendingRequestTarget {
+    let threadId: String
+    let nativeRequestId: String
+    let adapterGeneration: Int
+  }
+  @ObservationIgnored var pendingRequestTargets: [String: PendingRequestTarget] = [:]
+  /// Every issued read and event advances the token: an older reply cannot restore removed targets.
+  @ObservationIgnored private var requestTargetRevisions: [String: Int] = [:]
   /// The registration offered after "No passkey for …", until Create account or Cancel.
   @ObservationIgnored var pendingRegistration: PendingRegistration?
   /// The passkey this device made at sign-up, renamed once onboarding names the account.
@@ -380,8 +389,8 @@ public final class WorkspaceModel {
   /// The phone's sends, and the Mac's thread starts, by thread id, one per thread, until settled and
   /// shown.
   public internal(set) var pendingSends: [String: PendingSend] = [:]
-  /// How many messages this app has sent in each thread since it started. The transcript goes back to
-  /// the end when its thread's count rises, and for no other new turn: one started from another device
+  /// How many messages this app has sent in each thread in the current account workspace. The transcript
+  /// goes back to the end when its thread's count rises, and for no other new turn: another device's turn
   /// leaves a reader who scrolled back where they are (D-254).
   private var ownSendCounts: [String: Int] = [:]
 
@@ -804,7 +813,12 @@ public final class WorkspaceModel {
     connections = snapshot.connections
     // Progress from before the snapshot may never see its closing event.
     checks = [:]
+    let listedThreadIds = Set(snapshot.threads.filter { $0.userDeletedAt == nil }.map(\.id))
+    for id in Set(threads.map(\.id)).union(requestTargetRevisions.keys) where !listedThreadIds.contains(id) {
+      requestTargetRevisions[id, default: 0] += 1
+    }
     threads = snapshot.threads
+    pendingRequestTargets = pendingRequestTargets.filter { listedThreadIds.contains($0.value.threadId) }
     if arrivalsAwaitSnapshot {
       arrivals.reset()
       arrivalsAwaitSnapshot = false
@@ -1137,6 +1151,8 @@ public final class WorkspaceModel {
     detailLoading = true
     defer { detailLoading = false }
     let generation = accountGeneration
+    requestTargetRevisions[id, default: 0] += 1
+    let requestRevision = requestTargetRevisions[id, default: 0]
     do {
       let read = try await client.request(
         ThreadRead.self, ThreadRead.Params(threadId: id), options: RequestOptions(timeout: .seconds(60)))
@@ -1154,8 +1170,12 @@ public final class WorkspaceModel {
         composerText = draft?.text ?? ""
         restoringDraft = false
       }
+      guard !deletedThreadIds.contains(id), read.thread.id == id, read.thread.userDeletedAt == nil else {
+        return true
+      }
+      let requests = projectRequests(read, revision: requestRevision)
       let next = ThreadDetail(
-        thread: read.thread, turns: read.turns, items: read.items, requests: read.requests)
+        thread: read.thread, turns: read.turns, items: read.items, requests: requests)
       // A reload of the open thread mid-reply keeps the text streamed so far: the next delta appends
       // to it, and only a completion or the turn's end ends it, as without the reload.
       keepStreams(from: detail, to: next)
@@ -1223,18 +1243,25 @@ public final class WorkspaceModel {
 
   /// Deliberate reconciliation of one thread: unresolved turn, native history, continuity.
   public func reconcileThread(id: String) async {
+    let generation = accountGeneration
+    requestTargetRevisions[id, default: 0] += 1
+    let requestRevision = requestTargetRevisions[id, default: 0]
     let read: ThreadRead.Result? = await perform {
       try await $0.request(
         ThreadReconcile.self, ThreadReconcile.Params(threadId: id),
         options: Self.mutation(timeout: .seconds(60)))
     }
-    guard let read else { return }
+    guard let read, !Task.isCancelled, generation == accountGeneration,
+      !deletedThreadIds.contains(id), read.thread.id == id, read.thread.userDeletedAt == nil,
+      actionThread(id: id) != nil
+    else { return }
+    let requests = projectRequests(read, revision: requestRevision)
     threads.removeAll { $0.id == read.thread.id }
     threads.insert(read.thread, at: 0)
     noteThreadList()
     if detail?.thread.id == id {
       let next = ThreadDetail(
-        thread: read.thread, turns: read.turns, items: read.items, requests: read.requests)
+        thread: read.thread, turns: read.turns, items: read.items, requests: requests)
       keepStreams(from: detail, to: next)
       detail = next
     }
@@ -1543,6 +1570,8 @@ public final class WorkspaceModel {
     threads.removeAll { $0.id == threadId }
     noteThreadList()
     activeTurns[threadId] = nil
+    pendingRequestTargets = pendingRequestTargets.filter { $0.value.threadId != threadId }
+    requestTargetRevisions[threadId, default: 0] += 1
     stopStates[threadId] = nil
     pendingSends[threadId] = nil
     refetchTasks.removeValue(forKey: threadId)?.cancel()
@@ -1583,16 +1612,21 @@ public final class WorkspaceModel {
 
   private func refetch(threadId: String) async {
     let generation = accountGeneration
+    requestTargetRevisions[threadId, default: 0] += 1
+    let requestRevision = requestTargetRevisions[threadId, default: 0]
     guard let client,
       let read = try? await client.request(
         ThreadRead.self, ThreadRead.Params(threadId: threadId), options: RequestOptions(timeout: .seconds(60))
       ),
-      generation == accountGeneration
+      !Task.isCancelled, generation == accountGeneration,
+      !deletedThreadIds.contains(threadId), read.thread.id == threadId, read.thread.userDeletedAt == nil,
+      actionThread(id: threadId) != nil
     else { return }
+    let requests = projectRequests(read, revision: requestRevision)
     if var current = detail, current.thread.id == threadId {
       current.turns = read.turns
       current.items = read.items
-      current.requests = read.requests
+      current.requests = requests
       // No turn runs any more: a stream whose `turn.finished` never arrived does not stay live. A
       // read issued before the running turn was known lacks it, and says nothing about it.
       if current.activeTurn == nil, !predatesRunningTurn(threadId, turns: read.turns) {
@@ -1626,7 +1660,7 @@ public final class WorkspaceModel {
   // MARK: - Turns and requests
 
   public func send() async {
-    guard let detail else { return }
+    guard let detail, runtimeUnavailableReason(for: detail.thread) == nil else { return }
     // The phone: through the hub, with the send's state kept until the Mac's answer (SendState.swift).
     if relaysThroughHub {
       await relaySend(threadId: detail.thread.id)
@@ -1654,7 +1688,7 @@ public final class WorkspaceModel {
   }
 
   public func stop() async {
-    guard let detail else { return }
+    guard let detail, canStop(detail.thread) else { return }
     if relaysThroughHub {
       await relayStop(threadId: detail.thread.id)
       return
@@ -1722,6 +1756,7 @@ public final class WorkspaceModel {
 
   /// Deliberate recovery for an outcome-unknown turn (spec 10.1.4). Nothing is re-sent.
   public func abandonTurn(threadId: String) async {
+    guard let thread = actionThread(id: threadId), canAbandon(thread) else { return }
     _ = await perform {
       try await $0.request(
         TurnAbandon.self, TurnInterrupt.Params(threadId: threadId), options: Self.mutation()
@@ -1731,40 +1766,88 @@ public final class WorkspaceModel {
   }
 
   public func respond(requestId: String, decision: RuntimeDecision) async {
+    guard canRespond(requestId: requestId) else { return }
     if relaysThroughHub {
       await relayRespond(RequestRespond.Params(requestId: requestId, decision: decision))
       return
     }
+    let context = requestReplyContext(requestId: requestId)
     let answered = await perform {
       try await $0.request(
         RequestRespond.self, RequestRespond.Params(requestId: requestId, decision: decision),
         options: Self.mutation()
       ).request
     }
-    settle(answered)
+    settle(answered, context: context)
   }
 
   public func answer(requestId: String, answers: [String: [String]]) async {
+    guard canRespond(requestId: requestId) else { return }
     if relaysThroughHub {
       await relayRespond(RequestRespond.Params(requestId: requestId, answers: answers))
       return
     }
+    let context = requestReplyContext(requestId: requestId)
     let answered = await perform {
       try await $0.request(
         RequestRespond.self, RequestRespond.Params(requestId: requestId, answers: answers),
         options: Self.mutation()
       ).request
     }
-    settle(answered)
+    settle(answered, context: context)
   }
 
-  /// The coordinator's reply to an answer is the request as it now stands. One that is no longer
-  /// pending leaves the detail with the reply: its resolved event comes separately and may come
-  /// later, and until it did the card's buttons were offered again for an answer the coordinator
-  /// would refuse (D-253). The event still removes it when it is the first to arrive.
-  private func settle(_ request: RuntimeRequest?) {
-    guard let request, request.state != .pending, detail?.thread.id == request.threadId else { return }
-    detail?.requests.removeAll { $0.id == request.id }
+  /// Transient routing identity for this local call, without retaining the request's payload.
+  private struct RequestReplyContext {
+    let requestId: String
+    let target: PendingRequestTarget
+    let accountGeneration: Int
+    let client: WorkspaceClient?
+    let connectionId: String
+    let threadNativeScope: String?
+    let connectionKind: ConnectionKind
+    let connectionNativeScope: String?
+  }
+
+  private func requestReplyContext(requestId: String) -> RequestReplyContext? {
+    guard let target = pendingRequestTargets[requestId], let thread = actionThread(id: target.threadId),
+      let connection = connection(id: thread.connectionId)
+    else { return nil }
+    return RequestReplyContext(
+      requestId: requestId, target: target, accountGeneration: accountGeneration, client: client,
+      connectionId: thread.connectionId, threadNativeScope: thread.nativeScope,
+      connectionKind: connection.kind, connectionNativeScope: connection.nativeScope)
+  }
+
+  /// A matching terminal reply retires the authoritative identity even after selection changes.
+  /// Events and replacement generations may win the race; they must remain untouched (D-253).
+  private func settle(_ request: RuntimeRequest?, context: RequestReplyContext?) {
+    guard let request, request.state != .pending, let context,
+      request.id == context.requestId, request.threadId == context.target.threadId,
+      request.nativeRequestId == context.target.nativeRequestId,
+      request.adapterGeneration == context.target.adapterGeneration,
+      context.accountGeneration == accountGeneration, let capturedClient = context.client,
+      client === capturedClient, !relaysThroughHub,
+      !deletedThreadIds.contains(context.target.threadId),
+      let thread = actionThread(id: context.target.threadId), thread.userDeletedAt == nil,
+      thread.connectionId == context.connectionId, thread.nativeScope == context.threadNativeScope,
+      let connection = connection(id: context.connectionId),
+      connection.kind == context.connectionKind, connection.kind == .codex || connection.kind == .claude,
+      connection.nativeScope == context.connectionNativeScope,
+      let target = pendingRequestTargets[context.requestId], target.threadId == context.target.threadId,
+      target.nativeRequestId == context.target.nativeRequestId,
+      target.adapterGeneration == context.target.adapterGeneration
+    else { return }
+    requestTargetRevisions[target.threadId, default: 0] += 1
+    pendingRequestTargets[context.requestId] = nil
+    if detail?.thread.id == target.threadId, detail?.thread.connectionId == context.connectionId,
+      detail?.thread.nativeScope == context.threadNativeScope
+    {
+      detail?.requests.removeAll {
+        $0.id == context.requestId && $0.threadId == target.threadId
+          && $0.nativeRequestId == target.nativeRequestId && $0.adapterGeneration == target.adapterGeneration
+      }
+    }
   }
 
   // MARK: - Internals
@@ -1891,11 +1974,63 @@ public final class WorkspaceModel {
         }
       }
     case .runtimeRequestOpened, .runtimeRequestResolved, .runtimeRequestExpired:
-      applyToDetail(event)
+      if applyRequestTarget(event) { applyToDetail(event) }
       if let threadId = event.threadId { scheduleRefetch(threadId: threadId) }
     default:
       applyToDetail(event)
     }
+  }
+
+  /// The revision decision and request projection happen together after every await in the read.
+  /// Stale reads may still supply thread/turn/item data, but cannot restore settled request cards.
+  private func projectRequests(_ read: ThreadRead.Result, revision: Int) -> [RuntimeRequest] {
+    let id = read.thread.id
+    guard requestTargetRevisions[id, default: 0] == revision else {
+      if let detail, detail.thread.id == id { return detail.requests }
+      return read.requests.filter { request in
+        guard request.state == .pending, request.threadId == id,
+          let target = pendingRequestTargets[request.id]
+        else { return false }
+        return target.threadId == id && target.nativeRequestId == request.nativeRequestId
+          && target.adapterGeneration == request.adapterGeneration
+      }
+    }
+    pendingRequestTargets = pendingRequestTargets.filter { $0.value.threadId != id }
+    for request in read.requests where request.threadId == id && request.state == .pending {
+      pendingRequestTargets[request.id] = PendingRequestTarget(
+        threadId: id, nativeRequestId: request.nativeRequestId, adapterGeneration: request.adapterGeneration)
+    }
+    return read.requests
+  }
+
+  /// Background threads have the same identity lifecycle as the selected thread. Native ids are
+  /// scoped to their adapter generation; an old resolution cannot remove a new pending request.
+  /// The accepted context also gates visible cards, so rejected events cannot split the two views.
+  private func applyRequestTarget(_ event: AdapterEvent) -> Bool {
+    guard let threadId = event.threadId, !deletedThreadIds.contains(threadId),
+      let thread = actionThread(id: threadId), thread.connectionId == event.connectionId
+    else { return false }
+    let request = try? event.payload["runtimeRequest"]?.decode(RuntimeRequest.self)
+    if let request, request.threadId != threadId { return false }
+    requestTargetRevisions[threadId, default: 0] += 1
+    if let request {
+      if event.kind == .runtimeRequestOpened, request.state == .pending {
+        pendingRequestTargets[request.id] = PendingRequestTarget(
+          threadId: threadId, nativeRequestId: request.nativeRequestId,
+          adapterGeneration: request.adapterGeneration)
+      } else if let target = pendingRequestTargets[request.id], target.threadId == threadId,
+        target.nativeRequestId == request.nativeRequestId,
+        target.adapterGeneration == request.adapterGeneration
+      {
+        pendingRequestTargets[request.id] = nil
+      }
+    } else if event.kind != .runtimeRequestOpened, let nativeId = event.nativeIds["requestId"] {
+      pendingRequestTargets = pendingRequestTargets.filter {
+        $0.value.threadId != threadId || $0.value.nativeRequestId != nativeId
+          || $0.value.adapterGeneration != event.adapterGeneration
+      }
+    }
+    return true
   }
 
   private func applyToDetail(_ event: AdapterEvent) {
@@ -1932,7 +2067,10 @@ public final class WorkspaceModel {
       }
     case .runtimeRequestResolved, .runtimeRequestExpired:
       if let request = try? event.payload["runtimeRequest"]?.decode(RuntimeRequest.self) {
-        current.requests.removeAll { $0.id == request.id }
+        current.requests.removeAll {
+          $0.id == request.id && $0.nativeRequestId == request.nativeRequestId
+            && $0.adapterGeneration == request.adapterGeneration
+        }
       } else if let nativeId = event.nativeIds["requestId"] {
         current.requests.removeAll {
           $0.nativeRequestId == nativeId && $0.adapterGeneration == event.adapterGeneration
@@ -1970,6 +2108,9 @@ public final class WorkspaceModel {
   func forgetWorkspace() {
     stopThreadOpen()
     accountGeneration += 1
+    pendingRequestTargets = [:]
+    requestTargetRevisions = [:]
+    ownSendCounts = [:]
     draftSaveTask?.cancel()
     draftSaveTask = nil
     for task in refetchTasks.values { task.cancel() }

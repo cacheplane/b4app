@@ -80,7 +80,7 @@ import os
 
   public init(
     store: MirrorStore, secrets: any SecretStore, configuration: Configuration, memory: MirrorDeviceMemory,
-    makeAPI: @escaping APIFactory = { HTTPHubAPI(baseURL: $0, token: $1) },
+    makeAPI: @escaping APIFactory = { HTTPHubAPI(baseURL: $0, token: $1, client: .phoneMirror) },
     onBatch: @escaping @Sendable (AppliedBatch) async -> Void = { _ in },
     onSyncStatus: @escaping @Sendable (MirrorSyncStatus) async -> Void = { _ in }
   ) {

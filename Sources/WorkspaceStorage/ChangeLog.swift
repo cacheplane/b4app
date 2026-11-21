@@ -53,6 +53,30 @@ extension WorkspaceDatabase {
     }
   }
 
+  /// Mark the accepted prefix only while the original linked compatibility snapshot still matches.
+  public func markSynced(
+    through seq: Int, expectedProtocolSnapshot: ProtocolVerificationSnapshot
+  ) throws {
+    try writeProtocolSyncEffect(expectedSnapshot: expectedProtocolSnapshot) {
+      _ = try $0.execute(
+        "UPDATE \"changes\" SET \"synced\" = true WHERE \"seq\" <= $1::bigint AND NOT \"synced\"",
+        [String(seq)])
+    }
+  }
+
+  /// Mark the accepted prefix only while the original linked snapshot and reference both match.
+  package func markSynced(
+    through seq: Int, expectedProtocolSnapshot: ProtocolVerificationSnapshot, expectedTokenRef: String
+  ) throws {
+    try writeProtocolSyncEffect(
+      expectedSnapshot: expectedProtocolSnapshot, expectedTokenRef: expectedTokenRef
+    ) {
+      _ = try $0.execute(
+        "UPDATE \"changes\" SET \"synced\" = true WHERE \"seq\" <= $1::bigint AND NOT \"synced\"",
+        [String(seq)])
+    }
+  }
+
   public func unsyncedChangeCount() throws -> Int {
     try read {
       try $0.execute("SELECT count(*) AS \"n\" FROM \"changes\" WHERE NOT \"synced\"").rows.first?.int("n")

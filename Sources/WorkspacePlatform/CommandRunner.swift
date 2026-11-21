@@ -46,9 +46,61 @@ public struct CommandOptions: Sendable {
 /// Runs an executable with an argument array (never a shell string), bounded output, and a timeout.
 /// Resolves even on nonzero exit; throws `missing_executable` only when the process cannot start.
 public enum CommandRunner {
+  package enum SelectedOutcomeOrigin: String, Sendable, Equatable {
+    case finished, timerReturned, workCancellationCaught, defensiveNoOutcome
+  }
+
+  package struct ObservedResult: Sendable {
+    package let result: CommandResult
+    package let selectedOutcomeOrigin: SelectedOutcomeOrigin
+  }
+
   public static func run(
     _ executable: String, _ arguments: [String], options: CommandOptions = CommandOptions()
   ) async throws -> CommandResult {
+    let observed = try await runCore(executable, arguments, options: options)
+    return observed.result
+  }
+
+  package static func runObservingSelectedOutcome(
+    _ executable: String, _ arguments: [String], options: CommandOptions
+  ) async throws -> ObservedResult {
+    return try await runCore(executable, arguments, options: options)
+  }
+
+  package enum CoreStage: Sendable {
+    case commandCoreEntered, commandCoreExited
+    case commandWorkEntered, commandWorkExited, commandTimerEntered, commandTimerExited
+    case commandSelectedFinished, commandSelectedTimerReturned, commandSelectedWorkCancellationCaught
+    case commandSelectedDefensiveNoOutcome
+  }
+
+  /// Primitive fixture observation only; descendants may inherit this value past lexical scope exit.
+  package struct CoreObservation: Sendable {
+    package let reserve: @Sendable () -> UInt8?
+    package let record: @Sendable (UInt8, CoreStage) -> Void
+
+    package init(
+      reserve: @escaping @Sendable () -> UInt8?,
+      record: @escaping @Sendable (UInt8, CoreStage) -> Void
+    ) {
+      self.reserve = reserve
+      self.record = record
+    }
+  }
+
+  @TaskLocal package static var coreObservation: CoreObservation? = nil
+
+  private static func runCore(
+    _ executable: String, _ arguments: [String], options: CommandOptions
+  ) async throws -> ObservedResult {
+    let observation = coreObservation
+    let ordinal = observation?.reserve()
+    if let observation, let ordinal { observation.record(ordinal, .commandCoreEntered) }
+    defer {
+      // Unwinds only after the original structured task-group completion, on return or throw.
+      if let observation, let ordinal { observation.record(ordinal, .commandCoreExited) }
+    }
     let environment: Subprocess.Environment
     if let custom = options.environment {
       environment = .custom(
@@ -64,11 +116,16 @@ public enum CommandRunner {
 
     enum Outcome: Sendable {
       case finished(CommandResult)
-      case timedOut
+      case timedOut(SelectedOutcomeOrigin)
     }
 
     return try await withThrowingTaskGroup(of: Outcome.self) { group in
       group.addTask {
+        // Includes Subprocess and the original result/error mapping, not just executable runtime.
+        if let observation, let ordinal { observation.record(ordinal, .commandWorkEntered) }
+        defer {
+          if let observation, let ordinal { observation.record(ordinal, .commandWorkExited) }
+        }
         do {
           if let input {
             let result = try await Subprocess.run(
@@ -82,22 +139,42 @@ public enum CommandRunner {
             workingDirectory: workingDirectory, output: .string(limit: limit), error: .string(limit: limit))
           return .finished(Self.map(result))
         } catch is CancellationError {
-          return .timedOut
+          return .timedOut(.workCancellationCaught)
         } catch let error as SubprocessError {
           throw WorkspaceError(.missingExecutable, "Could not run \(executable): \(error.description)")
         }
       }
       group.addTask {
+        if let observation, let ordinal { observation.record(ordinal, .commandTimerEntered) }
+        defer {
+          if let observation, let ordinal { observation.record(ordinal, .commandTimerExited) }
+        }
         try await Task.sleep(for: timeout)
-        return .timedOut
+        return .timedOut(.timerReturned)
       }
       guard let first = try await group.next() else {
-        return CommandResult(stdout: "", stderr: "", exitCode: nil, signal: nil, timedOut: true)
+        if let observation, let ordinal { observation.record(ordinal, .commandSelectedDefensiveNoOutcome) }
+        return ObservedResult(
+          result: CommandResult(stdout: "", stderr: "", exitCode: nil, signal: nil, timedOut: true),
+          selectedOutcomeOrigin: .defensiveNoOutcome)
       }
       group.cancelAll()
       switch first {
-      case .finished(let result): return result
-      case .timedOut: return CommandResult(stdout: "", stderr: "", exitCode: nil, signal: nil, timedOut: true)
+      case .finished(let result):
+        if let observation, let ordinal { observation.record(ordinal, .commandSelectedFinished) }
+        return ObservedResult(result: result, selectedOutcomeOrigin: .finished)
+      case .timedOut(let origin):
+        if let observation, let ordinal {
+          switch origin {
+          case .finished: observation.record(ordinal, .commandSelectedFinished)
+          case .timerReturned: observation.record(ordinal, .commandSelectedTimerReturned)
+          case .workCancellationCaught: observation.record(ordinal, .commandSelectedWorkCancellationCaught)
+          case .defensiveNoOutcome: observation.record(ordinal, .commandSelectedDefensiveNoOutcome)
+          }
+        }
+        return ObservedResult(
+          result: CommandResult(stdout: "", stderr: "", exitCode: nil, signal: nil, timedOut: true),
+          selectedOutcomeOrigin: origin)
       }
     }
   }

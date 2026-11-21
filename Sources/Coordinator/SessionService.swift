@@ -51,15 +51,23 @@ public actor SessionService {
     }
   }
 
-  /// One adapter per connection kind. B4 reads its endpoint secret from the credential store.
+  /// Harness adapters; historical B4 and the staged protocol runtime cannot execute here.
   public static let defaultAdapterFactory: AdapterFactory = { connection, environment, version, secrets in
     switch connection.kind {
     case .codex: return CodexAdapter(connection: connection, environment: environment, clientVersion: version)
     case .claude:
       return ClaudeAdapter(connection: connection, environment: environment, clientVersion: version)
-    case .b4: return B4Adapter(connection: connection, secretStore: secrets, clientVersion: version)
+    case .b4: throw SessionService.legacyProtocolReadOnlyError
+    case .agentProtocol: throw SessionService.protocolUnavailableError
     }
   }
+
+  static let legacyProtocolReadOnlyError = WorkspaceError(
+    .unsupportedCapability,
+    "This B4 connection is historical and read-only. Use an upgraded Agent Protocol connection for new conversations.",
+    details: ["reason": "agent_protocol_cutover"])
+  private static let protocolUnavailableError = WorkspaceError(
+    .unsupportedCapability, "Agent Protocol execution is not available in this build.")
 
   let context: Context
   var adapters: [String: any AgentAdapter] = [:]
@@ -84,8 +92,8 @@ public actor SessionService {
     self.context = context
   }
 
-  /// Coordinator start: no runtime process survived, so pending requests expire and non-terminal
-  /// turns become `reconciling` with an unknown outcome until a viewer reconciles them.
+  /// Coordinator start: process-bound harness requests expire and non-terminal harness turns become
+  /// reconciling. Historical B4 facts stay unchanged; protocol recovery owns its own revalidation.
   public func start() {
     if let servers = context.servers {
       pumps["managed-servers"] = Task { [weak self] in
@@ -97,8 +105,17 @@ public actor SessionService {
     }
     var leftBehind: [String: [String]] = [:]
     do {
-      _ = try db.expireAllRuntimeRequests()
+      let processConnections = try db.listConnections(includeDisabled: true).filter {
+        $0.kind == .codex || $0.kind == .claude
+      }
+      let processConnectionIds = Set(processConnections.map(\.id))
+      for connection in processConnections {
+        _ = try db.expireRuntimeRequests(connectionId: connection.id)
+      }
       for turn in try db.unresolvedTurns() where turn.status != .reconciling {
+        guard let thread = try db.thread(id: turn.threadId),
+          processConnectionIds.contains(thread.connectionId)
+        else { continue }
         _ = try db.updateTurn(id: turn.id) {
           $0.status = .reconciling
           if $0.submission == .acknowledged || $0.nativeTurnId != nil { $0.submission = .unknown }
@@ -112,9 +129,13 @@ public actor SessionService {
     // Every thread with a turn that counts open work is taken, even with no agent in progress (a count
     // left behind by a recount that never ran), so the close's recount brings that count back to zero.
     do {
-      leftBehind = try openAgentItems()
-      for turn in try db.turnsWithOpenWork() where leftBehind[turn.threadId] == nil {
-        leftBehind[turn.threadId] = []
+      let turnsByThread = Dictionary(grouping: try db.turnsWithOpenWork(), by: \.threadId)
+      for (threadId, turns) in turnsByThread {
+        guard let thread = try db.thread(id: threadId),
+          let connection = try db.connection(id: thread.connectionId),
+          connection.kind == .codex || connection.kind == .claude
+        else { continue }
+        leftBehind[threadId] = try openAgentItems(threadId: threadId, turns: turns)
       }
     } catch {
       logger.error("startup open work read failed: \(String(describing: error), privacy: .public)")
@@ -143,6 +164,9 @@ public actor SessionService {
 
   func adapter(for connection: Connection) throws -> any AgentAdapter {
     if closing { throw WorkspaceError(.signedOut, AccountManager.signedOutMessage) }
+    // Check before a cached or injected factory can create/reuse any upstream adapter.
+    if connection.isProtocolReadOnly { throw Self.legacyProtocolReadOnlyError }
+    if connection.kind == .agentProtocol { throw Self.protocolUnavailableError }
     if let existing = adapters[connection.id] { return existing }
     let adapter = try context.adapterFactory(
       connection, context.environment, context.clientVersion, context.secretStore)
@@ -185,7 +209,9 @@ public actor SessionService {
       executableName = "claude"
       defaultLabel = "Claude Code"
     case .b4:
-      return try await addB4Connection(params)
+      throw Self.legacyProtocolReadOnlyError
+    case .agentProtocol:
+      throw Self.protocolUnavailableError
     }
     let located = ExecutableLocator.find(
       executableName, explicitPath: params.executablePath, environment: context.environment)
@@ -525,6 +551,9 @@ public actor SessionService {
     guard var thread = try db.thread(id: params.threadId), thread.userDeletedAt == nil else {
       throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
     }
+    if try db.connection(id: thread.connectionId)?.isProtocolReadOnly == true {
+      return try readResult(thread)
+    }
     if let reconciling = try db.activeTurn(threadId: thread.id), reconciling.status == .reconciling {
       await reconcile(reconciling, thread: thread)
     }
@@ -543,6 +572,7 @@ public actor SessionService {
     guard let connection = try db.connection(id: thread.connectionId) else {
       throw WorkspaceError(.notFound, "Connection \(thread.connectionId) does not exist.")
     }
+    if connection.isProtocolReadOnly { return try readResult(thread) }
     if Self.identityChanged(thread: thread, connection: connection) {
       thread = await setContinuity(thread, .identityChanged)
       return try readResult(thread)
@@ -755,6 +785,9 @@ public actor SessionService {
     guard let connection = try db.connection(id: params.connectionId) else {
       throw Self.refusal("This connection is not on this Mac.", reason: "connection_missing")
     }
+    // Refuse unavailable runtimes before D203 folder/environment routing can admit a start.
+    if connection.isProtocolReadOnly { throw Self.legacyProtocolReadOnlyError }
+    if connection.kind == .agentProtocol { throw Self.protocolUnavailableError }
     let environmentFolders = Set(environment?.folders.map(\.path) ?? [])
     let requested = params.folder.flatMap { $0.isEmpty ? nil : $0 }
     let folder: String?
@@ -802,6 +835,8 @@ public actor SessionService {
         }
       }
       folder = nil
+    case .agentProtocol:
+      throw Self.protocolUnavailableError
     }
     guard connection.enabled, connection.status == .ready else {
       throw Self.refusal(
@@ -1044,6 +1079,9 @@ public actor SessionService {
   public func turnAbandon(_ params: TurnAbandon.Params) async throws -> TurnSend.Result {
     guard let thread = try db.thread(id: params.threadId) else {
       throw WorkspaceError(.notFound, "Thread \(params.threadId) does not exist.")
+    }
+    if try db.connection(id: thread.connectionId)?.isProtocolReadOnly == true {
+      throw Self.legacyProtocolReadOnlyError
     }
     guard let active = try db.activeTurn(threadId: thread.id) else {
       throw WorkspaceError(.notFound, "No turn is active on this thread.")
@@ -1368,7 +1406,8 @@ public actor SessionService {
     }
   }
 
-  private func environment(_ incoming: AdapterEvent) async {
+  // Internal so storage-backed boundary tests can inject an event without starting a runtime.
+  func environment(_ incoming: AdapterEvent) async {
     // D-035: the coordinator is the redaction boundary. Adapters forward what runtimes say (stderr
     // tails, error messages); nothing of that leaves here unmasked.
     let raw: AdapterEvent = {
@@ -1381,6 +1420,13 @@ public actor SessionService {
     var turn: Turn?
     var recount: String?  // the turn whose open work an agent item just changed
     do {
+      // Only harness adapters can project runtime events. A queued event cannot change retained
+      // history or project runtime work for a protocol connection that has no admitted adapter.
+      if let connection = try db.connection(id: raw.connectionId),
+        connection.isProtocolReadOnly || connection.kind == .agentProtocol
+      {
+        return
+      }
       if let nativeThreadId = raw.nativeIds["threadId"] {
         thread = try db.thread(connectionId: raw.connectionId, nativeThreadId: nativeThreadId)
       }
@@ -1559,18 +1605,16 @@ public actor SessionService {
     await publishTurn(.turnStateChanged, updated, thread: thread)
   }
 
-  /// The ids of the agent items still in progress, by thread id, for the turns with open work.
-  private func openAgentItems(threadId: String? = nil) throws -> [String: [String]] {
-    var open: [String: [String]] = [:]
-    for turn in try db.turnsWithOpenWork(threadId: threadId) {
-      for item in try db.displayItems(threadId: turn.threadId)
-      where item.turnId == turn.id && item.payload["agent"]?.boolValue == true
-        && item.payload["status"]?.stringValue == "inProgress"
-      {
-        open[turn.threadId, default: []].append(item.id)
-      }
+  /// The ids of this thread's agent items still in progress on a turn that counts open work.
+  private func openAgentItems(threadId: String, turns: [Turn]) throws -> [String] {
+    guard !turns.isEmpty else { return [] }
+    let turnIds = Set(turns.map(\.id))
+    return try db.displayItems(threadId: threadId).compactMap { item in
+      guard let turnId = item.turnId, turnIds.contains(turnId), item.payload["agent"]?.boolValue == true,
+        item.payload["status"]?.stringValue == "inProgress"
+      else { return nil }
+      return item.id
     }
-    return open
   }
 
   /// The session that ran a thread's agents is gone, so none of them will ever end: each agent in
@@ -1579,8 +1623,11 @@ public actor SessionService {
   /// again. A row is read again just before it is written, with no suspension between, so an agent that
   /// ended meanwhile, or was closed already, is left as it is.
   func closeOpenWork(threadId: String, reason: String, items: [String]? = nil) async throws {
-    guard let thread = try db.thread(id: threadId) else { return }
-    let ids = try items ?? openAgentItems(threadId: threadId)[threadId] ?? []
+    guard let thread = try db.thread(id: threadId),
+      let connection = try db.connection(id: thread.connectionId),
+      connection.kind == .codex || connection.kind == .claude
+    else { return }
+    let ids = try items ?? openAgentItems(threadId: threadId, turns: db.turnsWithOpenWork(threadId: threadId))
     for id in ids {
       guard let current = try db.displayItem(id: id), current.threadId == threadId,
         current.payload["agent"]?.boolValue == true,

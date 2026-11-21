@@ -26,6 +26,11 @@ public struct RuntimeMark: View {
           .foregroundStyle(LLA.Color.ghost)
           .fixedSize()
           .frame(height: height)
+      case .agentProtocol:
+        Image(systemName: "network")
+          .font(.system(size: height * 0.8))
+          .foregroundStyle(LLA.Color.ghost)
+          .frame(height: height)
       }
     }
     .accessibilityHidden(true)

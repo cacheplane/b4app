@@ -1,0 +1,62 @@
+# CI fixture repairs and native checks
+
+Prepared 2026-11-17 for [PR 180](https://github.com/cacheplane/b4app/pull/180).
+This plan implements the approved repairs under [D-240](../../decisions/D-240-agent-protocol-client-foundation.md), [D-242](../../decisions/D-242-main-merges-through-a-merge-queue.md), [D-244](../../decisions/D-244-ci-under-ten-minutes.md) and [D-245](../../decisions/D-245-account-session-comparison-scenarios-have-independent-test-budgets.md). It introduces no material decision or version change. The [dated acceptance contract](../../verification/2026-11-17-ci-fixtures-and-native-acceptance.md) records the immutable baseline and qualification gates; subsequent run/check status belongs in PR 180.
+
+## Invariants and execution boundary
+
+Historical B4 connections remain locally read-only: preserve their cache, exact drafts, opaque identities and payloads, pending requests and unknown outcomes. Never convert them to active profiles or manufacture settlement. Standard Agent Protocol profiles remain dormant. Current Codex and Claude behavior, account ownership, credential refusal, environment routing, privacy and owned-process controls remain intact.
+
+Keep D-245's 23 independently discovered named cases at one minute each, with their serialized suite, fresh fixtures and existing aggregate parallelism. Keep the other 18 native methods, 86 selected companions, distinct physical writer population, existing operations, joins, assertions, cleanup and all budgets. Keep D-244's two Debug app builds, five macOS smoke methods, three iOS journeys, four ordinary macOS jobs, required check names and existing cache policy: clean main builds save; PR/merge-group builds restore main caches and never save. Keep the package's 45-minute job cap and PR 180's serial diagnostic.
+
+Managed CI is the execution lane. Local source review and formatter/parser checks earn no native, compiler, privacy or runtime credit; this plan authorizes no local native test execution. Do not install Node speculatively, enlarge deadlines, introduce retries/exclusions/global serialization or bypass a failed gate. Let managed runs finish naturally and preserve their complete evidence.
+
+## 0. Integrate main and bind the repair checkpoint
+
+Integration of main `167bd71d3713fd8f544956cf3b6b5bcbab4150d8` is source-complete at the preparation checkpoint. Preserve its published D-246 and smoke-window correction, all approved feature bytes and published decision numbers. Verify exact source/tree/index binding, branch currentness and decision allocation before publication. Each bounded change receives specification review and independent quality review before adoption; require a fresh independent combined checkpoint review before the first coherent push.
+
+On 2026-11-17, repairs through the macOS fixture were source-committed and reviewed at `685af28102750d50303fa0bede23abcf1ab91b37`, tree `b7e6c77875e33ede20fffd4fcb6fde6c6f6bda39`. That checkpoint was **STATIC_ONLY**. Production UI guards were unchanged, and no new managed result had been observed since the 402A baseline. Later commits qualify only from their actual runs.
+
+## 1. Repair owned PostgreSQL log provenance in tests
+
+Use the test-only `AgentProtocolOwnedPostgresLog` helper for the grant and archive consumers, taking the complete endpoint and immutable supported configuration. Trusted fixture/process configuration supplies ordinary use; pure scratch-file tests inject configuration without changing global environment or starting PostgreSQL. No production storage, privacy or pool behavior changes.
+
+Persistent selection must match the physically resolved selected root's `postgres.log` and socket root; process mode must match its exact process-owned log/socket layout. Preserve registered A3 private-root handling; nonce plus persistent selection refuses, and empty persistent selection follows the existing fallback. Never trust an arbitrary endpoint path or basename.
+
+Retain regular-file/current-user checks, raw leaf `lstat`, `O_NOFOLLOW`, captured device/inode on every open, exact bounded reads, shrink refusal, the 4 MiB tail limit and two-second marker poll. Errors stay static and safe: no paths, SQL, secrets, log bytes or underlying errors. Scratch controls cover supported modes, wrong log/socket/root, conflicting selection, missing/nonregular/symlink leaves, replacement, shrink, oversize and exact marker reads.
+
+Keep both consumers' fail-closed mapping, existing bodies, sentinels, raw positive log witnesses, callback entry, transaction/COMMIT/rollback/application sequence checks, same-backend settings restoration, normalization, explicit close/cleanup and redaction oracles. The seven historical first-refusals remain unresolved until fresh managed bodies execute their positive witnesses and pass.
+
+## 2. Move existing native and compiler controls before slow work
+
+Move the existing metadata producer/upload and all 11 compiler-control stages, preserving internal order and predicates, followed by the single focused 41-method native invocation, immediately after successful build/prewarm/socket/transport prerequisites and before foundation/aggregates. Run the model-only historical-action regression immediately after native and before aggregates. Foundation and the model regression must remain available after successful build/prewarm when an unrelated earlier test fails, subject to `!cancelled`; preserve selectors and bodies. Regressions check job boundaries, declared prerequisites, ordering, single invocation, availability and existing cache/scope policy.
+
+For the unknown A5 delay, use only closed fixed-stage safe diagnostics around existing owned waits: pull entry, secret read, display-name status, collector readiness/joins, stop, pull settlement, socket close, observation guard and post-guard drain/origin capture. Keep the single ten-second observation deadline, all waits, joins, cleanup and assertions. Labels contain only fixed roles/ordinals, emit once per finite stage and retain privacy formatting; derive the exact finite cap from source. Marker order does not establish a scheduling cause. Do not add another stop/join deadline or an after-stop shortcut. The fake Node 24 timeout and successful serial counterpart justify no installation or deadline guess; further repair needs actual boundary evidence.
+
+Refresh changed test-source pins, then helper hash and metadata/all 11 bootstrap literals. Preserve all 33 C6 vectors, 116 argument-template entries, 11 profiles, summaries and bounds. At this checkpoint the strict closed CoordinatorTests description expects 51 sources, 55 inputs and 52 outputs. Those are source expectations, not compiler credit; actual current run/workflow/source/tree/artifact linkage is required.
+
+## 3. Reconcile obsolete fixtures and establish UI assertion RED
+
+Retain the reviewed mappings for 36 Coordinator and 10 UI legacy families, including public parameter cases. Use explicit historical seeding, deterministic current-runtime adapters/fake executables and dormant-profile negative fixtures; never silently repurpose a shared legacy constructor. Historical seeds are prior connection/thread/item/unknown-turn/request/draft/token facts compared exactly after operations, not runtime events or fake settlement.
+
+Preserve generic lifecycle, stream, retry `[1, 2, 3]`, incompatibility-one-attempt, background responsiveness, approval, native identity, restart reconciliation, no-resend and current-runtime isolation controls. Keep local logout interruption, remote unresolved history, exact summaries, owned-server conflicts/forced owned shutdown, actor-owned environment resolution/move and changelog assertions. Keep reference-only credential transport, orphan cleanup/reference retention, disabled-reference protection and label-only edits. Retired authentication replacement/endpoint execution become explicit negative controls. Seeded historical token aggregate/day/week/idempotence remains distinct from actual current phone plan-usage ingestion.
+
+Draft offerings exclude historical/dormant profiles and retired selection is a no-op. Preserve generic choice retention/reset, ownership filtering, memory pruning, send payload, palette order and summary wording; historical summaries remain readable.
+
+The new `AgentProtocolHistoricalActionTests` has nine source methods and 110 planned argument cases using existing APIs, complete ready historical attached/managed/remote records and complete dormant profiles. Online unavailable profiles need a send-block reason and disabled stop/answer predicates; direct actions must dispatch no command and retain exact draft/cache/unknown/pending state. Preserve current positive actions, disabled-current stop, captured request IDs across selection, account lifecycle and host connected/reconnecting/offline semantics. Historical B4 local abandon is denied; dormant/current local abandon remains allowed. Use bounded deterministic responses and await disconnect/cleanup.
+
+**Before changing production UI, managed CI must compile this suite and show meaningful assertion RED for the unavailable policy.** Compile failure, timeout, missing/skipped cases or expected failure cannot satisfy RED. Source review predicts no result.
+
+## 4. Keep five truthful macOS smoke methods
+
+Replace obsolete legacy endpoint setup with one explicitly historical-cache/current-native combined case; retain the other four smoke methods and generic archived recovery. Seed isolated historical account facts, exact opaque IDs, tool/task payloads, draft, unknown turn and pending requests without legacy endpoint, Node, inference or active standard client. Assert readable cache, visible historical reason, disabled execution/answers and exact state after relaunch; Check again remains a permitted cache read. Never force an unresolved historical turn terminal for teardown.
+
+The combined case must retain actual deterministic current fake-runtime partial streaming and Stop, retained cancelled partial, native approval, unique completed tool row, exact native request counts, continuation in the same native thread, relaunch/persistence and no resend. Seeded historical tool rows prove rendering/preservation only; cancelled partials do not prove natural completion. Keep standalone `Tests/B4Runtime` integration separate, with no active App-client or real-provider claim. Preserve integrated `DenseTranscript.swift` and the general smoke harness. Historical disabled-action assertions may remain RED until the guarded repair.
+
+## 5. Repair only after RED, then qualify and merge
+
+After the reviewed coherent push, preserve full logs, artifacts, actual checkout identity and every failure, skip, cancellation and missing result. Inspect the early native results, all C6 receipts and actual UI assertion RED. Then implement the minimal unavailable-runtime policy shared by predicates and direct local actions, including the actual captured request target across selection and account lifecycle. Keep host-offline copy separate, current positive behavior and disabled-current stop intact, local-abandon distinctions unchanged, and historical draft/cache/request/unknown state untouched. No protocol, storage, Hub or adapter activation-policy expansion.
+
+Review that repair against the specification and independently for quality, then require fresh full managed GREEN on its actual source: every CI job, default/focused/serial native and applicable companion controls, all five Mac methods, three iOS journeys, two Debug builds and actual C6 compilation. Use fixed-stage evidence to diagnose remaining failures before further behavioral edits. Focused/serial success cannot replace default failure or missing results; no historical pass transfers.
+
+After independent final review and currentness/check verification, use the existing D-242 squash merge queue, observe merge-group CI and verify the merged commit/main validation. The four branch-required contexts do not waive the additional native, Mac, C6 or other actual CI gates. Routine reviewed push/merge follows existing authorization without a new approval flow. SDK/npm publication, coordinated activation, production-floor changes, new deployment/release, A4–A10 and live HTTP remain separately held. No physical descendant-quiescence, precise ARC/PQfinish, ABI, import or freshness qualification follows from these checks; normal driver completion is trusted only within the existing contract.

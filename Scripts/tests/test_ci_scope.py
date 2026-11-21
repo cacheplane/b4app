@@ -1,5 +1,7 @@
 """CI skips its macOS jobs only for a change it is sure they cannot read."""
 from pathlib import Path
+import ast
+import re
 import subprocess
 import sys
 import unittest
@@ -8,6 +10,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ci_scope import needs_apple  # noqa: E402
 
 SCRIPT = Path(__file__).resolve().parents[1] / "ci_scope.py"
+
+
+def workflow_job_sections(text):
+    """Read the workflow's canonical root jobs mapping, preserving its source slices."""
+    in_jobs = False
+    headers = {}
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if not in_jobs:
+            if re.fullmatch(r"jobs:[ \t]*(?:#.*)?(?:\r?\n)?", line):
+                in_jobs = True
+        elif line.strip() and not line.lstrip().startswith("#"):
+            if not line[0].isspace():
+                break
+            if line.startswith("  ") and not line[2].isspace():
+                header = re.fullmatch(r"  ([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(?:#.*)?(?:\r?\n)?", line)
+                if header is None:
+                    raise ValueError(f"Unsupported two-space job entry: {line.strip()}")
+                name = header.group(1)
+                if name in headers:
+                    raise ValueError(f"Duplicate job ID: {name}")
+                headers[name] = offset
+        offset += len(line)
+    if not in_jobs:
+        raise ValueError("Missing root jobs mapping")
+    if not headers:
+        raise ValueError("No job headers in root jobs mapping")
+    starts = list(headers.values())
+    return {name: text[start:end] for name, start, end in zip(headers, starts, starts[1:] + [offset])}
 
 
 class ScopeTests(unittest.TestCase):
@@ -46,9 +77,9 @@ class WorkflowTests(unittest.TestCase):
         text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
         names = ["scope", "b4-runtime", "lint", "package", "app-builds", "apps", "ios-layout",
                  "ios-layout-result", "macos-smoke", "hub"]
-        starts = [text.index(f"\n  {name}:\n") for name in names]
-        self.assertEqual(starts, sorted(starts))
-        self.jobs = {name: text[start:end] for name, start, end in zip(names, starts, starts[1:] + [len(text)])}
+        jobs = workflow_job_sections(text)
+        self.assertEqual([name for name in jobs if name in names], names)
+        self.jobs = {name: jobs[name] for name in names}
 
     def test_every_macos_job_runs_unless_the_scope_said_false(self):
         macos = [name for name, job in self.jobs.items() if "runs-on: macos-26" in job]
@@ -103,6 +134,200 @@ class WorkflowTests(unittest.TestCase):
             # The always-saving cache step is used only for downloads (.spm, the PostgreSQL archive).
             self.assertNotRegex(job, r"uses: actions/cache@\S+(?: # \S+)?\n        with:\n          path: \|?\n?\s*\.build(\n|/\w*DerivedData)",
                                 name)
+
+    def test_compiler_profile_closed_inventory_and_derived_counts_without_import(self):
+        root = Path(__file__).resolve().parents[2]
+        tree = ast.parse((root / "Scripts/check-owner-carrier-compiler-controls.py").read_text())
+        assignments = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "SOURCE_NAMES" for target in node.targets)]
+        self.assertEqual(len(assignments), 1)
+        names = ast.literal_eval(assignments[0].value)
+        self.assertIsInstance(assignments[0].value, ast.List)
+        actual = sorted(path.name for path in (root / "Tests/CoordinatorTests").glob("*.swift"))
+        self.assertEqual(names, actual)
+        self.assertEqual(names, sorted(set(names)))
+        preparations = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                        and node.name == "prepare"]
+        self.assertEqual(len(preparations), 1)
+        prepare = preparations[0]
+        # Keep the literal package pins coupled to the guard that reads and hashes each root file.
+        import hashlib
+        package_loops = [node for node in ast.walk(prepare) if isinstance(node, ast.For)
+                         and isinstance(node.target, ast.Tuple) and isinstance(node.iter, ast.Tuple)]
+        self.assertEqual(len(package_loops), 1)
+        package_loop = package_loops[0]
+        self.assertIn(package_loop, prepare.body)
+        target = ast.parse("for relative, expected in (): pass").body[0].target
+        self.assertEqual(ast.dump(package_loop.target), ast.dump(target))
+        self.assertEqual(len(package_loop.iter.elts), 2)
+        for entry in package_loop.iter.elts:
+            self.assertIsInstance(entry, ast.Tuple)
+            self.assertEqual(len(entry.elts), 2)
+            self.assertTrue(all(isinstance(value, ast.Constant) and isinstance(value.value, str)
+                                for value in entry.elts))
+        package_pins = ast.literal_eval(package_loop.iter)
+        self.assertEqual([name for name, digest in package_pins], ["Package.swift", "Package.resolved"])
+        guard = ast.parse(
+            "_, content = read_regular(checkout / relative, checkout, MAX_INPUT)\n"
+            'require(hashlib.sha256(content).hexdigest() == expected, "package_pin")').body
+        self.assertEqual([ast.dump(node) for node in package_loop.body], [ast.dump(node) for node in guard])
+        self.assertFalse(package_loop.orelse)
+        for relative, expected_digest in package_pins:
+            self.assertRegex(expected_digest, r"^[0-9a-f]{64}$")
+            self.assertEqual(expected_digest, hashlib.sha256((root / relative).read_bytes()).hexdigest(), relative)
+        profiles = [node for node in ast.walk(prepare) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name) and node.func.id == "emit" and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and node.args[0].value == "owner_carrier_compiler_profile"]
+        self.assertEqual(len(profiles), 1)
+        fields = {keyword.arg: keyword.value for keyword in profiles[0].keywords}
+        for name, expression in {"sources": "len(SOURCE_NAMES)", "inputs": 'len(expected["inputs"])',
+                                 "outputs": 'len(expected["outputs"])'}.items():
+            self.assertEqual(ast.dump(fields[name]), ast.dump(ast.parse(expression, mode="eval").body))
+        # The counted expected graph must remain the same graph compared strictly to the compiler command.
+        strict = ast.parse("command == expected", mode="eval").body
+        self.assertTrue(any(ast.dump(node) == ast.dump(strict) for node in ast.walk(prepare)))
+        for variable, expression in {
+            "source_paths": '[str(checkout / "Tests/CoordinatorTests" / name) for name in SOURCE_NAMES]',
+            "object_paths": '[debug + "/CoordinatorTests.build/" + name + ".o" for name in SOURCE_NAMES]',
+        }.items():
+            values = [node.value for node in ast.walk(prepare) if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == variable for target in node.targets)]
+            self.assertEqual(len(values), 1)
+            self.assertEqual(ast.dump(values[0]), ast.dump(ast.parse(expression, mode="eval").body))
+        expected_nodes = [node.value for node in ast.walk(prepare) if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "expected" for target in node.targets)]
+        self.assertEqual(len(expected_nodes), 1)
+        self.assertIsInstance(expected_nodes[0], ast.Dict)
+        self.assertEqual(len(expected_nodes[0].keys), 15)
+        expected = dict(zip([ast.literal_eval(key) for key in expected_nodes[0].keys], expected_nodes[0].values))
+        for key, expression in {
+            "sources": "source_paths",
+            "inputs": '[{"kind": "file", "name": name} for name in source_paths + ['
+                      'debug + "/swift-version-7974D3F7F03D5E95.txt", debug + "/Modules/Coordinator.swiftmodule", '
+                      'debug + "/Modules/NIOTransport.swiftmodule", debug + "/CoordinatorTests.build/sources"]]',
+            "outputs": '[{"kind": "file", "name": name} for name in object_paths + '
+                       '[debug + "/Modules/CoordinatorTests.swiftmodule"]]',
+        }.items():
+            self.assertEqual(ast.dump(expected[key]), ast.dump(ast.parse(expression, mode="eval").body))
+
+    def test_startup_diagnostics_have_closed_private_safe_fields_and_finite_cap(self):
+        # Source-only privacy/cap oracle; managed Swift execution remains required.
+        text = (Path(__file__).resolve().parents[2] / "Tests/CoordinatorTests/HubOwnerCarrierTests.swift").read_text()
+        diagnostic = text.split("private final class OwnerStartupDiagnostics: Sendable {", 1)[1].split(
+            "private enum OwnerNativeDiagnostics", 1)[0]
+        stages = re.search(r"enum Stage: String, CaseIterable, Hashable, Sendable \{(.*?)\n  \}",
+                           diagnostic, re.S).group(1)
+        stage_names = re.findall(r"\b[a-z][A-Za-z]+\b", stages.replace("case", ""))
+        expected = {
+            "collectorArmed", "managerStartReturned", "refreshJoined", "failed", "pullEntryEntered", "pullEntryReturned",
+            "secretReadEntered", "secretReadReturned", "displayNameEntered", "displayNameReturned", "collectorReadyEntered",
+            "collectorReadyReturned", "firstCollectorJoinEntered", "firstCollectorJoinReturned", "hubStopEntered",
+            "hubStopReturned", "pullSettledReturned", "secondCollectorJoinEntered", "secondCollectorJoinReturned",
+            "socketClosedReturned", "observationGuardEntered", "baselineDrainEntered", "baselineDrainReturned",
+            "originCaptureEntered", "originCaptureReturned", "baselineAssertReturned"}
+        self.assertEqual(set(stage_names), expected)
+        self.assertEqual(len(stage_names), 26)
+        self.assertEqual(set(re.findall(r"startupDiagnostics\.emit\(\s*\.([A-Za-z]+)", text)), expected)
+        self.assertIn("static let maximumRecords = Stage.allCases.count", diagnostic)
+        self.assertIn("var emitted: Set<Stage> = []", diagnostic)
+        self.assertIn("state.emitted.insert(stage).inserted", diagnostic)
+        self.assertIn("guard ordinal > 0 && observation.0 else { return }", diagnostic)
+        self.assertIn("guard count < 10_000 else { return 0 }", diagnostic)
+        self.assertIn("enum Role: String, Sendable { case unjoined, linked, heldSecret, sharedAPI, heldSecretSharedAPI }",
+                      diagnostic)
+        record = re.search(r'"A5_STARTUP ([^"\n]+)"', diagnostic).group(1)
+        fields = re.findall(r"([A-Za-z]+)=\\\(([^)]+)\)", record)
+        self.assertEqual(fields, [(name, value) for name, value in [
+            ("role", "role.rawValue"), ("fixture", "ordinal"), ("stage", "stage.rawValue"), ("armed", "armed"),
+            ("elapsedMillis", "elapsed"), ("remainingMillis", "remaining"), ("expired", "expired"),
+            ("observationArmed", "observationArmed"), ("observationElapsedMillis", "observationElapsedMillis"),
+            ("observationRemainingMillis", "observationRemainingMillis"), ("observationExpired", "observationExpired"),
+            ("parentCancelled", "parentCancelled"), ("collectorCancelled", "collectorCancelled"),
+            ("readEntered", "readEntered"), ("readSettled", "readSettled"), ("activeRead", "activeRead"),
+            ("opens", "opens"), ("collectorStarted", "collectorStarted"), ("collectorReturned", "collectorReturned"),
+            ("collectorSucceeded", "collectorSucceeded")]])
+        self.assertEqual(record, " ".join(f"{name}=\\({value})" for name, value in fields))
+        self.assertIn("let parts = duration.components", text)
+        self.assertIn("return Int(min(max(whole + fraction, 0), 60_000))", text)
+        self.assertIn("static func count(_ value: Int) -> Int { min(max(value, 0), 10_000) }", text)
+        self.assertRegex(text, r'Issue\.record\(\s*"The direct owner-carrier fixture setup failed; private details were suppressed\."\)')
+        self.assertNotIn("print(error", diagnostic)
+
+
+class WorkflowJobSectionsTests(unittest.TestCase):
+    def test_adjacent_jobs_have_exact_sections_without_nested_or_root_keys(self):
+        before = (
+            "name: example\non:\n  pull_request:\nenv:\n  package: ROOT_BEFORE\n"
+            "concurrency:\n  group: example\njobs: # root jobs\n"
+        )
+        package = (
+            "  package: \t# ordinary package\n"
+            "    runs-on: macos-26\n"
+            "    env:\n      package: PACKAGE_ENV\n"
+            "    strategy:\n      matrix:\n        app-builds: [PACKAGE_MATRIX]\n"
+            "    steps:\n"
+            "      - name: PACKAGE_SENTINEL\n"
+            "        uses: actions/cache/restore@v4\n"
+            "        with:\n"
+            "          account-session-aggregate-serial-diagnostic: PACKAGE_WITH\n"
+            "          path: .build/package\n"
+            "      - run: |\n"
+            "          app-builds:\n"
+            "          package:\n"
+            "\n  # A comment between jobs stays with the preceding section.\n"
+        )
+        diagnostic = (
+            "  account-session-aggregate-serial-diagnostic:\n"
+            "    runs-on: macos-26\n"
+            "    steps:\n"
+            "      - name: DIAGNOSTIC_SENTINEL\n"
+            "        uses: actions/cache@v4\n"
+            "        with:\n          path: .build/diagnostic\n"
+        )
+        app_builds = (
+            "  app-builds: \t\n"
+            "    runs-on: macos-26\n"
+            "    steps:\n"
+            "      - name: APP_SENTINEL\n"
+            "        uses: actions/cache/save@v4\n"
+            "        with:\n          path: .build/app\n"
+        )
+        after = "env:\n  app-builds: ROOT_AFTER\n"
+        jobs = workflow_job_sections(before + package + diagnostic + app_builds + after)
+        self.assertEqual(list(jobs), ["package", "account-session-aggregate-serial-diagnostic", "app-builds"])
+        self.assertEqual(jobs, {"package": package, "account-session-aggregate-serial-diagnostic": diagnostic,
+                                "app-builds": app_builds})
+        for name in ["package", "app-builds"]:
+            self.assertNotIn("DIAGNOSTIC_SENTINEL", jobs[name])
+            self.assertNotIn(".build/diagnostic", jobs[name])
+
+    def test_unsupported_or_ambiguous_job_mappings_fail_clearly(self):
+        cases = [
+            ("env:\n  package: value\n", "Missing root jobs mapping"),
+            ("jobs:\n  # no jobs\nenv:\n  package: value\n", "No job headers"),
+            ("jobs:\n  package:\n  package:\n", "Duplicate job ID: package"),
+            ("jobs:\n  package: {runs-on: macos-26}\n", "Unsupported two-space job entry"),
+            ("jobs:\n  'package':\n", "Unsupported two-space job entry"),
+            ("jobs:\n  1package:\n", "Unsupported two-space job entry"),
+        ]
+        for text, error in cases:
+            with self.subTest(text=text):
+                with self.assertRaisesRegex(ValueError, error):
+                    workflow_job_sections(text)
+
+    def test_cache_policy_rejects_a_prohibited_package_cache(self):
+        case = WorkflowTests("test_build_caches_are_saved_from_main_only")
+        case.setUp()
+        jobs = case.jobs.copy()
+        jobs["package"] += (
+            "      - uses: actions/cache@v4\n"
+            "        with:\n"
+            "          path: .build\n"
+        )
+        case.jobs = jobs
+        with self.assertRaisesRegex(AssertionError, "package"):
+            case.test_build_caches_are_saved_from_main_only()
 
 
 class CombiningCheckTests(unittest.TestCase):

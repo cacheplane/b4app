@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use b4hub_core::relay::Role;
-use b4hub_db::devices::authenticate_session;
+
 use b4hub_db::signals::{self, Listener, Signal};
 use b4hub_db::Db;
 use tokio::time::Instant;
@@ -123,6 +123,9 @@ pub async fn listen_loop(
                     });
                 }
             }
+            Signal::ProtocolFloor => {
+                refresh_floor(&relay, &db).await;
+            }
             Signal::Echo { .. } => {}
             // sqlx has already listened again on a new connection.
             Signal::Lost => {
@@ -138,6 +141,7 @@ pub async fn listen_loop(
 fn recheck_everyone(relay: &Relay, db: &Db) {
     let (relay, db) = (relay.clone(), db.clone());
     tokio::spawn(async move {
+        refresh_floor(&relay, &db).await;
         for user in relay.users() {
             recheck_user(&relay, &db, user).await;
         }
@@ -168,26 +172,37 @@ pub async fn recheck_user(relay: &Relay, db: &Db, user: Uuid) -> bool {
 
 /// Looks the session `link` was opened with up again and closes the link (`4001`, "session
 /// ended") when the token is gone, its device is revoked, or it now names another device or
-/// account. False when it closed the link; a database error leaves the link up (true) and is
-/// logged.
+/// account. Database/floor refusal is fail closed; it never selects ordinary drain flushing.
 pub async fn check_session(relay: &Relay, db: &Db, link: &LinkHandle) -> bool {
-    let Some(session) = &link.session else {
-        return true;
-    };
-    let alive = match authenticate_session(db, session).await {
-        Ok(Some(device)) => {
-            device.device_id == link.device_id
-                && device.user_id == link.user_id
-                && device.org_id == link.org_id
-        }
-        Ok(None) => false,
+    match crate::relay::admission::Checked::open(db, relay, link).await {
+        Ok(checked) => match checked.commit().await {
+            Ok(()) => true,
+            Err(error) => {
+                if let Some(close) = error.close() {
+                    relay.close_generation(link.device_id, link.generation, close);
+                }
+                false
+            }
+        },
         Err(error) => {
-            tracing::warn!(%error, device = %link.device_id, "could not check a link's session");
-            return true;
+            if let Some(close) = error.close() {
+                relay.close_generation(link.device_id, link.generation, close);
+            }
+            false
         }
-    };
-    if !alive && relay.close_generation(link.device_id, link.generation, Close::session_ended()) {
-        tracing::info!(device = %link.device_id, "closing a link whose session ended");
     }
-    alive
+}
+
+/// Signals/heartbeats are denial hints. Protected action/write boundaries independently read
+/// the native floor; a missed notification never authorizes a frame.
+async fn refresh_floor(relay: &Relay, db: &Db) {
+    let valid = match b4hub_db::settings::protocol_floor(db).await {
+        Ok(floor) => relay.observe_floor(floor).is_ok(),
+        Err(_) => false,
+    };
+    if !valid {
+        for user in relay.users() {
+            relay.close_user(user, Close::protocol_unavailable());
+        }
+    }
 }

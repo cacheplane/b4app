@@ -48,11 +48,11 @@ async fn the_app_role_can_only_read_hub_settings(pool: PgPool) {
         .await
         .unwrap();
 
-    let keys: Vec<String> = sqlx::query_scalar("SELECT key FROM hub_settings")
+    let keys: Vec<String> = sqlx::query_scalar("SELECT key FROM hub_settings ORDER BY key")
         .fetch_all(&app.pool)
         .await
         .unwrap();
-    assert_eq!(keys, vec!["maintenance"]);
+    assert_eq!(keys, vec!["client_protocol", "maintenance"]);
 
     for statement in [
         "INSERT INTO hub_settings (key, value) VALUES ('other', '{}'::jsonb)",

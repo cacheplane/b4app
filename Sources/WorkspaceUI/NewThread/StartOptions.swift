@@ -10,9 +10,8 @@ extension WorkspaceModel {
     relaysThroughHub ? filterEnvironments.filter { $0.ownerDeviceId != nil } : filterEnvironments
   }
 
-  /// The connections offered for an environment: ready Codex or Claude connections, and a local B4
-  /// connection that serves this very environment. Never a remote B4 (it has no environment) or another
-  /// environment's B4. The phone offers only the connections of the Mac that owns the environment.
+  /// Ready harness connections for an environment. Historical B4 and staged protocol profiles cannot
+  /// start conversations. The phone offers only the connections of the Mac that owns the environment.
   public func startConnections(for environment: WorkEnvironment) -> [Connection] {
     let owner = environment.ownerDeviceId
     if relaysThroughHub, owner == nil { return [] }
@@ -20,25 +19,23 @@ extension WorkspaceModel {
       if relaysThroughHub, connection.ownerDeviceId != owner { return false }
       switch connection.kind {
       case .codex, .claude: return true
-      case .b4: return connection.b4Mode != .remote && connection.environmentId == environment.id
+      case .b4, .agentProtocol: return false
       }
     }
   }
 
-  /// The Mac's ready remote B4 connections, offered with no environment. None on the phone, which has no
-  /// route to them.
+  /// Kept for existing composer callers. Historical B4 connections are never new-thread choices.
   public var remoteB4Connections: [Connection] {
-    guard !relaysThroughHub else { return [] }
-    return conversationReadyConnections.filter { $0.kind == .b4 && $0.b4Mode == .remote }
+    []
   }
 
   /// The connections a start with no environment may use. On the Mac, a ready Codex or Claude connection
   /// (with no folder, in one the coordinator makes, or in a folder chosen outside every environment, whose
-  /// environment the coordinator finds or makes on Send) and a remote B4. On the phone, the ready Codex and
+  /// environment the coordinator finds or makes on Send). On the phone, the ready Codex and
   /// Claude connections of the primary Mac, which makes the folder; none when no Mac is known.
   public var startConnectionsWithoutEnvironment: [Connection] {
-    let harness = conversationReadyConnections.filter { $0.kind != .b4 }
-    guard relaysThroughHub else { return harness + remoteB4Connections }
+    let harness = conversationReadyConnections.filter { $0.kind == .codex || $0.kind == .claude }
+    guard relaysThroughHub else { return harness }
     guard let primary = primaryHostId else { return [] }
     return harness.filter { $0.ownerDeviceId == primary }
   }
@@ -53,10 +50,12 @@ extension WorkspaceModel {
     return name.isEmpty ? connection.label : name
   }
 
-  /// The folders a start may run in: a Codex or Claude thread runs in one of the environment's folders; a
-  /// B4 thread is bound to its connection's route and has none.
+  /// Only harness runtimes may choose an environment's folders for a new thread.
   public func startFolders(for environment: WorkEnvironment, connection: Connection) -> [EnvironmentFolder] {
-    connection.kind == .b4 ? [] : environment.folders
+    switch connection.kind {
+    case .codex, .claude: return environment.folders
+    case .b4, .agentProtocol: return []
+    }
   }
 
   /// The folder step is shown only when there is more than one folder to choose from.
@@ -100,7 +99,7 @@ extension WorkspaceModel {
   /// is unchanged.
   public var newThreadEntryReason: String? {
     guard relaysThroughHub else {
-      return conversationReadyConnections.isEmpty
+      return startConnectionsWithoutEnvironment.isEmpty
         ? "Add a ready Codex connection first" : newThreadDisabledReason
     }
     // "No folder" goes to the primary Mac.

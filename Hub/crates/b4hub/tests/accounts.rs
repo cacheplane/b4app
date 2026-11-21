@@ -345,6 +345,7 @@ async fn me_lists_identities(pool: PgPool) {
 
     let me = hub.get("/v1/me", Some(t)).await;
     assert_eq!(me.status, StatusCode::OK, "{}", me.body);
+    assert_eq!(me.body["orgId"], who.org_id.to_string());
     // The fields older clients decode are all still there.
     for field in ["deviceId", "deviceName", "platform", "createdAt"] {
         assert!(me.body[field].is_string(), "{field}: {}", me.body);

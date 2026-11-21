@@ -363,24 +363,34 @@ pub async fn authenticate(db: &Db, token: &str) -> Result<Option<AuthedDevice>> 
 /// token is deleted (log-out, account deletion) or its device revoked.
 pub async fn authenticate_session(db: &Db, session: &SessionKey) -> Result<Option<AuthedDevice>> {
     let mut tx = db.untenanted_tx().await?;
+    let device = authenticate_session_in(&mut tx, session).await?;
+    tx.commit().await?;
+    Ok(device)
+}
+
+/// Same native lookup, borrowed by floor-aware relay admission without another pool lease.
+/// The floor barrier must already precede this helper's first SELECT.
+pub(crate) async fn authenticate_session_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    session: &SessionKey,
+) -> Result<Option<AuthedDevice>> {
     let found: Option<(Uuid, Uuid)> = sqlx::query_as(
         "SELECT org_id, device_id FROM device_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
     )
     .bind(&session.0[..])
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     let Some((org_id, device_id)) = found else {
         return Ok(None);
     };
 
-    set_tenant(&mut tx, org_id).await?;
+    set_tenant(tx, org_id).await?;
     let device: Option<(Uuid, String)> = sqlx::query_as(
         "SELECT user_id, platform FROM devices WHERE id = $1 AND revoked_at IS NULL",
     )
     .bind(device_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
-    tx.commit().await?;
     let Some((user_id, platform)) = device else {
         return Ok(None);
     };
