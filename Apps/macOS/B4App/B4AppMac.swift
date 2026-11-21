@@ -56,11 +56,6 @@ struct B4AppMac: App {
               || sharedModel.availability(of: id, target: .workspace) != .available)
         }
       }
-      CommandGroup(replacing: .appSettings) {
-        SettingsLink { Text("Settings…") }
-          .keyboardShortcut(",")
-          .disabled(sharedModel.rootScreen != .workspace)
-      }
       CommandMenu("Coordinator") {
         Button("Restart Coordinator") { Task { await CoordinatorHost.restartAndReconnect(sharedModel) } }
         Button("Open Login Items…") { SMAppService.openSystemSettingsLoginItems() }
@@ -70,8 +65,10 @@ struct B4AppMac: App {
       }
     }
 
-    // ⌘, and the app menu's Settings… come with the scene; the profile menu and remediations open it
-    // through `WorkspaceModel.openSettings`.
+    // ⌘, and the app menu's Settings… come with the scene, and are its only menu item: a
+    // `CommandGroup(replacing: .appSettings)` beside it drew a second Settings… (D-268). Signed out,
+    // the window shows its signed-out page. The profile menu and remediations open it through
+    // `WorkspaceModel.openSettings`.
     Settings {
       WorkspaceSettingsView(model: sharedModel)
     }
