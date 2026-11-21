@@ -12,7 +12,8 @@ private let fakeCodex =
   URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
   .appendingPathComponent("CodexAdapterTests/Fixtures/fake-codex.py").path
 
-/// What reached the runtimes, in order: `interrupt:<native thread>` and `delete:<native thread>`.
+/// What reached the runtimes, in order: `interrupt:<native thread>`, `stopOpenWork:<native thread>` and
+/// `delete:<native thread>`.
 actor RuntimeCalls {
   private(set) var calls: [String] = []
   /// A delete of one of these native threads takes this long instead of the adapter's `deleteDelay`.
@@ -95,6 +96,9 @@ private struct RecordingAdapter: AgentAdapter {
   }
   func events() -> AsyncStream<AdapterEvent> { inner.events() }
   func dispose() async { await inner.dispose() }
+  func stopOpenWork(_ ref: NativeSessionRef) async throws {
+    await calls.record("stopOpenWork:\(ref.nativeSessionId)")
+  }
 }
 
 private func recording(
@@ -205,6 +209,23 @@ private func markDeletedAndCaptureCursor(
     #expect(try h.coordinator.database.activeTurn(threadId: thread.id) == nil)
     #expect(try h.coordinator.database.threadDeleteAttempts(threadId: thread.id) == 1)
     #expect(try await h.deleteSummary().isEmpty)
+    await h.stop()
+  }
+
+  /// The fake runtime runs no agents, so the turn's count is written to its row: deletion reads only
+  /// `turnsWithOpenWork`, not the items.
+  @Test(NativeDBResources()) func deletingAThreadAsksItsOpenWorkToStop() async throws {
+    let calls = RuntimeCalls()
+    let h = try await Harness.start(adapterFactory: recording(calls))
+    let codex = try await h.addCodex()
+    let thread = try await h.newThread(codex)
+    let turn = try await h.send(thread, "hello there")
+    _ = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == turn.id }
+    _ = try h.coordinator.database.updateTurn(id: turn.id) { $0.openWork = 1 }
+    _ = try await h.delete(thread)
+    try await eventually("deleted in Codex") { await !calls.deletes.isEmpty }
+    #expect(
+      await calls.calls == ["stopOpenWork:\(thread.nativeThreadId)", "delete:\(thread.nativeThreadId)"])
     await h.stop()
   }
 

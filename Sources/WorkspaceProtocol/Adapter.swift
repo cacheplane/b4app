@@ -202,11 +202,23 @@ public protocol AgentAdapter: Sendable {
   func dispose() async
   /// Delete the runtime's copy of a thread the owner deleted (settings: deleting threads).
   func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion
+  /// Stop every background agent the session still runs. The agents' ends arrive as ordinary item events.
+  /// An implementation must be safe to call when nothing is open, and right after `interrupt` (the
+  /// coordinator asks again after an interrupt, from its own count, which may lag the runtime's).
+  func stopOpenWork(_ ref: NativeSessionRef) async throws
 }
 
 extension AgentAdapter {
   /// An adapter without its own delete leaves the runtime's copy alone.
   public func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion { .unsupported }
+
+  /// An adapter that cannot stop background agents says so; it never reports a stop that did not happen.
+  public func stopOpenWork(_ ref: NativeSessionRef) async throws {
+    throw WorkspaceError(
+      .unsupportedCapability,
+      "Stopping background agents arrives with the Claude Code and Codex adapter changes of the runtime turns design."
+    )
+  }
 }
 
 /// Result of starting a runtime's official sign-in. The caller opens `authUrl`; completion arrives as

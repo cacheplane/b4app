@@ -342,6 +342,9 @@ extension InspectionAdapterForwarding {
   func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
     try await forwarding.inner.deleteSession(ref)
   }
+  func stopOpenWork(_ ref: NativeSessionRef) async throws {
+    try await forwarding.inner.stopOpenWork(ref)
+  }
 }
 private struct InspectionPlainAdapter: InspectionAdapterForwarding {
   let forwarding: InspectionForwarding

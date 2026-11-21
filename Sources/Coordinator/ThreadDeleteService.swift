@@ -30,11 +30,12 @@ extension SessionService {
     return ThreadCreate.Result(thread: thread)
   }
 
-  /// End the deleted thread's unresolved turn. A live one is interrupted through its adapter (the
+  /// Ask the deleted thread's open work to stop, then end its unresolved turn. A live one is interrupted through its adapter (the
   /// thread commands refuse a deleted thread, so not through `turnInterrupt`), asking again once the
   /// runtime has named the turn, and given up to 10 seconds to end. Whatever is still unresolved after
   /// that, or was already `reconciling`, is ended here as cancelled: nothing would ever show or resolve it.
   private func stopTurn(of thread: ConversationThread, connection: Connection?) async {
+    await stopOpenWork(of: thread, connection: connection)
     guard let active = try? db.activeTurn(threadId: thread.id) else { return }
     if active.status != .reconciling, let connection, connection.enabled,
       let adapter = try? adapter(for: connection)
@@ -67,6 +68,24 @@ extension SessionService {
     _ = try? db.updateTurn(id: unresolved.id) {
       $0.status = .terminal
       $0.outcome = .cancelled
+    }
+  }
+
+  /// Ask the deleted thread's background agents to stop when any of its turns counts open work, whether
+  /// or not a turn is active. An adapter that cannot stop them is left alone; any other error is logged.
+  /// Their ends, if they come, arrive as ordinary item events.
+  private func stopOpenWork(of thread: ConversationThread, connection: Connection?) async {
+    guard let open = try? db.turnsWithOpenWork(threadId: thread.id), !open.isEmpty,
+      let connection, connection.enabled, let adapter = try? adapter(for: connection)
+    else { return }
+    let ref = NativeSessionRef(nativeSessionId: thread.nativeThreadId, nativeScope: thread.nativeScope)
+    do {
+      try await adapter.stopOpenWork(ref)
+    } catch let error as WorkspaceError where error.code == .unsupportedCapability {
+      return
+    } catch {
+      logger.error(
+        "stopping a deleted thread's open work failed: \(String(describing: error), privacy: .public)")
     }
   }
 

@@ -108,12 +108,37 @@ private final class RetirementFactoryCalls: Sendable {
     }
   }
 
-  @Test func startupKeepsLegacyPendingPresentationAndUnknownOutcome() async throws {
-    try await withFixture { (db, service, calls) async throws in
+  @Test(arguments: [ConnectionKind.b4, .agentProtocol])
+  func startupAndLateRuntimeEventsPreserveHistoricalOpenWork(kind: ConnectionKind) async throws {
+    try await withFixture(kind: kind) { (db, service, calls) async throws in
+      let turn = try #require(try db.updateTurn(id: "unknown-turn") { $0.openWork = 1 })
+      let item = try db.upsertDisplayItem(
+        threadId: "history", turnId: turn.id, nativeItemId: "old-agent", role: .tool,
+        type: "toolUse", payload: ["agent": true, "title": "Earlier agent", "status": "inProgress"],
+        provenance: .cache)
+      let before = try HistoricalCoordinatorFixture.snapshot(db, threadId: "history")
+      #expect(before.turns == [turn])
+      #expect(turn.openWork == 1 && turn.outcome == nil && turn.submission == .unknown)
+      #expect(before.items.contains(item))
+      #expect(item.payload["agent"]?.boolValue == true && item.payload["status"]?.stringValue == "inProgress")
+      #expect(before.requests.map(\.id) == ["old-request"] && before.requests.first?.state == .pending)
+
       await service.start()
-      #expect(try db.runtimeRequest(id: "old-request")?.state == .pending)
-      #expect(try db.turn(id: "unknown-turn")?.outcome == nil)
-      #expect(try db.turn(id: "unknown-turn")?.submission == .unknown)
+      let startupClose = await service.pumps["open-work-close"]
+      await startupClose?.value
+      #expect(try HistoricalCoordinatorFixture.snapshot(db, threadId: "history") == before)
+
+      await service.environment(
+        AdapterEvent(
+          kind: .toolCompleted, connectionId: "legacy",
+          nativeIds: ["threadId": "possibly-reused-thread", "turnId": "1", "itemId": "old-agent"],
+          payload: ["type": "toolUse", "role": "tool", "item": ["agent": true, "status": "completed"]]))
+      #expect(try HistoricalCoordinatorFixture.snapshot(db, threadId: "history") == before)
+      await service.environment(
+        AdapterEvent(
+          kind: .connectionChanged, connectionId: "legacy", nativeIds: ["threadId": "possibly-reused-thread"],
+          payload: ["transport": "disconnected"]))
+      #expect(try HistoricalCoordinatorFixture.snapshot(db, threadId: "history") == before)
       #expect(calls.value == 0)
     }
   }

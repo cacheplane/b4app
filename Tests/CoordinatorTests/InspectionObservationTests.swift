@@ -53,6 +53,7 @@ struct InspectionObservationTests {
     await #expect(throws: ObservationControlError.forwarded) {
       try await proxy.reconcile(session, turn: turn)
     }
+    await #expect(throws: ObservationControlError.forwarded) { try await proxy.stopOpenWork(session) }
     #expect(try await proxy.deleteSession(session) == .deleted)
     var iterator = proxy.events().makeAsyncIterator()
     #expect(await iterator.next() == ObservationFakeCore.event)
@@ -68,7 +69,8 @@ struct InspectionObservationTests {
     var expected: [ObservationFact] = [
       .factory(connection, ["synthetic": "value"], "synthetic-version", true), .kind, .inspection,
       .create(input), .load(session), .send(session, turnInput), .interrupt(session, turn),
-      .respond(request, response), .reconcile(session, turn), .delete(session), .events, .dispose,
+      .respond(request, response), .reconcile(session, turn), .stopOpenWork(session), .delete(session), .events,
+      .dispose,
     ]
     if mask.login { expected.append(.login) }
     if mask.usage { expected.append(.usage) }
@@ -351,7 +353,7 @@ private enum ObservationFact: Equatable, Sendable {
   case commands(ObjectIdentifier)
   case create(NewSessionInput), load(NativeSessionRef), send(NativeSessionRef, TurnInput)
   case interrupt(NativeSessionRef, ActiveTurnRef), respond(RuntimeRequestRef, RuntimeResponse)
-  case reconcile(NativeSessionRef, ActiveTurnRef?), delete(NativeSessionRef)
+  case reconcile(NativeSessionRef, ActiveTurnRef?), stopOpenWork(NativeSessionRef), delete(NativeSessionRef)
 }
 
 /// This fake's ordinary mutex may block; it is never called from the collector's lock callback.
@@ -412,6 +414,9 @@ private struct ObservationFakeCore: AgentAdapter {
   func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
     facts.record(.delete(ref)); return .deleted
   }
+  func stopOpenWork(_ ref: NativeSessionRef) async throws {
+    facts.record(.stopOpenWork(ref)); throw ObservationControlError.forwarded
+  }
   func loginResult() throws -> LoginStart {
     facts.record(.login)
     if failsInspectionAndLogin { throw ObservationControlError.forwarded }
@@ -454,6 +459,7 @@ extension ObservationFakeForwarding {
   func deleteSession(_ ref: NativeSessionRef) async throws -> SessionDeletion {
     try await core.deleteSession(ref)
   }
+  func stopOpenWork(_ ref: NativeSessionRef) async throws { try await core.stopOpenWork(ref) }
 }
 private struct ObservationLoginFake: ObservationFakeForwarding, LoginCapable {
   let core: ObservationFakeCore
