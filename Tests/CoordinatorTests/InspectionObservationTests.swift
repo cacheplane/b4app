@@ -69,8 +69,8 @@ struct InspectionObservationTests {
     var expected: [ObservationFact] = [
       .factory(connection, ["synthetic": "value"], "synthetic-version", true), .kind, .inspection,
       .create(input), .load(session), .send(session, turnInput), .interrupt(session, turn),
-      .respond(request, response), .reconcile(session, turn), .stopOpenWork(session), .delete(session), .events,
-      .dispose,
+      .respond(request, response), .reconcile(session, turn), .stopOpenWork(session),
+      .delete(session), .events, .dispose,
     ]
     if mask.login { expected.append(.login) }
     if mask.usage { expected.append(.usage) }
