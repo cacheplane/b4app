@@ -427,6 +427,8 @@ public final class WorkspaceModel {
   private let transportProvider: TransportProvider
   var client: WorkspaceClient?
   private var connectTask: Task<Void, Never>?
+  /// Connects again after the coordinator's connection closed (`reconnectAfterClose`).
+  private var reconnectTask: Task<Void, Never>?
   /// Callers of `settledLink()` waiting for the link to leave `.connecting`.
   @ObservationIgnored private var linkWaiters: [CheckedContinuation<LinkState, Never>] = []
   @ObservationIgnored private var lastComposerChange = Date.distantPast
@@ -614,6 +616,10 @@ public final class WorkspaceModel {
     for waiter in waiters { waiter.resume(returning: link) }
   }
 
+  /// The waits before each attempt to connect again after the coordinator's connection closed; the
+  /// last repeats until one succeeds, the owner presses Retry, or the model disconnects.
+  static let reconnectDelays: [Duration] = [.milliseconds(250), .seconds(1), .seconds(2), .seconds(5)]
+
   /// Connect again on a fresh transport, closing the old client once the new connection takes over.
   /// The root does not pass through "unavailable" on the way (the phone, after its account changed).
   func reconnect() {
@@ -629,6 +635,8 @@ public final class WorkspaceModel {
   public func disconnect() async {
     threadOpenTask?.cancel()
     threadOpenTask = nil
+    reconnectTask?.cancel()
+    reconnectTask = nil
     connectTask?.cancel()
     await client?.close()
     client = nil
@@ -1817,6 +1825,32 @@ public final class WorkspaceModel {
     if link == .ready, self.client === client {
       link = .unavailable
       linkMessage = "Coordinator connection closed."
+      reconnectAfterClose()
+    }
+  }
+
+  /// The coordinator went away under a ready link (it restarted, was updated, or exited): connect
+  /// again after each of `reconnectDelays` in turn, the last repeating, until a connect is ready. A
+  /// Retry pressed meanwhile, or any other connect, ends the attempts once the link is ready;
+  /// `disconnect()` ends them at once.
+  private func reconnectAfterClose() {
+    reconnectTask?.cancel()
+    let clock = self.clock
+    reconnectTask = Task { [weak self] in await self?.reconnectAttempts(clock: clock) }
+  }
+
+  private func reconnectAttempts<C: Clock<Duration>>(clock: C) async {
+    var attempt = 0
+    while !Task.isCancelled {
+      let delay = Self.reconnectDelays[min(attempt, Self.reconnectDelays.count - 1)]
+      do { try await clock.sleep(until: clock.now.advanced(by: delay), tolerance: nil) } catch { return }
+      switch link {
+      case .ready: return
+      case .connecting: break
+      case .unavailable: connect()
+      }
+      if await settledLink() == .ready || Task.isCancelled { return }
+      attempt += 1
     }
   }
 
