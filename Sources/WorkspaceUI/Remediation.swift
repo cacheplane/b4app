@@ -111,7 +111,7 @@ public struct Remediation: Equatable, Sendable {
         message:
           "That request is no longer pending; the runtime presents its current requests after a reconnect.",
         action: .checkAgain, actionTitle: "Check again")
-    case .protocolInvalid where reason == "native_session_archived":
+    case .protocolInvalid where reason == "native_session_archived" || reason == "native_session_busy":
       return Remediation(message: error.message, action: .checkAgain, actionTitle: "Check again")
     case .protocolInvalid where reason == "turn_active":
       let status = error.details?["status"]?.stringValue ?? "active"

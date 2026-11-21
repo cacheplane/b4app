@@ -190,6 +190,10 @@ while True:
                 "session thr_archived is archived. Run `codex unarchive thr_archived` to unarchive it first."}})
         elif thread_id == "thr_config_missing":
             send({"id": req_id, "error": {"code": -32600, "message": "configuration file not found"}})
+        elif thread_id == "thr_busy":
+            # Codex 0.166's wording when another process holds the thread's writer lock.
+            send({"id": req_id, "error": {"code": -32600, "message":
+                "thread thr_busy already has an active writer"}})
         elif thread_id == "thr_resume_fault":
             send({"id": req_id, "error": {"code": -32603, "message": "failed to read session: permission denied"}})
         else:

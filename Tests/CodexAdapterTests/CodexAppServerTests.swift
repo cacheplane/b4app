@@ -276,6 +276,25 @@ private func paramsFile() -> URL {
     await adapter.dispose()
   }
 
+  /// Another process (the ChatGPT app, a terminal) holds the thread's writer lock: the failure says
+  /// so in plain words, keeps Codex's own text in the details, and nothing is submitted.
+  @Test func aThreadOpenElsewhereIsNamedAndNotSubmitted() async throws {
+    let file = paramsFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let adapter = makeAdapter(["FAKE_CODEX_PARAMS": file.path])
+    let ref = NativeSessionRef(nativeSessionId: "thr_busy", nativeScope: "owner@example.com")
+    let failure = await #expect(throws: WorkspaceError.self) {
+      _ = try await adapter.sendTurn(ref, input: TurnInput(operationId: "op1", text: "carry on"))
+    }
+    #expect(failure?.code == .protocolInvalid)
+    #expect(failure?.details?["reason"]?.stringValue == "native_session_busy")
+    #expect(failure?.message.contains("open in another app") == true)
+    #expect(failure?.message.contains("active writer") == false)
+    #expect(failure?.details?["nativeMessage"]?.stringValue == "thread thr_busy already has an active writer")
+    #expect(try recordedParams("turn/start", in: file).isEmpty)
+    await adapter.dispose()
+  }
+
   @Test func archivedResumeRetainsRecoveryAndDoesNotSubmit() async throws {
     let file = paramsFile()
     defer { try? FileManager.default.removeItem(at: file) }

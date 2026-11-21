@@ -1,0 +1,7 @@
+## 2026-11-20: A Codex thread open elsewhere says so (D-264)
+
+- **Found on screen.** 2026-11-19, the Local app, a Codex test thread the ChatGPT desktop app also had open: every send failed with `thread <id> already has an active writer`. The ChatGPT app's Codex server held the thread's file under `~/.codex/thread-writer-locks`. The wording and its codes were then read from Codex's public source (`rollout/src/writer_lock.rs`, the app-server's tests) and from the strings of the installed 0.166.0 binary.
+- **Red.** `aThreadOpenElsewhereIsNamedAndNotSubmitted` (`internal`, no reason, Codex's words in the message; 5 issues) and `aThreadOpenElsewhereOffersCheckAgain` (no action; 4 issues). `aThreadOpenElsewhereStaysAvailableAndKeepsItsMessage` was first run against a test database whose files had been cleared from `/tmp` and failed for that reason only; it was not seen failing for the missing behaviour.
+- **Green.** The three tests and the archived-session tests beside them pass (20 tests in 14 suites) on a fresh test database.
+- **Gates.** `swift test` in CI's two processes: 531 tests in 68 suites (`WorkspaceStorageTests`, `CoordinatorTests`) and 1769 tests in 190 suites, all passed. `swift format lint --strict` and `Scripts/docs-index.sh --check` clean.
+- **Not checked.** The real refusal from Codex with this change in place: it needs another app to hold the thread, and the ChatGPT app was not driven. The notice on screen, the phone, and whether Check again clears it once the other app lets go.
