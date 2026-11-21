@@ -56,6 +56,18 @@ import WorkspaceProtocol
     #expect(remedy.actionTitle == "Check again")
   }
 
+  @Test(arguments: [false, true])
+  func aThreadOpenElsewhereOffersCheckAgain(wrappedByTurnSend: Bool) {
+    let message = "This Codex thread is open in another app."
+    let details: JSONValue = ["reason": "native_session_busy"]
+    let remedy = Remediation.for(
+      WorkspaceError(.protocolInvalid, message, details: wrappedByTurnSend ? ["cause": details] : details),
+      connection: codex)
+    #expect(remedy.message == message)
+    #expect(remedy.action == .checkAgain)
+    #expect(remedy.actionTitle == "Check again")
+  }
+
   @Test func continuityCoversOnlyTheSameFailure() {
     let missing = WorkspaceError(.nativeSessionMissing, "gone")
     let identity = WorkspaceError(.identityChanged, "changed")

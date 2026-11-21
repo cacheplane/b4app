@@ -1841,6 +1841,30 @@ actor EventCollector {
     await h.stop()
   }
 
+  @Test func aThreadOpenElsewhereStaysAvailableAndKeepsItsMessage() async throws {
+    let h = try await Harness.start()
+    let connection = try await h.addCodex()
+    let thread = try h.coordinator.database.insertThread(
+      ConversationThread(
+        id: "busy-native", connectionId: connection.id, nativeThreadId: "thr_busy",
+        nativeScope: "owner@example.com", title: "Open in another app", context: h.workDir))
+    let draft = "continue this conversation"
+    let failure = await #expect(throws: WorkspaceError.self) { _ = try await h.send(thread, draft) }
+    #expect(failure?.code == .protocolInvalid)
+    #expect(failure?.details?["cause"]?["reason"]?.stringValue == "native_session_busy")
+    let read = try await h.read(thread)
+    #expect(read.thread.continuity == .available)
+    #expect(read.turns.last?.outcome == .failed)
+    #expect(read.items.contains { $0.payload["text"]?.stringValue == draft })
+    let recheck = await #expect(throws: WorkspaceError.self) {
+      _ = try await h.client.request(
+        ThreadReconcile.self, ThreadReconcile.Params(threadId: thread.id), options: mutation())
+    }
+    #expect(recheck?.details?["reason"]?.stringValue == "native_session_busy")
+    #expect(try h.coordinator.database.thread(id: thread.id)?.continuity == .available)
+    await h.stop()
+  }
+
   @Test func recheckingAnArchivedSessionRepairsAnObsoleteMissingState() async throws {
     let h = try await Harness.start()
     let connection = try await h.addCodex()

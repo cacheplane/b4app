@@ -281,6 +281,7 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
       return result
     } catch {
       let failure = WorkspaceError.from(error)
+      if let busy = Self.openElsewhere(failure) { throw busy }
       if failure.details?["rpcCode"]?.numberValue == -32600 {
         let id = ref.nativeSessionId
         let message = failure.message.lowercased()
@@ -349,7 +350,7 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
           .submissionUnknown, "Codex did not acknowledge the turn; it may still have started.",
           details: failure.details)
       }
-      throw failure
+      throw Self.openElsewhere(failure) ?? failure
     }
     // `thread/compact/start` answers `{}`; its turn is named by the `turn/started` that follows.
     if command?.method == "thread/compact/start" {
@@ -382,6 +383,22 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
   }
 
   /// Codex's words for a thread it has nothing of: "… not found", or "no rollout found for thread id …".
+  /// Codex lets one process write a thread at a time (`~/.codex/thread-writer-locks`). When another
+  /// holds it, Codex refuses with "thread <id> already has an active writer", under more than one
+  /// RPC code, and its own clients match on the words; so does this. Nil for any other failure.
+  static func openElsewhere(_ failure: WorkspaceError) -> WorkspaceError? {
+    guard failure.details?["rpcCode"] != nil,
+      failure.message.localizedCaseInsensitiveContains("already has an active writer")
+    else { return nil }
+    var details = failure.details?.objectValue ?? [:]
+    details["reason"] = "native_session_busy"
+    details["nativeMessage"] = .string(failure.message)
+    return WorkspaceError(
+      .protocolInvalid,
+      "This Codex thread is open in another app, which holds it for writing. Close the thread there, or quit that app, then choose Check again. Nothing was sent.",
+      details: .object(details))
+  }
+
   static func saysAlreadyGone(_ message: String) -> Bool {
     message.localizedCaseInsensitiveContains("not found")
       || message.localizedCaseInsensitiveContains("no rollout found")
