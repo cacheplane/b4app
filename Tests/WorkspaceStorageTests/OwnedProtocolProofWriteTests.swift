@@ -317,7 +317,8 @@ struct OwnedProtocolProofWriteTests {
         let inspector = try PostgresConnection(
           lib: LibPQ.load(binDir: endpoint.binDir!),
           connectionString:
-            "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
+            "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)"
+        )
         let link = WorkspaceDatabase.HubLink(
           url: base, deviceId: "OWNED_PROOF_DEVICE", deviceName: "fixture",
           tokenRef: "secret:OWNED_PROOF_REFERENCE", orgSlug: "not-principal-proof",
