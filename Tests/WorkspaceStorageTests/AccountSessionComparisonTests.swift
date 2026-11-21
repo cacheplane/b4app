@@ -1324,21 +1324,23 @@ private final class P2BNativeFixture: Sendable {
   private static func withNativeFixture(
     root: String, linked: Bool, ascii: Bool, _ body: (P2BNativeFixture) throws -> Void
   ) throws -> Bool {
-    let endpoint = try AgentProtocolResourceFixture.endpoint()
-    guard let binDir = endpoint.binDir else { throw P2BFixtureFailure.incomplete }
-    if ascii {
-      let admin = try PostgresConnection(
-        lib: LibPQ.load(binDir: binDir),
-        connectionString:
-          "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=postgres application_name=p2b_ascii_admin"
-      )
-      // endpoint() has registered this newly empty owned DB; no session has opened it yet.
-      try admin.execute("DROP DATABASE \(Rows.quote(endpoint.database))")
-      try admin.execute(
-        "CREATE DATABASE \(Rows.quote(endpoint.database)) TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'"
-      )
+    let fixture = try AgentProtocolResourceFixture.withOrdinarySetup {
+      let endpoint = try AgentProtocolResourceFixture.endpoint()
+      guard let binDir = endpoint.binDir else { throw P2BFixtureFailure.incomplete }
+      if ascii {
+        let admin = try PostgresConnection(
+          lib: LibPQ.load(binDir: binDir),
+          connectionString:
+            "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=postgres application_name=p2b_ascii_admin"
+        )
+        // endpoint() has registered this newly empty owned DB; no session has opened it yet.
+        try admin.execute("DROP DATABASE \(Rows.quote(endpoint.database))")
+        try admin.execute(
+          "CREATE DATABASE \(Rows.quote(endpoint.database)) TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'"
+        )
+      }
+      return try Self(endpoint: endpoint, binDir: binDir, root: root)
     }
-    let fixture = try Self(endpoint: endpoint, binDir: binDir, root: root)
     let result = Result<Void, any Error> {
       if linked { try fixture.link() }
       try body(fixture)

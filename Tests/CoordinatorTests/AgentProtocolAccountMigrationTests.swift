@@ -680,18 +680,19 @@ struct AgentProtocolAccountMigrationTests {
     migrationCloseTaskExecutor: (any TaskExecutor)? = nil
   ) async throws -> Fixture {
     let files = try AgentProtocolFoundationFixture.knownFiles()
-    let endpoint = try AgentProtocolResourceFixture.endpoint()
+    let endpoint = try await AgentProtocolResourceFixture.setupEndpoint()
     let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-l1-\(UUID())"
     cleanup.own(root: root)
     var paths = PlatformPaths(runtimeDir: root + "/rt", dataDir: root + "/flavor-local")
     paths.postgres = endpoint
     try FileManager.default.createDirectory(
       atPath: paths.dataDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    let initial = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+    let initial = try await AgentProtocolResourceFixture.setupDatabase(
+      endpoint: endpoint, binDir: endpoint.binDir!)
     cleanup.own(initial)
     try initial.close()
     let registryName = AccountManager.registryDatabaseName(for: endpoint)
-    let registry = try AccountRegistry(
+    let registry = try await AgentProtocolResourceFixture.setupRegistry(
       endpoint: endpoint, binDir: endpoint.binDir!, databaseName: registryName)
     cleanup.own(registry)
     var registryEndpoint = endpoint

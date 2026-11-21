@@ -672,7 +672,7 @@ private final class L2LifetimeOwner: Sendable {
   private let state = Mutex(State())
 
   func prepare() async throws -> Prepared {
-    let endpoint = try AgentProtocolResourceFixture.endpoint()
+    let endpoint = try await AgentProtocolResourceFixture.setupEndpoint()
     let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "a3-l2-lifetime-\(UUID())"
     state.withLock {
       $0.root = root; $0.endpoint = endpoint
@@ -683,9 +683,11 @@ private final class L2LifetimeOwner: Sendable {
       atPath: paths.dataDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     // The initial constructor's DB is a different, immediately closed lexical object.
     do {
-      let initial = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!); try initial.close()
+      let initial = try await AgentProtocolResourceFixture.setupDatabase(
+        endpoint: endpoint, binDir: endpoint.binDir!)
+      try initial.close()
     }
-    let registry = try AccountRegistry(
+    let registry = try await AgentProtocolResourceFixture.setupRegistry(
       endpoint: endpoint, binDir: endpoint.binDir!,
       databaseName: AccountManager.registryDatabaseName(for: endpoint))
     state.withLock { $0.registry = registry }

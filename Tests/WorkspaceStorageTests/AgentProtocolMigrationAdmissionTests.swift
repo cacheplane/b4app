@@ -26,6 +26,10 @@ struct AgentProtocolMigrationAdmissionTests {
   }
 
   private static func fixture(_ cluster: AdmissionOwnedCluster, pending: Bool = true) throws -> Fixture {
+    try AgentProtocolResourceFixture.withOrdinarySetup { try buildFixture(cluster, pending: pending) }
+  }
+
+  private static func buildFixture(_ cluster: AdmissionOwnedCluster, pending: Bool) throws -> Fixture {
     let endpoint = try cluster.endpoint(dataDir: true)
     let raw = try connection(endpoint)
     if pending {
@@ -230,7 +234,9 @@ struct AgentProtocolMigrationAdmissionTests {
   @Test func preflightDistinguishesCurrentEmptyAndMissingWithoutCreation() async throws {
     try await AdmissionOwnedCluster.withCluster { cluster in
       let current = try Self.fixture(cluster, pending: false)
-      let database = try WorkspaceDatabase(endpoint: current.endpoint, binDir: current.endpoint.binDir!)
+      let database = try AgentProtocolResourceFixture.withOrdinarySetup {
+        try WorkspaceDatabase(endpoint: current.endpoint, binDir: current.endpoint.binDir!)
+      }
       try database.close()
       let empty = try Self.fixture(cluster, pending: false)
       var missing = empty.endpoint
@@ -287,7 +293,9 @@ struct AgentProtocolMigrationAdmissionTests {
       // Successful drain after ordinary close, with one already admitted lease.
       do {
         let fixture = try Self.fixture(cluster, pending: false)
-        let db = try WorkspaceDatabase(endpoint: fixture.endpoint, binDir: fixture.endpoint.binDir!)
+        let db = try AgentProtocolResourceFixture.withOrdinarySetup {
+          try WorkspaceDatabase(endpoint: fixture.endpoint, binDir: fixture.endpoint.binDir!)
+        }
         defer { try? db.close() }
         let before = try Self.snapshot(fixture.raw)
         let files = Self.backupFiles(fixture.endpoint)
@@ -383,7 +391,9 @@ struct AgentProtocolMigrationAdmissionTests {
       // Timeout keeps admission closed. This guarded caller is test-owned, not account wiring.
       do {
         let fixture = try Self.fixture(cluster, pending: false)
-        let db = try WorkspaceDatabase(endpoint: fixture.endpoint, binDir: fixture.endpoint.binDir!)
+        let db = try AgentProtocolResourceFixture.withOrdinarySetup {
+          try WorkspaceDatabase(endpoint: fixture.endpoint, binDir: fixture.endpoint.binDir!)
+        }
         defer { try? db.close() }
         let before = try Self.snapshot(fixture.raw)
         let files = Self.backupFiles(fixture.endpoint)

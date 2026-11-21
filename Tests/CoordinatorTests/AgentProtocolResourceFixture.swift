@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import WorkspacePlatform
 import WorkspaceProtocol
 import WorkspaceStorage
@@ -45,5 +46,41 @@ enum AgentProtocolResourceFixture {
   static func database() throws -> WorkspaceDatabase {
     let endpoint = try endpoint()
     return try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+  }
+
+  // Only the native database constructors in protocol fixture setup share this queue. Tests keep
+  // their own databases and run all actor calls, barriers, observations and cleanup in their case.
+  private static let setupQueue = DispatchQueue(label: "b4app.tests.protocol-coordinator-setup")
+
+  private static func prepare<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+    guard TestAccount.ordinaryFixture else { return try work() }
+    let cancelled = Mutex(false)
+    return try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        setupQueue.async {
+          continuation.resume(
+            with: Result {
+              if cancelled.withLock({ $0 }) { throw CancellationError() }
+              return try work()
+            })
+        }
+      }
+    } onCancel: {
+      cancelled.withLock { $0 = true }
+    }
+  }
+
+  static func setupEndpoint() async throws -> PostgresEndpoint {
+    try await prepare { try endpoint() }
+  }
+
+  static func setupDatabase(endpoint: PostgresEndpoint, binDir: String) async throws -> WorkspaceDatabase {
+    try await prepare { try WorkspaceDatabase(endpoint: endpoint, binDir: binDir) }
+  }
+
+  static func setupRegistry(
+    endpoint: PostgresEndpoint, binDir: String, databaseName: String
+  ) async throws -> AccountRegistry {
+    try await prepare { try AccountRegistry(endpoint: endpoint, binDir: binDir, databaseName: databaseName) }
   }
 }

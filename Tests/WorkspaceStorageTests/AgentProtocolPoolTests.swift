@@ -39,12 +39,14 @@ struct AgentProtocolPoolTests {
   }
 
   @Test func queuedCheckoutCannotRunAfterPoolClose() async throws {
-    let endpoint = try AgentProtocolResourceFixture.endpoint()
-    let pool = try ConnectionPool(
-      lib: LibPQ.load(binDir: endpoint.binDir!),
-      connectionString:
-        "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)",
-      size: 1)
+    let pool = try AgentProtocolResourceFixture.withOrdinarySetup {
+      let endpoint = try AgentProtocolResourceFixture.endpoint()
+      return try ConnectionPool(
+        lib: LibPQ.load(binDir: endpoint.binDir!),
+        connectionString:
+          "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)",
+        size: 1)
+    }
     defer { pool.close() }
     let releaseBorrower = DispatchSemaphore(value: 0)
     let releaseWaiter = DispatchSemaphore(value: 0)

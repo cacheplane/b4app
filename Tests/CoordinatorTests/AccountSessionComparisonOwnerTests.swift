@@ -1096,7 +1096,7 @@ private struct P2BOwnerFixture: Sendable {
     linked: Bool, observation: P2BOwnerObservation? = nil
   ) async throws -> Self {
     observation?.record(.firstEndpointEntered)
-    let endpoint = try AgentProtocolResourceFixture.endpoint()
+    let endpoint = try await AgentProtocolResourceFixture.setupEndpoint()
     observation?.record(.firstEndpointReturned)
     let binDir = try p2bOwnerRequire(endpoint.binDir)
     observation?.record(.temporaryStateEntered)
@@ -1121,7 +1121,7 @@ private struct P2BOwnerFixture: Sendable {
       ]
       observation?.record(.temporaryStateReturned)
       observation?.record(.seedDatabaseEntered)
-      let seed = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir)
+      let seed = try await AgentProtocolResourceFixture.setupDatabase(endpoint: endpoint, binDir: binDir)
       cleanup.database(seed)
       try empty(seed)
       try seed.close()
@@ -1131,7 +1131,7 @@ private struct P2BOwnerFixture: Sendable {
       let links = FakeHubLinkConnection()
       let power = FakePowerAssertions()
       observation?.record(.registryEntered)
-      let actualRegistry = try AccountRegistry(
+      let actualRegistry = try await AgentProtocolResourceFixture.setupRegistry(
         endpoint: endpoint, binDir: binDir,
         databaseName: AccountManager.registryDatabaseName(for: endpoint))
       registry = actualRegistry
@@ -1221,11 +1221,12 @@ private struct P2BOwnerFixture: Sendable {
       observation?.record(.liveEventsReturned)
       observation?.record(.liveHubReturned)
       observation?.record(.secondEndpointEntered)
-      let candidateEndpoint = try AgentProtocolResourceFixture.endpoint()
+      let candidateEndpoint = try await AgentProtocolResourceFixture.setupEndpoint()
       observation?.record(.secondEndpointReturned)
       let candidateBin = try p2bOwnerRequire(candidateEndpoint.binDir)
       observation?.record(.candidateDatabaseEntered)
-      let candidateDatabase = try WorkspaceDatabase(endpoint: candidateEndpoint, binDir: candidateBin)
+      let candidateDatabase = try await AgentProtocolResourceFixture.setupDatabase(
+        endpoint: candidateEndpoint, binDir: candidateBin)
       cleanup.database(candidateDatabase)
       try empty(candidateDatabase)
       observation?.record(.candidateDatabaseReturned)

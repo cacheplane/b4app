@@ -119,6 +119,10 @@ struct AgentProtocolMigrationPoolDrainTests {
   }
 
   private static func fixture(pending: Bool = false) throws -> Fixture {
+    try AgentProtocolResourceFixture.withOrdinarySetup { try buildFixture(pending: pending) }
+  }
+
+  private static func buildFixture(pending: Bool) throws -> Fixture {
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir =
       try AgentProtocolResourceFixture.physicalExistingDirectory(

@@ -11,6 +11,18 @@ import WorkspaceProtocol
 /// Task-local test helpers shared by the two test targets through identical thin delegates.
 /// EphemeralPostgres owns the opt-in resource registration and acknowledgment.
 enum AgentProtocolResourceFixture {
+  // Only blocking-native test executors call this with synchronous construction work.
+  // A fixture's body, waits on peer tasks, and teardown run after the closure returns.
+  private static let ordinarySetupLock = NSLock()
+
+  static func withOrdinarySetup<T>(_ setup: () throws -> T) rethrows -> T {
+    let environment = ProcessInfo.processInfo.environment
+    if environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1" || environment["B4APP_A3_NONCE"] != nil {
+      return try setup()
+    }
+    return try ordinarySetupLock.withLock(setup)
+  }
+
   static var temporaryDirectory: String {
     let env = ProcessInfo.processInfo.environment
     if env["B4APP_A3_NONCE"] != nil, let root = env["B4APP_A3_PRIVATE_ROOT"] {

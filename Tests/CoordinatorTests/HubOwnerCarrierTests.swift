@@ -1487,7 +1487,7 @@ private struct OwnerFixture: Sendable {
       linked: linked, heldSecret: heldSecret, sameAPI: sameAPI)
     var actualManager: AccountManager?
     do {
-      let endpoint = try AgentProtocolResourceFixture.endpoint()
+      let endpoint = try await AgentProtocolResourceFixture.setupEndpoint()
       let binDir = try ownerRequire(endpoint.binDir)
       let root =
         try AgentProtocolResourceFixture.physicalTemporaryDirectory()
@@ -1529,7 +1529,7 @@ private struct OwnerFixture: Sendable {
         url: base, deviceId: device, deviceName: "Fixture Mac", tokenRef: reference.rawValue,
         orgSlug: "fixture-org", username: "fixture-user", joinedAt: stamp)
       do {
-        let seed = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir)
+        let seed = try await AgentProtocolResourceFixture.setupDatabase(endpoint: endpoint, binDir: binDir)
         defer { try? seed.close() }
         if linked { try seed.saveHubLink(link) }
         let empty =
@@ -1543,7 +1543,7 @@ private struct OwnerFixture: Sendable {
       }  // Seed pool is CLOSED; no seed-object snapshot is reused by the actual restored scope.
       let events = EventLog()
       cleanup.resource { await events.finish() }
-      let registry = try AccountRegistry(
+      let registry = try await AgentProtocolResourceFixture.setupRegistry(
         endpoint: endpoint, binDir: binDir,
         databaseName: AccountManager.registryDatabaseName(for: endpoint))
       cleanup.resource { registry.close() }

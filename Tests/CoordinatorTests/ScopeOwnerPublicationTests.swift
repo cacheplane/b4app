@@ -989,7 +989,7 @@ private struct ScopeOwnerFixture: Sendable {
     beforeStart: @Sendable (AccountManager, AccountManager.Slot) async throws -> Void = { _, _ in },
     linked: Bool
   ) async throws -> Self {
-    let endpoint = try AgentProtocolResourceFixture.endpoint()
+    let endpoint = try await AgentProtocolResourceFixture.setupEndpoint()
     let binDir = try scopeOwnerRequire(endpoint.binDir)
     let root =
       try AgentProtocolResourceFixture.physicalTemporaryDirectory()
@@ -1010,7 +1010,7 @@ private struct ScopeOwnerFixture: Sendable {
         "B4APP_RUNTIME_DIR": paths.runtimeDir, "B4APP_DATA_DIR": paths.dataDir,
         "B4APP_NODE_PATH": "/nonexistent/node", ExecutableLocator.fallbackOverrideVariable: "",
       ]
-      let seed = try WorkspaceDatabase(endpoint: endpoint, binDir: binDir)
+      let seed = try await AgentProtocolResourceFixture.setupDatabase(endpoint: endpoint, binDir: binDir)
       cleanup.database(seed)
       try empty(seed)
       try seed.close()
@@ -1018,7 +1018,7 @@ private struct ScopeOwnerFixture: Sendable {
       let secrets = ScopeOwnerSecretStore(probe)
       let links = FakeHubLinkConnection()
       let power = FakePowerAssertions()
-      let actualRegistry = try AccountRegistry(
+      let actualRegistry = try await AgentProtocolResourceFixture.setupRegistry(
         endpoint: endpoint, binDir: binDir,
         databaseName: AccountManager.registryDatabaseName(for: endpoint))
       registry = actualRegistry
@@ -1080,9 +1080,10 @@ private struct ScopeOwnerFixture: Sendable {
       let emptyPush = try await scope.hub.pushNow()
       #expect(emptyPush == 0)
       await events.finish()
-      let candidateEndpoint = try AgentProtocolResourceFixture.endpoint()
+      let candidateEndpoint = try await AgentProtocolResourceFixture.setupEndpoint()
       let candidateBin = try scopeOwnerRequire(candidateEndpoint.binDir)
-      let candidateDatabase = try WorkspaceDatabase(endpoint: candidateEndpoint, binDir: candidateBin)
+      let candidateDatabase = try await AgentProtocolResourceFixture.setupDatabase(
+        endpoint: candidateEndpoint, binDir: candidateBin)
       cleanup.database(candidateDatabase)
       try empty(candidateDatabase)
       let candidate = await AccountScope.open(

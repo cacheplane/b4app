@@ -51,26 +51,32 @@ struct ProtocolActivationStoreTests {
       binding: binding, reportedMinimum: 2, reportedVersion: version, healthy: true)
   }
   private static func withFixture(_ body: @Sendable (Fixture) async throws -> Void) async throws {
-    let endpoint = try AgentProtocolResourceFixture.currentSchemaEndpoint()
+    let endpoint = try AgentProtocolResourceFixture.withOrdinarySetup {
+      try AgentProtocolResourceFixture.currentSchemaEndpoint()
+    }
     let root = try AgentProtocolResourceFixture.physicalTemporaryDirectory() + "activation-store-\(UUID())"
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     defer { try? FileManager.default.removeItem(atPath: root) }
-    let database = try WorkspaceDatabase(
-      endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
+    let database = try AgentProtocolResourceFixture.withOrdinarySetup {
+      try WorkspaceDatabase(
+        endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
+    }
     defer { try? database.close() }
-    let raw = try PostgresConnection(
-      lib: LibPQ.load(binDir: endpoint.binDir!),
-      connectionString:
-        "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
-    let link = WorkspaceDatabase.HubLink(
-      url: base, deviceId: "ACTIVATION_DEVICE_SENTINEL", deviceName: "fixture", tokenRef: "secret:fixture",
-      orgSlug: "not-principal-proof", username: "not-principal-proof", joinedAt: stamp)
-    try database.saveHubLink(link)
-    try database.setSetting(key: "activation-unrelated", value: .string("retained"))
-    let f = Fixture(
-      database: database, raw: raw, endpoint: endpoint, root: root, link: link,
-      binding: try binding(databaseName: endpoint.database))
+    let f = try AgentProtocolResourceFixture.withOrdinarySetup {
+      let raw = try PostgresConnection(
+        lib: LibPQ.load(binDir: endpoint.binDir!),
+        connectionString:
+          "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
+      let link = WorkspaceDatabase.HubLink(
+        url: base, deviceId: "ACTIVATION_DEVICE_SENTINEL", deviceName: "fixture", tokenRef: "secret:fixture",
+        orgSlug: "not-principal-proof", username: "not-principal-proof", joinedAt: stamp)
+      try database.saveHubLink(link)
+      try database.setSetting(key: "activation-unrelated", value: .string("retained"))
+      return Fixture(
+        database: database, raw: raw, endpoint: endpoint, root: root, link: link,
+        binding: try binding(databaseName: endpoint.database))
+    }
     var primary: (any Error)?
     do { try await body(f) } catch { primary = Self.unexpectedError(error) }
     do { try database.close() } catch { if primary == nil { primary = Self.unexpectedError(error) } }

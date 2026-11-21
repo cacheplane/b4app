@@ -305,37 +305,42 @@ struct OwnedProtocolProofWriteTests {
   }
 
   private static func withNativeFixture(_ root: String, _ body: (Fixture) throws -> Void) throws {
-    let endpoint = try AgentProtocolResourceFixture.currentSchemaEndpoint()
-    let database = try WorkspaceDatabase(
-      endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
+    let (endpoint, database) = try AgentProtocolResourceFixture.withOrdinarySetup {
+      let endpoint = try AgentProtocolResourceFixture.currentSchemaEndpoint()
+      let database = try WorkspaceDatabase(
+        endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
+      return (endpoint, database)
+    }
     defer { try? database.close() }
     let outcome = Result<Void, any Error> {
-      let inspector = try PostgresConnection(
-        lib: LibPQ.load(binDir: endpoint.binDir!),
-        connectionString:
-          "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
-      let link = WorkspaceDatabase.HubLink(
-        url: base, deviceId: "OWNED_PROOF_DEVICE", deviceName: "fixture",
-        tokenRef: "secret:OWNED_PROOF_REFERENCE", orgSlug: "not-principal-proof",
-        username: "not-principal-proof", joinedAt: stamp)
-      // Existing normal APIs are fixture setup only. The new proof-write API is never used here.
-      try database.saveHubLink(link)
-      try database.setSetting(key: sentinelKey, value: .string("OWNED_PROOF_RETAINED"))
-      _ = try database.insertConnection(
-        Connection(
-          id: "owned-proof-modern", kind: .agentProtocol, label: "Stored modern fixture",
-          target: "https://example.invalid/agent", nativeScope: "owned-proof-native",
-          peerProfile: .agentProtocol, agentId: "fixture-agent", authMode: ConnectionAuthMode.none))
-      let binding = try ProtocolMembershipBinding(
-        accountID: "OWNED_PROOF_ACCOUNT", canonicalHubBase: base, hubUserID: "OWNED_PROOF_USER",
-        hubOrgID: "OWNED_PROOF_ORG", deviceID: link.deviceId, databaseName: endpoint.database,
-        linkJoinedAt: link.joinedAt)
-      let membership = try ProtocolNativeMembership(
-        canonicalHubBase: link.url, deviceID: link.deviceId, linkJoinedAt: link.joinedAt)
-      let anchor = try database.captureProtocolVerification(
-        accountID: binding.accountID, expectedMembership: membership)
-      try body(
-        Fixture(database: database, inspector: inspector, link: link, binding: binding, anchor: anchor))
+      let fixture = try AgentProtocolResourceFixture.withOrdinarySetup {
+        let inspector = try PostgresConnection(
+          lib: LibPQ.load(binDir: endpoint.binDir!),
+          connectionString:
+            "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
+        let link = WorkspaceDatabase.HubLink(
+          url: base, deviceId: "OWNED_PROOF_DEVICE", deviceName: "fixture",
+          tokenRef: "secret:OWNED_PROOF_REFERENCE", orgSlug: "not-principal-proof",
+          username: "not-principal-proof", joinedAt: stamp)
+        // Existing normal APIs are fixture setup only. The new proof-write API is never used here.
+        try database.saveHubLink(link)
+        try database.setSetting(key: sentinelKey, value: .string("OWNED_PROOF_RETAINED"))
+        _ = try database.insertConnection(
+          Connection(
+            id: "owned-proof-modern", kind: .agentProtocol, label: "Stored modern fixture",
+            target: "https://example.invalid/agent", nativeScope: "owned-proof-native",
+            peerProfile: .agentProtocol, agentId: "fixture-agent", authMode: ConnectionAuthMode.none))
+        let binding = try ProtocolMembershipBinding(
+          accountID: "OWNED_PROOF_ACCOUNT", canonicalHubBase: base, hubUserID: "OWNED_PROOF_USER",
+          hubOrgID: "OWNED_PROOF_ORG", deviceID: link.deviceId, databaseName: endpoint.database,
+          linkJoinedAt: link.joinedAt)
+        let membership = try ProtocolNativeMembership(
+          canonicalHubBase: link.url, deviceID: link.deviceId, linkJoinedAt: link.joinedAt)
+        let anchor = try database.captureProtocolVerification(
+          accountID: binding.accountID, expectedMembership: membership)
+        return Fixture(database: database, inspector: inspector, link: link, binding: binding, anchor: anchor)
+      }
+      try body(fixture)
     }
     // Close the real pool even when setup, native inspection, or an intended assertion fails.
     let closed = Result { try database.close() }

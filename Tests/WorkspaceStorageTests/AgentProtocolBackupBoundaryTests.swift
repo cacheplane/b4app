@@ -66,6 +66,10 @@ struct AgentProtocolBackupBoundaryTests {
   }
 
   private static func fixture() throws -> Fixture {
+    try AgentProtocolResourceFixture.withOrdinarySetup { try buildFixture() }
+  }
+
+  private static func buildFixture() throws -> Fixture {
     var endpoint = try AgentProtocolResourceFixture.endpoint()
     endpoint.dataDir =
       try AgentProtocolResourceFixture.physicalExistingDirectory(

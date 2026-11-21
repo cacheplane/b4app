@@ -23,6 +23,10 @@ struct AgentProtocolEnvironmentHistoryIntegrationTests {
   private enum Fault: Error { case durability }
 
   private func fixture() throws -> Fixture {
+    try AgentProtocolResourceFixture.withOrdinarySetup { try buildFixture() }
+  }
+
+  private func buildFixture() throws -> Fixture {
     let endpoint = try AgentProtocolResourceFixture.endpoint()
     let raw = try PostgresConnection(
       lib: LibPQ.load(binDir: endpoint.binDir!),
