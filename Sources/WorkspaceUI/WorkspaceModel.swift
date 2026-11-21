@@ -1939,7 +1939,11 @@ public final class WorkspaceModel {
         }
       }
     case .adapterError:
-      lastError = event.payload["message"]?.stringValue
+      // The code picks the remedy (an expired sign-in offers Sign in); the runtime's words go to Details.
+      let message = event.payload["message"]?.stringValue ?? "The runtime reported an error."
+      let code = event.payload["errorCode"]?.stringValue.flatMap(ErrorCode.init(rawValue:)) ?? .internalError
+      lastFailure = WorkspaceError(code, message, details: ["nativeMessage": .string(message)])
+      lastError = message
     default:
       break
     }
