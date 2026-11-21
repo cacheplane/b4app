@@ -345,6 +345,54 @@ private func paramsFile() -> URL {
     await adapter.dispose()
   }
 
+  /// Codex 0.166 leaves a stopped turn's running command alive as a background terminal. Stop ends
+  /// the commands the stopped turn started, and none that an earlier turn left running on purpose.
+  @Test func stoppingATurnEndsTheCommandsItStarted() async throws {
+    let file = paramsFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let adapter = makeAdapter(["FAKE_CODEX_PARAMS": file.path])
+    let collector = EventCollector(adapter.events())
+    let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
+    let earlier = try await adapter.sendTurn(
+      ref, input: TurnInput(operationId: "op1", text: "leave a server"))
+    try await collector.waitFor { $0.kind == .turnFinished && $0.nativeIds["turnId"] == earlier.nativeTurnId }
+    let receipt = try await adapter.sendTurn(
+      ref, input: TurnInput(operationId: "op2", text: "background job"))
+    let turnId = try #require(receipt.nativeTurnId)
+    try await collector.waitFor { $0.kind == .toolStarted && $0.nativeIds["turnId"] == turnId }
+    let stop = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: turnId))
+    #expect(stop.confirmed)
+    let ended = try recordedParams("thread/backgroundTerminals/terminate", in: file)
+    #expect(ended.map { $0["processId"]?.stringValue } == ["p-\(turnId)"])
+    #expect(ended.first?["threadId"]?.stringValue == ref.nativeSessionId)
+    await adapter.dispose()
+  }
+
+  /// The handshake asks for Codex's experimental requests, which the background terminals are.
+  @Test func theHandshakeAsksForExperimentalRequests() async throws {
+    let file = paramsFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let adapter = makeAdapter(["FAKE_CODEX_PARAMS": file.path])
+    _ = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
+    let hello = try #require(try recordedParams("initialize", in: file).first)
+    #expect(hello["capabilities"]?["experimentalApi"]?.boolValue == true)
+    await adapter.dispose()
+  }
+
+  /// A stop with nothing running asks Codex for nothing more than the interrupt.
+  @Test func stoppingATurnWithNoCommandListsNothing() async throws {
+    let file = paramsFile()
+    defer { try? FileManager.default.removeItem(at: file) }
+    let adapter = makeAdapter(["FAKE_CODEX_PARAMS": file.path])
+    let collector = EventCollector(adapter.events())
+    let ref = try await adapter.createSession(NewSessionInput(workingDirectory: "/tmp/work"))
+    let receipt = try await adapter.sendTurn(ref, input: TurnInput(operationId: "op1", text: "hang around"))
+    try await collector.waitFor { $0.kind == .turnAcknowledged }
+    _ = try await adapter.interrupt(ref, turn: ActiveTurnRef(nativeTurnId: receipt.nativeTurnId!))
+    #expect(try recordedParams("thread/backgroundTerminals/list", in: file).isEmpty)
+    await adapter.dispose()
+  }
+
   @Test func processExitMidTurnIsReportedAndTheNextSendRestarts() async throws {
     let adapter = makeAdapter()
     let collector = EventCollector(adapter.events())

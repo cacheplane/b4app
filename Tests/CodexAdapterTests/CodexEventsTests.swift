@@ -229,7 +229,7 @@ private let turnStream = """
     #expect(CodexProtocol.modelListParams() == ["includeHidden": false])
     let initialize = CodexProtocol.initializeParams(version: "0.0.0")
     #expect(initialize["clientInfo"]?["name"]?.stringValue == "agent_workspace")
-    #expect(initialize["capabilities"]?["experimentalApi"]?.boolValue == false)
+    #expect(initialize["capabilities"]?["experimentalApi"]?.boolValue == true)
     #expect(CodexProtocol.turnsListParams(threadId: "t")["itemsView"]?.stringValue == "full")
   }
 }
