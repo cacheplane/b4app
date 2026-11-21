@@ -11,12 +11,14 @@ public enum CodexProtocol {
 
   // MARK: - Client requests
 
+  /// `experimentalApi` is asked for because ending a stopped turn's commands needs
+  /// `thread/backgroundTerminals/list` and `/terminate`, which Codex 0.166 marks experimental.
   public static func initializeParams(version: String) -> JSONValue {
     [
       "clientInfo": [
         "name": .string(clientName), "title": .string(clientTitle), "version": .string(version),
       ],
-      "capabilities": ["experimentalApi": false, "optOutNotificationMethods": []],
+      "capabilities": ["experimentalApi": true, "optOutNotificationMethods": []],
     ]
   }
 

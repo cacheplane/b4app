@@ -5,6 +5,8 @@ from the turn text: "approve" asks for a command approval, "permissions" asks fo
 grant, "question" asks a user question, "hang" waits for turn/interrupt, "partial" streams part of a
 reply and then waits for turn/interrupt without completing it (as the real server does when a reply is
 stopped; with "emptied" too, the interrupt completes the item with no text), "crash" exits mid-turn.
+"background" starts a command and waits for turn/interrupt, which (as in 0.166) leaves the command
+running as a background terminal; "leave" starts one and completes the turn with it still running.
 Never run in place of the real server for anything the docs call live-tested."""
 import json
 import os
@@ -131,6 +133,19 @@ ID_PREFIX = os.environ.get("FAKE_CODEX_ID_PREFIX", "")
 loaded = {}
 deleted = set()
 hanging = None
+experimental = False
+# Background terminals by thread: {"itemId", "processId", "command"}, as `thread/backgroundTerminals/list`.
+terminals = {}
+
+
+def start_command(thread_id, turn_id, command):
+    item_id = "exec-%s" % turn_id
+    notify("item/started", {"threadId": thread_id, "turnId": turn_id, "startedAtMs": 1,
+                            "item": {"id": item_id, "type": "commandExecution", "command": command, "cwd": "/tmp",
+                                     "status": "inProgress", "commandActions": []}})
+    terminals.setdefault(thread_id, []).append(
+        {"itemId": item_id, "processId": "p-%s" % turn_id, "command": command, "cwd": "/tmp",
+         "osPid": None, "cpuPercent": None, "rssKb": None})
 
 while True:
     msg = read()
@@ -138,6 +153,7 @@ while True:
     req_id = msg.get("id")
     params = msg.get("params") or {}
     if method == "initialize":
+        experimental = bool((params.get("capabilities") or {}).get("experimentalApi"))
         send({"id": req_id, "result": {"userAgent": "fake-codex/0.166.0", "codexHome": "/tmp/fake-codex",
                                        "platformFamily": "unix", "platformOs": "macos"}})
         notify("account/updated", {"authMode": "chatgpt", "planType": "plus"})
@@ -268,6 +284,12 @@ while True:
         if "hang" in text:
             hanging = (thread_id, turn_id)
             continue
+        if "background" in text:
+            start_command(thread_id, turn_id, "sleep 60")
+            hanging = (thread_id, turn_id)
+            continue
+        if "leave" in text:
+            start_command(thread_id, turn_id, "npm run dev")
         reply = "Hello from fake Codex."
         if "approve" in text:
             send({"id": 7, "method": "item/commandExecution/requestApproval",
@@ -344,6 +366,12 @@ while True:
                                   "item": {"id": "item_%s_compact" % turn_id, "type": "contextCompaction"}})
         finish_turn(thread_id, turn_id, "completed")
     elif method == "turn/interrupt":
+        if hanging and hanging[1] == params.get("turnId") and any(
+                t["itemId"] == "exec-%s" % hanging[1] for t in terminals.get(hanging[0], [])):
+            # A stopped command turn reports itself completed before the answer, the order that
+            # leaves an adapter nothing to end if it reads the turn's commands only afterwards.
+            finish_turn(hanging[0], hanging[1], "interrupted")
+            hanging = None
         send({"id": req_id, "result": {}})
         if hanging and hanging[1] == params.get("turnId"):
             if len(hanging) > 2 and hanging[2]:
@@ -351,5 +379,14 @@ while True:
                                           "item": {"id": hanging[2], "type": "agentMessage", "text": ""}})
             finish_turn(hanging[0], hanging[1], "interrupted")
             hanging = None
+    elif method in ("thread/backgroundTerminals/list", "thread/backgroundTerminals/terminate") and not experimental:
+        send({"id": req_id, "error": {"code": -32600, "message": "%s requires experimentalApi capability" % method}})
+    elif method == "thread/backgroundTerminals/list":
+        send({"id": req_id, "result": {"data": terminals.get(params["threadId"], []), "nextCursor": None}})
+    elif method == "thread/backgroundTerminals/terminate":
+        running = terminals.get(params["threadId"], [])
+        kept = [t for t in running if t["processId"] != params["processId"]]
+        terminals[params["threadId"]] = kept
+        send({"id": req_id, "result": {"terminated": len(kept) < len(running)}})
     elif req_id is not None:
         send({"id": req_id, "error": {"code": -32601, "message": "fake-codex does not implement %s" % method}})
