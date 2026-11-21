@@ -1487,7 +1487,7 @@ private struct OwnerFixture: Sendable {
       linked: linked, heldSecret: heldSecret, sameAPI: sameAPI)
     var actualManager: AccountManager?
     do {
-      let endpoint = try await AgentProtocolResourceFixture.setupEndpoint()
+      let endpoint = try await AgentProtocolResourceFixture.setupEndpoint(currentSchema: true)
       let binDir = try ownerRequire(endpoint.binDir)
       let root =
         try AgentProtocolResourceFixture.physicalTemporaryDirectory()

@@ -166,7 +166,27 @@ import WorkspaceProtocol
     let density: String?
     let hasRow: Bool
   }
-  private static let publishedCases: [PublishedCase] =
+  private static var publishedCases: [PublishedCase] {
+    let environment = ProcessInfo.processInfo.environment
+    if environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1" || environment["B4APP_A3_NONCE"] != nil {
+      return allPublishedCases
+    }
+    // Keep each published storage layout, legacy conversions, opaque values and absent rows in
+    // everyday round trips. Qualification also crosses each supported quiet and density spelling.
+    return [
+      .init(prefix: 12, quiet: nil, density: nil, hasRow: false),
+      .init(prefix: 13, quiet: "tiny", density: nil, hasRow: true),
+      .init(prefix: 13, quiet: nil, density: nil, hasRow: false),
+      .init(prefix: 14, quiet: "small", density: nil, hasRow: true),
+      .init(prefix: 14, quiet: "future-quiet", density: nil, hasRow: true),
+      .init(prefix: 15, quiet: nil, density: nil, hasRow: true),
+      .init(prefix: 15, quiet: "future-quiet", density: "future-density", hasRow: true),
+      .init(prefix: 15, quiet: "hidden", density: "", hasRow: true),
+      .init(prefix: 16, quiet: "shown", density: "dense", hasRow: true),
+    ]
+  }
+
+  private static let allPublishedCases: [PublishedCase] =
     [
       .init(prefix: 12, quiet: nil, density: nil, hasRow: false),
       .init(prefix: 13, quiet: "future-quiet", density: nil, hasRow: true),

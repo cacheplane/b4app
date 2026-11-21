@@ -70,8 +70,10 @@ enum AgentProtocolResourceFixture {
     }
   }
 
-  static func setupEndpoint() async throws -> PostgresEndpoint {
-    try await prepare { try endpoint() }
+  static func setupEndpoint(currentSchema: Bool = false) async throws -> PostgresEndpoint {
+    try await prepare {
+      try EphemeralPostgres.endpoint(migrated: currentSchema && TestAccount.ordinaryFixture)
+    }
   }
 
   static func setupDatabase(endpoint: PostgresEndpoint, binDir: String) async throws -> WorkspaceDatabase {

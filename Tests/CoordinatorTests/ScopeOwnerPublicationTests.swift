@@ -989,7 +989,7 @@ private struct ScopeOwnerFixture: Sendable {
     beforeStart: @Sendable (AccountManager, AccountManager.Slot) async throws -> Void = { _, _ in },
     linked: Bool
   ) async throws -> Self {
-    let endpoint = try await AgentProtocolResourceFixture.setupEndpoint()
+    let endpoint = try await AgentProtocolResourceFixture.setupEndpoint(currentSchema: true)
     let binDir = try scopeOwnerRequire(endpoint.binDir)
     let root =
       try AgentProtocolResourceFixture.physicalTemporaryDirectory()
@@ -1080,7 +1080,7 @@ private struct ScopeOwnerFixture: Sendable {
       let emptyPush = try await scope.hub.pushNow()
       #expect(emptyPush == 0)
       await events.finish()
-      let candidateEndpoint = try await AgentProtocolResourceFixture.setupEndpoint()
+      let candidateEndpoint = try await AgentProtocolResourceFixture.setupEndpoint(currentSchema: true)
       let candidateBin = try scopeOwnerRequire(candidateEndpoint.binDir)
       let candidateDatabase = try await AgentProtocolResourceFixture.setupDatabase(
         endpoint: candidateEndpoint, binDir: candidateBin)

@@ -58,11 +58,13 @@ enum AgentProtocolResourceFixture {
   // The shared ephemeral test utility owns the same opt-in guard/registration/ACK for all callers.
   static func endpoint() throws -> PostgresEndpoint { try EphemeralPostgres.endpoint() }
 
-  static func currentSchemaEndpoint() throws -> PostgresEndpoint {
+  static var usesCurrentSchemaTemplate: Bool {
     let environment = ProcessInfo.processInfo.environment
-    if environment["B4APP_PROTOCOL_FULL_MATRIX"] == "1" || environment["B4APP_A3_NONCE"] != nil {
-      return try endpoint()
-    }
+    return environment["B4APP_PROTOCOL_FULL_MATRIX"] != "1" && environment["B4APP_A3_NONCE"] == nil
+  }
+
+  static func currentSchemaEndpoint() throws -> PostgresEndpoint {
+    guard usesCurrentSchemaTemplate else { return try endpoint() }
     return try EphemeralPostgres.endpoint(migrated: true)
   }
 

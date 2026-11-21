@@ -55,6 +55,23 @@ import WorkspaceProtocol
     }
   }
 
+  private static func restoreDatabase() throws -> WorkspaceDatabase {
+    let endpoint = try AgentProtocolResourceFixture.currentSchemaEndpoint()
+    return try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
+  }
+
+  private static func distinguishClonedSourceLedger(_ source: WorkspaceDatabase) throws {
+    guard AgentProtocolResourceFixture.usesCurrentSchemaTemplate else { return }
+    // A restore that copies the source ledger must be detectable even when both stores were cloned.
+    try source.write { c in
+      let result = try c.execute(
+        """
+        UPDATE public."schemaMigrations" SET "appliedAt" = $1 WHERE "name" = '0001_init' RETURNING "name"
+        """, ["2000-01-01T00:00:00.000Z"])
+      try #require(result.rows.count == 1)
+    }
+  }
+
   private static func nextSequence(_ db: WorkspaceDatabase) throws -> String {
     try db.read { c in
       try #require(
@@ -78,11 +95,12 @@ import WorkspaceProtocol
       atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     defer { try? FileManager.default.removeItem(atPath: root) }
     let path = root + "/workspace.jsonl"
-    let source = try AgentProtocolResourceFixture.database()
+    let source = try Self.restoreDatabase()
     defer { try? source.close() }
-    let destination = try AgentProtocolResourceFixture.database()
+    let destination = try Self.restoreDatabase()
     defer { try? destination.close() }
     let outcome = Result<Int, any Error> { () throws -> Int in
+      try Self.distinguishClonedSourceLedger(source)
       try #require(source.endpoint.database != destination.endpoint.database)
       try #require(try source.appliedMigrations() == Self.migrations)
       try #require(try destination.appliedMigrations() == Self.migrations)
@@ -125,6 +143,7 @@ import WorkspaceProtocol
       try #require(before["viewSettings"]?.count == 1 && before["settings"]?.count == 1)
       let sourceLedger = try Self.ledger(source)
       let destinationLedger = try Self.ledger(destination)
+      try #require(sourceLedger != destinationLedger)
       let next = try Self.nextSequence(source)
       let exported = try source.export(to: path)
       #expect(exported.rows == before.values.reduce(0) { $0 + $1.count })
@@ -246,17 +265,19 @@ extension ProtocolActivationRestoreTests {
     try FileManager.default.createDirectory(
       atPath: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
     defer { try? FileManager.default.removeItem(atPath: root) }
-    let source = try AgentProtocolResourceFixture.database()
+    let source = try restoreDatabase()
     defer { try? source.close() }
-    let destination = try AgentProtocolResourceFixture.database()
+    let destination = try restoreDatabase()
     defer { try? destination.close() }
     let outcome = Result<Void, any Error> { () throws -> Void in
+      try distinguishClonedSourceLedger(source)
       try #require(source.endpoint.database != destination.endpoint.database)
       try #require(try source.appliedMigrations() == migrations)
       try #require(try destination.appliedMigrations() == migrations)
       try #require(try publicTables(source) == Set(tables + ["schemaMigrations", "hubLink"]))
       try #require(try publicTables(destination) == Set(tables + ["schemaMigrations", "hubLink"]))
       let sourceLedger = try ledger(source), destinationLedger = try ledger(destination)
+      try #require(sourceLedger != destinationLedger)
       try body(source, destination, root)
       let sourceLedgerUnchanged = try ledger(source) == sourceLedger
       let destinationLedgerUnchanged = try ledger(destination) == destinationLedger

@@ -1325,7 +1325,10 @@ private final class P2BNativeFixture: Sendable {
     root: String, linked: Bool, ascii: Bool, _ body: (P2BNativeFixture) throws -> Void
   ) throws -> Bool {
     let fixture = try AgentProtocolResourceFixture.withOrdinarySetup {
-      let endpoint = try AgentProtocolResourceFixture.endpoint()
+      let endpoint =
+        ascii
+        ? try AgentProtocolResourceFixture.endpoint()
+        : try AgentProtocolResourceFixture.currentSchemaEndpoint()
       guard let binDir = endpoint.binDir else { throw P2BFixtureFailure.incomplete }
       if ascii {
         let admin = try PostgresConnection(
