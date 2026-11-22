@@ -178,12 +178,22 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     XCTAssertEqual(reason.value as? String, "This historical conversation is read-only.")
     // If local answer entry remains editable, make it nonempty before testing Submit answers.
     // Otherwise an empty-answer predicate alone could make the historical question check vacuous.
-    let answer = app.textFields["Answer"]
+    let requests = app.scrollViews["runtime-requests"]
+    let answer = requests.textFields["Answer"]
     try requireElement(answer, in: app)
     if answer.isEnabled {
-      let requests = app.scrollViews["runtime-requests"]
-      requests.scroll(byDeltaX: 0, deltaY: -300)
-      answer.click()
+      // AX exposes the question even when its card is below the scroll view's visible area.
+      let deadline = ContinuousClock.now + .seconds(10)
+      while !requests.frame.contains(answer.frame) {
+        guard ContinuousClock.now < deadline else {
+          XCTFail("Answer field \(answer.frame) is outside the request viewport \(requests.frame)")
+          return
+        }
+        requests.scroll(byDeltaX: 0, deltaY: answer.frame.midY > requests.frame.midY ? -300 : 300)
+        try await Task.sleep(for: .milliseconds(100))
+      }
+      XCTAssertTrue(answer.isHittable)
+      answer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
       answer.typeText("retained answer")
       XCTAssertEqual(answer.value as? String, "retained answer")
     }

@@ -4,6 +4,12 @@ import WorkspaceProtocol
 @testable import WorkspaceStorage
 
 struct OwnedProtocolProofWriteTests {
+  @Test func losingTheCommitAcknowledgementLeavesTheWriteOutcomeUnknown() {
+    let decision = ProtocolProofSettlementClassifier.classify(
+      beginSent: true, rollbackAcknowledged: false, commitSent: true, commitAcknowledged: false)
+    #expect(decision == .unknown)
+  }
+
   @Test func bindVerifyAndFenceRequireTheOriginalMembershipAndCredential() throws {
     let db = try AgentProtocolResourceFixture.database()
     defer { try? db.close() }

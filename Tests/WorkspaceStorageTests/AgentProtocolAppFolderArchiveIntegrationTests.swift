@@ -66,7 +66,7 @@ struct AgentProtocolAppFolderArchiveIntegrationTests {
     let upgraded = try WorkspaceDatabase(
       endpoint: endpoint, binDir: endpoint.binDir!, backupDirectory: root + "/backups")
     defer { try? upgraded.close() }
-    for db in [upgraded, destination] {
+    func checkTurnFields(in db: WorkspaceDatabase) throws {
       #expect(try db.appliedMigrations().last == "0017_agent_protocol")
       try db.read { c in
         let row = try #require(
@@ -75,5 +75,17 @@ struct AgentProtocolAppFolderArchiveIntegrationTests {
         #expect(row.text("origin") == (prefix == 16 ? "runtime-fixture" : nil))
       }
     }
+
+    try checkTurnFields(in: upgraded)
+    try checkTurnFields(in: destination)
+    let directory = URL(fileURLWithPath: root + "/backups")
+    let archives = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+      .filter { $0.pathExtension == "jsonl" }
+    try #require(archives.count == 1)
+    try destination.write { c in
+      _ = try c.execute(#"UPDATE turns SET origin='before-restore' WHERE id='u'"#)
+    }
+    _ = try destination.restore(from: archives[0].path, replace: true)
+    try checkTurnFields(in: destination)
   }
 }

@@ -627,7 +627,10 @@ async fn published_view_settings_remain_public_at_both_protocol_floors(pool: PgP
             .collect();
         assert_eq!(other_rows.len(), 1);
         assert_eq!(other_rows[0].row_id, "view");
-        assert_eq!(other_rows[0].value.as_ref().unwrap()["arrangement"], "bob-layout");
+        assert_eq!(
+            other_rows[0].value.as_ref().unwrap()["arrangement"],
+            "bob-layout"
+        );
         let same_user = snapshot::take_for_protocol(&app, &mac, client)
             .await
             .unwrap();

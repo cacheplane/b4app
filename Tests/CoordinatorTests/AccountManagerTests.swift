@@ -382,11 +382,11 @@ private let acme = AuthSession(
     let attachment = try await scope.hub.attachReservedScopeOwner(prepared.carrier)
     _ = try await rig.accounts.publishDormantReservedScope(
       expectedScope: scope, prepared: prepared, attachment: attachment)
+    #expect(throws: WorkspaceError.self) { try ordinary.requireOrdinaryMemory() }
     let comparison = try prepared.carrier.captureInstalledAccountSessionComparison()
     try comparison.requireOriginalNativeSession()
 
     _ = try await rig.accounts.signIn(session: bob, hubURL: hubURL)
-    #expect(throws: WorkspaceError.self) { try ordinary.requireOrdinaryMemory() }
     #expect(throws: WorkspaceError.self) { try comparison.requireOriginalNativeSession() }
   }
 

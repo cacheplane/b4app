@@ -462,8 +462,7 @@ private func failure(
     #expect(try h.coordinator.database.thread(id: threadId) == nil)
   }
 
-  @Test func relayedStartRefusesHistoricalRemoteAndCompleteDormantProfiles() async throws
-  {
+  @Test func relayedStartRefusesHistoricalRemoteAndCompleteDormantProfiles() async throws {
     let witness = HistoricalFactoryWitness()
     let h = try await Harness.start(adapterFactory: witness.makeFactory())
     defer { Task { await h.stop() } }

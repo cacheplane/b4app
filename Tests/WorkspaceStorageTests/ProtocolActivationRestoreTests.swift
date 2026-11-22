@@ -48,7 +48,6 @@ struct ProtocolActivationRestoreTests {
     }
   }
 
-
   private static func nextSequence(_ db: WorkspaceDatabase) throws -> String {
     try db.read { c in
       try #require(

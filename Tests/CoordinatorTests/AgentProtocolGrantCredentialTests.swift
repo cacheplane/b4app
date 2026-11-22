@@ -31,7 +31,8 @@ struct AgentProtocolGrantCredentialTests {
           """
           SELECT current_setting('log_parameter_max_length') AS normal,
             current_setting('log_parameter_max_length_on_error') AS errors
-          """).rows.first
+          """
+        ).rows.first
         #expect(privacy?.text("normal") == "0" && privacy?.text("errors") == "0")
         if rollback { throw WorkspaceError(.internalError, material) }
       }

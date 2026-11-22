@@ -1,9 +1,20 @@
+import Darwin
 import Foundation
 import Testing
 import WorkspacePlatform
 
 @testable import Coordinator
 @testable import WorkspaceStorage
+
+/// Archive publication requires a literal path without any symlink components, including /var.
+func privateArchiveFixtureDirectory() throws -> URL {
+  let resolved = try #require(NSTemporaryDirectory().withCString { realpath($0, nil) })
+  defer { free(resolved) }
+  let base = try #require(String(validatingCString: resolved))
+  let root = URL(fileURLWithPath: base, isDirectory: true).appendingPathComponent(UUID().uuidString)
+  try PrivateFiles.ensurePrivateDirectory(root.path)
+  return root
+}
 
 struct AgentProtocolMigrationBackupPathTests {
   @Test func accountOpenBacksUpPublishedSchemaInItsFlavorDirectory() throws {
@@ -21,9 +32,7 @@ struct AgentProtocolMigrationBackupPathTests {
         #"INSERT INTO "schemaMigrations" ("name","appliedAt") VALUES ($1,'published')"#, [file.name])
     }
     try raw.execute(#"INSERT INTO settings(key,value) VALUES ('retained','true')"#)
-    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(
-      UUID().uuidString)
-    try PrivateFiles.ensurePrivateDirectory(root.path)
+    let root = try privateArchiveFixtureDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
     let paths = PlatformPaths(runtimeDir: root.appendingPathComponent("rt").path, dataDir: root.path)
     let row = AccountRow(

@@ -630,9 +630,10 @@ private struct HubHarness {
     defer { Task { await h.close() } }
     _ = try await h.join()
     let db = h.coordinator.database
-    let archiveParent = URL(fileURLWithPath: h.workDir).resolvingSymlinksInPath().path
+    let archiveParent = try privateArchiveFixtureDirectory()
+    defer { try? FileManager.default.removeItem(at: archiveParent) }
     let backup = try await h.client.request(
-      DatabaseBackup.self, DatabaseBackup.Params(path: archiveParent + "/archive.jsonl"),
+      DatabaseBackup.self, DatabaseBackup.Params(path: archiveParent.path + "/archive.jsonl"),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
     try await h.addThread()
     // The thread's push (debounced) must have landed before the snapshot, or it marks rows synced and
@@ -668,9 +669,10 @@ private struct HubHarness {
     let db = h.coordinator.database
     // An archive of the empty store: restoring an archive whose change log holds scalar jsonb values
     // fails independently of the hub (see the Task 7 fix report).
-    let archiveParent = URL(fileURLWithPath: h.workDir).resolvingSymlinksInPath().path
+    let archiveParent = try privateArchiveFixtureDirectory()
+    defer { try? FileManager.default.removeItem(at: archiveParent) }
     let backup = try await h.client.request(
-      DatabaseBackup.self, DatabaseBackup.Params(path: archiveParent + "/archive.jsonl"),
+      DatabaseBackup.self, DatabaseBackup.Params(path: archiveParent.path + "/archive.jsonl"),
       options: RequestOptions(operationId: UUID().uuidString, timeout: .seconds(30)))
     try await h.addThread()
     let restored = try await h.client.request(
