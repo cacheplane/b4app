@@ -34,6 +34,8 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
   private let eventStream: AsyncStream<AdapterEvent>
   private let eventContinuation: AsyncStream<AdapterEvent>.Continuation
   private var loadedThreads: Set<String> = []
+  /// The command items each running turn started, by native turn id; dropped when the turn completes.
+  private var commandItems: [String: Set<String>] = [:]
   private var loadedGeneration = 0
   private var pendingRequests: [String: PendingRequest] = [:]
   private var account: CodexAccount?
@@ -125,6 +127,7 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
       if case .notification("account/rateLimits/updated", _) = message {
         Task { await self.followRateLimits(generation: generation) }
       }
+      noteCommands(message)
       if case .notification("serverRequest/resolved", let params) = message {
         let requestId = params["requestId"]
         let key = requestId?.stringValue ?? requestId?.numberValue.map { String(Int($0)) } ?? ""
@@ -406,6 +409,9 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
 
   public func interrupt(_ ref: NativeSessionRef, turn: ActiveTurnRef) async throws -> StopReceipt {
     let server = try await ensureStarted()
+    // Taken before the interrupt: Codex reports the turn completed right after answering it, and that
+    // report drops the turn's commands here.
+    let started = commandItems[turn.nativeTurnId] ?? []
     do {
       _ = try await server.request(
         "turn/interrupt",
@@ -415,7 +421,43 @@ public actor CodexAdapter: AgentAdapter, LoginCapable, UsageReporting {
         .cancellationUnconfirmed, "Codex did not confirm the interrupt: \(WorkspaceError.from(error).message)"
       )
     }
+    commandItems[turn.nativeTurnId] = nil
+    await endCommands(started, threadId: ref.nativeSessionId, server: server)
     return StopReceipt(confirmed: true, outcome: nil)
+  }
+
+  private func noteCommands(_ message: RpcMessage) {
+    guard case .notification(let method, let params) = message else { return }
+    switch method {
+    case "item/started":
+      guard params["item"]?["type"]?.stringValue == "commandExecution",
+        let turnId = params["turnId"]?.stringValue, let itemId = params["item"]?["id"]?.stringValue
+      else { return }
+      commandItems[turnId, default: []].insert(itemId)
+    case "turn/completed":
+      if let turnId = params["turn"]?["id"]?.stringValue { commandItems[turnId] = nil }
+    default:
+      break
+    }
+  }
+
+  /// Codex 0.166 ends an interrupted turn but leaves its running commands alive as background
+  /// terminals. End the ones this turn started; any an earlier turn left running are not touched. A
+  /// Codex that refuses the requests (not offered, or not experimental) leaves the stop as it was.
+  private func endCommands(_ started: Set<String>, threadId: String, server: CodexAppServer) async {
+    guard !started.isEmpty else { return }
+    guard
+      let listed = try? await server.request(
+        "thread/backgroundTerminals/list", ["threadId": .string(threadId)])
+    else { return }
+    for terminal in listed["data"]?.arrayValue ?? [] {
+      guard let itemId = terminal["itemId"]?.stringValue, started.contains(itemId),
+        let processId = terminal["processId"]?.stringValue
+      else { continue }
+      _ = try? await server.request(
+        "thread/backgroundTerminals/terminate",
+        ["threadId": .string(threadId), "processId": .string(processId)])
+    }
   }
 
   public func respond(_ ref: RuntimeRequestRef, response: RuntimeResponse) async throws {
