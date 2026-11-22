@@ -39,7 +39,7 @@ private func connect(_ coordinator: RunningCoordinator) async throws -> Workspac
   try await UnixSocketTransport.client(path: coordinator.paths.socketPath)
 }
 
-@Suite(NativeDBResources(), .serialized) struct CoordinatorSocketTests {
+@Suite(.serialized) struct CoordinatorSocketTests {
   @Test func repeatedConnectionsFinishBeforeTheirEventLoopsShutDown() async throws {
     let coordinator = try await startIsolated()
     do {
@@ -276,7 +276,7 @@ private final class RetireCount: Sendable {
 /// The pre-flavour adoption runs inside `Coordinator.start`, under the singleton lock and before the
 /// data directory exists (sign-in plan, Task 3 fix round 1). Plans here use fake closures and a
 /// temporary home.
-@Suite(NativeDBResources(), .serialized) struct CoordinatorAdoptionOrderTests {
+@Suite(.serialized) struct CoordinatorAdoptionOrderTests {
   private func plan(
     _ probe: AdoptionProbe, paths: PlatformPaths, fails: Bool = false
   ) -> LegacyAdoption.Plan {

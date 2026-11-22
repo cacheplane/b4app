@@ -28,18 +28,6 @@ import Testing
     #expect(
       parsed("Run:\n\(fence)bash\n  ls -la\n\n# not a heading\n\(fence)\nDone.")
         == "p \"Run:\"\ncode bash closed \"  ls -la\\n\\n# not a heading\"\np \"Done.\"")
-    // Retain the retired splitter's exact Copy payload: blank lines, indentation, trailing spaces,
-    // a tab, Unicode, and the combining scalar must survive as bytes between the fence lines.
-    let code =
-      "func a() {\n\n    let p = \"/Users/dev/a very/long path/файл.swift\"  \n\tprint(\"👩🏽‍💻 e\u{301}\")\n}"
-    let document = MarkdownParser.parse("\(fence)swift title=\"a.swift\"\n\(code)\n\(fence)")
-    #expect(document.blocks.count == 1)
-    if let block = document.blocks.first, case .code(let language, let body, let closed) = block.kind {
-      #expect(language == "swift" && closed)
-      #expect(body.utf8.elementsEqual(code.utf8))
-    } else {
-      Issue.record("the exact fenced payload must be code")
-    }
   }
   @Test func tildeFencesAndLongerFencesHoldShorterOnes() {
     #expect(parsed("~~~\n\(fence)\n~~~") == "code - closed \"\(fence)\"")

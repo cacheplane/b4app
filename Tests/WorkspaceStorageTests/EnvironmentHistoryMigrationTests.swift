@@ -63,7 +63,7 @@ private func storeHistoryEndpoint() throws -> PostgresEndpoint {
 }
 
 struct EnvironmentHistoryMigrationTests {
-  @Test(NativeDBResources()) func environmentsRenameRunnerPreservesOpaqueJSONHistory() throws {
+  @Test func environmentsRenameRunnerPreservesOpaqueJSONHistory() throws {
     let endpoint = try storeHistoryEndpoint()
     let binDir = try #require(endpoint.binDir)
     let lib = try LibPQ.load(binDir: binDir)

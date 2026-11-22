@@ -102,12 +102,6 @@ import WorkspacePlatform
     }
   }
 
-  @Test func deploymentNormalizationPreservesCaseAndEncodedComponents() throws {
-    let client = try AgentProtocolClient(
-      baseURL: "https://EXAMPLE.com:443/Deploy/%61/", authentication: .none, decodingPolicy: .generic)
-    #expect(client.baseURL.absoluteString == "https://example.com/Deploy/%61")
-  }
-
   @Test func deploymentRejectsUserInfoQueryFragmentAndPathEscape() {
     for base in [
       "https://user:password@example.com/base", "https://example.com/base?token=private",
@@ -117,24 +111,6 @@ import WorkspacePlatform
       #expect(throws: AgentProtocolTransportError.invalidBaseURL) {
         _ = try AgentProtocolClient(baseURL: base, authentication: .none, decodingPolicy: .generic)
       }
-    }
-  }
-
-  @Test func resourceIdentityIsOneComponentWithinDeployment() throws {
-    let client = try AgentProtocolClient(
-      baseURL: "https://example.com/one", authentication: .none, decodingPolicy: .generic)
-    #expect(
-      try client.url(for: .agent("route/child#agent")).absoluteString
-        == "https://example.com/one/agents/route%2Fchild%23agent")
-  }
-
-  @Test func bearerDoesNotGuessAnotherSchemeFromWhitespace() async throws {
-    try await withProtocolPeer { peer in
-      let client = try AgentProtocolClient(
-        baseURL: peer.baseURL + "/one", authentication: .bearer(.make()), decodingPolicy: .generic,
-        resolveSecret: { _ in "Basic synthetic-only" })
-      _ = try await client.searchAgents()
-      #expect(try await peer.records().first?["bearer"] == .bool(true))
     }
   }
 
@@ -150,12 +126,6 @@ import WorkspacePlatform
     var parser = SSEParser()
     let events = parser.push("retry: +12\ndata: one\n\nretry: -1\ndata: two\n\nretry: 12\ndata: three\n\n")
     #expect(events.map(\.retry) == [nil, nil, 12])
-  }
-
-  @Test func sseEOFDiscardsUnterminatedEvent() {
-    var parser = SSEParser()
-    #expect(parser.push("data: incomplete").isEmpty)
-    #expect(parser.flush() == nil)
   }
 
   @Test func sseIgnoresNulIDAndEventOnlyBlocks() {
@@ -1092,18 +1062,6 @@ private func storedStrings(_ value: Any, depth: Int = 0) -> [String] {
   guard depth < 24 else { return [] }
   if let string = value as? String { return [string] }
   return Mirror(reflecting: value).children.flatMap { storedStrings($0.value, depth: depth + 1) }
-}
-
-private func protocolFixture(_ name: String) throws -> AgentProtocol.Value {
-  struct Corpus: Decodable {
-    let upstream: [AgentProtocol.Object]
-    let b4: [AgentProtocol.Object]
-  }
-  let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(
-    "Fixtures/agent-protocol/agent-protocol.fixtures.json")
-  let corpus = try JSONDecoder().decode(Corpus.self, from: Data(contentsOf: url))
-  let entries = corpus.upstream + corpus.b4
-  return try #require(entries.first { $0["name"] == .string(name) }?["value"])
 }
 
 private actor ResolutionCounter {

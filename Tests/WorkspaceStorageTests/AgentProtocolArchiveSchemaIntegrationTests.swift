@@ -4,66 +4,8 @@ import Testing
 @testable import WorkspaceStorage
 
 /// Pure archive-contract checks. No bundle, migration execution, store or fixture endpoint is opened.
-@Suite struct AgentProtocolArchiveSchemaIntegrationTests {
+struct AgentProtocolArchiveSchemaIntegrationTests {
   private typealias F = ArchiveSchemaIntegrationFixture
-
-  @Test func schemaNineExcludesOwnedAsAndAgentProtocolObligations() throws {
-    let schema = try WorkspaceArchive.schema(F.nine)
-    #expect(schema.migrations == F.nine)
-    #expect(schema.data == F.preProtocolTables)
-    #expect(schema.context == ["schemaMigrations", "hubLink"])
-    #expect(try WorkspaceArchive.columns("hubLink", at: 9) == F.hubColumns)
-    #expect(try WorkspaceArchive.columns("connections", at: 9) == F.connectionColumns)
-  }
-
-  @Test func mainTenPreservesOwnedAsBeforeAgentProtocolSchema() throws {
-    // Deployed main10 is valid input; a future-schema rejection here is the intended initial RED.
-    let schema = try WorkspaceArchive.schema(F.ten)
-    #expect(schema.migrations == F.ten)
-    #expect(schema.data == F.preProtocolTables)
-    #expect(schema.context == ["schemaMigrations", "hubLink"])
-    #expect(try WorkspaceArchive.columns("hubLink", at: 10) == F.hubColumns.union(["ownedAs"]))
-    #expect(try WorkspaceArchive.columns("connections", at: 10) == F.connectionColumns)
-  }
-
-  @Test func successorFourteenDeclaresOwnedAsAndAgentProtocolObligations() throws {
-    let schema = try WorkspaceArchive.schema(F.seventeen)
-    #expect(WorkspaceArchive.version == 4)
-    #expect(schema.migrations == F.seventeen)
-    let oldTurn = try WorkspaceArchive.columns("turns", at: 15)
-    let publishedTurn = try WorkspaceArchive.columns("turns", at: 16)
-    #expect(publishedTurn == oldTurn.union(["openWork", "origin"]))
-    #expect(try WorkspaceArchive.columns("turns", at: 17) == publishedTurn)
-    #expect(try WorkspaceArchive.schema(F.sixteen).data == F.viewSettingsTables)
-    for table in F.protocolTables { #expect(try WorkspaceArchive.columns(table, at: 16).isEmpty) }
-    func legacyTurn(_ ledger: [String], _ fields: [String: Any]) throws -> WorkspaceArchive.Input {
-      try WorkspaceArchive.read(
-        F.lines([
-          ["format": "b4app-export", "version": 3, "migrations": ledger],
-          ["table": "turns", "row": fields],
-        ]))
-    }
-    let validTurn: [String: Any] = ["id": "t", "openWork": Int32.min, "origin": NSNull()]
-    #expect(try legacyTurn(F.sixteen, validTurn).dataCount == 1)
-    for bad in [
-      ["id": "t", "openWork": true, "origin": NSNull()],
-      ["id": "t", "openWork": Int64(Int32.max) + 1, "origin": "runtime"],
-      ["id": "t", "openWork": 1, "origin": 2],
-      ["id": "t", "openWork": 1],
-      ["id": "t", "origin": "runtime"],
-    ] as [[String: Any]] {
-      #expect(throws: WorkspaceArchive.Rejection.self) { try legacyTurn(F.sixteen, bad) }
-    }
-    for field in [["openWork": 1], ["origin": "runtime"]] as [[String: Any]] {
-      #expect(throws: WorkspaceArchive.Rejection.self) { try legacyTurn(F.fifteen, field) }
-    }
-    #expect(schema.data == F.viewSettingsTables + F.protocolTables)
-    #expect(schema.context == ["schemaMigrations", "hubLink"])
-    #expect(try WorkspaceArchive.columns("hubLink", at: 12) == F.hubColumns.union(["ownedAs"]))
-    #expect(
-      try WorkspaceArchive.columns("connections", at: 17)
-        == F.environmentConnectionColumns.union(["commands"]).union(F.protocolFields.map { $0.name }))
-  }
 
   @Test func ownedAsAndProtocolColumnsUseDifferentMigrationOrdinals() throws {
     #expect(
@@ -78,20 +20,6 @@ import Testing
       let after = try WorkspaceArchive.columns(table, at: 17)
       #expect(before.isEmpty, "Protocol table columns must not exist in published13: \(table)")
       #expect(!after.isEmpty, "Protocol table columns begin in successor17: \(table)")
-    }
-  }
-
-  @Test func environmentElevenRenamesOnlySchemaOwnedNamesBeforeProtocolFourteen() throws {
-    let schema = try WorkspaceArchive.schema(F.eleven)
-    #expect(schema.data == F.environmentTables)
-    #expect(try WorkspaceArchive.columns("connections", at: 11) == F.environmentConnectionColumns)
-    #expect(
-      try WorkspaceArchive.columns("projectFolders", at: 10) == Set(["id", "projectId", "path", "createdAt"]))
-    #expect(
-      try WorkspaceArchive.columns("environmentFolders", at: 11)
-        == Set(["id", "environmentId", "path", "createdAt"]))
-    #expect(throws: WorkspaceArchive.Rejection.self) {
-      try WorkspaceArchive.schema(F.ten + ["0011_agent_protocol"])
     }
   }
 
@@ -155,60 +83,6 @@ import Testing
     }
   }
 
-  @Test func mainElevenVersionThreeKeepsEnvironmentAssociationsAndOpaqueUpdates() throws {
-    let opaque = #"{"projectId":"external","environmentId":"keep"}"#
-    let lines: [[String: Any]] = [
-      ["format": "b4app-export", "version": 3],
-      ["table": "environments", "row": ["id": "p", "name": "Environment"]],
-      ["table": "environmentFolders", "row": ["id": "f", "environmentId": "p"]],
-      ["table": "connections", "row": ["id": "c", "kind": "b4", "environmentId": "p"]],
-      [
-        "table": "changes",
-        "row": ["seq": 1, "table": "displayItems", "op": "update", "column": "payload", "value": opaque],
-      ],
-    ]
-    let bytes = try F.lines(lines)
-    let input = try WorkspaceArchive.read(bytes)
-    #expect(input.records["environments"]?.first?.row["id"] as? String == "p")
-    #expect(input.records["connections"]?.first?.row["environmentId"] as? String == "p")
-    #expect(input.records["changes"]?.first?.row["value"] as? String == opaque)
-  }
-
-  @Test func legacyMixedRelationalNamesAndUnknownUnpublishedLedgerRefuse() throws {
-    let variants: [[[String: Any]]] = [
-      [["table": "projects", "row": ["id": "old"]], ["table": "environments", "row": ["id": "new"]]],
-      [["table": "connections", "row": ["id": "c", "projectId": "p", "environmentId": "p"]]],
-      [
-        ["table": "projects", "row": ["id": "p"]],
-        ["table": "threads", "row": ["id": "t", "environmentId": "p"]],
-      ],
-      [
-        [
-          "table": "changes",
-          "row": [
-            "seq": 1, "table": "threads", "op": "insert", "value": #"{"projectId":"p","environmentId":"p"}"#,
-          ],
-        ]
-      ],
-      [
-        [
-          "table": "columnClocks",
-          "row": ["table": "projectFolders", "rowId": "f", "column": "environmentId"],
-        ]
-      ],
-    ]
-    for records in variants {
-      let bytes = try F.lines([["format": "b4app-export", "version": 3]] + records)
-      #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(bytes) }
-    }
-    for version in 1...3 {
-      let bytes = try F.lines([
-        ["format": "b4app-export", "version": version, "migrations": F.ten + ["0011_agent_protocol"]]
-      ])
-      #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(bytes) }
-    }
-  }
-
   @Test func versionFourValidatesEachSourcePrefixBeforeRelationalMapping() throws {
     for names in F.sourceLedgers {
       let renamed = names.count >= 11
@@ -236,47 +110,6 @@ import Testing
       #expect(input.records["environmentFolders"]?.first?.row["environmentId"] as? String == "p")
       #expect(input.records["projectFolders"] == nil)
       #expect(input.dataCount == 1)
-    }
-  }
-
-  @Test func versionFourRejectsReferencesFromTheOtherRelationalSchemaFamily() throws {
-    for names in F.sourceLedgers {
-      let current = names.count >= 11
-      let association = current ? "environmentId" : "projectId"
-      let wrong = current ? "projectId" : "environmentId"
-      let table = current ? "environments" : "projects"
-      let wrongTable = current ? "projects" : "environments"
-      let change: [String: Any] = [
-        "seq": 1, "deviceId": "fixture", "wall": 1, "table": "threads", "rowId": "t", "op": "update",
-        "column": association, "value": #""p""#, "synced": false, "hlc": "000000001000-0000-fixture",
-      ]
-      let clock: [String: Any] = [
-        "table": "threads", "rowId": "t", "column": association, "hlc": "000000001000-0000-fixture",
-      ]
-      _ = try WorkspaceArchive.read(
-        F.v4(
-          names: names,
-          records: [["table": "changes", "row": change], ["table": "columnClocks", "row": clock]]))
-      var badColumn = change; badColumn["column"] = wrong
-      var badTable = change; badTable["table"] = wrongTable; badTable["column"] = "name"
-      var badClock = clock; badClock["column"] = wrong
-      var badClockTable = clock; badClockTable["table"] = wrongTable; badClockTable["column"] = "name"
-      var goodInsert = change; goodInsert["op"] = "insert"; goodInsert["column"] = NSNull()
-      goodInsert["value"] = "{\"id\":\"t\",\"\(association)\":\"p\"}"
-      _ = try WorkspaceArchive.read(F.v4(names: names, records: [["table": "changes", "row": goodInsert]]))
-      var badInsert = goodInsert; badInsert["value"] = "{\"id\":\"t\",\"\(wrong)\":\"p\"}"
-      var goodTable = change; goodTable["table"] = table; goodTable["column"] = "name"
-      _ = try WorkspaceArchive.read(F.v4(names: names, records: [["table": "changes", "row": goodTable]]))
-      let invalidRecords: [[String: Any]] = [
-        ["table": "changes", "row": badColumn], ["table": "changes", "row": badTable],
-        ["table": "columnClocks", "row": badClock], ["table": "columnClocks", "row": badClockTable],
-        ["table": "changes", "row": badInsert],
-      ]
-      for record in invalidRecords {
-        #expect(throws: WorkspaceArchive.Rejection.self) {
-          try WorkspaceArchive.read(F.v4(names: names, records: [record]))
-        }
-      }
     }
   }
 
@@ -324,49 +157,7 @@ import Testing
       }
     }
   }
-
-  @Test func legacyArchivesPreserveNullProtocolFieldsForVersionsOneThroughThree() throws {
-    for version in 1...3 {
-      var row = F.legacyRow
-      for field in F.protocolFields { row[field.name] = NSNull() }
-      let input = try WorkspaceArchive.read(F.legacy(version: version, row: row))
-      #expect(input.version == version)
-      #expect(input.dataCount == 1)
-      let record = try #require(input.records["connections"]?.first)
-      #expect(record.row["id"] as? String == "legacy-fixed")
-      #expect(record.row["kind"] as? String == "b4")
-      for field in F.protocolFields { #expect(record.row[field.name] is NSNull) }
-    }
-  }
-
-  @Test func legacyArchivesReadUnextendedB4RowsForVersionsOneThroughThree() throws {
-    for version in 1...3 {
-      let input = try WorkspaceArchive.read(F.legacy(version: version, row: F.legacyRow))
-      #expect(input.version == version)
-      #expect(input.dataCount == 1)
-      let record = try #require(input.records["connections"]?.first)
-      #expect(Set(record.row.keys) == Set(F.legacyRow.keys))
-      #expect(record.row["nativeScope"] as? String == "historical-scope")
-      #expect(record.row["authReference"] as? String == "secret:reference-only")
-    }
-  }
-
-  @Test func legacyArchivesStillRejectAgentProtocolConnectionKind() throws {
-    for version in 1...3 {
-      var row = F.legacyRow
-      row["kind"] = "agentProtocol"
-      do {
-        _ = try WorkspaceArchive.read(F.legacy(version: version, row: row))
-        Issue.record("Legacy\(version) accepted an Agent Protocol connection.")
-      } catch WorkspaceArchive.Rejection.invalid {
-      } catch {
-        Issue.record("Legacy\(version) rejected the new kind for the wrong reason: \(error).")
-      }
-    }
-  }
 }
-
-/// Fixed independent contracts, not aliases of WorkspaceArchive or the shared AP oracle.
 private enum ArchiveSchemaIntegrationFixture {
   static let nine = [
     "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay",

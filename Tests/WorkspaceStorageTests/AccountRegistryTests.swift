@@ -22,7 +22,7 @@ import WorkspaceProtocol
       tokenRef: nil, lastSignedInAt: nil, active: false)
   }
 
-  @Test(NativeDBResources()) func insertFindActivate() throws {
+  @Test func insertFindActivate() throws {
     let registry = try makeRegistry()
     #expect(try registry.all().isEmpty)
     #expect(try registry.active() == nil)
@@ -46,7 +46,7 @@ import WorkspaceProtocol
     #expect(try registry.all().isEmpty)
   }
 
-  @Test(NativeDBResources()) func activateIsExclusive() throws {
+  @Test func activateIsExclusive() throws {
     let registry = try makeRegistry()
     let first = row(hubUserId: "user-1")
     let second = row(hubUserId: "user-2")
@@ -69,7 +69,7 @@ import WorkspaceProtocol
     #expect(try registry.active()?.id == second.id)
   }
 
-  @Test(NativeDBResources()) func uniqueHubUser() throws {
+  @Test func uniqueHubUser() throws {
     let registry = try makeRegistry()
     try registry.insert(row())
     #expect(throws: WorkspaceError.self) { try registry.insert(row()) }
@@ -78,7 +78,7 @@ import WorkspaceProtocol
     #expect(try registry.all().count == 2)
   }
 
-  @Test(NativeDBResources()) func databaseRefusesTwoActiveRows() throws {
+  @Test func databaseRefusesTwoActiveRows() throws {
     let registry = try makeRegistry()
     var first = row(hubUserId: "user-1")
     first.active = true
@@ -89,7 +89,7 @@ import WorkspaceProtocol
     #expect(try registry.all().count == 1)
   }
 
-  @Test(NativeDBResources()) func signOutClearsToken() throws {
+  @Test func signOutClearsToken() throws {
     let registry = try makeRegistry()
     let account = row()
     try registry.insert(account)
@@ -117,7 +117,7 @@ import WorkspaceProtocol
 
   /// A log-out that could not reach the hub leaves its session open there; the row says so until the
   /// person dismisses the notice.
-  @Test(NativeDBResources()) func aSessionLeftOpenIsRecordedUntilCleared() throws {
+  @Test func aSessionLeftOpenIsRecordedUntilCleared() throws {
     let registry = try makeRegistry()
     let account = row()
     try registry.insert(account)
@@ -136,7 +136,7 @@ import WorkspaceProtocol
     #expect(try registry.all().first?.hubSessionLeftOpen == false)
   }
 
-  @Test(NativeDBResources()) func theOnboardingStateIsKept() throws {
+  @Test func theOnboardingStateIsKept() throws {
     let registry = try makeRegistry()
     let account = row()
     try registry.insert(account)
@@ -149,7 +149,7 @@ import WorkspaceProtocol
 
   /// Final review M12: a ledger that exists is found, not created again `IF NOT EXISTS`, which made
   /// the server send a NOTICE libpq printed on every open.
-  @Test(NativeDBResources()) func aLedgerIsCreatedOnlyWhenMissing() throws {
+  @Test func aLedgerIsCreatedOnlyWhenMissing() throws {
     let endpoint = try EphemeralPostgres.endpoint()
     let lib = try LibPQ.load(binDir: endpoint.binDir!)
     let connection = try PostgresConnection(
@@ -167,7 +167,7 @@ import WorkspaceProtocol
     #expect(names == ["registryMigrations", "schemaMigrations"])
   }
 
-  @Test(NativeDBResources()) func registryMigratesOnItsOwnListAndIsIdempotent() throws {
+  @Test func registryMigratesOnItsOwnListAndIsIdempotent() throws {
     let endpoint = try EphemeralPostgres.endpoint()
     let name = "registry_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
     let first = try AccountRegistry(endpoint: endpoint, binDir: endpoint.binDir!, databaseName: name)

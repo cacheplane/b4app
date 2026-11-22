@@ -9,7 +9,6 @@ import WorkspaceStorage
 /// logs on disk. Attached endpoints are never touched here.
 public actor LocalServerService {
   public struct Context: Sendable {
-    var nodeVersionProbeObservation: (@Sendable (NodeVersionProbeObservation) -> Void)? = nil
     public var database: WorkspaceDatabase
     public var eventLog: EventLog
     public var environment: [String: String]
@@ -39,14 +38,7 @@ public actor LocalServerService {
 
   public func add(_ params: ServerAdd.Params) async throws -> ServerAdd.Result {
     let project = try B4ProjectInspector.locate(projectPath: params.projectPath)
-    let resolvedNode: NodeExecutable?
-    if let observation = context.nodeVersionProbeObservation {
-      resolvedNode = await NodeLocator.resolveObservingExplicitProbe(
-        environment: context.environment, observation: observation)
-    } else {
-      resolvedNode = await NodeLocator.resolve(environment: context.environment)
-    }
-    guard let node = resolvedNode else {
+    guard let node = await NodeLocator.resolve(environment: context.environment) else {
       throw WorkspaceError(
         .missingExecutable,
         "No Node \(NodeLocator.minimumMajor)+ executable was found. Install Node 24 or set B4APP_NODE_PATH.")

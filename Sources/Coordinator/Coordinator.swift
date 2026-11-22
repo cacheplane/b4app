@@ -5,7 +5,6 @@ import WorkspaceStorage
 import WorkspaceSync
 
 public struct CoordinatorOptions: Sendable {
-  var nodeVersionProbeObservation: (@Sendable (NodeVersionProbeObservation) -> Void)? = nil
   public var paths: PlatformPaths
   public var environment: [String: String]
   public var secretStore: any SecretStore
@@ -208,13 +207,12 @@ public enum Coordinator {
       context: DiagnosticsService.Context(
         paths: paths, startedAt: startedAt, environment: options.environment,
         secretStore: options.secretStore, eventLog: eventLog))
-    var scopeContext = AccountScope.Context(
+    let scopeContext = AccountScope.Context(
       paths: paths, environment: options.environment, secretStore: options.secretStore,
       eventLog: eventLog, diagnostics: diagnostics, adapterFactory: options.adapterFactory,
       hubAPIFactory: options.hubAPIFactory, hubLinkConnection: options.hubLinkConnection,
       powerAssertions: options.powerAssertions, checkRetryDelays: options.checkRetryDelays,
       threadDeleteSweep: options.threadDeleteSweep)
-    scopeContext.nodeVersionProbeObservation = options.nodeVersionProbeObservation
     let accounts = AccountManager(
       context: AccountManager.Context(
         cluster: cluster, registry: registry,

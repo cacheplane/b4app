@@ -11,23 +11,6 @@ import WorkspaceStorage
 // restart restores any account, and reach its services through the accessors below.
 
 enum TestAccount {
-  // Session fixtures boot many real coordinators together. Creating their databases and
-  // registering local accounts is synchronous PostgreSQL work; keep it off the async workers
-  // which must also deliver socket requests, child-process exits and test callbacks.
-  private static let setupQueue = DispatchQueue(label: "b4app.tests.signed-in-setup")
-
-  static var ordinaryFixture: Bool {
-    let env = ProcessInfo.processInfo.environment
-    return env["B4APP_PROTOCOL_FULL_MATRIX"] != "1" && env["B4APP_A3_NONCE"] == nil
-  }
-
-  static func prepare<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
-    guard ordinaryFixture else { return try work() }
-    return try await withCheckedThrowingContinuation { continuation in
-      setupQueue.async { continuation.resume(with: Result { try work() }) }
-    }
-  }
-
   /// Register an active account for `paths`' store, unless one is active already (a restart).
   static func register(_ paths: PlatformPaths) throws {
     let endpoint = paths.postgres
@@ -48,7 +31,7 @@ enum TestAccount {
 extension Coordinator {
   /// `start`, signed in to a test account (`TestAccount.register`).
   static func startSignedIn(options: CoordinatorOptions) async throws -> StartOutcome {
-    try await TestAccount.prepare { try TestAccount.register(options.paths) }
+    try TestAccount.register(options.paths)
     return try await start(options: options)
   }
 }

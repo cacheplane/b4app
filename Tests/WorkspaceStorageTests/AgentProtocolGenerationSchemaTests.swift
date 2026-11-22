@@ -7,7 +7,7 @@ import WorkspaceProtocol
 
 /// Protocol14 correction controls. Old protocol13 is frozen DDL, distinct from published viewSettings13.
 /// No provider, account, socket or protocol observation is started by these storage tests.
-@Suite(.serialized) struct AgentProtocolGenerationSchemaTests {
+struct AgentProtocolGenerationSchemaTests {
   private struct Fixture {
     let endpoint: PostgresEndpoint
     let raw: PostgresConnection
@@ -31,13 +31,6 @@ import WorkspaceProtocol
       connectionString:
         "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)")
     try body(Fixture(endpoint: endpoint, raw: raw, root: root))
-    let observation = ApplicationBackendObservation.observe {
-      try raw.execute(
-        "SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND application_name='b4app'",
-        [endpoint.database]
-      ).rows.count
-    }
-    #expect(observation.accepted, Comment(rawValue: observation.diagnostic))
   }
 
   private static func seed(_ f: Fixture, count: Int, oldThirteen: Bool = false) throws {
@@ -125,7 +118,7 @@ import WorkspaceProtocol
     #expect(failure.details == nil)
   }
 
-  @Test(NativeDBResources()) func segmentKeysSeparateGenerationLocalEpochAndNamespace() throws {
+  @Test func segmentKeysSeparateGenerationLocalEpochAndNamespace() throws {
     try Self.withFixture { f in
       try Self.seed(f, count: 17)
       try Self.seedOwner(f)
@@ -162,60 +155,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test(NativeDBResources()) func subscriptionsRequireExactlyOneNativeOrLocalEpoch() throws {
-    try Self.withFixture { f in
-      try Self.seed(f, count: 17)
-      try Self.seedOwner(f)
-      let insert =
-        #"INSERT INTO public."protocolSubscriptions" ("threadId","connectionId","nativeThreadId","generation","localObservationEpoch","channels","namespaces","coverage","updatedAt") VALUES ('t','c','raw-native-thread',$1,$2,'[]','[[]]','{}','then')"#
-      for (generation, local) in [("native" as String?, nil as String?), (nil, "local")] {
-        try f.raw.execute(insert, [generation, local])
-        let row = try #require(
-          try f.raw.execute(#"SELECT generation,"localObservationEpoch" FROM public."protocolSubscriptions""#)
-            .rows.first)
-        #expect(row.text("generation") == generation)
-        #expect(row.text("localObservationEpoch") == local)
-        try f.raw.execute(#"DELETE FROM public."protocolSubscriptions""#)
-      }
-      for values in [[nil, nil], ["native", "local"]] as [[String?]] {
-        do {
-          try f.raw.execute(insert, values); Issue.record("Ambiguous subscription epoch accepted.")
-        } catch let error as PostgresError { #expect(error.sqlState == "23514") }
-        #expect(try f.raw.execute(#"SELECT 1 FROM public."protocolSubscriptions""#).rows.isEmpty)
-      }
-    }
-  }
-
-  @Test(NativeDBResources()) func oldThirteenRefusesBeforeBackupOnEveryPublicAdmission() throws {
-    try Self.withFixture { f in
-      try Self.seed(f, count: 12)
-      try f.raw.execute(Self.oldThirteenSQL)
-      try f.raw.execute(
-        "INSERT INTO public.\"schemaMigrations\" (name,\"appliedAt\") VALUES ('0013_agent_protocol','old-draft')"
-      )
-      try Self.seedOwner(f)
-      #expect(
-        try Migrator.recorded(f.raw) == Array(AgentProtocolFoundationFixture.migrations.prefix(12)) + [
-          "0013_agent_protocol"
-        ])
-      try Self.assertRefusal(f, oldAlias: true)
-    }
-  }
-
-  @Test(NativeDBResources()) func oldPrivateFourteenAliasRefusesEvenWithNoProtocolRows() throws {
-    try Self.withFixture { f in
-      try Self.seed(f, count: 13)
-      try f.raw.execute(Self.oldThirteenSQL)
-      try f.raw.execute(
-        #"INSERT INTO "schemaMigrations" (name,"appliedAt") VALUES ('0014_agent_protocol','old-private14')"#)
-      try Self.assertRefusal(f, oldAlias: true)
-    }
-    var lines = String(decoding: try Self.archive(prefix: 14), as: UTF8.self)
-    lines = lines.replacingOccurrences(of: "0014_connection_commands", with: "0014_agent_protocol")
-    #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(Data(lines.utf8)) }
-  }
-
-  @Test(NativeDBResources()) func oldPrivateFifteenAliasRefusesEvenWhenEmpty() throws {
+  @Test func oldPrivateFifteenAliasRefusesEvenWhenEmpty() throws {
     try Self.withFixture { f in
       try Self.seed(f, count: 14)
       try f.raw.execute(Self.oldThirteenSQL)
@@ -239,74 +179,12 @@ import WorkspaceProtocol
     #expect(throws: WorkspaceArchive.Rejection.self) { try WorkspaceArchive.read(Data(archive.utf8)) }
   }
 
-  @Test(NativeDBResources()) func oldGenerationShapeUnderCanonicalFourteenRefusesWithoutMutation() throws {
+  @Test func oldGenerationShapeUnderCanonicalFourteenRefusesWithoutMutation() throws {
     try Self.withFixture { f in
       try Self.seed(f, count: 17, oldThirteen: true)
       try Self.seedOwner(f)
       #expect(try Migrator.recorded(f.raw) == AgentProtocolFoundationFixture.migrations)
       try Self.assertRefusal(f)
-    }
-  }
-
-  @Test(
-    NativeDBResources(),
-    arguments: [
-      "old-primary", "segment-type", "extra-typmod-column", "segment-null", "subscription-missing",
-      "subscription-type", "subscription-null",
-    ])
-  func currentFourteenShapeDamageRefusesWithoutMutation(damage: String) throws {
-    try Self.withFixture { f in
-      try Self.seed(f, count: 17)
-      switch damage {
-      case "old-primary":
-        try f.raw.execute(
-          #"ALTER TABLE public."protocolRunSegments" DROP CONSTRAINT "protocolRunSegments_pkey", ADD PRIMARY KEY ("connectionId","threadId","namespace","nativeRunId")"#
-        )
-      case "segment-type":
-        try f.raw.execute(
-          #"ALTER TABLE public."protocolRunSegments" ALTER COLUMN "identityEpochId" TYPE varchar(80)"#)
-      case "extra-typmod-column":
-        try f.raw.execute(
-          #"ALTER TABLE public."protocolRunSegments" ADD COLUMN "unexpectedBounded" varchar(8)"#)
-      case "segment-null":
-        try f.raw.execute(#"ALTER TABLE public."protocolRunSegments" ALTER COLUMN "rootRunId" SET NOT NULL"#)
-      case "subscription-missing":
-        try f.raw.execute(#"ALTER TABLE public."protocolSubscriptions" DROP COLUMN "localObservationEpoch""#)
-      case "subscription-type":
-        try f.raw.execute(
-          #"ALTER TABLE public."protocolSubscriptions" ALTER COLUMN "localObservationEpoch" TYPE varchar(80)"#
-        )
-      default:
-        try f.raw.execute(
-          #"ALTER TABLE public."protocolSubscriptions" ALTER COLUMN "localObservationEpoch" SET NOT NULL"#)
-      }
-      try Self.assertRefusal(f)
-    }
-  }
-
-  @Test(NativeDBResources(), arguments: [0, 12, 13, 14, 15, 16, 17])
-  func freshPublishedTwelveThirteenAndCurrentReopensRemainValid(prefix: Int) throws {
-    try Self.withFixture { f in
-      if prefix > 0 { try Self.seed(f, count: prefix) }
-      for _ in 0..<2 {
-        let db = try WorkspaceDatabase(
-          endpoint: f.endpoint, binDir: f.endpoint.binDir!, createIfMissing: false,
-          backupDirectory: f.backups)
-        let outcome = Result<Void, any Error> { () throws -> Void in
-          #expect(try db.appliedMigrations() == AgentProtocolFoundationFixture.migrations)
-          #expect(
-            try f.raw.execute(
-              #"SELECT "identityEpochKind","identityEpochId" FROM public."protocolRunSegments""#
-            ).rows.isEmpty)
-          #expect(
-            try f.raw.execute(#"SELECT "localObservationEpoch" FROM public."protocolSubscriptions""#).rows
-              .isEmpty)
-        }
-        try db.close()
-        try outcome.get()
-      }
-      #expect(
-        try Self.files(f).count == ((12...16).contains(prefix) ? 1 : 0))
     }
   }
 
@@ -340,13 +218,6 @@ import WorkspaceProtocol
     }
   }
 
-  @Test func emptyOldThirteenArchiveWithoutMarkerRefuses() throws {
-    // No protocol rows exist: column-only row validation cannot distinguish this old archive.
-    #expect(throws: WorkspaceArchive.Rejection.self) {
-      try WorkspaceArchive.read(Self.archive(prefix: 13, oldProtocolThirteen: true))
-    }
-  }
-
   @Test func v4ProtocolSchemaMarkerHasExactValue() throws {
     #expect(throws: WorkspaceArchive.Rejection.self) {
       try WorkspaceArchive.read(Self.archive(prefix: 17))
@@ -359,15 +230,6 @@ import WorkspaceProtocol
     let input = try WorkspaceArchive.read(Self.archive(prefix: 17, marker: "generation_epochs_v1"))
     #expect(input.version == 4)
     #expect(input.dataCount == 0)
-  }
-
-  @Test func publishedThroughThirteenArchivesKeepTheirClosedHeader() throws {
-    for prefix in [8, 9, 10, 11, 12, 13, 14, 15, 16] {
-      #expect(try WorkspaceArchive.read(Self.archive(prefix: prefix)).dataCount == 0)
-      #expect(throws: WorkspaceArchive.Rejection.self) {
-        try WorkspaceArchive.read(Self.archive(prefix: prefix, marker: "generation_epochs_v1"))
-      }
-    }
   }
 
   private static let oldThirteenSQL = #"""

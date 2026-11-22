@@ -246,15 +246,13 @@ The B4 live check needs a server you run yourself: a B4 project with one `agent(
 
 ### Protocol qualification
 
-Everyday tests cover protocol admission and refusal, migration and archive restore, phone compatibility, and representative owner and writer behavior. On an Apple silicon Mac with the project’s Xcode toolchain, run the full database fault and contention matrix and the subprocess timing probes from the repository root.
+Everyday CI runs the package tests using the same workflow as main. They cover protocol admission and refusal, archive restore, phone compatibility and ownership changes. PR 180 also qualifies the storage and coordinator suites on the same revision with bounded parallelism and serial execution. To reproduce those two runs on an Apple silicon Mac with the project's Xcode toolchain:
 
 ```bash
 ./Scripts/fetch-postgres.sh
 B4APP_PROTOCOL_FULL_MATRIX=1 swift test --experimental-maximum-parallelization-width 2 --filter '^(WorkspaceStorageTests|CoordinatorTests)\.'
-B4APP_PROTOCOL_FULL_MATRIX=1 swift test --filter NodeVersionProbeObservationTests
+B4APP_PROTOCOL_FULL_MATRIX=1 swift test --no-parallel --filter '^(WorkspaceStorageTests|CoordinatorTests)\.'
 ```
-
-For a serial database comparison, replace `--experimental-maximum-parallelization-width 2` with `--no-parallel`. The same test methods and fault assertions run in both modes.
 
 ## Hub (optional)
 

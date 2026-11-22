@@ -309,7 +309,7 @@ private struct JoinedHarness {
 // MARK: - Tests
 
 @Suite(.serialized, .timeLimit(.minutes(2))) struct HubLinkRelayTests {
-  @Test(NativeDBResources()) func commandFromTheHubRunsAndReplies() async throws {
+  @Test func commandFromTheHubRunsAndReplies() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let thread = try await h.newThread(try await h.addCodex())
@@ -338,7 +338,7 @@ private struct JoinedHarness {
     #expect(try h.coordinator.database.turns(threadId: thread.id).map(\.outcome) == [.completed])
   }
 
-  @Test(NativeDBResources()) func relayedInterruptAndAnswerRunFromTheLink() async throws {
+  @Test func relayedInterruptAndAnswerRunFromTheLink() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let thread = try await h.newThread(try await h.addCodex())
@@ -402,7 +402,7 @@ private struct JoinedHarness {
     #expect(staleError?.code == ErrorCode.staleRuntimeRequest.rawValue)
   }
 
-  @Test(NativeDBResources()) func commandsDoNotHoldUpTheLink() async throws {
+  @Test func commandsDoNotHoldUpTheLink() async throws {
     let gate = TurnGate()
     let h = try await LinkHarness.start(adapterFactory: { connection, environment, version, secrets in
       GatedAdapter(
@@ -434,7 +434,7 @@ private struct JoinedHarness {
     #expect(error == nil)
   }
 
-  @Test(NativeDBResources()) func expiredOrUndatedCommandIsRefused() async throws {
+  @Test func expiredOrUndatedCommandIsRefused() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let thread = try await h.newThread(try await h.addCodex())
@@ -458,7 +458,7 @@ private struct JoinedHarness {
     #expect(try h.coordinator.database.turns(threadId: thread.id).isEmpty)
   }
 
-  @Test(NativeDBResources()) func onlyWatchedThreadsEventsAreSent() async throws {
+  @Test func onlyWatchedThreadsEventsAreSent() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -481,7 +481,7 @@ private struct JoinedHarness {
     #expect(next?.threadId == "t2")
   }
 
-  @Test(NativeDBResources()) func forwardedKindsOnly() async throws {
+  @Test func forwardedKindsOnly() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -504,7 +504,7 @@ private struct JoinedHarness {
     #expect(kinds == RelayLimits.forwardedEventKinds)
   }
 
-  @Test(NativeDBResources()) func oversizedEventIsSkipped() async throws {
+  @Test func oversizedEventIsSkipped() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -521,7 +521,7 @@ private struct JoinedHarness {
     #expect(sent?.payload["output"]?.stringValue?.hasPrefix("y") == true)
   }
 
-  @Test(NativeDBResources()) func newWatchFirstGetsTheTextSoFar() async throws {
+  @Test func newWatchFirstGetsTheTextSoFar() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -555,7 +555,7 @@ private struct JoinedHarness {
 
   /// Another client starts watching a thread already watched: the hub names it in `refresh`, and the
   /// Mac sends the text so far again, so that client does not start mid-reply.
-  @Test(NativeDBResources()) func refreshSendsTheCatchUpAgain() async throws {
+  @Test func refreshSendsTheCatchUpAgain() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -570,7 +570,7 @@ private struct JoinedHarness {
 
   /// A relink mid-reply sends the whole text so far again, marked `catchUp` so the phone (whose item is
   /// still open) resumes from it instead of appending it to what it has.
-  @Test(NativeDBResources()) func reconnectCatchesUpTheWatchedThreadsAgain() async throws {
+  @Test func reconnectCatchesUpTheWatchedThreadsAgain() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -592,7 +592,7 @@ private struct JoinedHarness {
     #expect(next?.payload["catchUp"] == nil)
   }
 
-  @Test(NativeDBResources()) func wakeReconnectsAtOnce() async throws {
+  @Test func wakeReconnectsAtOnce() async throws {
     let h = try await JoinedHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.join()
@@ -607,7 +607,7 @@ private struct JoinedHarness {
     await waitUntil("connected again") { (try? await h.coordinator.hub.status().link?.state) == .connected }
   }
 
-  @Test(NativeDBResources()) func pathChangeReconnectsAtOnce() async throws {
+  @Test func pathChangeReconnectsAtOnce() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.connect()
@@ -622,7 +622,7 @@ private struct JoinedHarness {
     #expect(!h.paths.started)
   }
 
-  @Test(NativeDBResources()) func unauthorizedStopsTheLink() async throws {
+  @Test func unauthorizedStopsTheLink() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     h.connection.refuseWith(status: 401)
@@ -639,7 +639,7 @@ private struct JoinedHarness {
     #expect(h.connection.openCount == 1)
   }
 
-  @Test(NativeDBResources()) func aRefusedPushStopsTheLink() async throws {
+  @Test func aRefusedPushStopsTheLink() async throws {
     let h = try await JoinedHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.join()
@@ -656,7 +656,7 @@ private struct JoinedHarness {
     await waitUntil("signed out") { await h.coordinator.accounts.status().state == .signedOut }
   }
 
-  @Test(NativeDBResources()) func statusReportsConnectedAndLastError() async throws {
+  @Test func statusReportsConnectedAndLastError() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
     #expect(await h.link.status() == HubLinkStatus(state: .offline))
@@ -683,7 +683,7 @@ private struct JoinedHarness {
     #expect(await h.link.status().lastError == nil)
   }
 
-  @Test(NativeDBResources()) func leaveStopsTheLink() async throws {
+  @Test func leaveStopsTheLink() async throws {
     let h = try await JoinedHarness.start()
     defer { Task { await h.close() } }
     let socket = try await h.join()
@@ -697,56 +697,44 @@ private struct JoinedHarness {
   }
 
   /// Review Focus 1 at the link: the executor is given the hub's clock from `hello`, not the Mac's.
-  @Test(NativeDBResources()) func deadlineUsesTheHubClockAtTheLink() async throws {
+  @Test func deadlineUsesTheHubClockAtTheLink() async throws {
     let h = try await LinkHarness.start()
-    do {
-      let thread = try await h.newThread(try await h.addCodex())
-      let params = try JSONValue(encoding: TurnLookup.Params(operationId: "op-1", threadId: thread.id))
+    defer { Task { await h.close() } }
+    let thread = try await h.newThread(try await h.addCodex())
+    await h.link.start()
+    let socket = try await h.connection.nextSocket()
+    let params = try JSONValue(encoding: TurnLookup.Params(operationId: "op-1", threadId: thread.id))
 
-      /// Opens a fresh link with one hello setting the hub's clock to the Mac's plus `skew`, then
-      /// sends a `turn.lookup` due `left` seconds after the hub's now and returns its error code.
-      func lookup(skew: TimeInterval, left: TimeInterval) async throws -> String? {
-        await h.link.start()
-        do {
-          let socket = try await h.connection.nextSocket()
-          let hubNow = Date().addingTimeInterval(skew)
-          socket.deliver(hello(hubTime: hubNow))
-          await waitUntil("connected") { await h.link.status().state == .connected }
-          let id = UUID().uuidString.lowercased()
-          socket.deliver(
-            .command(
-              id: id, method: .turnLookup, params: params,
-              deadline: Timestamp.string(from: hubNow.addingTimeInterval(left))))
-          guard case .reply(id, let result, let error) = try await nextFrame(socket) else {
-            Issue.record("expected the reply to \(id)")
-            await h.link.stop()
-            return "no reply"
-          }
-          if error == nil { #expect(try #require(result).decode(TurnLookup.Result.self).state == .none) }
-          await h.link.stop()
-          return error?.code
-        } catch {
-          await h.link.stop()
-          throw error
-        }
+    /// Sets the hub's clock to the Mac's plus `skew` (a repeated hello moves the offset), then sends a
+    /// `turn.lookup` due `left` seconds after the hub's now, and returns the reply's error code.
+    func lookup(skew: TimeInterval, left: TimeInterval) async throws -> String? {
+      let hubNow = Date().addingTimeInterval(skew)
+      socket.deliver(hello(hubTime: hubNow))
+      await waitUntil("connected") { await h.link.status().state == .connected }
+      let id = UUID().uuidString.lowercased()
+      socket.deliver(
+        .command(
+          id: id, method: .turnLookup, params: params,
+          deadline: Timestamp.string(from: hubNow.addingTimeInterval(left))))
+      guard case .reply(id, let result, let error) = try await nextFrame(socket) else {
+        Issue.record("expected the reply to \(id)")
+        return "no reply"
       }
-
-      let expired = ErrorCode.commandExpired.rawValue
-      // The Mac is 2 minutes ahead: 8 s left on the hub is already past on the Mac's clock. It runs.
-      #expect(try await lookup(skew: -120, left: 8) == nil)
-      // The Mac is 2 minutes behind: 1 s past on the hub still looks far off on the Mac's. Refused.
-      #expect(try await lookup(skew: 120, left: -1) == expired)
-      // The cases where both clocks agree.
-      #expect(try await lookup(skew: 120, left: 8) == nil)
-      #expect(try await lookup(skew: -120, left: -1) == expired)
-    } catch {
-      await h.close()
-      throw error
+      if error == nil { #expect(try #require(result).decode(TurnLookup.Result.self).state == .none) }
+      return error?.code
     }
-    await h.close()
+
+    let expired = ErrorCode.commandExpired.rawValue
+    // The Mac is 2 minutes ahead: 8 s left on the hub is already past on the Mac's clock. It runs.
+    #expect(try await lookup(skew: -120, left: 8) == nil)
+    // The Mac is 2 minutes behind: 1 s past on the hub still looks far off on the Mac's. Refused.
+    #expect(try await lookup(skew: 120, left: -1) == expired)
+    // The cases where both clocks agree.
+    #expect(try await lookup(skew: 120, left: 8) == nil)
+    #expect(try await lookup(skew: -120, left: -1) == expired)
   }
 
-  @Test(NativeDBResources()) func diagnosticsShowTheRelayLink() async throws {
+  @Test func diagnosticsShowTheRelayLink() async throws {
     let h = try await JoinedHarness.start()
     defer { Task { await h.close() } }
     let notJoined = try await h.coordinator.diagnostics.read()

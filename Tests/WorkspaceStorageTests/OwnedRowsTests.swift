@@ -6,7 +6,7 @@ import WorkspaceProtocol
 
 /// D-184: a Mac re-announces its own rows when its hub device changes, so the hub and the phone see the
 /// current device as their owner.
-@Suite(NativeDBResources()) struct OwnedRowsTests {
+@Suite struct OwnedRowsTests {
   private func link(_ device: String) -> WorkspaceDatabase.HubLink {
     WorkspaceDatabase.HubLink(
       url: "http://localhost:8080", deviceId: device, deviceName: "Mac", tokenRef: "secret:t",

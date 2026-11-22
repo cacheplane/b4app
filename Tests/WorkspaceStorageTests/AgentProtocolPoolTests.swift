@@ -13,7 +13,6 @@ private final class PoolObservation: Sendable {
   let closeFinished = Mutex(false)
 }
 
-@Suite(NativeDBResources(runBlockingCaseInOrdinarySuite: true), .serialized)
 struct AgentProtocolPoolTests {
   // Suspend the retained Task while its synchronous gate runs outside the cooperative executor.
   private static func onDedicatedPoolThread<T: Sendable>(
@@ -39,14 +38,12 @@ struct AgentProtocolPoolTests {
   }
 
   @Test func queuedCheckoutCannotRunAfterPoolClose() async throws {
-    let pool = try AgentProtocolResourceFixture.withOrdinarySetup {
-      let endpoint = try AgentProtocolResourceFixture.endpoint()
-      return try ConnectionPool(
-        lib: LibPQ.load(binDir: endpoint.binDir!),
-        connectionString:
-          "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)",
-        size: 1)
-    }
+    let endpoint = try AgentProtocolResourceFixture.endpoint()
+    let pool = try ConnectionPool(
+      lib: LibPQ.load(binDir: endpoint.binDir!),
+      connectionString:
+        "host=\(endpoint.socketDir) port=\(endpoint.port) user=\(NSUserName()) dbname=\(endpoint.database)",
+      size: 1)
     defer { pool.close() }
     let releaseBorrower = DispatchSemaphore(value: 0)
     let releaseWaiter = DispatchSemaphore(value: 0)

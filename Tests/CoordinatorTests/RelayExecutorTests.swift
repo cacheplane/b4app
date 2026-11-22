@@ -230,7 +230,7 @@ private func failure(
 @Suite(.serialized) struct RelayExecutorTests {
   // MARK: - turn.send
 
-  @Test(NativeDBResources()) func relayedSendRunsATurn() async throws {
+  @Test func relayedSendRunsATurn() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -248,7 +248,7 @@ private func failure(
     #expect(read.items.map(\.role) == [.user, .assistant])
   }
 
-  @Test(NativeDBResources()) func resendAfterCompletionReturnsTheSameTurn() async throws {
+  @Test func resendAfterCompletionReturnsTheSameTurn() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -266,7 +266,7 @@ private func failure(
     #expect(try h.db.turns(threadId: thread.id).count == 1)
   }
 
-  @Test(NativeDBResources()) func overlappingResendAwaitsTheFirst() async throws {
+  @Test func overlappingResendAwaitsTheFirst() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -283,7 +283,7 @@ private func failure(
     try await h.waitForFinish(turn)
   }
 
-  @Test(NativeDBResources()) func expiredCommandRunsNothing() async throws {
+  @Test func expiredCommandRunsNothing() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -299,7 +299,7 @@ private func failure(
   }
 
   /// Review Focus 1: the deadline is judged on the hub's clock, whatever the Mac's says.
-  @Test(NativeDBResources()) func deadlineUsesTheHubClockNotTheMacs() async throws {
+  @Test func deadlineUsesTheHubClockNotTheMacs() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -326,7 +326,7 @@ private func failure(
     #expect(try h.db.turns(threadId: thread.id).map(\.id) == [turn.id])
   }
 
-  @Test(NativeDBResources()) func failureAfterInsertCarriesTheTurnId() async throws {
+  @Test func failureAfterInsertCarriesTheTurnId() async throws {
     let h = try await RelayHarness.start(extraEnvironment: ["B4APP_CODEX_REQUEST_TIMEOUT": "1"])
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -345,7 +345,7 @@ private func failure(
 
   // MARK: - thread.start
 
-  @Test(NativeDBResources()) func threadStartCreatesInTheFolderAndSends() async throws {
+  @Test func threadStartCreatesInTheFolderAndSends() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -375,7 +375,7 @@ private func failure(
     try await h.events.waitFor { $0.kind == .threadUpdated && $0.threadId == threadId }
   }
 
-  @Test(NativeDBResources()) func relayedHistoricalManagedStartRefusesWithAndWithoutFolder() async throws {
+  @Test func relayedHistoricalManagedStartRefusesWithAndWithoutFolder() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
     let server = try await h.add(try h.project("agent"))
@@ -400,12 +400,9 @@ private func failure(
     #expect(try h.coordinator.database.listAppFolders().isEmpty)
     let unchanged = try h.coordinator.database.connection(id: connection.id) == connection
     #expect(unchanged)
-    // Current relayed start/folder/terminal positives remain in threadStartCreatesInTheFolderAndSends / threadStartRetryReusesThreadAndTurn and the generic
-    // start/environment tests in this suite. This profile no longer admits route-bound starts.
-
   }
 
-  @Test(NativeDBResources()) func threadStartRefusesAFolderOutsideTheEnvironment() async throws {
+  @Test func threadStartRefusesAFolderOutsideTheEnvironment() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -439,7 +436,7 @@ private func failure(
     #expect(try h.db.thread(id: threadId) == nil)
   }
 
-  @Test(NativeDBResources()) func threadStartRefusesAB4ServerOfAnotherEnvironment() async throws {
+  @Test func threadStartRefusesAB4ServerOfAnotherEnvironment() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
     let server = try await h.add(try h.project("agent"))
@@ -465,7 +462,7 @@ private func failure(
     #expect(try h.coordinator.database.thread(id: threadId) == nil)
   }
 
-  @Test(NativeDBResources()) func relayedStartRefusesHistoricalRemoteAndCompleteDormantProfiles() async throws
+  @Test func relayedStartRefusesHistoricalRemoteAndCompleteDormantProfiles() async throws
   {
     let witness = HistoricalFactoryWitness()
     let h = try await Harness.start(adapterFactory: witness.makeFactory())
@@ -494,7 +491,7 @@ private func failure(
     #expect(witness.count == 0)
   }
 
-  @Test(NativeDBResources()) func threadStartRefusesAReusedIdWithAnotherFolder() async throws {
+  @Test func threadStartRefusesAReusedIdWithAnotherFolder() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -534,7 +531,7 @@ private func failure(
 
   /// A relayed start with a folder must name its environment: without one it is refused before anything is
   /// made.
-  @Test(NativeDBResources()) func relayedStartStillRequiresAEnvironment() async throws {
+  @Test func relayedStartStillRequiresAEnvironment() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -551,7 +548,7 @@ private func failure(
 
   /// R4: `turn.lookup` is refused over the local socket (`thread.start` is local too now), and a local
   /// `thread.create` cannot choose its thread's id.
-  @Test(NativeDBResources()) func localSocketRefusesTurnLookupAndAChosenThreadId() async throws {
+  @Test func localSocketRefusesTurnLookupAndAChosenThreadId() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -569,7 +566,7 @@ private func failure(
     #expect(created.thread.id != "t-chosen")
   }
 
-  @Test(NativeDBResources()) func threadStartRetryReusesThreadAndTurn() async throws {
+  @Test func threadStartRetryReusesThreadAndTurn() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -592,7 +589,7 @@ private func failure(
 
   /// Two starts of one new thread under different command ids: the second waits for the first, so the
   /// thread (and its native session) is created once and no store error reaches the reply.
-  @Test(NativeDBResources()) func concurrentStartsOfOneNewThreadCreateItOnce() async throws {
+  @Test func concurrentStartsOfOneNewThreadCreateItOnce() async throws {
     let seams = Seams()
     await seams.set(createDelay: .milliseconds(300))
     let h = try await seamHarness(seams)
@@ -628,7 +625,7 @@ private func failure(
   /// A store failure, a process launch failure, and an internal error reach the hub only as their code
   /// (and `turnId`); the text, which can carry SQL, row values, and paths, goes to the log and
   /// Diagnostics on this Mac.
-  @Test(NativeDBResources()) func storeLaunchAndInternalFailuresKeepTheirTextOnTheMac() async throws {
+  @Test func storeLaunchAndInternalFailuresKeepTheirTextOnTheMac() async throws {
     let seams = Seams()
     let h = try await seamHarness(seams)
     defer { Task { await h.close() } }
@@ -717,7 +714,7 @@ private func failure(
 
   /// A refusal made before this send's turn exists names the turn in the way as `blockingTurnId`, never
   /// `turnId`, which the phone reads as "accepted".
-  @Test(NativeDBResources()) func refusalsBeforeTheTurnExistsNameTheBlockingTurnApart() async throws {
+  @Test func refusalsBeforeTheTurnExistsNameTheBlockingTurnApart() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -748,7 +745,7 @@ private func failure(
   }
 
   /// A NUL cannot be stored; a relayed text with one is refused before any `SessionService` call.
-  @Test(NativeDBResources()) func textWithANulIsRefusedBeforeAnything() async throws {
+  @Test func textWithANulIsRefusedBeforeAnything() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -781,7 +778,7 @@ private func failure(
 
   /// No folder lock: a start beside another thread's running turn in the same folder makes its thread
   /// and its turn.
-  @Test(NativeDBResources()) func threadStartBesideARunningThreadInTheSameFolderStarts() async throws {
+  @Test func threadStartBesideARunningThreadInTheSameFolderStarts() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -806,7 +803,7 @@ private func failure(
   }
 
   /// The phone mints the thread id; anything but a lowercase UUID is refused before anything is made.
-  @Test(NativeDBResources()) func threadStartRefusesAThreadIdThatIsNotALowercaseUUID() async throws {
+  @Test func threadStartRefusesAThreadIdThatIsNotALowercaseUUID() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -831,7 +828,7 @@ private func failure(
   /// store, process, or foreign-error text.
   // MARK: - Environment edits
 
-  @Test(NativeDBResources()) func environmentCreateValidatesFoldersOnThisMacAndRunsOnce() async throws {
+  @Test func environmentCreateValidatesFoldersOnThisMacAndRunsOnce() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -878,7 +875,7 @@ private func failure(
     #expect(failure(badId)?.details?["reason"] == "invalid_environment_id")
   }
 
-  @Test(NativeDBResources()) func environmentUpdateAndDeleteRunOnTheMac() async throws {
+  @Test func environmentUpdateAndDeleteRunOnTheMac() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -960,7 +957,7 @@ private func failure(
 
   // MARK: - turn.interrupt and request.respond
 
-  @Test(NativeDBResources()) func relayedInterruptStopsARunningTurn() async throws {
+  @Test func relayedInterruptStopsARunningTurn() async throws {
     let h = try await RelayHarness.start()
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()
@@ -998,7 +995,7 @@ private func failure(
     return (turn, request)
   }
 
-  @Test(NativeDBResources()) func relayedAnswerResolvesAPendingRequest() async throws {
+  @Test func relayedAnswerResolvesAPendingRequest() async throws {
     let log = AnswerLog()
     let h = try await countingHarness(log)
     defer { Task { await h.close() } }
@@ -1016,7 +1013,7 @@ private func failure(
     #expect(await log.answered.count == 1)
   }
 
-  @Test(NativeDBResources()) func relayedAnswerToAnAnsweredRequestIsStale() async throws {
+  @Test func relayedAnswerToAnAnsweredRequestIsStale() async throws {
     let log = AnswerLog()
     let h = try await countingHarness(log)
     defer { Task { await h.close() } }
@@ -1036,7 +1033,7 @@ private func failure(
 
   // MARK: - turn.lookup
 
-  @Test(NativeDBResources()) func turnLookupReportsInFlightFoundAndNone() async throws {
+  @Test func turnLookupReportsInFlightFoundAndNone() async throws {
     let h = try await RelayHarness.start(extraEnvironment: ["B4APP_CODEX_REQUEST_TIMEOUT": "2"])
     defer { Task { await h.close() } }
     let connection = try await h.addCodex()

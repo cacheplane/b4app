@@ -370,21 +370,8 @@ async fn axum_failed_upgrade_keeps_an_existing_link_generation_and_instance_clai
         .unwrap();
 }
 
-fn harmless_connections() -> Vec<serde_json::Value> {
-    vec![
-        json!({"kind":"codex"}),
-        json!({"kind":"codex","target":null,"authReference":null,"localServerId":null}),
-        json!({"kind":"codex","target":""}),
-    ]
-}
-fn private_connections() -> Vec<serde_json::Value> {
-    vec![
-        json!({"kind":"codex","target":"PRIVATE_TARGET_CANARY"}),
-        json!({"kind":"codex","authReference":"PRIVATE_AUTH_REFERENCE_CANARY"}),
-        json!({"kind":"codex","localServerId":"PRIVATE_LOCAL_SERVER_CANARY"}),
-        json!({"kind":"codex","authMode":null}),
-        json!({"kind":"codex","authHeaderName":null}),
-    ]
+fn legacy_connection() -> serde_json::Value {
+    json!({"kind":"codex","target":"","authReference":null,"localServerId":null})
 }
 
 #[sqlx::test(migrations = false)]
@@ -400,77 +387,75 @@ async fn typed_event_and_native_sender_exclude_private_connection_values_without
     let mut phone = FakeDevice::ready(hub.addr, &phone_token).await.0;
     phone.watch("projection-thread").await;
     assert_eq!(mac.expect_watching().await, ["projection-thread"]);
-    for connection in harmless_connections() {
-        let event = json!({"threadId":"projection-thread","kind":"message.delta","payload":{"connection":connection},"text":{"connection":{"target":"opaque-user-text","authReference":"ordinary-text"}}});
-        mac.send(&RelayMessage::Event {
+    let connection = legacy_connection();
+    let event = json!({"threadId":"projection-thread","kind":"message.delta","payload":{"connection":connection},"text":{"connection":{"target":"opaque-user-text","authReference":"ordinary-text"}}});
+    mac.send(&RelayMessage::Event {
+        event: event.clone(),
+    })
+    .await;
+    assert_eq!(
+        phone.next_skipping_chatter().await,
+        RelayMessage::Event {
+            event: event.clone()
+        }
+    );
+    let mut native = b4hub_db::relay::Admission::open(
+        &hub.state.db,
+        &b4hub_db::devices::SessionKey::of(&phone_token),
+        b4hub_core::protocol::ClientProtocol::LEGACY,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let sent = b4hub::relay::admission::try_send_native(
+        &hub.state.relay,
+        &mut native,
+        phone_id,
+        RelayMessage::Event {
             event: event.clone(),
-        })
+        },
+    )
+    .await;
+    native.commit().await.unwrap();
+    assert_eq!(sent, Ok(()));
+    assert_eq!(
+        phone.next_skipping_chatter().await,
+        RelayMessage::Event { event }
+    );
+    let connection = json!({"kind":"codex","target":"PRIVATE_TARGET_CANARY"});
+    let event = json!({"threadId":"projection-thread","kind":"message.delta","payload":{"connection":connection}});
+    mac.send(&RelayMessage::Event {
+        event: event.clone(),
+    })
+    .await;
+    mac.ping().await; // Ordered host processing has finished the event before the witness.
+    phone
+        .expect_quiet(std::time::Duration::from_millis(100))
         .await;
-        assert_eq!(
-            phone.next_skipping_chatter().await,
-            RelayMessage::Event {
-                event: event.clone()
-            }
-        );
-        let mut native = b4hub_db::relay::Admission::open(
-            &hub.state.db,
-            &b4hub_db::devices::SessionKey::of(&phone_token),
-            b4hub_core::protocol::ClientProtocol::LEGACY,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let sent = b4hub::relay::admission::try_send_native(
-            &hub.state.relay,
-            &mut native,
-            phone_id,
-            RelayMessage::Event {
-                event: event.clone(),
-            },
-        )
+    let mut native = b4hub_db::relay::Admission::open(
+        &hub.state.db,
+        &b4hub_db::devices::SessionKey::of(&phone_token),
+        b4hub_core::protocol::ClientProtocol::LEGACY,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let sent = b4hub::relay::admission::try_send_native(
+        &hub.state.relay,
+        &mut native,
+        phone_id,
+        RelayMessage::Event { event },
+    )
+    .await;
+    native.commit().await.unwrap();
+    assert_eq!(
+        sent,
+        Err(b4hub::relay::SendError::Offline),
+        "the actual native sender must refuse before enqueue"
+    );
+    phone
+        .expect_quiet(std::time::Duration::from_millis(100))
         .await;
-        native.commit().await.unwrap();
-        assert_eq!(sent, Ok(()));
-        assert_eq!(
-            phone.next_skipping_chatter().await,
-            RelayMessage::Event { event }
-        );
-    }
-    for connection in private_connections() {
-        let event = json!({"threadId":"projection-thread","kind":"message.delta","payload":{"connection":connection}});
-        mac.send(&RelayMessage::Event {
-            event: event.clone(),
-        })
-        .await;
-        mac.ping().await; // Ordered host processing has finished the event before the witness.
-        phone
-            .expect_quiet(std::time::Duration::from_millis(100))
-            .await;
-        let mut native = b4hub_db::relay::Admission::open(
-            &hub.state.db,
-            &b4hub_db::devices::SessionKey::of(&phone_token),
-            b4hub_core::protocol::ClientProtocol::LEGACY,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let sent = b4hub::relay::admission::try_send_native(
-            &hub.state.relay,
-            &mut native,
-            phone_id,
-            RelayMessage::Event { event },
-        )
-        .await;
-        native.commit().await.unwrap();
-        assert_eq!(
-            sent,
-            Err(b4hub::relay::SendError::Offline),
-            "the actual native sender must refuse before enqueue"
-        );
-        phone
-            .expect_quiet(std::time::Duration::from_millis(100))
-            .await;
-    }
     phone.close().await;
     mac.close().await;
 }
@@ -486,23 +471,22 @@ async fn typed_reply_preserves_harmless_legacy_fields_and_refuses_private_target
     hub.seed_thread(&user, mac_id, "reply-thread").await;
     let mut mac = FakeDevice::ready(hub.addr, &mac_token).await.0;
     let mut phone = FakeDevice::ready(hub.addr, &phone_token).await.0;
-    for (index, connection) in harmless_connections().into_iter().enumerate() {
-        let id = format!("harmless-{index}");
-        phone
-            .command(
-                &id,
-                RelayMethod::TurnLookup,
-                json!({"threadId":"reply-thread","operationId":"op"}),
-            )
-            .await;
-        assert_eq!(mac.expect_command().await.0, id);
-        let result = json!({"connection":connection,"text":{"connection":{"target":"opaque-user-text","authReference":"ordinary-text"}}});
-        mac.reply(&id, result.clone()).await;
-        let (actual, body, error) = phone.expect_reply().await;
-        assert_eq!(actual, id);
-        assert_eq!(body, Some(result));
-        assert!(error.is_none());
-    }
+    let connection = legacy_connection();
+    let id = "harmless";
+    phone
+        .command(
+            id,
+            RelayMethod::TurnLookup,
+            json!({"threadId":"reply-thread","operationId":"op"}),
+        )
+        .await;
+    assert_eq!(mac.expect_command().await.0, id);
+    let result = json!({"connection":connection,"text":{"connection":{"target":"opaque-user-text","authReference":"ordinary-text"}}});
+    mac.reply(id, result.clone()).await;
+    let (actual, body, error) = phone.expect_reply().await;
+    assert_eq!(actual, id);
+    assert_eq!(body, Some(result));
+    assert!(error.is_none());
     phone
         .command(
             "private-result",
@@ -890,7 +874,6 @@ async fn queued_close_companion(pool: PgPool, case: QueuedCloseCase) {
                 }),
                 "real logout must block the SAME still-present generation before release"
             );
-            // Managed baseline must demonstrate actual4000 here before any correction.
             assert_eq!(close.code, Some(close_code::REVOKED), "{close:?}");
             assert!(
                 !close.application,

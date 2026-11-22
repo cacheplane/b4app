@@ -5,8 +5,8 @@ import Testing
 
 /// The corpus is copied byte for byte from the pinned, unpublished SDK package.
 /// Loading through #filePath keeps the existing test target's fixture exclusions intact.
-@Suite struct AgentProtocolTypesTests {
-  private struct Fixture: Decodable {
+private struct Corpus: Decodable, Sendable {
+  struct Fixture: Decodable, Sendable {
     let name: String
     let schema: String
     let value: AgentProtocol.Value
@@ -14,21 +14,24 @@ import Testing
     let correctedValid: Bool?
   }
 
-  private struct Corpus: Decodable {
-    let upstream: [Fixture]
-    let b4: [Fixture]
-  }
+  let upstream: [Fixture]
+  let b4: [Fixture]
 
-  private func corpus() throws -> Corpus {
-    let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-      .appendingPathComponent("Fixtures/agent-protocol", isDirectory: true)
-    return try JSONDecoder().decode(
-      Corpus.self, from: Data(contentsOf: directory.appendingPathComponent("agent-protocol.fixtures.json")))
+  static let loaded = Result<Corpus, Error> {
+    let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .appendingPathComponent("Fixtures/agent-protocol/agent-protocol.fixtures.json")
+    return try JSONDecoder().decode(Corpus.self, from: Data(contentsOf: url))
   }
+}
 
+func protocolFixture(_ name: String) throws -> AgentProtocol.Value {
+  let corpus = try Corpus.loaded.get()
+  return try #require((corpus.upstream + corpus.b4).first { $0.name == name }).value
+}
+
+@Suite struct AgentProtocolTypesTests {
   private func fixture(_ name: String) throws -> AgentProtocol.Value {
-    let corpus = try corpus()
-    return try #require((corpus.upstream + corpus.b4).first { $0.name == name }).value
+    try protocolFixture(name)
   }
 
   private func decode<T: Decodable>(_ type: T.Type, fixture name: String) throws -> T {
@@ -262,19 +265,8 @@ import Testing
     try expectFailure(AgentProtocol.AgentMetadata.self, value: metadata, path: ["v"])
   }
 
-  @Test func futureOptionalCapabilitiesStayOpaqueAndDoNotBecomeFalse() throws {
-    // Derive the resource from the imported valid B4 fixture; the future block is synthetic.
-    let corpus = try corpus()
-    var agent = try #require(corpus.b4.first { $0.schema == "B4Agent" && $0.valid == true }).value
-    agent["capabilities"]?["com.example.future"] = .object(["nested": .array([.null, .integer(9)])])
-    let resource = try JSONDecoder().decode(AgentProtocol.Agent.self, from: JSONEncoder().encode(agent))
-    #expect(resource.capabilities["com.example.future"] == .object(["nested": .array([.null, .integer(9)])]))
-    #expect(resource.capabilities["com.example.absent"] == nil)
-    try roundTrip(resource, equals: agent)
-  }
-
   @Test func b4AgentNegotiationChecksMetadataVersionAndKeepsUnknownCapabilities() throws {
-    let corpus = try corpus()
+    let corpus = try Corpus.loaded.get()
     let source = try #require(corpus.b4.first { $0.schema == "B4Agent" && $0.valid == true }).value
     let agent = try JSONDecoder().decode(AgentProtocol.B4Agent.self, from: JSONEncoder().encode(source))
     #expect(agent.metadata.kind == .agent)
@@ -294,7 +286,7 @@ import Testing
   }
 
   @Test func aspAndHTTPFailuresKeepDistinctCorrelationAndMetadata() throws {
-    let corpus = try corpus()
+    let corpus = try Corpus.loaded.get()
     for fixture in corpus.b4 where fixture.schema == "AspErrorResponse" && fixture.valid == true {
       let error = try JSONDecoder().decode(
         AgentProtocol.ASPError.self, from: JSONEncoder().encode(fixture.value))
@@ -339,7 +331,7 @@ import Testing
   }
 
   @Test func importedReceiptAndSummaryFixturesRejectMissingAndMalformedRequiredData() throws {
-    let corpus = try corpus()
+    let corpus = try Corpus.loaded.get()
     let selected: [String: (AgentProtocol.Value) throws -> Void] = [
       "ReceiptV1": {
         _ = try JSONDecoder().decode(AgentProtocol.Receipt.self, from: JSONEncoder().encode($0))
@@ -411,7 +403,7 @@ import Testing
       "supported feature missing group staging": ["limits", "staging"],
       "supported feature missing group recovery": ["schemas", "recovery"],
     ]
-    let cases = try corpus().b4.filter { $0.schema == "B4Agent" }
+    let cases = try Corpus.loaded.get().b4.filter { $0.schema == "B4Agent" }
     #expect(cases.filter { $0.valid == false }.count == expectedMissingFields.count)
     for fixture in cases {
       if fixture.valid == true {
@@ -436,7 +428,7 @@ import Testing
       "CapabilityWorkspaceV1": "run.b4.workspace",
       "CapabilityStoreV1": "run.b4.store",
     ]
-    let cases = try corpus().b4.filter { names[$0.schema] != nil && $0.valid == true }
+    let cases = try Corpus.loaded.get().b4.filter { names[$0.schema] != nil && $0.valid == true }
     #expect(cases.count == names.count)
     for fixture in cases {
       let name = try #require(names[fixture.schema])
@@ -482,7 +474,9 @@ import Testing
   }
 
   @Test func knownAgentSchemasAndLimitsEnforceAllImportedShapes() throws {
-    let cases = try corpus().b4.filter { $0.schema == "AgentSchemasV1" || $0.schema == "AgentLimitsV1" }
+    let cases = try Corpus.loaded.get().b4.filter {
+      $0.schema == "AgentSchemasV1" || $0.schema == "AgentLimitsV1"
+    }
     for fixture in cases {
       var metadata = try self.fixture("agent metadata")
       metadata[fixture.schema == "AgentSchemasV1" ? "schemas" : "limits"] = fixture.value
@@ -508,7 +502,7 @@ import Testing
   }
 
   @Test func knownAguiCapabilityUsesFrozenNativeCapabilitiesShape() throws {
-    let cases = try corpus().b4.filter { $0.schema == "NativeAgentCapabilities" }
+    let cases = try Corpus.loaded.get().b4.filter { $0.schema == "NativeAgentCapabilities" }
     for fixture in cases {
       var agui = try self.fixture("capability agui")
       agui["capabilities"] = fixture.value
@@ -537,6 +531,7 @@ import Testing
     try roundTrip(b4, equals: agent)
     agent["capabilities"]?["run.b4.recovery"]?["v"] = .integer(2)
     let generic = try JSONDecoder().decode(AgentProtocol.Agent.self, from: JSONEncoder().encode(agent))
+    #expect(generic.capabilities["com.example.absent"] == nil)
     try roundTrip(generic, equals: agent)
     try expectFailure(
       AgentProtocol.B4Agent.self, value: agent, path: ["capabilities", "run.b4.recovery", "v"])

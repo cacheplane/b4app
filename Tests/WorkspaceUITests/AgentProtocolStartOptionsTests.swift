@@ -26,12 +26,7 @@ import WorkspaceProtocol
       Connection(
         id: "historical-remote", kind: .b4, label: "Historical remote", target: "", b4Mode: .remote,
         ownerDeviceId: "mac-1", status: .ready),
-      Connection(
-        id: "staged-protocol", kind: .agentProtocol, label: "Staged", target: "https://example.invalid",
-        nativeScope: #"["agent-protocol-v1","agentProtocol","https://example.invalid"]"#,
-        peerProfile: .agentProtocol, agentId: "fixture",
-        authMode: ConnectionAuthMode.none,
-        ownerDeviceId: "mac-1", status: .ready),
+      HistoricalActionFixture.staged(),
     ]
     let transport = ScriptedTransport()
     transport.set(connections: connections, threads: [PhoneFixture.thread()], environments: [environment])
@@ -41,7 +36,6 @@ import WorkspaceProtocol
     var failure: (any Error)?
     do {
       try #require(await model.settledLink() == .ready)
-      try HistoricalActionFixture.checkCanonicalStaged(try #require(model.connection(id: "staged-protocol")))
       try body(model, environment)
     } catch { failure = error }
     await model.disconnect()

@@ -13,7 +13,7 @@ private func seeded() throws -> WorkspaceDatabase {
   return db
 }
 
-@Suite(NativeDBResources(), .serialized) struct ConversationStorageTests {
+@Suite struct ConversationStorageTests {
   @Test func upsertReplacesByNativeIdAndKeepsSequence() throws {
     let db = try seeded()
     _ = try db.insertTurn(Turn(id: "turn_a", threadId: "t1", operationId: "op-a"))
@@ -86,7 +86,7 @@ private func seeded() throws -> WorkspaceDatabase {
   }
 }
 
-@Suite(NativeDBResources(), .serialized) struct SnapshotMergeTests {
+@Suite struct SnapshotMergeTests {
   @Test func canonicalHistoryIdsReuseMessagesWithinAcknowledgedNativeTurns() throws {
     let db = try seeded()
     defer { try? db.close() }

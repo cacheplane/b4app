@@ -10,110 +10,6 @@ import WorkspaceStorage
 @testable import Coordinator
 @testable import WorkspacePlatform
 
-/// Closed case labels; neither the collector nor formatter accepts request or executable text.
-enum ServerNodeProbeLabel: String, Sendable {
-  case addsAProjectAndInspectsItsRoutes
-  case startsToReadyInSourceModeAndIsIdempotent
-  case startsInDevelopmentModeWithTheEnvFile
-  case logsAreTailedRedactedAndFollowable
-  case managedConnectionRefusesWhileStopped
-  case removingRefusesWhileATurnIsRunningUnlessForced
-  case localB4ThreadsUseTheServerEnvironmentAndRemoteHaveNone
-}
-
-private func nodeProbeLine(
-  label: ServerNodeProbeLabel, observation: NodeVersionProbeObservation
-) -> String {
-  func flag(_ value: Bool?) -> String {
-    guard let value else { return "unavailable" }
-    return value ? "true" : "false"
-  }
-  func number(_ value: Int32?) -> String {
-    guard let value else { return "unavailable" }
-    return String(value)
-  }
-  return "node-explicit-probe case=\(label.rawValue)"
-    + " commandThrew=\(flag(observation.commandThrew))"
-    + " returnedTimedOut=\(flag(observation.returnedTimedOut))"
-    + " returnedExitCode=\(number(observation.returnedExitCode))"
-    + " returnedSignal=\(number(observation.returnedSignal))"
-    + " returnedSucceeded=\(flag(observation.returnedSucceeded))"
-    + " stdoutShape=\(observation.stdoutShape.rawValue)"
-    + " versionPrefixAccepted=\(flag(observation.versionPrefixAccepted))"
-    + " minimumAccepted=\(flag(observation.minimumAccepted))"
-    + " resolveAccepted=\(flag(observation.resolveAccepted))"
-    + " callerCancelledAtReturn=\(flag(observation.callerCancelledAtReturn))"
-    + " probeParentElapsedMilliseconds=\(observation.probeParentElapsedMilliseconds)"
-    + " selectedOutcomeOrigin=\(observation.selectedOutcomeOrigin?.rawValue ?? "unavailable")"
-}
-
-private final class ServerNodeProbeCollector: Sendable {
-  private let records = Mutex<[NodeVersionProbeObservation]>([])
-  private let label: ServerNodeProbeLabel
-
-  init(label: ServerNodeProbeLabel) { self.label = label }
-
-  func append(_ observation: NodeVersionProbeObservation) {
-    records.withLock { $0.append(observation) }
-  }
-
-  func emitSnapshot() {
-    let snapshot = records.withLock { $0 }
-    for observation in snapshot { print(nodeProbeLine(label: label, observation: observation)) }
-  }
-}
-
-struct NodeProbeDiagnosticFormattingTests {
-  @Test func rawPrivateTextIsDroppedByTheSameProjectionBeforeFixedFormatting() {
-    let rawError = "error: TOKEN=private-example /private/example/stderr"
-    let samples: [(String, NodeVersionProbeObservation.StdoutShape)] = [
-      ("/private/example/node TOKEN=private-example", .other),
-      ("error: private-example --private-argument", .other),
-      ("v/private/example/version", .vPrefixOther),
-      ("v24.0.0\n", .exactFake24),
-    ]
-    for (rawStdout, expectedShape) in samples {
-      let result = CommandResult(stdout: rawStdout, stderr: rawError, exitCode: 0)
-      let shape = NodeVersionProbeObservation.classifyStdout(of: result)
-      #expect(shape == expectedShape)
-      let observation = NodeVersionProbeObservation(
-        commandThrew: false, returnedTimedOut: result.timedOut, returnedExitCode: result.exitCode,
-        returnedSignal: result.signal, returnedSucceeded: result.succeeded, stdoutShape: shape,
-        versionPrefixAccepted: nil, minimumAccepted: nil, resolveAccepted: false,
-        callerCancelledAtReturn: false, probeParentElapsedMilliseconds: 123)
-      let line = nodeProbeLine(label: .addsAProjectAndInspectsItsRoutes, observation: observation)
-      let leakedRawText = line.contains(rawStdout) || line.contains(rawError)
-      #expect(!leakedRawText)
-    }
-  }
-
-  @Test func formatterUsesOnlyClosedLabelsShapesAndPrimitiveFacts() {
-    let shapes: [NodeVersionProbeObservation.StdoutShape] = [
-      .unavailable, .empty, .exactFake24, .vPrefixOther, .other,
-    ]
-    let origins: [CommandRunner.SelectedOutcomeOrigin?] = [
-      nil, .finished, .timerReturned, .workCancellationCaught, .defensiveNoOutcome,
-    ]
-    for shape in shapes {
-      for origin in origins {
-        let observation = NodeVersionProbeObservation(
-          commandThrew: false, returnedTimedOut: false, returnedExitCode: 0, returnedSignal: nil,
-          returnedSucceeded: true, stdoutShape: shape, versionPrefixAccepted: true,
-          minimumAccepted: true, resolveAccepted: true, callerCancelledAtReturn: false,
-          probeParentElapsedMilliseconds: 123, selectedOutcomeOrigin: origin)
-        let line = nodeProbeLine(label: .addsAProjectAndInspectsItsRoutes, observation: observation)
-        #expect(
-          line == "node-explicit-probe case=addsAProjectAndInspectsItsRoutes"
-            + " commandThrew=false returnedTimedOut=false returnedExitCode=0 returnedSignal=unavailable"
-            + " returnedSucceeded=true stdoutShape=\(shape.rawValue) versionPrefixAccepted=true"
-            + " minimumAccepted=true resolveAccepted=true callerCancelledAtReturn=false"
-            + " probeParentElapsedMilliseconds=123"
-            + " selectedOutcomeOrigin=\(origin?.rawValue ?? "unavailable")")
-      }
-    }
-  }
-}
-
 /// A coordinator on scratch directories whose Node is the fake shim, plus a scratch B4 project.
 struct ServerHarness {
   let coordinator: RunningCoordinator
@@ -121,10 +17,9 @@ struct ServerHarness {
   let paths: PlatformPaths
   let base: String
   let events: EventCollector
-  private let nodeProbeCollector: ServerNodeProbeCollector?
 
   static func start(
-    paths existing: PlatformPaths? = nil, nodeProbeLabel: ServerNodeProbeLabel? = nil,
+    paths existing: PlatformPaths? = nil,
     adapterFactory: SessionService.AdapterFactory? = nil
   ) async throws -> ServerHarness {
     let base: String
@@ -138,10 +33,8 @@ struct ServerHarness {
     }
     var env = ProcessInfo.processInfo.environment
     env["B4APP_NODE_PATH"] = fakeNodePath()
-    let collector = nodeProbeLabel.map { ServerNodeProbeCollector(label: $0) }
-    var options = CoordinatorOptions(
+    let options = CoordinatorOptions(
       paths: paths, environment: env, secretStore: MemorySecretStore(), adapterFactory: adapterFactory)
-    if let collector { options.nodeVersionProbeObservation = { collector.append($0) } }
     let outcome = try await Coordinator.startSignedIn(options: options)
     guard case .running(let coordinator) = outcome else {
       throw WorkspaceError(.internalError, "expected running")
@@ -151,12 +44,8 @@ struct ServerHarness {
     await client.resetCursor(epoch: snapshot.epoch, sequence: snapshot.sequence)
     let events = EventCollector(await client.events())
     return ServerHarness(
-      coordinator: coordinator, client: client, paths: paths, base: base, events: events,
-      nodeProbeCollector: collector)
+      coordinator: coordinator, client: client, paths: paths, base: base, events: events)
   }
-
-  /// Snapshot only; the existing deferred Task cleanup is not joined by this method.
-  func emitNodeProbeObservations() { nodeProbeCollector?.emitSnapshot() }
 
   func project(
     _ name: String = "proj", cliVersion: String? = "0.15.8", withConfig: Bool = true
@@ -220,10 +109,9 @@ struct ServerHarness {
   }
 }
 
-@Suite(NativeDBResources(), .serialized) struct LocalServerRegistryTests {
+@Suite(.serialized) struct LocalServerRegistryTests {
   @Test func addsAProjectAndInspectsItsRoutes() async throws {
-    let h = try await ServerHarness.start(nodeProbeLabel: .addsAProjectAndInspectsItsRoutes)
-    defer { h.emitNodeProbeObservations() }
+    let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
     let path = try h.project("research-agent")
     let server = try await h.add(path)
@@ -304,7 +192,7 @@ struct ServerHarness {
 }
 
 /// Owned-server lifecycle against the fake project CLI.
-@Suite(NativeDBResources(), .serialized) struct LocalServerLifecycleTests {
+@Suite(.serialized) struct LocalServerLifecycleTests {
   /// The server's row once a `server.changed` event has moved it from the health it had in `server` to
   /// `health` (every change to a managed server is published). Events are ordered, so a match after
   /// the one that reported `server.health` is the change the caller waits for, not an older one.
@@ -328,8 +216,7 @@ struct ServerHarness {
   }
 
   @Test func startsToReadyInSourceModeAndIsIdempotent() async throws {
-    let h = try await ServerHarness.start(nodeProbeLabel: .startsToReadyInSourceModeAndIsIdempotent)
-    defer { h.emitNodeProbeObservations() }
+    let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
     let added = try await h.add(try h.project())
     let started = try await h.start(added)
@@ -353,8 +240,7 @@ struct ServerHarness {
   }
 
   @Test func startsInDevelopmentModeWithTheEnvFile() async throws {
-    let h = try await ServerHarness.start(nodeProbeLabel: .startsInDevelopmentModeWithTheEnvFile)
-    defer { h.emitNodeProbeObservations() }
+    let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
     let path = try h.project()
     try "FAKE_B4_MARK=mark-1\n".write(toFile: path + "/.env", atomically: true, encoding: .utf8)
@@ -581,10 +467,9 @@ struct ServerHarness {
   }
 }
 
-@Suite(NativeDBResources(), .serialized) struct LocalServerLogTests {
+@Suite(.serialized) struct LocalServerLogTests {
   @Test func logsAreTailedRedactedAndFollowable() async throws {
-    let h = try await ServerHarness.start(nodeProbeLabel: .logsAreTailedRedactedAndFollowable)
-    defer { h.emitNodeProbeObservations() }
+    let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
     let path = try h.project()
     try "OPENAI_API_KEY=sk-proj-abcdefghijklmnop\nFAKE_B4_ECHO_ENV=1\n".write(
@@ -627,7 +512,7 @@ struct ServerHarness {
   }
 }
 
-@Suite(NativeDBResources(), .serialized) struct ManagedConnectionTests {
+@Suite(.serialized) struct ManagedConnectionTests {
   private func connect(
     _ h: ServerHarness, _ server: LocalServer, route: String = "/chat#agent"
   ) async throws -> ConnectionAdd.Result {
@@ -650,9 +535,7 @@ struct ServerHarness {
 
   @Test func managedConnectionRefusesWhileStopped() async throws {
     let witness = HistoricalFactoryWitness()
-    let h = try await ServerHarness.start(
-      nodeProbeLabel: .managedConnectionRefusesWhileStopped, adapterFactory: witness.makeFactory())
-    defer { h.emitNodeProbeObservations() }
+    let h = try await ServerHarness.start(adapterFactory: witness.makeFactory())
     defer { Task { await h.close() } }
     let server = try await h.add(try h.project())
     for mixedURL in [false, true, false] {
@@ -773,7 +656,7 @@ struct ServerHarness {
     let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
     let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
       h.coordinator.database, connection: connection, status: .running)
-    // TEST SEAM, matching AgentProtocolLegacyManagedTests: a synthetic current-kind row linked to
+    // A synthetic current-kind row linked to
     // the owned registration exercises the generic notification projection. Shipped Codex does not
     // execute through a B4 server, and no such routing claim is made here.
     let current = try h.coordinator.database.insertConnection(
@@ -836,7 +719,7 @@ struct ServerHarness {
 }
 
 /// Taking a project off the Mac (D-231).
-@Suite(NativeDBResources(), .serialized) struct LocalServerRemoveTests {
+@Suite(.serialized) struct LocalServerRemoveTests {
   private func connect(_ h: ServerHarness, _ server: LocalServer) async throws -> Connection {
     try await h.client.request(
       ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),
@@ -921,10 +804,7 @@ struct ServerHarness {
 
   @Test func removingRefusesWhileATurnIsRunningUnlessForced() async throws {
     let witness = HistoricalFactoryWitness()
-    let h = try await ServerHarness.start(
-      nodeProbeLabel: .removingRefusesWhileATurnIsRunningUnlessForced,
-      adapterFactory: witness.makeFactory())
-    defer { h.emitNodeProbeObservations() }
+    let h = try await ServerHarness.start(adapterFactory: witness.makeFactory())
     defer { Task { await h.close() } }
     let server = try await h.start(try await h.add(try h.project()))
     let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)

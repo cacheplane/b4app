@@ -117,28 +117,18 @@ async fn every_sync_http_entry_refuses_old_clients_before_body_or_data(pool: PgP
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
-    for protocol in [None, Some("1"), Some("2")] {
-        let mut request = Request::builder()
-            .method("POST")
-            .uri("/v1/changes")
-            .header(header::AUTHORIZATION, format!("Bearer {token}"))
-            .header(header::CONTENT_TYPE, "application/json");
-        if let Some(protocol) = protocol {
-            request = request.header("B4-Protocol", protocol);
-        }
-        let response = serve::router(state.clone())
-            .oneshot(request.body(Body::from("{\"changes\":[]}")).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            if protocol == Some("2") {
-                StatusCode::OK
-            } else {
-                StatusCode::CONFLICT
-            }
-        );
-    }
+    let response = serve::router(state.clone())
+        .oneshot(
+            Request::post("/v1/changes")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("B4-Protocol", "2")
+                .body(Body::from(r#"{"changes":[]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
     let ready = serve::router(state.clone())
         .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
         .await

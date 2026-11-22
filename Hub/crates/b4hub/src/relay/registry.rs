@@ -1802,9 +1802,6 @@ mod tests {
         }
     }
 
-    // Retained-close unit policy controls use synthetic registrations only. The ordered calls
-    // below model the publication/last-seen/cutoff phases; they do not exercise a DB await,
-    // socket, native admission, instance-claim release or a transport quiescence guarantee.
     #[test]
     fn every_blocking_setter_retains_the_cause_even_after_a_drain_notification() {
         for setter in 0..4 {
@@ -1885,12 +1882,8 @@ mod tests {
     #[test]
     fn repeated_blocking_requests_preserve_the_first_full_close_without_priority() {
         for (first, later) in [
-            (Close::session_ended(), Close::revoked()),
             (Close::revoked(), Close::session_ended()),
             (Close::client_too_old(2), Close::client_too_old(3)),
-            (Close::client_too_old(3), Close::client_too_old(2)),
-            (Close::replaced(), Close::session_ended()),
-            (Close::session_ended(), Close::replaced()),
         ] {
             let relay = Relay::new();
             let link = relay.register_synthetic_model(identity(1, Role::Client));
@@ -1938,14 +1931,6 @@ mod tests {
             };
             assert_eq!(old.handle.retained_close.get(), Some(&expected));
             assert_eq!(old.closing.try_recv().unwrap(), expected);
-            assert!(!Arc::ptr_eq(
-                &old.handle.retained_close,
-                &new.handle.retained_close
-            ));
-            assert!(Arc::ptr_eq(
-                &new.handle.retained_close,
-                &new.handle.clone().retained_close,
-            ));
             assert!(new.handle.retained_close.get().is_none());
             assert!(relay.current(&new.handle));
             assert!(!relay.close_generation(

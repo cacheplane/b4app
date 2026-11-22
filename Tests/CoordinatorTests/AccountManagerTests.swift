@@ -131,7 +131,7 @@ private struct AccountRig {
   var accounts: AccountManager { coordinator.accounts }
 
   static func paths() throws -> PlatformPaths {
-    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4a-\(UUID().uuidString.prefix(8))"
+    let base = NSTemporaryDirectory() + "b4a-\(UUID().uuidString.prefix(8))"
     try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
     return try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
   }
@@ -240,7 +240,7 @@ private let acme = AuthSession(
   user: UserInfo(username: "brian", displayName: "Brian"), needsOnboarding: false,
   userId: "0197cccc-0000-7000-8000-00000000c003")
 
-@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(3))) struct AccountManagerTests {
+@Suite(.serialized, .timeLimit(.minutes(3))) struct AccountManagerTests {
   @Test func adoptsJoinedWorkspace() async throws {
     let paths = try AccountRig.paths()
     let secrets = MemorySecretStore()
@@ -357,6 +357,37 @@ private let acme = AuthSession(
     #expect(second.database == AccountRegistry.databaseName(id: second.id))
     #expect(second.database != rig.paths.postgres.database)
     #expect(await rig.accounts.status().known.count == 2)
+  }
+
+  @Test func installedProtocolComparisonExpiresWhenTheAccountChanges() async throws {
+    let rig = try await AccountRig.start()
+    defer { Task { await rig.close() } }
+    await rig.hub.add(ann)
+    await rig.hub.add(bob)
+    _ = try await rig.accounts.signIn(session: ann, hubURL: hubURL)
+    let scope = try rig.accounts.scope()
+    let link = try #require(try scope.database.hubLink())
+    let snapshot = try scope.database.captureProtocolVerification(
+      accountID: scope.account.id,
+      expectedMembership: ProtocolNativeMembership(
+        canonicalHubBase: link.url, deviceID: link.deviceId, linkJoinedAt: link.joinedAt))
+    let ordinary = try await rig.accounts.prepareDormantHubOwner(
+      expectedScope: scope, originalSnapshot: snapshot)
+    try ordinary.requireOrdinaryMemory()
+    let window = try await rig.accounts.beginDormantScopePreparation()
+    let prepared = try await rig.accounts.reserveDormantScopeOwner(preparation: window, expectedScope: scope)
+    #expect(throws: WorkspaceError.self) {
+      _ = try prepared.carrier.captureInstalledAccountSessionComparison()
+    }
+    let attachment = try await scope.hub.attachReservedScopeOwner(prepared.carrier)
+    _ = try await rig.accounts.publishDormantReservedScope(
+      expectedScope: scope, prepared: prepared, attachment: attachment)
+    let comparison = try prepared.carrier.captureInstalledAccountSessionComparison()
+    try comparison.requireOriginalNativeSession()
+
+    _ = try await rig.accounts.signIn(session: bob, hubURL: hubURL)
+    #expect(throws: WorkspaceError.self) { try ordinary.requireOrdinaryMemory() }
+    #expect(throws: WorkspaceError.self) { try comparison.requireOriginalNativeSession() }
   }
 
   @Test func switchPreservesThreads() async throws {
@@ -614,7 +645,7 @@ private let acme = AuthSession(
   }
 
   @Test func aServerStartRacingSignOutLeavesNoServerRunning() async throws {
-    let base = AgentProtocolResourceFixture.temporaryDirectory + "b4as-\(UUID().uuidString.prefix(8))"
+    let base = NSTemporaryDirectory() + "b4as-\(UUID().uuidString.prefix(8))"
     let paths = try EphemeralPostgres.paths(runtimeDir: base + "/rt", dataDir: base + "/data")
     var environment = ProcessInfo.processInfo.environment
     environment["B4APP_NODE_PATH"] = fakeNodePath()
@@ -817,7 +848,7 @@ private func seedConnectionSecret(
   return ref
 }
 
-@Suite(NativeDBResources(), .serialized, .timeLimit(.minutes(3))) struct LegacySecretCopyTests {
+@Suite(.serialized, .timeLimit(.minutes(3))) struct LegacySecretCopyTests {
   @Test func anAdoptedWorkspacesSecretsAreCopiedAndItStaysSignedIn() async throws {
     let paths = try AccountRig.paths()
     let prod = CountingSecretStore()

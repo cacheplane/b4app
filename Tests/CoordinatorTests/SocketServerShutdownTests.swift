@@ -8,88 +8,37 @@ import WorkspaceProtocol
 
 @Suite(.serialized, .timeLimit(.minutes(2))) struct SocketServerShutdownTests {
   @Test func initializedBufferedChildrenReachScopedOwnersBeforeLoopShutdown() async throws {
-    let timing = NativeTimingBoundary(.bufferedChildren)
-    let shutdownTiming = NarrowTimingObservation(.bufferedChildren)
-    let shutdownCallbackQueue = DispatchQueue(label: "b4app.test.bufferedChildren.shutdown")
-    defer { shutdownTiming.emitAfterCleanup() }
     let root = try directory()
     defer { try? FileManager.default.removeItem(at: root) }
     let probe = ShutdownProbe()
     let handoff = ShutdownGate()
-    timing.record(.serverStartIssued)
     let server = try await SocketServer.start(
       socketPath: root.appendingPathComponent("s").path, eventLog: EventLog(),
       plainDispatch: { _ in ResponseEnvelope.success("unexpected", result: .object([:])) },
       lifecycleObserver: { event in
         probe.record(event)
-        switch event {
-        case .connectionDequeued: timing.record(.connectionDequeued)
-        case .connectionFinished: timing.record(.connectionFinished)
-        case .acceptFinished: timing.record(.acceptFinished)
-        case .groupShutdownStarted: timing.record(.groupShutdownStarted)
-        default: break
-        }
         if case .connectionDequeued = event { await handoff.holdFirst() }
-      },
-      acceptanceObserver: { event in
-        switch event {
-        case .groupShutdownInvoked: shutdownTiming.record(.groupShutdownInvoked); return
-        case .groupShutdownCallbackEntered: shutdownTiming.record(.groupShutdownCallbackEntered); return
-        case .groupShutdownAwaitReturned: shutdownTiming.record(.groupShutdownAwaitReturned); return
-        default: break
-        }
-        probe.record(event)
-        switch event {
-        case .initialized: timing.record(.initialized)
-        case .listenerClosed: timing.record(.listenerClosed)
-        case .sourceFinished: timing.record(.sourceFinished)
-        default: break
-        }
-      }, shutdownCallbackQueue: shutdownCallbackQueue)
-    timing.record(.serverStartReturned)
+      }, acceptanceObserver: { probe.record($0) })
     var peers: [UnixSocketTransport] = []
     var closing: Task<Void, Never>?
     var failure: (any Error)?
     do {
-      timing.record(.connectIssued)
       peers.append(try await UnixSocketTransport.connect(path: server.socketPath))
-      timing.record(.connectReturned)
-      timing.record(.gateWaitIssued)
       try await waitFor { handoff.reached }
-      timing.record(.gateWaitReturned)
-      timing.record(.secondConnectIssued)
       peers.append(try await UnixSocketTransport.connect(path: server.socketPath))
-      timing.record(.secondConnectReturned)
-      timing.record(.secondGateWaitIssued)
       try await waitFor { probe.initialized.count == 2 }
-      timing.record(.secondGateWaitReturned)
       #expect(probe.dequeued.count == 1)
-      timing.record(.closeIssued)
-      let task = Task {
-        timing.record(.closeTaskEntered)
-        await server.close()
-        timing.record(.closeReturned)
-      }
+      let task = Task { await server.close() }
       closing = task
       try await waitFor { probe.contains(.listenerClosed) }
       #expect(!probe.contains(.acceptFinished) && !probe.contains(.groupShutdownStarted))
       handoff.release()
-      timing.record(.gateReleased)
-      timing.record(.closeJoinIssued)
       await task.value
-      timing.record(.closeJoinReturned)
     } catch { failure = error }
     handoff.release()
-    timing.record(.cleanupGateReleased)
-    timing.record(.cleanupCloseIssued)
     if let closing { await closing.value } else { await server.close() }
-    timing.record(.cleanupCloseReturned)
-    timing.record(.peersCloseIssued)
     for peer in peers { await peer.close() }
-    timing.record(.peersCloseReturned)
-    timing.record(.finalCloseIssued)
     await server.close()
-    timing.record(.finalCloseReturned)
     if let failure { throw failure }
     #expect(probe.initialized.count == 2 && probe.dequeued.count == 2)
     #expect(Set(probe.initialized) == Set(probe.dequeued))

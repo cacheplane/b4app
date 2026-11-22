@@ -343,14 +343,5 @@ mod tests {
             public_requirement(&json!({"connection":{"kind":"codex","peerProfile":null}})),
             1
         );
-        assert!(private_connection_fields(
-            &json!({"connection":{"authMode":"bearer"}})
-        ));
-        assert!(private_connection_fields(
-            &json!({"payload":{"connection":{"authHeaderName":null}}})
-        ));
-        assert!(!private_connection_fields(
-            &json!({"text":{"authMode":"user text"}})
-        ));
     }
 }

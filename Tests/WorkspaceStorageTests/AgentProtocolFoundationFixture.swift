@@ -10,25 +10,31 @@ import WorkspaceProtocol
 /// production archive codec, WorkspaceDatabase initializer, or migration admission core.
 enum AgentProtocolFoundationFixture {
   enum Failure: Error { case canonicalSet, schema, framing, row }
+
   static let migrations = [
     "0001_init", "0002_changes", "0003_hub", "0004_organisation", "0005_relay",
     "0006_usage", "0007_connection_usage", "0008_thread_delete", "0009_thread_runtime_choice",
     "0010_owned_rows", "0011_environments", "0012_app_folders", "0013_view_settings",
     "0014_connection_commands", "0015_density", "0016_turn_open_work", "0017_agent_protocol",
   ]
+
   static let protocolTables = [
     "protocolSubscriptions", "protocolRunSegments", "protocolOperations",
     "protocolGrantSecrets", "protocolGrants", "protocolPromptAnswers", "protocolHistoryAnchors",
   ]
+
   static let legacyDataTables = [
     "localServers", "projects", "projectFolders", "connections", "threads", "turns",
     "displayItems", "runtimeRequests", "drafts", "devices", "changes", "columnClocks", "settings",
     "usageReadings", "tokenUsage", "connectionUsage", "threadDeletes",
   ]
+
   static let appFolderDataTables = legacyDataTables.flatMap { table in
     table == "threads" ? ["threads", "appFolders"] : [currentTable(old: table)]
   }
+
   static let viewSettingsDataTables = appFolderDataTables + ["viewSettings"]
+
   static let dataTables = viewSettingsDataTables + protocolTables
 
   static func currentTable(old table: String) -> String {
@@ -78,13 +84,7 @@ enum AgentProtocolFoundationFixture {
     }
     return result
   }
-  static let addedColumns = [
-    "connections": [
-      "models", "peerProfile", "agentId", "authMode", "authHeaderName", "protocolRetiredAt",
-      "protocolRetiredReason",
-    ],
-    "threads": ["model", "permission"],
-  ]
+
   struct ArchiveFacts: Sendable, Equatable {
     var jsonColumns: [String: Set<String>]
     var primaryKeys: [String: [String]]
@@ -92,20 +92,12 @@ enum AgentProtocolFoundationFixture {
     var nativeSQLNullCells: [String: [String]]
     var nativeThreadChoices: [String]
   }
-  struct Document {
-    var header: [String: Any]
-    var rows: [String: [[String: Any]]]
-    var rowCount: Int
-  }
-  static func knownFiles() throws -> [(name: String, sql: String)] {
-    let files = try Migrator.files()
-    guard files.map(\.name) == migrations else { throw Failure.canonicalSet }
-    return files
-  }
+
   static func canonical(_ object: Any) throws -> String {
     String(
       decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
   }
+
   private static func identity(_ row: [String: Any], keys: [String]) throws -> [String] {
     try keys.map { key in
       if let text = row[key] as? String { return text }
@@ -115,6 +107,7 @@ enum AgentProtocolFoundationFixture {
       throw Failure.row
     }
   }
+
   private static func taggedJSON(_ row: [String: Any], keys: [String], columns: Set<String>) throws -> String
   {
     var cells: [String: Any] = [:]
@@ -124,6 +117,7 @@ enum AgentProtocolFoundationFixture {
     }
     return try canonical(["identity": identity(row, keys: keys), "cells": cells])
   }
+
   static func archiveFacts(_ c: PostgresConnection) throws -> ArchiveFacts {
     var json: [String: Set<String>] = [:], keys: [String: [String]] = [:]
     for row in try c.execute(
@@ -202,6 +196,7 @@ enum AgentProtocolFoundationFixture {
       jsonColumns: json, primaryKeys: keys, encodedJSONCells: encoded,
       nativeSQLNullCells: nulls, nativeThreadChoices: threadChoices)
   }
+
   /// Compare only source-existing JSON cells, keyed by their original SQL primary IDs.
   /// Cell text stays opaque, so SQL NULL, jsonb null and out-of-Double-range numbers remain distinct.
   static func requireNativeJSONRetained(
@@ -240,101 +235,14 @@ enum AgentProtocolFoundationFixture {
       for (id, value) in originalNull { guard currentNull[id] == value else { throw Failure.row } }
     }
   }
-  static func readV4(
-    _ text: String, expectedRows: [String: [String]], expectedMigrations: [String], facts: ArchiveFacts,
-    canonicalPrefixCount: Int = 8
-  ) throws -> Document {
-    guard text.utf8.last == 10 else { throw Failure.framing }
-    let pieces = text.split(separator: "\n", omittingEmptySubsequences: false)
-    guard pieces.last?.isEmpty == true, pieces.count >= 3 else { throw Failure.framing }
-    let lines = pieces.dropLast()
-    func object(_ line: Substring) throws -> [String: Any] {
-      guard let value = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else {
-        throw Failure.framing
-      }
-      return value
-    }
-    let header = try object(try #require(lines.first)), footer = try object(try #require(lines.last))
-    let expectedContext = [Migrator.table, "hubLink"]
-    // Store11 switches to environment names. Stores12–17 add app folders, view settings, commands,
-    // density, turn open work/origin, and finally the protocol tables.
-    // Never infer a smaller schema from missing tables; unknown or absent tables are failures.
-    let baseTables =
-      canonicalPrefixCount >= 13
-      ? viewSettingsDataTables
-      : canonicalPrefixCount >= 12
-        ? appFolderDataTables
-        : (canonicalPrefixCount >= 11 ? legacyDataTables.map { currentTable(old: $0) } : legacyDataTables)
-    let expectedData = baseTables + (canonicalPrefixCount == 17 ? protocolTables : [])
-    var headerFields: Set<String> = [
-      "format", "version", "at", "purpose", "migrations", "requiredTables", "sourceContextTables",
-    ]
-    if canonicalPrefixCount == 17 { headerFields.insert("protocolSchema") }
-    guard (8...17).contains(canonicalPrefixCount),
-      expectedMigrations == Array(migrations.prefix(canonicalPrefixCount)),
-      Set(expectedRows.keys) == Set(expectedData + expectedContext),
-      Set(header.keys) == headerFields,
-      canonicalPrefixCount != 17 || header["protocolSchema"] as? String == "generation_epochs_v1",
-      header["format"] as? String == "b4app-export", header["version"] as? Int == 4,
-      header["purpose"] as? String == "preMigration", !(header["at"] as? String ?? "").isEmpty,
-      header["migrations"] as? [String] == expectedMigrations,
-      header["requiredTables"] as? [String] == expectedData,
-      header["sourceContextTables"] as? [String] == expectedContext,
-      Set(footer.keys) == Set(["format", "version", "rows", "tableRows"]),
-      footer["format"] as? String == "b4app-export-end", footer["version"] as? Int == 4,
-      let counts = footer["tableRows"] as? [String: Any], Set(counts.keys) == Set(expectedRows.keys)
-    else { throw Failure.framing }
-    var rows: [String: [[String: Any]]] = [:], count = 0
-    for line in lines.dropFirst().dropLast() {
-      let entry = try object(line)
-      guard Set(entry.keys) == Set(["table", "row"]), let table = entry["table"] as? String,
-        expectedRows[table] != nil, let row = entry["row"] as? [String: Any]
-      else { throw Failure.framing }
-      rows[table, default: []].append(row); count += 1
-    }
-    guard footer["rows"] as? Int == count else { throw Failure.framing }
-    for (table, old) in expectedRows {
-      guard counts[table] as? Int == old.count, (rows[table]?.count ?? 0) == old.count else {
-        throw Failure.framing
-      }
-      if let columns = facts.jsonColumns[table] {
-        let primary = try #require(facts.primaryKeys[table])
-        let encoded = try (rows[table] ?? []).map { try taggedJSON($0, keys: primary, columns: columns) }
-          .sorted()
-        let exactCells = encoded.map { Data($0.utf8) } == facts.encodedJSONCells[table]?.map { Data($0.utf8) }
-        // SQL NULL remains different from the JSON-text string "null",
-        // keyed by owner row.
-        #expect(exactCells)
-      }
-    }
-    return Document(header: header, rows: rows, rowCount: count)
-  }
-  static func assertArchiveRows(_ document: Document, oldRows: [String: [String]], facts: ArchiveFacts) throws
-  {
-    #expect(document.rowCount == oldRows.values.reduce(0) { $0 + $1.count })
-    for (table, original) in oldRows {
-      let expected = try original.map { text in
-        try canonical(try JSONSerialization.jsonObject(with: Data(text.utf8)))
-      }.sorted()
-      let actual = try (document.rows[table] ?? []).map { archived in
-        var row = archived
-        for column in facts.jsonColumns[table] ?? [] {
-          guard let value = row[column], !(value is NSNull) else { continue }
-          let text = try #require(value as? String)
-          row[column] = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
-        }
-        return try canonical(row)
-      }.sorted()
-      let allFieldsRetained = actual == expected
-      #expect(allFieldsRetained)
-    }
-  }
+
   /// The original ledger is the authority for a preservation comparison, even for an empty store.
   struct PreservationPrefix {
     let names: [String]
     var count: Int { names.count }
     fileprivate init(names: [String]) { self.names = names }
   }
+
   static func preservationPrefix(_ originalNames: [String], expectedCount: Int) throws -> PreservationPrefix {
     guard (8...17).contains(expectedCount), originalNames.count == expectedCount,
       Set(originalNames).count == expectedCount,
@@ -342,6 +250,7 @@ enum AgentProtocolFoundationFixture {
     else { throw Failure.canonicalSet }
     return PreservationPrefix(names: originalNames)
   }
+
   static func ledgerNames(_ originalRows: [String: [String]]) throws -> [String] {
     guard let ledger = originalRows["schemaMigrations"] else { throw Failure.canonicalSet }
     return try ledger.map { text in
@@ -351,6 +260,7 @@ enum AgentProtocolFoundationFixture {
       return name
     }.sorted()
   }
+
   private static let introduction: [String: [String: Int]] = [
     "connections": [
       "models": 9, "commands": 14, "peerProfile": 17, "agentId": 17,
@@ -359,12 +269,15 @@ enum AgentProtocolFoundationFixture {
     "turns": ["openWork": 16, "origin": 16],
     "threads": ["model": 9, "permission": 9], "hubLink": ["ownedAs": 10],
   ]
+
   static func introducedColumns(after source: PreservationPrefix, table: String) -> [String] {
     (introduction[currentTable(old: table)] ?? [:]).filter { $0.value > source.count }.keys.sorted()
   }
+
   static func projectionColumns(after source: PreservationPrefix, table: String) -> [String] {
     introducedColumns(after: source, table: table)
   }
+
   /// Boundaries come from the validated ledger, never the first row or the comparison target.
   static func preservationPrefix(_ raw: PostgresConnection, expectedCount: Int) throws -> PreservationPrefix {
     let source = try preservationPrefix(Migrator.recorded(raw), expectedCount: expectedCount)
@@ -401,6 +314,7 @@ enum AgentProtocolFoundationFixture {
     else { throw Failure.schema }
     return source
   }
+
   /// Verify each introduced cell against its SQL default on the retained original ID before subtraction.
   /// A jsonb null yields is_null=false and text="null" and must refuse.
   static func requireIntroducedSQLDefaults(
@@ -432,89 +346,7 @@ enum AgentProtocolFoundationFixture {
       }
     }
   }
-  /// Native text facts are independent from whole-row JSON and distinguish SQL NULL from text.
-  struct NativeTextCell: Equatable {
-    let isNull: Bool
-    let bytes: Data?
-    init(_ text: String?) { isNull = text == nil; bytes = text.map { Data($0.utf8) } }
-  }
-  struct DensityFacts {
-    let source: PreservationPrefix
-    let rows: [String: [String: NativeTextCell]]
-  }
-  enum DensityPath: Equatable { case nativeMigration, archiveRestore }
-  static func densityFacts(_ raw: PostgresConnection, source: PreservationPrefix) throws -> DensityFacts {
-    _ = try preservationPrefix(raw, expectedCount: source.count)
-    guard source.count >= 13 else { return DensityFacts(source: source, rows: [:]) }
-    let columns = ["quietThreads"] + (source.count >= 15 ? ["density"] : [])
-    let fields = columns.flatMap { column in
-      [
-        "(" + Rows.quote(column) + " IS NULL)::text AS " + Rows.quote("null:" + column),
-        Rows.quote(column) + "::text AS " + Rows.quote(column),
-      ]
-    }
-    var result: [String: [String: NativeTextCell]] = [:]
-    for row in try raw.execute(
-      "SELECT id::text AS id," + fields.joined(separator: ",") + " FROM \"viewSettings\" ORDER BY id"
-    ).rows {
-      guard let id = row.text("id"), result[id] == nil else { throw Failure.row }
-      var cells: [String: NativeTextCell] = [:]
-      for column in columns {
-        let cell = NativeTextCell(row.text(column))
-        guard row.text("null:" + column) == (cell.isNull ? "true" : "false") else { throw Failure.row }
-        cells[column] = cell
-      }
-      result[id] = cells
-    }
-    return DensityFacts(source: source, rows: result)
-  }
-  /// This literal table is TEST-owned. Native migration runs SQL15; raw archive restore does not.
-  static func expectedDensityCells(
-    _ cells: [String: NativeTextCell], source: PreservationPrefix, path: DensityPath
-  ) throws -> [String: NativeTextCell] {
-    guard let quiet = cells["quietThreads"] else { throw Failure.row }
-    if source.count >= 15 {
-      guard cells["density"] != nil else { throw Failure.row }
-      return cells
-    }
-    var result = cells
-    result["density"] = NativeTextCell(nil)
-    if path == .nativeMigration {
-      if quiet.bytes == Data("small".utf8) {
-        result["quietThreads"] = NativeTextCell("shown"); result["density"] = NativeTextCell("normal")
-      } else if quiet.bytes == Data("tiny".utf8) {
-        result["quietThreads"] = NativeTextCell("shown"); result["density"] = NativeTextCell("dense")
-      } else if quiet.bytes == Data("collapsed".utf8) || quiet.bytes == Data("hidden".utf8) {
-        result["density"] = NativeTextCell("normal")
-      }
-    }
-    return result
-  }
-  static func requireDensity(
-    _ raw: PostgresConnection, original: DensityFacts, path: DensityPath, targetCount: Int = 17
-  ) throws {
-    guard (15...17).contains(targetCount) else { throw Failure.canonicalSet }
-    let current = try preservationPrefix(raw, expectedCount: targetCount)
-    let actual = try densityFacts(raw, source: current)
-    guard Set(actual.rows.keys) == Set(original.rows.keys) else { throw Failure.row }
-    for (id, cells) in original.rows {
-      let expected = try expectedDensityCells(cells, source: original.source, path: path)
-      guard actual.rows[id] == expected else { throw Failure.row }
-    }
-  }
-  /// A separate expected view row retains every source field; only SQL15's quiet rewrite is applied.
-  /// No opaque JSON cell is decoded by this viewSettings-only helper.
-  static func expectedViewRows(_ rows: [String], facts: DensityFacts, path: DensityPath) throws -> [String] {
-    try rows.map { text in
-      guard var row = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
-        let id = row["id"] as? String, let cells = facts.rows[id]
-      else { throw Failure.row }
-      let expected = try expectedDensityCells(cells, source: facts.source, path: path)
-      guard let quiet = expected["quietThreads"] else { throw Failure.row }
-      row["quietThreads"] = quiet.bytes.map { String(decoding: $0, as: UTF8.self) as Any } ?? NSNull()
-      return try canonical(row)
-    }.sorted()
-  }
+
   /// Locate one fixed top-level primary key without decoding opaque JSON numbers in other cells.
   static func rowIdentifier(_ text: String, key: String) throws -> String {
     let bytes = Array(text.utf8)
@@ -567,104 +399,5 @@ enum AgentProtocolFoundationFixture {
     }
     guard depth == 0, let found else { throw Failure.row }
     return found
-  }
-  static func projectedRows(
-    _ c: PostgresConnection, table: String, source: PreservationPrefix, originalRows: [String]
-  ) throws -> [String] {
-    try requireIntroducedSQLDefaults(c, source: source, table: table, originalRows: originalRows)
-    let columns = projectionColumns(after: source, table: table)
-    let expression = columns.isEmpty ? "to_jsonb(t)" : "to_jsonb(t) - $1::text[]"
-    let params: [String?] = columns.isEmpty ? [] : ["{" + columns.joined(separator: ",") + "}"]
-    return try c.execute("SELECT (\(expression))::text AS row FROM \(Rows.quote(table)) t ORDER BY 1", params)
-      .rows.compactMap { $0.text("row") }
-  }
-  static func assertCurrentPreservesOld(_ c: PostgresConnection, oldRows: [String: [String]]) throws {
-    let source = try preservationPrefix(ledgerNames(oldRows), expectedCount: 8)
-    var currentRows: [String: [String]] = [:]
-    for table in try c.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'").rows.compactMap({
-      $0.text("tablename")
-    }) {
-      let oldName =
-        oldRows[table] == nil
-        ? (table == "environments" ? "projects" : table == "environmentFolders" ? "projectFolders" : table)
-        : table
-      currentRows[table] = try projectedRows(
-        c, table: table, source: source, originalRows: oldRows[oldName] ?? [])
-    }
-    #expect(try Migrator.recorded(c) == migrations)
-    try assertCurrentLedgerAndInventory(currentRows, oldRows: oldRows)
-    for (table, rows) in oldRows where table != Migrator.table {
-      let currentName = currentTable(old: table)
-      func normalized(_ values: [String], table: String) throws -> [String] {
-        try values.map { text in
-          guard let row = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
-          else { throw Failure.row }
-          return try canonical(currentRow(table: table, row: row))
-        }.sorted()
-      }
-      let unchanged =
-        try (try #require(currentRows[currentName])).map { text in
-          try canonical(JSONSerialization.jsonObject(with: Data(text.utf8)))
-        }.sorted() == normalized(rows, table: table)
-      #expect(unchanged)
-    }
-    try assertAdditionsNullAndPrivateEmpty(c)
-  }
-  /// Value-only inventory/ledger oracle, also usable by L1's deliberately nine-table history
-  /// comparison. Account tokens/link rows retain their dedicated lifecycle assertions.
-  static func assertCurrentLedgerAndInventory(
-    _ currentRows: [String: [String]], oldRows: [String: [String]]
-  ) throws {
-    #expect(Set(currentRows.keys) == Set(dataTables + [Migrator.table, "hubLink"]))
-    for table in protocolTables { #expect(currentRows[table]?.isEmpty == true) }
-    if oldRows["appFolders"] == nil { #expect(currentRows["appFolders"]?.isEmpty == true) }
-    if oldRows["viewSettings"] == nil { #expect(currentRows["viewSettings"]?.isEmpty == true) }
-    let oldLedger = try #require(oldRows[Migrator.table])
-    let currentLedger = try #require(currentRows[Migrator.table])
-    func names(_ rows: [String]) throws -> [String] {
-      try rows.map { text in
-        try #require(
-          (try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])?["name"] as? String)
-      }.sorted()
-    }
-    let oldNames = try names(oldLedger)
-    guard (8...17).contains(oldNames.count),
-      oldNames == Array(migrations.prefix(oldNames.count))
-    else {
-      throw Failure.canonicalSet
-    }
-    #expect(try names(currentLedger) == migrations)
-    #expect(Set(oldLedger).isSubset(of: Set(currentLedger)))  // Includes every original appliedAt.
-    let additions = migrations.filter { !oldNames.contains($0) }
-    #expect(additions == Array(migrations.dropFirst(oldNames.count)))
-    #expect(currentLedger.count == oldLedger.count + additions.count)
-  }
-  /// Snapshot only value facts about known columns that actually exist at this schema prefix.
-  /// Checking PostgreSQL IS NOT NULL preserves SQL NULL versus jsonb's non-NULL JSON null.
-  static func additiveSQLNullFacts(_ c: PostgresConnection) throws -> [String: Bool] {
-    var facts: [String: Bool] = [:]
-    for row in try c.execute(
-      "SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('connections','threads')"
-    ).rows {
-      guard let table = row.text("table_name"), let column = row.text("column_name") else {
-        throw Failure.schema
-      }
-      guard addedColumns[table]?.contains(column) == true else { continue }
-      facts["\(table).\(column)"] = try c.execute(
-        "SELECT 1 FROM \(Rows.quote(table)) WHERE \(Rows.quote(column)) IS NOT NULL LIMIT 1"
-      ).rows.isEmpty
-    }
-    return facts
-  }
-  static func assertAdditionsNullAndPrivateEmpty(_ c: PostgresConnection) throws {
-    for (table, columns) in addedColumns {
-      let predicate = columns.map { Rows.quote($0) + " IS NOT NULL" }.joined(separator: " OR ")
-      let allNull = try c.execute("SELECT 1 FROM \(Rows.quote(table)) WHERE \(predicate)").rows.isEmpty
-      #expect(allNull)
-    }
-    for table in protocolTables {
-      let empty = try c.execute("SELECT 1 FROM \(Rows.quote(table)) LIMIT 1").rows.isEmpty
-      #expect(empty)
-    }
   }
 }

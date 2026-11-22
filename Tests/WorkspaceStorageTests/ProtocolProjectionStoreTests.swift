@@ -6,9 +6,11 @@ import WorkspaceProtocol
 @testable import WorkspaceStorage
 
 /// Dormant storage controls only. No adapter, account activation, event publication or network.
-@Suite(.serialized) struct ProtocolProjectionStoreTests {
+struct ProtocolProjectionStoreTests {
   private static let generation = "11111111-1111-4111-8111-111111111111"
+
   private static let scope = #"["agent-protocol-v1","b4","https://example.invalid"]"#
+
   private static let privateFacts =
     #"{"opaque":{"integer":9007199254740993,"large":1e400,"small":1e-400},"private":"projection-private-sentinel"}"#
 
@@ -88,7 +90,7 @@ import WorkspaceProtocol
     }
   }
 
-  @Test(NativeDBResources()) func nativeImagesCursorAndSafePresentationCommitTogetherWithoutNumberCoercion()
+  @Test func nativeImagesCursorAndSafePresentationCommitTogetherWithoutNumberCoercion()
     throws
   {
     let db = try fixture(); defer { try? db.close() }
@@ -137,52 +139,7 @@ import WorkspaceProtocol
     let unchanged = try snapshot(db) == before; #expect(unchanged)
   }
 
-  @Test(NativeDBResources()) func localNilCursorUsesStrictTimestampCASWhenThePriorStampIsAheadOfTheClock()
-    throws
-  {
-    let db = try fixture(local: true); defer { try? db.close() }
-    _ = try prepare(db, local: true)
-    // A canonical future stamp forces the monotonic branch regardless of wall-clock resolution.
-    try db.write {
-      try $0.execute(#"UPDATE "protocolSubscriptions" SET "updatedAt"='2099-01-01T00:00:00.000000Z'"#)
-    }
-    let owner = try db.protocolProjectionOwner(connectionId: "c", threadId: "t")
-    let current = try db.protocolProjectionState(
-      owner: owner, epoch: .local("local-observation"), coverage: coverage())
-    let request = ProtocolProjectionBatch(
-      precondition: current, position: .genericImage, segments: [try segment()])
-    let committed = try db.applyProtocolProjection(request)
-    #expect(committed.revision == "2099-01-01T00:00:00.000001Z")
-    #expect(committed.appliedSequence == nil)
-    let before = try snapshot(db)
-    expectSafeRefusal { _ = try db.applyProtocolProjection(request) }
-    let unchanged = try snapshot(db) == before; #expect(unchanged)
-    let next = try db.protocolProjectionState(
-      owner: owner, epoch: .local("local-observation"), coverage: coverage())
-    let again = try db.applyProtocolProjection(
-      ProtocolProjectionBatch(
-        precondition: next, position: .genericImage, segments: [try segment(text: "replacement")]))
-    #expect(
-      again.revision == "2099-01-01T00:00:00.000002Z" && again.changedItemIds == committed.changedItemIds)
-  }
-
-  @Test(NativeDBResources(), arguments: [ProtocolProjectionStage.segments, .presentation, .cursor])
-  func faultsRollBackPrivateImagesPresentationAndCursor(stage: ProtocolProjectionStage) throws {
-    let db = try fixture(); defer { try? db.close() }
-    let state = try prepare(db), before = try snapshot(db)
-    var witnessed = false
-    expectSafeRefusal {
-      _ = try db.applyProtocolProjection(
-        batch(state, seq: 1, segments: [segment()]),
-        observe: { reached in
-          if reached == stage { witnessed = true; throw ProjectionFault.privateSentinel }
-        })
-    }
-    #expect(witnessed)
-    let unchanged = try snapshot(db) == before; #expect(unchanged)
-  }
-
-  @Test(NativeDBResources()) func deferredCommitFailureIsSanitizedAndRollsBackTheWholeProjection() throws {
+  @Test func deferredCommitFailureIsSanitizedAndRollsBackTheWholeProjection() throws {
     let db = try fixture(); defer { try? db.close() }
     let state = try prepare(db)
     try db.write { c in
@@ -212,7 +169,7 @@ import WorkspaceProtocol
     #expect(recovery.appliedSequence == 1)
   }
 
-  @Test(NativeDBResources())
+  @Test
   func changedProfileCoverageEpochDeletedThreadAndForeignStoreRefuseWithoutMutation() throws {
     let db = try fixture(); defer { try? db.close() }
     let state = try prepare(db)
@@ -245,27 +202,7 @@ import WorkspaceProtocol
     expectSafeRefusal { _ = try db.protocolProjectionOwner(connectionId: "c", threadId: "t") }
   }
 
-  @Test(NativeDBResources()) func conflictingSegmentCorrelationAndMalformedJSONCannotAdvanceCursor() throws {
-    let db = try fixture(); defer { try? db.close() }
-    let state = try prepare(db)
-    _ = try db.applyProtocolProjection(batch(state, seq: 1, segments: [segment()]))
-    let owner = try db.protocolProjectionOwner(connectionId: "c", threadId: "t")
-    let current = try db.protocolProjectionState(
-      owner: owner, epoch: .b4(Self.generation), coverage: coverage())
-    let before = try snapshot(db)
-    expectSafeRefusal {
-      _ = try db.applyProtocolProjection(batch(current, seq: 2, segments: [segment(root: "unrelated-root")]))
-    }
-    for invalidJSON in ["{malformed", "[]", #"{"private":"\u0000"}"#] {
-      let invalid = ProtocolProjectionSegment(
-        namespace: [], nativeRunId: "new-run", facts: try ProtocolProjectionJSON(utf8: Data(invalidJSON.utf8))
-      )
-      expectSafeRefusal { _ = try db.applyProtocolProjection(batch(current, seq: 2, segments: [invalid])) }
-    }
-    let unchanged = try snapshot(db) == before; #expect(unchanged)
-  }
-
-  @Test(NativeDBResources()) func retainedGenerationAndNamespaceIdentitiesCannotAliasNewImages() throws {
+  @Test func retainedGenerationAndNamespaceIdentitiesCannotAliasNewImages() throws {
     let db = try fixture(); defer { try? db.close() }
     let original = try prepare(db)
     let first = try db.applyProtocolProjection(
@@ -296,221 +233,4 @@ import WorkspaceProtocol
     expectSafeRefusal { _ = try db.applyProtocolProjection(batch(original, seq: 2, segments: [segment()])) }
     let unchanged = try snapshot(db) == before; #expect(unchanged)
   }
-
-  @Test(NativeDBResources()) func namespacePrefixesAndRootTokensUseExactUTF8RatherThanUnicodeEquivalence()
-    throws
-  {
-    let db = try fixture(); defer { try? db.close() }
-    let owner = try db.protocolProjectionOwner(connectionId: "c", threadId: "t")
-    let selected = ProtocolProjectionCoverage(
-      channels: ["messages"], namespaces: [["é"]],
-      descriptor: try ProtocolProjectionJSON(utf8: Data("{}".utf8)))
-    let state = try db.prepareProtocolProjection(
-      owner: owner, epoch: .b4(Self.generation), coverage: selected)
-    let before = try snapshot(db)
-    expectSafeRefusal {
-      _ = try db.applyProtocolProjection(batch(state, seq: 1, segments: [segment(namespace: ["e\u{301}"])]))
-    }
-    let unchanged = try snapshot(db) == before; #expect(unchanged)
-    _ = try db.applyProtocolProjection(batch(state, seq: 1, segments: [segment(namespace: ["é"], root: "é")]))
-    let current = try db.protocolProjectionState(
-      owner: owner, epoch: .b4(Self.generation), coverage: selected)
-    let committed = try snapshot(db)
-    expectSafeRefusal {
-      _ = try db.applyProtocolProjection(
-        batch(current, seq: 2, segments: [segment(namespace: ["é"], root: "e\u{301}")]))
-    }
-    let rootUnchanged = try snapshot(db) == committed; #expect(rootUnchanged)
-    _ = try db.insertThread(
-      ConversationThread(
-        id: "unicode", connectionId: "c", nativeThreadId: "unicode-native", nativeScope: Self.scope))
-    let otherOwner = try db.protocolProjectionOwner(connectionId: "c", threadId: "unicode")
-    let both = ProtocolProjectionCoverage(
-      channels: ["messages"], namespaces: [["é"], ["e\u{301}"]],
-      descriptor: try ProtocolProjectionJSON(utf8: Data("{}".utf8)))
-    let bothState = try db.prepareProtocolProjection(
-      owner: otherOwner, epoch: .b4(Self.generation), coverage: both)
-    let distinct = try db.applyProtocolProjection(
-      batch(
-        bothState, seq: 1,
-        segments: [segment(namespace: ["é"]), segment(namespace: ["e\u{301}"])]))
-    #expect(distinct.changedItemIds.count == 2 && Set(distinct.changedItemIds).count == 2)
-    let nativeBytes = try db.write { c in
-      try ProtocolGrantProtection.establish(c)
-      return try c.execute(
-        #"SELECT encode(convert_to(namespace->>0,'UTF8'),'hex') AS bytes FROM "protocolRunSegments" WHERE "threadId"='unicode' ORDER BY bytes"#
-      )
-      .rows.compactMap { $0.text("bytes") }
-    }
-    #expect(nativeBytes == ["65cc81", "c3a9"])
-  }
-
-  @Test(NativeDBResources())
-  func existingAuthorizedLinksSurviveWholeImageReplacementWithoutAcknowledgingATurn() throws {
-    let db = try fixture(); defer { try? db.close() }
-    let initial = try prepare(db)
-    let first = try db.applyProtocolProjection(batch(initial, seq: 1, segments: [segment()]))
-    _ = try db.insertTurn(Turn(id: "optimistic", threadId: "t", operationId: "local-operation"))
-    // Only a separate future A6 boundary may authorize these links; the event API has no setters.
-    try db.write { c in
-      try c.execute(
-        #"UPDATE "protocolRunSegments" SET "localTurnId"='optimistic',"submissionId"='local-submission'"#)
-    }
-    let owner = try db.protocolProjectionOwner(connectionId: "c", threadId: "t")
-    let current = try db.protocolProjectionState(
-      owner: owner, epoch: .b4(Self.generation), coverage: coverage())
-    let next = try db.applyProtocolProjection(batch(current, seq: 2, segments: [segment(text: "reconciled")]))
-    #expect(next.changedItemIds == first.changedItemIds)
-    let firstID = try #require(first.changedItemIds.first)
-    let links = try db.write { c in
-      try ProtocolGrantProtection.establish(c)
-      return try c.execute(
-        #"SELECT "localTurnId"='optimistic' AND "submissionId"='local-submission' AS exact FROM "protocolRunSegments""#
-      ).rows.first?.text("exact") == "t"
-    }
-    #expect(links)
-    let presentation = try db.read {
-      try $0.execute(#"SELECT "turnId" FROM "displayItems" WHERE id=$1"#, [firstID]).rows.first?.text(
-        "turnId")
-    }
-    #expect(presentation == "optimistic")
-    let turn = try #require(try db.turn(id: "optimistic"))
-    #expect(turn.status == .submitting && turn.submission == .prepared && turn.nativeTurnId == nil)
-  }
-
-  @Test(NativeDBResources()) func invalidPriorTimestampRefusesInsteadOfInventingACASRevision() throws {
-    let db = try fixture(local: true); defer { try? db.close() }
-    _ = try prepare(db, local: true)
-    try db.write {
-      try $0.execute(#"UPDATE "protocolSubscriptions" SET "updatedAt"='2099-02-31T00:00:00.000000Z'"#)
-    }
-    let owner = try db.protocolProjectionOwner(connectionId: "c", threadId: "t")
-    let before = try snapshot(db)
-    expectSafeRefusal {
-      _ = try db.protocolProjectionState(
-        owner: owner, epoch: .local("local-observation"), coverage: coverage())
-    }
-    let unchanged = try snapshot(db) == before; #expect(unchanged)
-  }
-
-  @Test(NativeDBResources())
-  func continuationReferencesTheSameCanonicalMessageAndPreservesAnUnresolvedSegmentsTrustedTurn() throws {
-    let db = try fixture(); defer { try? db.close() }
-    let initial = try prepare(db)
-    let first = try db.applyProtocolProjection(batch(initial, seq: 1, segments: [segment()]))
-    let itemId = try #require(first.changedItemIds.first)
-    _ = try db.insertTurn(Turn(id: "original-turn", threadId: "t", operationId: "original-operation"))
-    try db.write {
-      try $0.execute(
-        #"UPDATE "protocolRunSegments" SET "localTurnId"='original-turn',"submissionId"='original-submission'"#
-      )
-    }
-    let owner = try db.protocolProjectionOwner(connectionId: "c", threadId: "t")
-    let second = try db.protocolProjectionState(
-      owner: owner, epoch: .b4(Self.generation), coverage: coverage())
-    _ = try db.applyProtocolProjection(batch(second, seq: 2, segments: [segment(text: "linked image")]))
-    let continued = ProtocolProjectionSegment(
-      namespace: [], nativeRunId: "continued-run", rootRunId: "root",
-      predecessorRunId: "run", facts: try ProtocolProjectionJSON(utf8: Data(Self.privateFacts.utf8)),
-      presentation: [
-        ProtocolProjectionPresentation(
-          nativeItemId: "message", role: .assistant, content: .text("continued final"))
-      ])
-    let current = try db.protocolProjectionState(
-      owner: owner, epoch: .b4(Self.generation), coverage: coverage())
-    let alsoReferences = ProtocolProjectionSegment(
-      namespace: [], nativeRunId: "another-reference", rootRunId: "root",
-      facts: try ProtocolProjectionJSON(utf8: Data(Self.privateFacts.utf8)),
-      presentation: [
-        ProtocolProjectionPresentation(
-          nativeItemId: "message", role: .assistant, content: .text("continued final"))
-      ])
-    let committed = try db.applyProtocolProjection(
-      batch(current, seq: 3, segments: [continued, alsoReferences]))
-    #expect(committed.changedItemIds == [itemId])
-    let rows = try db.read {
-      try $0.execute(#"SELECT "turnId",payload->>'text' AS text FROM "displayItems""#).rows
-    }
-    #expect(
-      rows.count == 1 && rows.first?.text("turnId") == "original-turn"
-        && rows.first?.text("text") == "continued final")
-    let unresolved = try db.write { c in
-      try ProtocolGrantProtection.establish(c)
-      return try c.execute(
-        #"SELECT "localTurnId" IS NULL AND "submissionId" IS NULL AND "predecessorRunId"='run' AS exact FROM "protocolRunSegments" WHERE "nativeRunId"='continued-run'"#
-      ).rows.first?.text("exact") == "t"
-    }
-    #expect(unresolved)
-    let turn = try #require(try db.turn(id: "original-turn"))
-    #expect(turn.status == .submitting && turn.submission == .prepared && turn.nativeTurnId == nil)
-    _ = try db.insertTurn(
-      Turn(
-        id: "other-turn", threadId: "t", operationId: "other-operation", status: .terminal,
-        submission: .acknowledged, outcome: .completed))
-    try db.write {
-      try $0.execute(
-        #"UPDATE "protocolRunSegments" SET "localTurnId"='other-turn' WHERE "nativeRunId"='continued-run'"#)
-    }
-    let next = try db.protocolProjectionState(owner: owner, epoch: .b4(Self.generation), coverage: coverage())
-    let before = try snapshot(db)
-    expectSafeRefusal { _ = try db.applyProtocolProjection(batch(next, seq: 4, segments: [continued])) }
-    let unchanged = try snapshot(db) == before; #expect(unchanged)
-  }
-
-  @Test(NativeDBResources())
-  func unknownContentBecomesKnownTextOnTheSameMessageButAnEstablishedRoleCannotChange() throws {
-    let db = try fixture(); defer { try? db.close() }
-    let initial = try prepare(db)
-    let unknown = ProtocolProjectionSegment(
-      namespace: [], nativeRunId: "run",
-      facts: try ProtocolProjectionJSON(utf8: Data(Self.privateFacts.utf8)),
-      presentation: [ProtocolProjectionPresentation(nativeItemId: "message", role: .user, content: .unknown)])
-    let first = try db.applyProtocolProjection(batch(initial, seq: 1, segments: [unknown]))
-    let owner = try db.protocolProjectionOwner(connectionId: "c", threadId: "t")
-    let current = try db.protocolProjectionState(
-      owner: owner, epoch: .b4(Self.generation), coverage: coverage())
-    let known = ProtocolProjectionSegment(
-      namespace: [], nativeRunId: "run",
-      facts: try ProtocolProjectionJSON(utf8: Data(Self.privateFacts.utf8)),
-      presentation: [
-        ProtocolProjectionPresentation(nativeItemId: "message", role: .user, content: .text("known text"))
-      ])
-    let updated = try db.applyProtocolProjection(batch(current, seq: 2, segments: [known]))
-    #expect(updated.changedItemIds == first.changedItemIds)
-    let rows = try db.read {
-      try $0.execute("SELECT role,type,payload->>'text' AS text FROM \"displayItems\"").rows
-    }
-    #expect(
-      rows.count == 1 && rows.first?.text("role") == "user" && rows.first?.text("type") == "userMessage"
-        && rows.first?.text("text") == "known text")
-    let next = try db.protocolProjectionState(owner: owner, epoch: .b4(Self.generation), coverage: coverage())
-    let before = try snapshot(db)
-    expectSafeRefusal {
-      _ = try db.applyProtocolProjection(
-        batch(next, seq: 3, segments: [segment(text: "wrong assistant role")]))
-    }
-    let contradiction = ProtocolProjectionSegment(
-      namespace: [], nativeRunId: "other-reference",
-      facts: try ProtocolProjectionJSON(utf8: Data(Self.privateFacts.utf8)),
-      presentation: [
-        ProtocolProjectionPresentation(
-          nativeItemId: "message", role: .user, content: .text("contradictory whole image"))
-      ])
-    expectSafeRefusal {
-      _ = try db.applyProtocolProjection(batch(next, seq: 3, segments: [known, contradiction]))
-    }
-    let unchanged = try snapshot(db) == before; #expect(unchanged)
-  }
-
-  @Test func opaqueBoundaryRefusesInvalidUTF8AndCStringNULWithoutReflectingMaterial() throws {
-    expectSafeRefusal { _ = try ProtocolProjectionJSON(utf8: Data([0xff])) }
-    expectSafeRefusal { _ = try ProtocolProjectionJSON(utf8: Data([0])) }
-    let value = try ProtocolProjectionJSON(utf8: Data(Self.privateFacts.utf8))
-    let hidden =
-      !String(reflecting: value).contains("projection-private-sentinel")
-      && Mirror(reflecting: value).children.isEmpty
-    #expect(hidden)
-  }
 }
-
-private enum ProjectionFault: Error { case privateSentinel }

@@ -4,7 +4,7 @@ import WorkspaceProtocol
 
 @testable import WorkspaceStorage
 
-@Suite(NativeDBResources()) struct AppFolderStoreTests {
+@Suite struct AppFolderStoreTests {
   private let folder = AppFolder(path: "/p/one", threadId: "t1", createdAt: "2026-11-10T00:00:00Z")
 
   @Test func anAppFolderIsFoundByPathAndByThread() throws {

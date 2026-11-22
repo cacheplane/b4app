@@ -5,7 +5,7 @@ import WorkspaceProtocol
 @testable import WorkspaceStorage
 
 @Suite struct RelaySchemaTests {
-  @Test(NativeDBResources()) func settingsRoundTripAndAreNeverInTheChangeLog() throws {
+  @Test func settingsRoundTripAndAreNeverInTheChangeLog() throws {
     let db = try WorkspaceDatabase.temporary()
     #expect(try db.settings(key: "keepAwake") == nil)
 
@@ -33,8 +33,7 @@ import WorkspaceProtocol
     #expect(!WorkspaceDatabase.syncedTables.contains { $0.table == "settings" })
   }
 
-  @Test(NativeDBResources()) func connectionEnvironmentIsLoggedAndClearedWhenItsEnvironmentIsDeleted() throws
-  {
+  @Test func connectionEnvironmentIsLoggedAndClearedWhenItsEnvironmentIsDeleted() throws {
     let db = try WorkspaceDatabase.temporary()
     _ = try db.insertEnvironment(WorkEnvironment(id: "p1"), folders: ["/tmp/a"])
     _ = try db.insertConnection(

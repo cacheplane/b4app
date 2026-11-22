@@ -23,7 +23,7 @@ private func seed(_ db: WorkspaceDatabase) throws -> (thread: ConversationThread
   return (thread, turn)
 }
 
-@Suite(NativeDBResources(), .serialized) struct ChangeLogTests {
+@Suite struct ChangeLogTests {
   @Test func everyWriteLeavesChangesAndTheLogReplaysIntoAnEqualStore() throws {
     let source = try WorkspaceDatabase.temporary()
     let (thread, turn) = try seed(source)

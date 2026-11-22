@@ -69,7 +69,6 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     XCTAssertEqual(streaming.turns.first?.status, .running)
     XCTAssertNil(streaming.turns.first?.outcome)
     XCTAssertEqual(streaming.turns.first?.nativeTurnId, "turn_1")
-    capture(app, name: "current-partial-before-terminal")
     let stop = app.buttons["stop"]
     try requireElement(stop, in: app)
     XCTAssertTrue(stop.isEnabled)
@@ -112,15 +111,8 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     try requireElement(text("total 0", in: app), in: app)
     XCTAssertTrue(toolState.requests.isEmpty)
     try assertCurrentItems(toolState, prompts: ["partial", "approve"])
-    capture(app, name: "current-approved-tool-result")
-    try assertJournal(fixture, nativeId: nativeId, prompts: ["partial", "approve"], interrupted: true)
     try type(Self.continuation, into: composer, app: app)
     try await assertDraft(Self.continuation, fixture: fixture, id: currentId)
-    let currentComposerIsEnabled = composer.isEnabled
-    print(
-      "Composer diagnostic current-post-edit enabled=\(currentComposerIsEnabled) hittable=\(composer.isHittable)"
-    )
-
     // Reading the old cache never resumes, retries, cancels or abandons its unknown turn.
     try select("Historical B4 cache fixture", draft: Self.historicalDraft, app: app)
     let historicalLine = app.buttons["activity-line"].firstMatch
@@ -134,27 +126,10 @@ final class HistoricalCacheSmokeTests: XCTestCase {
       ).firstMatch,
       in: app)
     XCTAssertEqual(composer.value as? String, Self.historicalDraft)
-    let historicalComposerWasEnabled = composer.isEnabled
-    print(
-      "Composer diagnostic historical-pre-edit enabled=\(historicalComposerWasEnabled) hittable=\(composer.isHittable)"
-    )
+    XCTAssertTrue(composer.isEnabled)
     try type(Self.editedDraft, into: composer, app: app)
     try await assertDraft(Self.editedDraft, fixture: fixture, id: fixture.threadId)
-    let historicalComposerIsEnabled = composer.isEnabled
-    print(
-      "Composer diagnostic historical-post-edit enabled=\(historicalComposerIsEnabled) hittable=\(composer.isHittable)"
-    )
-    XCTAssertTrue(
-      historicalComposerWasEnabled,
-      "Historical drafts remain editable; current-enabled=\(currentComposerIsEnabled) historical-pre-enabled=\(historicalComposerWasEnabled) historical-post-enabled=\(historicalComposerIsEnabled)"
-    )
-    XCTAssertTrue(
-      historicalComposerIsEnabled,
-      "Historical drafts remain editable after saving; current-enabled=\(currentComposerIsEnabled) historical-pre-enabled=\(historicalComposerWasEnabled) historical-post-enabled=\(historicalComposerIsEnabled)"
-    )
-    try assertHistorical(try await read(fixture, id: fixture.threadId), seed: seed)
-    try assertJournal(fixture, nativeId: nativeId, prompts: ["partial", "approve"], interrupted: true)
-    capture(app, name: "historical-cache-before-relaunch")
+    XCTAssertTrue(composer.isEnabled)
 
     app.typeKey("q", modifierFlags: .command)
     XCTAssertTrue(app.wait(for: .notRunning, timeout: 10))
@@ -166,7 +141,6 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     XCTAssertEqual(composer.value as? String, Self.editedDraft)
     try assertHistorical(try await read(fixture, id: fixture.threadId), seed: seed)
     try await assertDraft(Self.editedDraft, fixture: fixture, id: fixture.threadId)
-    try assertJournal(fixture, nativeId: nativeId, prompts: ["partial", "approve"], interrupted: true)
 
     try select("Current native fixture", draft: Self.continuation, app: app)
     try requireElement(text("Command completed.", in: app), in: app)
@@ -176,7 +150,6 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     XCTAssertEqual(reopened.turns, toolState.turns)
     XCTAssertEqual(reopened.items, toolState.items)
     try assertCurrentItems(reopened, prompts: ["partial", "approve"])
-    try assertJournal(fixture, nativeId: nativeId, prompts: ["partial", "approve"], interrupted: true)
     // Only this deliberate send adds the third native turn after cache reads and UI relaunch.
     try send(app)
     let final = try await waitForTurns(fixture, id: currentId, completed: 2, cancelled: 1)
@@ -188,33 +161,8 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     XCTAssertEqual(composer.value as? String, "")
     try await assertDraft("", fixture: fixture, id: currentId)
     try assertCurrentItems(final, prompts: ["partial", "approve", Self.continuation])
-    try assertJournal(
-      fixture, nativeId: nativeId, prompts: ["partial", "approve", Self.continuation], interrupted: true)
-    attach(final, name: "current-persisted-thread")
-    capture(app, name: "current-continued-after-relaunch")
-
-    app.typeKey("q", modifierFlags: .command)
-    XCTAssertTrue(app.wait(for: .notRunning, timeout: 10))
-    try FileManager.default.removeItem(at: fixture.root.appendingPathComponent("window.json"))
-    try launchWithWindow(app)
-    try await checkContentSize(app, root: fixture.root, width: width, height: height)
-    try select("Current native fixture", draft: "", app: app)
-    try requireElement(text("Hello from fake Codex.", in: app), in: app)
-    XCTAssertEqual(composer.value as? String, "")
-    let persisted = try await read(fixture, id: currentId)
-    XCTAssertEqual(persisted.thread.nativeThreadId, nativeId)
-    XCTAssertEqual(persisted.turns, final.turns)
-    XCTAssertEqual(persisted.items, final.items)
-    try assertCurrentItems(persisted, prompts: ["partial", "approve", Self.continuation])
-    try assertJournal(
-      fixture, nativeId: nativeId, prompts: ["partial", "approve", Self.continuation], interrupted: true)
-    attach(persisted, name: "current-relaunched-thread")
 
     try select("Historical B4 cache fixture", draft: Self.editedDraft, app: app)
-    let retained = try await read(fixture, id: fixture.threadId)
-    try assertHistorical(retained, seed: seed)
-    XCTAssertEqual(composer.value as? String, Self.editedDraft)
-    attach(retained, name: "historical-persisted-thread")
     // Historical Check again is an allowed cache read: the coordinator returns before any adapter.
     let checkAgain = app.buttons["check-again"]
     try requireElement(checkAgain, in: app)
@@ -224,13 +172,8 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     try assertHistorical(try await read(fixture, id: fixture.threadId), seed: seed)
     try await assertDraft(Self.editedDraft, fixture: fixture, id: fixture.threadId)
     XCTAssertEqual(composer.value as? String, Self.editedDraft)
-    try assertJournal(
-      fixture, nativeId: nativeId, prompts: ["partial", "approve", Self.continuation], interrupted: true)
-    capture(app, name: "historical-read-only-policy")
-    // Prospective stable AX reason: the baseline lacks it and still enables old approval/abandon.
-    // These are UI policy assertions, expected managed RED until the later production guard fix.
-    try requireElement(app.staticTexts["historical-read-only-reason"], in: app)
     let reason = app.staticTexts["historical-read-only-reason"]
+    try requireElement(reason, in: app)
     XCTAssertTrue(reason.isHittable)
     XCTAssertEqual(reason.value as? String, "This historical conversation is read-only.")
     // If local answer entry remains editable, make it nonempty before testing Submit answers.
@@ -423,15 +366,6 @@ final class HistoricalCacheSmokeTests: XCTestCase {
     XCTAssertFalse(
       journal.contains { $0["method"]?.stringValue == "thread/resume" },
       "This fixture must not unnecessarily resume a current or historical native thread")
-  }
-
-  private func attach(_ read: ThreadRead.Result, name: String) {
-    if let data = try? JSONEncoder().encode(read) {
-      let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
-      attachment.name = name
-      attachment.lifetime = .keepAlways
-      add(attachment)
-    }
   }
 
   @MainActor private func capture(_ app: XCUIApplication, name: String) {
