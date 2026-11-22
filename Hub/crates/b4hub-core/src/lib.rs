@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod change;
 pub mod hlc;
 pub mod ids;
+pub mod protocol;
 pub mod push;
 pub mod relay;
 pub mod tokens;

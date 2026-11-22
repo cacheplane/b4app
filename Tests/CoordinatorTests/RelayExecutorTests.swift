@@ -375,42 +375,31 @@ private func failure(
     try await h.events.waitFor { $0.kind == .threadUpdated && $0.threadId == threadId }
   }
 
-  @Test func threadStartOnLocalB4IsRouteBound() async throws {
+  @Test func relayedHistoricalManagedStartRefusesWithAndWithoutFolder() async throws {
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
-    let server = try await h.start(try await h.add(try h.project("agent")))
-    let connection = try await h.client.request(
-      ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),
-      options: h.mutation()
-    ).connection
-    #expect(connection.status == .ready)
+    let server = try await h.add(try h.project("agent"))
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
     let environmentId = try #require(connection.environmentId)
     let executor = RelayExecutor(
       sessions: h.coordinator.sessions, environments: h.coordinator.environments,
-      database: h.coordinator.database,
-      diagnostics: h.coordinator.diagnostics)
-
-    // A folder is not part of a B4 thread.
-    let withFolder = try await run(
-      executor, .threadStart,
-      ThreadStart.Params(
-        threadId: UUID().uuidString.lowercased(), environmentId: environmentId, connectionId: connection.id,
-        folder: h.base + "/agent", text: "hi"))
-    #expect(failure(withFolder)?.code == ErrorCode.protocolInvalid.rawValue)
-
-    let threadId = UUID().uuidString.lowercased()
-    let reply = try await run(
-      executor, .threadStart,
-      ThreadStart.Params(
-        threadId: threadId, environmentId: environmentId, connectionId: connection.id, text: "hello")
-    )
-    let started = try result(reply, as: ThreadStart.Result.self)
-    #expect(started.thread.id == threadId)
-    #expect(started.thread.context == connection.routeKey)
-    #expect(started.thread.context == "/chat#agent")
-    #expect(started.thread.environmentId == environmentId)
-    let finished = try await h.events.waitFor { $0.kind == .turnFinished && $0.turnId == started.turn.id }
-    #expect(finished.payload["outcome"]?.stringValue == "completed")
+      database: h.coordinator.database, diagnostics: h.coordinator.diagnostics)
+    for folder in [h.base + "/agent", nil] {
+      let threadId = UUID().uuidString.lowercased()
+      let reply = try await run(
+        executor, .threadStart,
+        ThreadStart.Params(
+          threadId: threadId, environmentId: environmentId, connectionId: connection.id, folder: folder,
+          text: "never dispatch"))
+      let error = try #require(failure(reply))
+      #expect(error.code == ErrorCode.unsupportedCapability.rawValue)
+      #expect(error.details?["reason"]?.stringValue == "agent_protocol_cutover")
+      #expect(try h.coordinator.database.thread(id: threadId) == nil)
+    }
+    #expect(try h.coordinator.database.listThreads().isEmpty)
+    #expect(try h.coordinator.database.listAppFolders().isEmpty)
+    let unchanged = try h.coordinator.database.connection(id: connection.id) == connection
+    #expect(unchanged)
   }
 
   @Test func threadStartRefusesAFolderOutsideTheEnvironment() async throws {
@@ -451,10 +440,7 @@ private func failure(
     let h = try await ServerHarness.start()
     defer { Task { await h.close() } }
     let server = try await h.add(try h.project("agent"))
-    let connection = try await h.client.request(
-      ConnectionAdd.self, ConnectionAdd.Params(kind: .b4, route: "/chat#agent", serverId: server.id),
-      options: h.mutation()
-    ).connection
+    let connection = try await HistoricalCoordinatorFixture.seedEarlierManagedConnection(h, server: server)
     let own = try #require(connection.environmentId)
     let otherFolder = h.base + "/other"
     try FileManager.default.createDirectory(atPath: otherFolder, withIntermediateDirectories: true)
@@ -471,27 +457,37 @@ private func failure(
       executor, .threadStart,
       ThreadStart.Params(threadId: threadId, environmentId: other.id, connectionId: connection.id, text: "hi")
     )
-    #expect(failure(reply)?.code == ErrorCode.protocolInvalid.rawValue)
+    #expect(failure(reply)?.code == ErrorCode.unsupportedCapability.rawValue)
+    #expect(failure(reply)?.details?["reason"]?.stringValue == "agent_protocol_cutover")
     #expect(try h.coordinator.database.thread(id: threadId) == nil)
   }
 
-  @Test func threadStartRefusesRemoteB4() async throws {
-    let h = try await RelayHarness.start()
-    defer { Task { await h.close() } }
-    let environment = try await h.environment("App", [try h.folder("app")])
-    let remote = try h.db.insertConnection(
-      Connection(
-        id: "c-remote", kind: .b4, label: "Remote", target: "https://b4.example.com", routeKey: "/chat#agent",
-        b4Mode: .remote, environmentId: environment.id, status: .ready))
-    let threadId = UUID().uuidString.lowercased()
-    let reply = try await run(
-      h.executor, .threadStart,
-      ThreadStart.Params(
-        threadId: threadId, environmentId: environment.id, connectionId: remote.id, text: "hi"))
-    let error = try #require(failure(reply))
-    #expect(error.code == ErrorCode.protocolInvalid.rawValue)
-    #expect(error.details?["reason"]?.stringValue == "remote_b4")
-    #expect(try h.db.thread(id: threadId) == nil)
+  @Test func relayedStartRefusesHistoricalRemoteAndCompleteDormantProfiles() async throws {
+    let witness = HistoricalFactoryWitness()
+    let h = try await Harness.start(adapterFactory: witness.makeFactory())
+    defer { Task { await h.stop() } }
+    let remote = try HistoricalCoordinatorFixture.seedEarlierConnection(h.coordinator.database, mode: .remote)
+    let dormant = try HistoricalCoordinatorFixture.seedDormantConnection(h.coordinator.database)
+    let executor = RelayExecutor(
+      sessions: h.coordinator.sessions, environments: h.coordinator.environments,
+      database: h.coordinator.database, diagnostics: h.coordinator.diagnostics)
+    for connection in [remote, dormant] {
+      let threadId = UUID().uuidString.lowercased()
+      let reply = try await run(
+        executor, .threadStart,
+        ThreadStart.Params(threadId: threadId, connectionId: connection.id, text: "never dispatch"))
+      let error = try #require(failure(reply))
+      #expect(error.code == ErrorCode.unsupportedCapability.rawValue)
+      if connection.kind == .b4 {
+        #expect(error.details?["reason"]?.stringValue == "agent_protocol_cutover")
+      } else {
+        #expect(error.message == "Agent Protocol execution is not available in this build.")
+      }
+      #expect(try h.coordinator.database.thread(id: threadId) == nil)
+      #expect(try h.coordinator.database.turns(threadId: threadId).isEmpty)
+    }
+    #expect(try h.coordinator.database.listAppFolders().isEmpty)
+    #expect(witness.count == 0)
   }
 
   @Test func threadStartRefusesAReusedIdWithAnotherFolder() async throws {

@@ -140,21 +140,18 @@ enum Phone {
 // MARK: - Tests
 
 @Suite(.serialized) @MainActor struct NewThreadDraftTests {
-  @Test func offersCodexClaudeAndThisEnvironmentsLocalB4Only() async throws {
+  @Test func offersOnlyTheOwnersCurrentHarnessesAndKeepsHistoricalLabels() async throws {
     let transport = ScriptedTransport()
-    let model = try await Phone.model(transport, clock: TestClock())
+    let model = try await Phone.model(
+      transport, clock: TestClock(), connections: Phone.connections + [HistoricalActionFixture.staged()])
     let ids = { (environment: WorkEnvironment) in model.startConnections(for: environment).map(\.id) }
-    // Codex and Claude of the owner, and this environment's own local B4; no remote B4, no other Mac's
-    // connection, nothing switched off or not ready, and no other environment's B4.
-    #expect(ids(Phone.p1) == ["codex-1", "claude-1", "b4-p1"])
-    #expect(ids(Phone.p2) == ["codex-1", "claude-1", "b4-p2"])
-    // The other Mac's environment gets the other Mac's connections only.
+    // Only the owner's current harnesses: no historical/staged profiles, disabled or offline rows.
+    #expect(ids(Phone.p1) == ["codex-1", "claude-1"])
+    #expect(ids(Phone.p2) == ["codex-1", "claude-1"])
     #expect(ids(Phone.p3) == ["codex-2"])
-    // A B4 connection reads as its route's name, as the Mac titles a B4 thread.
     let b4 = try #require(model.connection(id: "b4-p1"))
     #expect(model.startLabel(for: b4) == "research")
     #expect(model.startLabel(for: try #require(model.connection(id: "codex-1"))) == "Codex")
-    // An environment with no owner offers nothing: there is no Mac to send to.
     #expect(model.startConnections(for: WorkEnvironment(id: "px", name: "No owner")).isEmpty)
     await model.disconnect()
   }
@@ -191,31 +188,20 @@ enum Phone {
     await model.disconnect()
   }
 
-  @Test func b4HasNoFolderStep() async throws {
+  @Test func unavailableProfilesHaveNoFolderStepAndCannotStart() async throws {
     let transport = ScriptedTransport()
-    let model = try await Phone.model(transport, clock: TestClock())
-    let b4 = try #require(model.connection(id: "b4-p1"))
-    // p1 has two folders, yet a B4 thread is bound to the route, not a folder.
-    #expect(model.startFolders(for: Phone.p1, connection: b4).isEmpty)
-    #expect(!model.needsFolderChoice(for: Phone.p1, connection: b4))
-
-    transport.script(.threadStart, [.hold])
-    let task = Task {
-      // A folder passed with a B4 connection is dropped.
-      await model.startThread(
-        environmentId: "p1", connectionId: "b4-p1", folder: "/work/atlas", text: "Hi B4")
+    let model = try await Phone.model(
+      transport, clock: TestClock(), connections: Phone.connections + [HistoricalActionFixture.staged()])
+    for id in ["b4-p1", "b4-p2", "b4-remote", "staged-protocol"] {
+      let connection = try #require(model.connection(id: id))
+      #expect(model.startFolders(for: Phone.p1, connection: connection).isEmpty)
+      #expect(!model.needsFolderChoice(for: Phone.p1, connection: connection))
+      #expect(
+        await model.startThread(
+          environmentId: "p1", connectionId: id, folder: "/work/atlas", text: "Keep historical") == nil)
     }
-    try await waitUntil("held") { transport.heldCount(.threadStart) == 1 }
-    let call = try #require(transport.recorded(.threadStart).first)
-    #expect(call.params["connectionId"] == "b4-p1")
-    #expect(call.params["folder"] == nil || call.params["folder"] == .null)
-    let pending = try #require(model.pendingSends.values.first)
-    transport.setRead(
-      ThreadRead.Result(
-        thread: PhoneFixture.thread(pending.threadId), turns: [], items: [], requests: []))
-    transport.release(
-      .threadStart, with: Phone.started(PhoneFixture.thread(pending.threadId), pending.id))
-    _ = await task.value
+    #expect(transport.recorded(.threadStart).isEmpty)
+    #expect(model.pendingSends.isEmpty)
     await model.disconnect()
   }
 
@@ -745,7 +731,8 @@ enum Phone {
   }
 
   @Test func switchingRuntimeResetsPermissionToAsConfigured() async throws {
-    let model = try await Phone.macModel(ScriptedTransport())
+    let model = try await Phone.macModel(
+      ScriptedTransport(), connections: Phone.macConnections + [HistoricalActionFixture.staged(owner: nil)])
     let draft = NewThreadDraft(model: model, environmentId: "p1")
     draft.selectRuntime(connectionId: "claude-1", model: "opus")
     draft.selectPermission("plan")
@@ -763,11 +750,13 @@ enum Phone {
     // Claude's permission is not one of Codex's: nothing changes.
     draft.selectPermission("plan")
     #expect(draft.permission == "auto")
-    // A B4 agent has neither model nor permission.
-    draft.selectRuntime(connectionId: "b4-p1", model: "opus")
-    #expect(draft.model == nil)
-    #expect(draft.permission == nil)
-    #expect(draft.environmentId == "p1")
+    draft.text = "  Keep this exact draft\n"
+    let before = HistoricalActionFixture.draft(draft)
+    for id in ["b4-p1", "b4-remote", "staged-protocol"] {
+      draft.selectRuntime(connectionId: id, model: "opus")
+      let draftRetained = HistoricalActionFixture.draft(draft) == before
+      #expect(draftRetained)
+    }
     await model.disconnect()
   }
 
@@ -897,49 +886,63 @@ enum Phone {
 
   // MARK: The Mac
 
-  @Test func macOffersRemoteB4WithNoEnvironment() async throws {
+  @Test func macOffersCurrentHarnessesAndIgnoresHistoricalAndStagedDraftChoices() async throws {
     let transport = ScriptedTransport()
-    let model = try await Phone.macModel(transport)
-    // Every environment, each with the ready Codex and Claude connections and its own local B4; remote
-    // B4 on its own.
+    let connections = Phone.macConnections + [HistoricalActionFixture.staged(owner: nil)]
+    let model = try await Phone.macModel(transport, connections: connections)
     #expect(model.startEnvironments.map(\.id) == ["p1", "p2", "p3"])
-    #expect(
-      model.startConnections(for: Phone.macEnvironments[0]).map(\.id) == [
-        "codex-1", "claude-1", "claude-2", "b4-p1",
-      ])
-    #expect(
-      model.startConnections(for: Phone.macEnvironments[1]).map(\.id) == ["codex-1", "claude-1", "claude-2"])
-    #expect(model.remoteB4Connections.map(\.id) == ["b4-remote"])
-
+    for environment in Phone.macEnvironments {
+      #expect(model.startConnections(for: environment).map(\.id) == ["codex-1", "claude-1", "claude-2"])
+    }
+    #expect(model.remoteB4Connections.isEmpty)
     let draft = NewThreadDraft(model: model, environmentId: "p1")
-    #expect(draft.connections.map(\.id) == ["codex-1", "claude-1", "claude-2", "b4-p1", "b4-remote"])
+    #expect(draft.connections.map(\.id) == ["codex-1", "claude-1", "claude-2"])
     draft.selectRuntime(connectionId: "claude-1", model: "opus")
     draft.selectPermission("plan")
-    draft.selectRuntime(connectionId: "b4-remote", model: nil)
-    #expect(draft.environmentId == nil)
-    #expect(draft.folder == nil)
-    #expect(draft.model == nil)
-    #expect(draft.permission == nil)
-    draft.text = "Ask the remote agent"
+    draft.text = "Ask the current harness"
+    let before = HistoricalActionFixture.draft(draft)
+    for id in ["b4-p1", "b4-remote", "staged-protocol"] {
+      draft.selectRuntime(connectionId: id, model: nil)
+      let draftRetained = HistoricalActionFixture.draft(draft) == before
+      #expect(draftRetained)
+    }
+    #expect(transport.recorded(.threadStart).isEmpty)
+    #expect(model.pendingSends.isEmpty)
     #expect(draft.blockedReason == nil)
     #expect(draft.canSend)
-    let call = try await Phone.land(draft, model, transport, environmentId: nil, folder: nil)
-    #expect(call.params["connectionId"] == "b4-remote")
-    for key in ["environmentId", "folder", "model", "permission"] {
-      #expect(call.params[key] == nil || call.params[key] == .null)
-    }
+    let call = try await Phone.land(draft, model, transport, environmentId: "p1", folder: "/work/atlas")
+    #expect(call.params["connectionId"] == "claude-1")
+    #expect(call.params["environmentId"] == "p1")
+    #expect(call.params["folder"] == "/work/atlas")
+    #expect(call.params["model"] == "opus")
+    #expect(call.params["permission"] == "plan")
+    #expect(call.params["text"] == "Ask the current harness")
     #expect(draft.finished)
-
-    // Back to Codex: the default place, which with nothing remembered is "No folder".
-    draft.selectRuntime(connectionId: "codex-1", model: nil)
-    #expect(draft.isNoFolder)
-    #expect(draft.folder == nil)
     await model.disconnect()
 
-    // The phone has no route to a remote B4.
-    let phone = try await Phone.model(ScriptedTransport(), clock: TestClock())
+    // An old remembered identity is skipped, without adopting it as a current profile.
+    for id in ["b4-remote", "staged-protocol"] {
+      let preferences = InMemoryPreferences()
+      NewThreadMemory(lastRuntime: RuntimeChoice(connectionId: id), text: "Retained text").save(
+        to: preferences)
+      let fallback = try await Phone.macModel(
+        ScriptedTransport(), preferences: preferences, connections: connections)
+      let remembered = NewThreadDraft(model: fallback, environmentId: nil)
+      #expect(remembered.isNoFolder)
+      #expect(remembered.folder == nil)
+      #expect(remembered.connectionId == "codex-1")
+      #expect(remembered.model == nil)
+      #expect(remembered.permission == nil)
+      #expect(remembered.text == "Retained text")
+      #expect(fallback.connection(id: id)?.id == id)
+      await fallback.disconnect()
+    }
+    let phone = try await Phone.model(
+      ScriptedTransport(), clock: TestClock(),
+      connections: Phone.connections + [HistoricalActionFixture.staged()])
     #expect(phone.remoteB4Connections.isEmpty)
-    #expect(!phone.startConnectionsWithoutEnvironment.contains { $0.kind == .b4 })
+    #expect(
+      !phone.startConnectionsWithoutEnvironment.contains { $0.kind == .b4 || $0.kind == .agentProtocol })
     #expect(!NewThreadDraft(model: phone, environmentId: nil).connections.contains { $0.id == "b4-remote" })
     await phone.disconnect()
   }
@@ -1163,25 +1166,32 @@ enum Phone {
     #expect(PickerMenus.models(agent, chosen: nil, isChosenConnection: true, forThread: false).isEmpty)
   }
 
-  @Test func runtimeSectionsPutClaudeFirstAndRemoteB4OnTheMacOnly() async throws {
-    let mac = try await Phone.macModel(ScriptedTransport())
+  @Test func runtimeSectionsPutCurrentClaudeFirstAndExcludeUnavailableDraftChoices() async throws {
+    let mac = try await Phone.macModel(
+      ScriptedTransport(), connections: Phone.macConnections + [HistoricalActionFixture.staged(owner: nil)])
     let draft = NewThreadDraft(model: mac, environmentId: "p1")
-    var sections = PickerMenus.runtimeSections(draft.connections)
+    let sections = PickerMenus.runtimeSections(draft.connections)
     #expect(sections.harness.map(\.id) == ["claude-1", "claude-2", "codex-1"])
-    #expect(sections.local.map(\.id) == ["b4-p1"])
-    #expect(sections.remote.map(\.id) == ["b4-remote"])
-    // With a remote B4 chosen there is no environment, so no local agent is offered.
-    draft.selectRuntime(connectionId: "b4-remote", model: nil)
-    sections = PickerMenus.runtimeSections(draft.connections)
     #expect(sections.local.isEmpty)
-    #expect(sections.remote.map(\.id) == ["b4-remote"])
+    #expect(sections.remote.isEmpty)
+    let before = HistoricalActionFixture.draft(draft)
+    for id in ["b4-p1", "b4-remote", "staged-protocol"] {
+      draft.selectRuntime(connectionId: id, model: nil)
+      let draftRetained = HistoricalActionFixture.draft(draft) == before
+      #expect(draftRetained)
+    }
+    // Pure presentation still understands historical groupings for cached history.
+    let historical = PickerMenus.runtimeSections(Phone.macConnections)
+    #expect(historical.local.map(\.id) == ["b4-p1"])
+    #expect(historical.remote.map(\.id) == ["b4-remote"])
     await mac.disconnect()
-
-    let phone = try await Phone.model(ScriptedTransport(), clock: TestClock())
+    let phone = try await Phone.model(
+      ScriptedTransport(), clock: TestClock(),
+      connections: Phone.connections + [HistoricalActionFixture.staged()])
     let phoneSections = PickerMenus.runtimeSections(
       NewThreadDraft(model: phone, environmentId: "p1").connections)
     #expect(phoneSections.harness.map(\.id) == ["claude-1", "codex-1"])
-    #expect(phoneSections.local.map(\.id) == ["b4-p1"])
+    #expect(phoneSections.local.isEmpty)
     #expect(phoneSections.remote.isEmpty)
     await phone.disconnect()
   }
@@ -1283,14 +1293,19 @@ enum Phone {
   }
 
   @Test func noFolderOffersCodexAndClaudeButNoLocalB4() async throws {
-    let mac = try await Phone.macModel(ScriptedTransport())
+    let mac = try await Phone.macModel(
+      ScriptedTransport(), connections: Phone.macConnections + [HistoricalActionFixture.staged(owner: nil)])
     let draft = NewThreadDraft(model: mac, environmentId: nil)
     #expect(draft.isNoFolder)
-    #expect(draft.connections.map(\.id) == ["codex-1", "claude-1", "claude-2", "b4-remote"])
+    #expect(draft.connections.map(\.id) == ["codex-1", "claude-1", "claude-2"])
     await mac.disconnect()
 
     // The phone offers the primary Mac's ready Codex and Claude connections, and nothing else.
-    let phone = try await Self.phoneOnMac1(ScriptedTransport())
+    let phone = try await Phone.model(
+      ScriptedTransport(), clock: TestClock(),
+      threads: [PhoneFixture.thread("recent", owner: "mac-1", at: -10)],
+      connections: Phone.connections + [HistoricalActionFixture.staged()])
+    #expect(phone.primaryHostId == "mac-1")
     #expect(phone.startConnectionsWithoutEnvironment.map(\.id) == ["codex-1", "claude-1"])
     let phoneDraft = NewThreadDraft(model: phone, environmentId: nil)
     #expect(phoneDraft.isNoFolder)

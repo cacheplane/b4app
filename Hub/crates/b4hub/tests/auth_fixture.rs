@@ -341,6 +341,7 @@ async fn routes_answer_the_shapes_the_fixture_holds(pool: PgPool) {
     let me = hub.get("/v1/me", Some(&token)).await;
     same_shape("me", &me.body, &example("me"));
     assert_eq!(me.body["userId"], session.body["userId"]);
+    assert_eq!(me.body["orgId"], principal.org_id.to_string());
     assert_eq!(me.body["identities"].as_array().unwrap().len(), 2);
 
     // A passkey step-up: the begin answer, the finish request, and the grant.

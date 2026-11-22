@@ -226,7 +226,17 @@ pub async fn run(
     // The heartbeat has a connection of its own: one that queued behind busy requests for the
     // pool's 5 s acquire wait could let a healthy instance read as dead to the others.
     let beat_db = state.db.dedicated();
-    instances::register(&beat_db, &state.instances, public_url.as_deref()).await;
+    let floor = instances::register(&beat_db, &state.instances, public_url.as_deref())
+        .await
+        .map_err(|_| std::io::Error::other("Hub startup admission failed"))?;
+    if state.relay.observe_floor(floor).is_err() {
+        // No serving/heartbeat/listener task has started. Release only this exact instance's
+        // newly committed registration before returning the fixed startup failure.
+        instances::release(&beat_db, &state.instances).await;
+        return Err(std::io::Error::other(
+            "Hub startup protocol floor is incompatible",
+        ));
+    }
     // Aborted however `run` ends, dropped mid-drain included.
     let heartbeat = AbortOnDrop(tokio::spawn(instances::heartbeat_loop(
         beat_db,

@@ -359,6 +359,37 @@ private let acme = AuthSession(
     #expect(await rig.accounts.status().known.count == 2)
   }
 
+  @Test func installedProtocolComparisonExpiresWhenTheAccountChanges() async throws {
+    let rig = try await AccountRig.start()
+    defer { Task { await rig.close() } }
+    await rig.hub.add(ann)
+    await rig.hub.add(bob)
+    _ = try await rig.accounts.signIn(session: ann, hubURL: hubURL)
+    let scope = try rig.accounts.scope()
+    let link = try #require(try scope.database.hubLink())
+    let snapshot = try scope.database.captureProtocolVerification(
+      accountID: scope.account.id,
+      expectedMembership: ProtocolNativeMembership(
+        canonicalHubBase: link.url, deviceID: link.deviceId, linkJoinedAt: link.joinedAt))
+    let ordinary = try await rig.accounts.prepareDormantHubOwner(
+      expectedScope: scope, originalSnapshot: snapshot)
+    try ordinary.requireOrdinaryMemory()
+    let window = try await rig.accounts.beginDormantScopePreparation()
+    let prepared = try await rig.accounts.reserveDormantScopeOwner(preparation: window, expectedScope: scope)
+    #expect(throws: WorkspaceError.self) {
+      _ = try prepared.carrier.captureInstalledAccountSessionComparison()
+    }
+    let attachment = try await scope.hub.attachReservedScopeOwner(prepared.carrier)
+    _ = try await rig.accounts.publishDormantReservedScope(
+      expectedScope: scope, prepared: prepared, attachment: attachment)
+    #expect(throws: WorkspaceError.self) { try ordinary.requireOrdinaryMemory() }
+    let comparison = try prepared.carrier.captureInstalledAccountSessionComparison()
+    try comparison.requireOriginalNativeSession()
+
+    _ = try await rig.accounts.signIn(session: bob, hubURL: hubURL)
+    #expect(throws: WorkspaceError.self) { try comparison.requireOriginalNativeSession() }
+  }
+
   @Test func switchPreservesThreads() async throws {
     let rig = try await AccountRig.start()
     defer { Task { await rig.close() } }

@@ -65,9 +65,10 @@ private func runningTurn(threadId: String) -> Turn {
     #expect(
       model.deleteConfirmation(for: thread(connectionId: "c2")).message
         == "It's removed from this app and from Claude Code. You can't undo this.")
+    // Historical B4 is read-only; deletion must not promise a call to its retired runtime.
     #expect(
       model.deleteConfirmation(for: thread(connectionId: "c3")).message
-        == "It's removed from this app and from the B4 server. You can't undo this.")
+        == "It's removed from this app. You can't undo this.")
     #expect(
       model.deleteConfirmation(for: thread(connectionId: "c4")).message
         == "It's removed from this app. You can't undo this.")

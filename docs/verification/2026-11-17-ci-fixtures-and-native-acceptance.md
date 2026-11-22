@@ -1,0 +1,51 @@
+## 2026-11-17: CI fixture repairs and native acceptance
+
+This dated record separates the completed managed failure baseline from the source preparation checkpoint and defines acceptance for the [canonical repair plan](../superpowers/plans/2026-11-17-ci-fixtures-and-native-checks.md). It introduces no waiver, material decision or version change. Subsequent run/check status and final outcomes belong in [PR 180](https://github.com/cacheplane/b4app/pull/180); later commits qualify only from evidence produced by their actual runs.
+
+### Completed managed baseline: 402A
+
+[Run 44043499381, attempt 1](https://github.com/cacheplane/b4app/actions/runs/44043499381/attempts/1) completed with **8 successful jobs, 2 failed and 1 cancelled**. Reviewed remote head was `402a2a5a146070b06b0727a8c59f06c1b35245eb`; actual tested synthetic merge was `0ae2f5a371978e938659539b55d4f4704a02c028`, with parents main `da8b4cf4b04a968a46908aa0f7919d42a2e1c196` and that feature head. This is a source/failure record, not qualification of that head or any successor.
+
+The package reached its 45-minute cap; the old historical Mac setup failed; the serial aggregate failed. Keep execution contexts separate:
+
+| Native context | Observed result | Qualification limit |
+| --- | --- | --- |
+| Dedicated focused | 11 native PASS; 30 missing, comprising 28 unstarted and 2 started without terminal results | Incomplete; missing results are not passes |
+| Default aggregate | 41 native PASS; selected companions 85 PASS / 1 FAIL | Companion failure blocks the applicable default gate |
+| Serial aggregate | 41 native PASS; selected companions 86 PASS | This selected subset does not make the failed serial aggregate green and cannot replace default/focused evidence |
+
+The focused step began 44 minutes 35 seconds into a 45-minute job. That establishes incomplete opportunity, not the cause of any unknown individual delay. Do not infer test terminal outcomes or causal scheduling/Node/ownership explanations from absent results.
+
+Six grant cases and archive A6 previously stopped at the owned-log `unsafeLog` first-refusal before their privacy bodies because the CI persistent fixture path differed from the helper's process layout. This explains the provenance refusal only. Repairing that helper does not establish privacy acceptance: actual positive witnesses and full body assertions must execute in fresh managed CI.
+
+All historical failed, skipped, cancelled and missing evidence remains preserved and open until exact-current evidence supports a specific resolution. Prior independently accepted bounded B2/T12 work retains only its exact old-source scope. Source counts, repeated observations and argument cases are not unique tests, defects or execution denominators; no wholesale closure or stale-pass transfer is permitted.
+
+### Source preparation checkpoint: 2026-11-17
+
+Repairs through the macOS fixture were source-committed and reviewed at `685af28102750d50303fa0bede23abcf1ab91b37`, tree `b7e6c77875e33ede20fffd4fcb6fde6c6f6bda39` (1,433 files). This integrated main `167bd71d3713fd8f544956cf3b6b5bcbab4150d8`, preserving published D-246 and the smoke-window correction. **STATIC_ONLY: no new managed result had been observed at this preparation checkpoint since the 402A baseline.** Production UI guards were unchanged. This record does not predict a later run's outcome.
+
+The test-only owned-log repair, early native/compiler ordering and fixed-stage diagnostics, legacy Coordinator/UI fixture reconciliation and five-method Mac fixture repair were source-reviewed. The new model-only suite has nine source methods and 110 planned argument cases, requiring actual compilation and meaningful assertion RED before production UI changes. Local source inspection, formatter/parser checks and metadata are not native execution, privacy or compiler acceptance.
+
+The five Mac source methods include one combined current-fake-native/historical-cache case; the other four remain. Historical cache rendering, exact draft/opaque/pending/unknown preservation and Check again are read-only behavior. Current partial/Stop, approval/tool-row, continuation, persistence and no-resend controls remain actual fixture interactions to be observed. No active standard client or real-provider integration is claimed.
+
+### Required acceptance sequence
+
+1. **Review and source binding.** Independently review the combined coherent checkpoint before its normal push. Record the actual feature head, tested checkout/synthetic commit and parents, workflow and full source/tree identity, run/attempt and artifacts. Preserve published decisions and current-main compatibility. Every later source change needs evidence from its actual run; metadata-only correspondence earns no runtime credit.
+2. **Actual managed UI assertion RED.** The new existing-API model suite must compile and reach assertion failures demonstrating unavailable-runtime predicates or dispatch. Compile errors, timeout, missing tests, skip, cancellation and expected-failure annotation do not count. Preserve current positive commands, disabled-current stop, exact captured request IDs across selection and account lifecycle, and the historical-cache/dormant fixtures' validity.
+3. **Minimal reviewed production guard.** Only after RED, apply the unavailable-runtime policy consistently to predicates and direct actions, checking the actual request target even when selection or account lifecycle changes. Historical B4 actions, including local abandon, cannot dispatch or mutate draft/cache/pending/unknown facts. Dormant/current local abandon remains allowed under existing semantics. Current Codex/Claude behavior remains positive; host-offline/reconnecting copy stays distinct from historical unavailability. Review specification and quality independently.
+4. **Fresh full managed GREEN.** Require successful terminal results for every actual CI job on the resulting source, including the repaired privacy bodies with positive raw-log witnesses, model regressions, all five Mac smoke methods, all three iOS journeys, two Debug app builds and other workflow jobs. Preserve setup/teardown evidence. No local native test execution is authorized; source assertions and formatter results cannot satisfy this gate.
+5. **Native and companion completeness.** Under D-245, require all 23 named one-minute cases plus the other 18 native methods in their actual contexts: the default aggregate contains 41 native methods plus 86 selected companions; the dedicated focused invocation contains 41 native methods only; PR 180's serial aggregate contains 41 native methods plus 86 selected companions. Existing dedicated companion lanes qualify their own selected populations separately from the focused native invocation; no combined focused native-and-companion lane is implied. Preserve selected writer 53 versus physical writer 55 only in their applicable actual lanes. Derive observed denominators from actual discovery/results with platform conditionals. Any missing, failed, skipped or cancelled required result blocks acceptance; focused or serial success never substitutes for default.
+6. **Actual current C6 controls.** Require all 33 compiler receipts, 11 profiles and 11 summaries with the unchanged 33 vectors, 116 argument-template entries and bounds. The preparation source expects a strict closed CoordinatorTests description of 51 sources / 55 inputs / 52 outputs; those counts remain source expectations until actual managed observation. Bind actual compiler results to the current workflow, helper/source pins, tree, run and artifacts. Metadata alone and old 48-source receipts do not qualify this source. Keep literal pins synchronized after any source change.
+7. **Final review, queue and main.** Require independent final review, currentness/decision-allocation checks and all actual CI gates before entering the existing squash merge queue. Observe merge-group validation and then verify the merged commit/main checks. Do not force-push, merge directly to main, waive a failure or cancel evidence collection to obtain a green presentation.
+
+### Unchanged CI and merge contracts
+
+[D-244](../decisions/D-244-ci-under-ten-minutes.md) retains four ordinary macOS jobs, two Debug app builds, five Mac methods, three iOS journeys, clean-main cache production, restore-only PR/merge-group caches, required names and the 45-minute package cap. [D-245](../decisions/D-245-account-session-comparison-scenarios-have-independent-test-budgets.md) retains independently named one-minute cases, serialized suite, fresh fixtures, aggregate parallelism, joins, assertions, cleanup and bounds. Early native/compiler ordering and explicit availability improve execution opportunity without granting a timeout, retry, exclusion or serialization waiver. Closed A5 fixed-stage diagnostics may locate an observed boundary; they establish no causal timing or physical-ownership proof.
+
+At preparation, main ruleset `27386786` enforced the [D-242](../decisions/D-242-main-merges-through-a-merge-queue.md) SQUASH/ALLGREEN queue. Separately, main branch protection required four contexts: `Package build and tests`, `macOS and iOS app builds`, `Hub (Rust)`, and `iOS navigation and banner regression tests`. Those four are a repository minimum; all actual CI jobs and the additional native, Mac and C6 gates above remain mandatory. Routine reviewed push/merge uses existing authorization and requires no new approval flow.
+
+### Evidence limits and held operations
+
+[D-240](../decisions/D-240-agent-protocol-client-foundation.md) historical read-only policy, dormant standard profiles, ownership/privacy boundaries and release holds remain intact. Preserve normal driver completion as trusted under the existing contract; these checks do not establish physical descendant quiescence, precise ARC/PQfinish timing, ABI, import or freshness qualification. No live HTTP, real-provider or active standard-client claim follows from seeded cache rows, fake runtimes, compiler receipts or source review.
+
+SDK/npm publication, coordinated activation, production-floor changes, new deployment/release, A4–A10 and live HTTP remain separately held. Full CI acceptance and queue/main validation resolve only their exact tested source and scope.

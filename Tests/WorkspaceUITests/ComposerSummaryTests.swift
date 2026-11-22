@@ -66,14 +66,24 @@ import WorkspaceProtocol
     await model.disconnect()
   }
 
-  @Test func aRemoteB4DraftHasNoFolderAndNoPermission() async throws {
-    let (draft, model) = try await Self.draft(runtime: "b4-remote")
-    let remote = try #require(draft.connection)
-    #expect(draft.isRemoteB4)
+  @Test func aRemoteHistoricalThreadKeepsItsRouteSummaryAndCannotReplaceTheDraft() async throws {
+    let (draft, model) = try await Self.draft(model: "opus")
+    draft.selectPermission("plan")
+    let before = HistoricalActionFixture.draft(draft)
     let summary = ComposerSummary.draft(draft, in: model)
-    #expect(summary.place == "No folder")
-    #expect(summary.runtime == model.startLabel(for: remote))
-    #expect(summary.permission == nil)
+    draft.selectRuntime(connectionId: "b4-remote", model: nil)
+    let draftRetained = HistoricalActionFixture.draft(draft) == before
+    #expect(draftRetained)
+    let summaryRetained = ComposerSummary.draft(draft, in: model) == summary
+    #expect(summaryRetained)
+    let thread = Self.thread(
+      "b4-remote", model: "stale-model", permission: "stale-permission", environmentId: nil)
+    let remote = try #require(model.connection(id: "b4-remote"))
+    let historical = ComposerSummary.thread(thread, in: model)
+    #expect(ComposerSummary.placeText(thread, in: model) == "No folder")
+    #expect(historical.runtime == model.startLabel(for: remote))
+    #expect(historical.text == model.startLabel(for: remote))
+    #expect(historical.permission == nil)
     await model.disconnect()
   }
 
@@ -178,10 +188,14 @@ import WorkspaceProtocol
     await model.disconnect()
   }
 
-  @Test func aB4DraftInASeveralFolderEnvironmentIsTheEnvironmentAlone() async throws {
-    let (draft, model) = try await Self.draft(in: "p1", runtime: "b4-p1")
-    #expect(draft.connection?.kind == .b4)
-    #expect(ComposerSummary.placeText(draft) == "Atlas")
+  @Test func aHistoricalSelectionKeepsTheCurrentDraftsEnvironmentAndFolder() async throws {
+    let (draft, model) = try await Self.draft(in: "p1", model: "opus")
+    let before = HistoricalActionFixture.draft(draft)
+    draft.selectRuntime(connectionId: "b4-p1", model: nil)
+    let draftRetained = HistoricalActionFixture.draft(draft) == before
+    #expect(draftRetained)
+    #expect(draft.connection?.kind == .claude)
+    #expect(ComposerSummary.placeText(draft) == "Atlas · atlas")
     await model.disconnect()
   }
 

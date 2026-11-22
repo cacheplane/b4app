@@ -696,7 +696,7 @@ private struct JoinedHarness {
     #expect(left.link == nil)
   }
 
-  /// Review Focus 1 at the link: the executor is given the hub's clock from `hello`, not the Mac's.
+  /// The executor uses the hub time supplied by the greeting and subsequent heartbeats.
   @Test func deadlineUsesTheHubClockAtTheLink() async throws {
     let h = try await LinkHarness.start()
     defer { Task { await h.close() } }
@@ -705,12 +705,16 @@ private struct JoinedHarness {
     let socket = try await h.connection.nextSocket()
     let params = try JSONValue(encoding: TurnLookup.Params(operationId: "op-1", threadId: thread.id))
 
-    /// Sets the hub's clock to the Mac's plus `skew` (a repeated hello moves the offset), then sends a
+    /// Sets the hub's clock to the Mac's plus `skew`, then sends a
     /// `turn.lookup` due `left` seconds after the hub's now, and returns the reply's error code.
-    func lookup(skew: TimeInterval, left: TimeInterval) async throws -> String? {
+    func lookup(skew: TimeInterval, left: TimeInterval, greeting: Bool = false) async throws -> String? {
       let hubNow = Date().addingTimeInterval(skew)
-      socket.deliver(hello(hubTime: hubNow))
-      await waitUntil("connected") { await h.link.status().state == .connected }
+      if greeting {
+        socket.deliver(hello(hubTime: hubNow))
+        await waitUntil("connected") { await h.link.status().state == .connected }
+      } else {
+        socket.deliver(.pong(hubTime: Timestamp.string(from: hubNow)))
+      }
       let id = UUID().uuidString.lowercased()
       socket.deliver(
         .command(
@@ -726,7 +730,7 @@ private struct JoinedHarness {
 
     let expired = ErrorCode.commandExpired.rawValue
     // The Mac is 2 minutes ahead: 8 s left on the hub is already past on the Mac's clock. It runs.
-    #expect(try await lookup(skew: -120, left: 8) == nil)
+    #expect(try await lookup(skew: -120, left: 8, greeting: true) == nil)
     // The Mac is 2 minutes behind: 1 s past on the hub still looks far off on the Mac's. Refused.
     #expect(try await lookup(skew: 120, left: -1) == expired)
     // The cases where both clocks agree.

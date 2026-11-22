@@ -20,6 +20,7 @@ use tokio::time::Instant;
 
 use crate::error::relay_code;
 
+pub mod admission;
 pub mod limits;
 pub mod link;
 pub mod registry;
@@ -30,7 +31,7 @@ pub use registry::{
 };
 
 /// The link protocol this hub speaks, sent as `protocol` in `hello`.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = b4hub_core::protocol::ClientProtocol::SUPPORTED.value();
 /// The oldest client protocol this hub serves, sent as `minClientProtocol` in `hello`.
 pub const MIN_CLIENT_PROTOCOL: u32 = 1;
 

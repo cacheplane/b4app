@@ -38,15 +38,16 @@ use b4hub_core::relay::{
     From, RelayMessage, RelayMethod, Role, WireError, COMMAND_DEADLINE, HELD_MAX, HOLD_WINDOW,
     PENDING_THREAD_TTL, REPLY_WAIT_OTHER, REPLY_WAIT_START,
 };
-use b4hub_db::relay::{
-    owner_device, owner_of_environment, owner_of_request, owner_of_thread, Owner,
-};
+use b4hub_db::relay::Owner;
 use b4hub_db::Db;
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use super::admission::{
+    private_connection_fields, public_requirement, target_requirement, Checked, Failure,
+};
 use super::limits::{RateWithBurst, SlidingWindow, COMMAND_WINDOW, STARTS_PER_WINDOW};
 use super::registry::WatchError;
 use super::{rfc3339_millis, LinkHandle, Relay, SendError};
@@ -70,6 +71,8 @@ pub mod code {
 /// What a host answered to one command.
 #[derive(Debug, Clone)]
 struct Answer {
+    required: u32,
+    native_owner: Option<Uuid>,
     result: Option<Value>,
     error: Option<WireError>,
 }
@@ -77,6 +80,8 @@ struct Answer {
 impl Answer {
     fn refused(error: WireError) -> Answer {
         Answer {
+            required: 1,
+            native_owner: None,
             result: None,
             error: Some(error),
         }
@@ -92,6 +97,8 @@ struct InFlight {
 /// A thread a `thread.start` was routed for, before its row reaches the hub.
 struct PendingThread {
     owner: Uuid,
+    connection: String,
+    required: u32,
     until: Instant,
 }
 
@@ -146,7 +153,14 @@ impl Commands {
         Ok(())
     }
 
-    fn remember_thread(&self, user_id: Uuid, thread_id: String, owner: Uuid) {
+    fn remember_thread(
+        &self,
+        user_id: Uuid,
+        thread_id: String,
+        owner: Uuid,
+        connection: String,
+        required: u32,
+    ) {
         let now = Instant::now();
         let mut pending = lock(&self.pending_threads);
         pending.retain(|_, thread| thread.until > now);
@@ -154,16 +168,20 @@ impl Commands {
             (user_id, thread_id),
             PendingThread {
                 owner,
+                connection,
+                required,
                 until: now + PENDING_THREAD_TTL,
             },
         );
     }
 
-    fn pending_thread(&self, user_id: Uuid, thread_id: &str) -> Option<Uuid> {
+    fn pending_thread(&self, user_id: Uuid, thread_id: &str) -> Option<(Uuid, String, u32)> {
         let key = (user_id, thread_id.to_string());
         let mut pending = lock(&self.pending_threads);
         match pending.get(&key) {
-            Some(thread) if thread.until > Instant::now() => Some(thread.owner),
+            Some(thread) if thread.until > Instant::now() => {
+                Some((thread.owner, thread.connection.clone(), thread.required))
+            }
             Some(_) => {
                 pending.remove(&key);
                 None
@@ -291,7 +309,9 @@ impl Relay {
     /// last [`PENDING_THREAD_TTL`], before the thread's row reached the hub. Commands consult it
     /// before the thread lookup; so does `watch`.
     pub fn pending_thread_owner(&self, user_id: Uuid, thread_id: &str) -> Option<Uuid> {
-        self.commands().pending_thread(user_id, thread_id)
+        self.commands()
+            .pending_thread(user_id, thread_id)
+            .map(|(owner, _, _)| owner)
     }
 
     /// How many commands are held for the offline host `host`.
@@ -326,6 +346,47 @@ pub async fn handle_command(
     params: Value,
 ) {
     let started = Instant::now();
+    // Existing IDs attach before interpreting a second, possibly different params object.
+    if caller.role == Role::Client && relay.commands().in_flight(caller.device_id, &id) {
+        return;
+    }
+    let mut preflight = match Checked::open(db, relay, caller).await {
+        Ok(value) => value,
+        Err(error) => {
+            fence(relay, caller, error);
+            return;
+        }
+    };
+    let inspected = find_target(relay, &mut preflight, caller, method, &params).await;
+    let early = match inspected {
+        Err(error) if error.code == "protocol_not_activated" => Some(error),
+        Err(error) if error.code == code::INTERNAL_ERROR => {
+            fence(relay, caller, Failure::Unavailable);
+            return;
+        }
+        _ => None,
+    };
+    if let Err(error) = preflight.commit().await {
+        fence(relay, caller, error);
+        return;
+    }
+    if let Some(error) = early {
+        let _ = deliver_answer(
+            relay,
+            db,
+            caller.device_id,
+            RelayMessage::Reply {
+                id,
+                result: None,
+                error: Some(error),
+            },
+            1,
+            None,
+        )
+        .await;
+        return;
+    }
+    let reply_params = params.clone();
     // A client's command is claimed before anything else, the limits included: a resend of one in
     // flight attaches to it and is not counted. The claim is held until the answer has been handed
     // to the caller's link, so a resend in that gap attaches too, and the caller gets one reply.
@@ -352,15 +413,22 @@ pub async fn handle_command(
     // The caller may have linked again meanwhile; then the answer goes to the new link. A caller
     // with no link, or whose queue stays full for `QUEUE_WAIT`, misses it and settles the command
     // another way (the phone's `turn.lookup`).
+    let owner = answer.native_owner;
     let reply = RelayMessage::Reply {
         id,
         result: answer.result,
         error: answer.error,
     };
-    if relay
-        .send_wait(caller.device_id, reply, QUEUE_WAIT)
-        .await
-        .is_err()
+    if deliver_answer(
+        relay,
+        db,
+        caller.device_id,
+        reply,
+        answer.required,
+        owner.map(|owner| (method, &reply_params, owner)),
+    )
+    .await
+    .is_err()
     {
         tracing::info!(method = method.as_str(), "command reply not delivered");
     }
@@ -369,21 +437,36 @@ pub async fn handle_command(
 
 /// A host's `reply`: answers the commands `id` forwarded to it that are still waiting. A reply
 /// that nothing waits for (too late, or never asked) is dropped.
-pub fn handle_reply(
+pub(super) async fn handle_reply(
     relay: &Relay,
+    db: &Db,
     host: &LinkHandle,
     id: &str,
     result: Option<Value>,
     error: Option<WireError>,
-) {
-    let answer = Answer { result, error };
-    let waiting = relay.commands().answered(host.device_id, id);
-    if waiting.is_empty() {
-        tracing::debug!("dropped a reply nothing waits for");
+) -> Result<(), Failure> {
+    let checked = Checked::open(db, relay, host).await?;
+    let details = error.as_ref().and_then(|error| error.details.as_ref());
+    let required = result
+        .as_ref()
+        .map_or(1, public_requirement)
+        .max(details.map_or(1, public_requirement));
+    if result.as_ref().is_some_and(private_connection_fields)
+        || details.is_some_and(private_connection_fields)
+    {
+        return Err(Failure::Gone);
     }
-    for reply in waiting {
+    checked.proof(required)?;
+    let answer = Answer {
+        result,
+        error,
+        required: checked.floor().minimum().max(required),
+        native_owner: Some(host.device_id),
+    };
+    for reply in relay.commands().answered(host.device_id, id) {
         let _ = reply.send(answer.clone());
     }
+    checked.commit().await
 }
 
 /// The answer to a frame that did not decode but is a `command` with an `id`: its method is not
@@ -412,29 +495,36 @@ pub async fn handle_watch(
     client: &LinkHandle,
     thread_id: &str,
 ) -> Option<RelayMessage> {
-    // Watching a thread the link already watches changes nothing, so it needs no lookup: a client
-    // that repeats its watches costs no database work.
-    if relay.watches(client, thread_id) {
-        return None;
-    }
-    let owner = match thread_owner(relay, db, client, thread_id).await {
-        Ok(owner) => owner,
+    let mut checked = match Checked::open(db, relay, client).await {
+        Ok(value) => value,
+        Err(error) => {
+            fence(relay, client, error);
+            return None;
+        }
+    };
+    let found = match thread_target(relay, &mut checked, client, thread_id).await {
+        Ok(value) => value,
         Err(error) => return Some(watch_refused(error, thread_id)),
     };
-    match relay.watch(client, owner.device_id, thread_id) {
-        Ok(()) | Err(WatchError::Gone) => None,
-        Err(WatchError::Limit) => {
-            tracing::info!(device = %client.device_id, "watch limit hit");
-            Some(watch_refused(
-                WireError {
-                    code: relay_code::WATCH_LIMIT.to_string(),
-                    message: "a link may watch at most 4 threads".to_string(),
-                    details: None,
-                },
-                thread_id,
-            ))
-        }
+    if let Err(error) = checked.proof(found.required) {
+        return Some(watch_refused(error.wire(), thread_id));
     }
+    let result = match relay.watch(client, found.owner.device_id, thread_id) {
+        Ok(()) | Err(WatchError::Gone) => None,
+        Err(WatchError::Limit) => Some(watch_refused(
+            WireError {
+                code: relay_code::WATCH_LIMIT.into(),
+                message: "a link may watch at most 4 threads".into(),
+                details: None,
+            },
+            thread_id,
+        )),
+    };
+    if let Err(error) = checked.commit().await {
+        fence(relay, client, error);
+        return None;
+    }
+    result
 }
 
 /// The `error` frame refusing a `watch`, with `details.threadId` naming the thread, so the client
@@ -455,15 +545,121 @@ fn watch_refused(error: WireError, thread_id: &str) -> RelayMessage {
 /// A host's `event`: sent on to every client link watching its `threadId`, and dropped when none
 /// does (or the event names no thread). The hub reads that one field and nothing else, and logs
 /// nothing about the event.
-pub fn handle_event(relay: &Relay, host: &LinkHandle, event: Value) {
-    let Some(thread_id) = event
+pub(super) async fn handle_event(
+    relay: &Relay,
+    db: &Db,
+    host: &LinkHandle,
+    event: Value,
+) -> Result<(), Failure> {
+    let Some(thread) = event
         .get("threadId")
         .and_then(Value::as_str)
         .map(str::to_string)
     else {
-        return;
+        return Ok(());
     };
-    relay.fan_out(host.device_id, &thread_id, &RelayMessage::Event { event });
+    let mut checked = Checked::open(db, relay, host).await?;
+    let target = match thread_target(relay, &mut checked, host, &thread).await {
+        Ok(target) => target,
+        Err(_) => return checked.commit().await,
+    };
+    if target.owner.device_id != host.device_id {
+        return checked.commit().await;
+    }
+    if private_connection_fields(&event) {
+        return Ok(());
+    }
+    let mut required = target.required.max(public_requirement(&event));
+    if let Some(id) = event.get("connectionId").and_then(Value::as_str) {
+        let found = checked
+            .native()?
+            .connection(id)
+            .await
+            .map_err(Failure::db)?
+            .ok_or(Failure::Gone)?;
+        if found.owner.device_id != host.device_id {
+            return Err(Failure::Gone);
+        }
+        required = required.max(target_requirement(found.protocol)?);
+        // An event cannot claim a different connection than its persisted thread.
+        let matches = if target.stored {
+            checked
+                .native()?
+                .thread_connection_matches(&thread, id)
+                .await
+                .map_err(Failure::db)?
+        } else {
+            relay
+                .commands()
+                .pending_thread(host.user_id, &thread)
+                .is_some_and(|(device, connection, _)| device == host.device_id && connection == id)
+        };
+        if !matches {
+            return Ok(());
+        }
+    }
+    let proof = checked.proof(required)?;
+    relay.fan_out_checked(
+        host.device_id,
+        &thread,
+        &RelayMessage::Event { event },
+        &proof,
+    );
+    checked.commit().await
+}
+
+pub(super) fn fence(relay: &Relay, handle: &LinkHandle, error: Failure) {
+    if let Some(close) = error.close() {
+        relay.close_generation(handle.device_id, handle.generation, close);
+    }
+}
+
+/// Capacity waits finish before opening the short native write admission. A reconnect receives
+/// the original result only after its own session, floor and generation have been rechecked.
+async fn deliver_answer(
+    relay: &Relay,
+    db: &Db,
+    device: Uuid,
+    message: RelayMessage,
+    mut required: u32,
+    target: Option<(RelayMethod, &Value, Uuid)>,
+) -> Result<(), Failure> {
+    let until = Instant::now() + QUEUE_WAIT;
+    let reserved = relay
+        .reserve(device, until)
+        .await
+        .map_err(|_| Failure::Gone)?;
+    let mut checked =
+        match tokio::time::timeout_at(until, Checked::open(db, relay, &reserved.handle)).await {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => {
+                fence(relay, &reserved.handle, error);
+                return Err(error);
+            }
+            Err(_) => {
+                fence(relay, &reserved.handle, Failure::Unavailable);
+                return Err(Failure::Unavailable);
+            }
+        };
+    if let Some((method, params, expected_owner)) = target {
+        let recipient = reserved.handle.clone();
+        let current = tokio::time::timeout_at(
+            until,
+            find_target(relay, &mut checked, &recipient, method, params),
+        )
+        .await
+        .map_err(|_| Failure::Unavailable)?
+        .map_err(|_| Failure::Gone)?;
+        if current.owner.device_id != expected_owner {
+            return Err(Failure::Gone);
+        }
+        required = required.max(current.required);
+    }
+    let proof = checked.proof(required)?;
+    reserved.send(message, &proof).map_err(|_| Failure::Gone)?;
+    tokio::time::timeout_at(until, checked.commit())
+        .await
+        .map_err(|_| Failure::Unavailable)?
 }
 
 /// A claimed client command, from the limits on.
@@ -494,11 +690,17 @@ async fn deliver(
     method: RelayMethod,
     params: Value,
 ) -> Result<Answer, WireError> {
-    let mut owner = find_owner(relay, db, caller, method, &params).await?;
+    let mut checked = Checked::open(db, relay, caller).await.map_err(|error| {
+        fence(relay, caller, error);
+        error.wire()
+    })?;
+    let target = find_target(relay, &mut checked, caller, method, &params).await?;
+    checked
+        .proof(target.required)
+        .map_err(|error| error.wire())?;
+    let owner = target.owner;
+    checked.commit().await.map_err(|error| error.wire())?;
     if !relay.online(owner.device_id) {
-        // Read the owner again now that it reads offline: its `last_seen_at` is then the last
-        // frame it sent, which is what the hold window and the refusal's details are about.
-        owner = eligible(caller, reread(db, caller, owner.device_id).await?)?;
         if !holdable(method) {
             return Err(device_offline(&owner));
         }
@@ -506,89 +708,179 @@ async fn deliver(
         hold(relay, &owner).await?;
         claim.unmark_held();
     }
-    forward(relay, caller, claim, id, method, params, &owner).await
+    forward(relay, db, caller, claim, (id, method, params), &owner).await
 }
 
-/// Steps 2 to 4: the owner of what the command names, if the caller may reach it.
-async fn find_owner(
+struct Target {
+    owner: Owner,
+    required: u32,
+    stored: bool,
+}
+async fn find_target(
     relay: &Relay,
-    db: &Db,
+    checked: &mut Checked,
     caller: &LinkHandle,
     method: RelayMethod,
     params: &Value,
-) -> Result<Owner, WireError> {
-    let (org, user) = (caller.org_id, caller.user_id);
-    match method {
+) -> Result<Target, WireError> {
+    if private_connection_fields(params) {
+        return Err(not_found());
+    }
+    let mut required = public_requirement(params);
+    let owner = match method {
         RelayMethod::TurnSend | RelayMethod::TurnInterrupt | RelayMethod::TurnLookup => {
-            thread_owner(relay, db, caller, param(params, "threadId")?).await
+            let found = thread_target(relay, checked, caller, param(params, "threadId")?).await?;
+            required = required.max(found.required);
+            found.owner
         }
         RelayMethod::RequestRespond => {
-            let request_id = param(params, "requestId")?;
-            let found = owner_of_request(db, org, user, request_id)
+            let found = checked
+                .native()
+                .map_err(|e| e.wire())?
+                .request(param(params, "requestId")?)
                 .await
                 .map_err(lookup_failed)?
                 .ok_or_else(not_found)?;
-            let owner = eligible(caller, found.owner)?;
-            // The Mac stays the authority (a request with no state is forwarded); this only saves
-            // the round trip for one the hub already knows was answered.
-            match found.state.as_deref() {
-                Some(state) if state != "pending" => Err(stale_runtime_request()),
-                _ => Ok(owner),
+            required =
+                required.max(target_requirement(found.target.protocol).map_err(|e| e.wire())?);
+            if found
+                .state
+                .as_deref()
+                .is_some_and(|state| state != "pending")
+            {
+                return Err(stale_runtime_request());
             }
+            eligible(caller, found.target.owner)?
         }
-        // A start that names an environment goes to the environment's owner; one that names none
-        // (a thread with no folder) names the Mac itself, like a new environment does.
-        RelayMethod::ThreadStart if params.get("environmentId").is_none_or(Value::is_null) => {
-            device_owner(db, caller, params).await
-        }
-        RelayMethod::ThreadStart
-        | RelayMethod::EnvironmentUpdate
-        | RelayMethod::EnvironmentDelete => {
-            let environment_id = param(params, "environmentId")?;
-            let found = owner_of_environment(db, org, user, environment_id)
+        RelayMethod::ThreadStart => {
+            // The connection is a real owned row even for a no-folder start. Neither a header
+            // nor an untyped missing parent is evidence of a legacy target.
+            let connection = checked
+                .native()
+                .map_err(|e| e.wire())?
+                .connection(param(params, "connectionId")?)
                 .await
-                .map_err(lookup_failed)?;
-            eligible(caller, found.ok_or_else(not_found)?)
+                .map_err(lookup_failed)?
+                .ok_or_else(not_found)?;
+            required = required.max(target_requirement(connection.protocol).map_err(|e| e.wire())?);
+            let owner = if params.get("environmentId").is_none_or(Value::is_null) {
+                device_target(checked, caller, params).await?
+            } else {
+                let row = checked
+                    .native()
+                    .map_err(|e| e.wire())?
+                    .environment(param(params, "environmentId")?)
+                    .await
+                    .map_err(lookup_failed)?
+                    .ok_or_else(not_found)?;
+                eligible(caller, row)?
+            };
+            if connection.owner.device_id != owner.device_id {
+                return Err(not_found());
+            }
+            owner
         }
-        // A new environment has no row yet: the phone names the Mac whose folders it will list.
-        RelayMethod::EnvironmentCreate => device_owner(db, caller, params).await,
-    }
+        RelayMethod::EnvironmentUpdate | RelayMethod::EnvironmentDelete => {
+            let row = checked
+                .native()
+                .map_err(|e| e.wire())?
+                .environment(param(params, "environmentId")?)
+                .await
+                .map_err(lookup_failed)?
+                .ok_or_else(not_found)?;
+            eligible(caller, row)?
+        }
+        RelayMethod::EnvironmentCreate => device_target(checked, caller, params).await?,
+    };
+    checked.proof(required).map_err(|e| e.wire())?;
+    Ok(Target {
+        owner,
+        required,
+        stored: true,
+    })
 }
-
-/// The Mac `params.deviceId` names, if the caller may reach it; a missing or malformed id is
-/// `not_found`.
-async fn device_owner(db: &Db, caller: &LinkHandle, params: &Value) -> Result<Owner, WireError> {
-    let device_id = param(params, "deviceId")?
+async fn device_target(
+    checked: &mut Checked,
+    caller: &LinkHandle,
+    params: &Value,
+) -> Result<Owner, WireError> {
+    let id = param(params, "deviceId")?
         .parse::<Uuid>()
         .map_err(|_| not_found())?;
-    let found = owner_device(db, caller.org_id, caller.user_id, device_id)
-        .await
-        .map_err(lookup_failed)?;
-    eligible(caller, found.ok_or_else(not_found)?)
+    eligible(
+        caller,
+        checked
+            .native()
+            .map_err(|e| e.wire())?
+            .device(id)
+            .await
+            .map_err(lookup_failed)?
+            .ok_or_else(not_found)?,
+    )
 }
-
-/// The Mac that owns `thread_id`, if the caller may reach it: a thread started moments ago through
-/// this hub is found in the pending-thread map first, then the thread table; a miss, or an owner
-/// that is not a non-revoked `macos` device of the caller's own user, is `not_found`.
-async fn thread_owner(
+async fn thread_target(
     relay: &Relay,
-    db: &Db,
+    checked: &mut Checked,
     caller: &LinkHandle,
-    thread_id: &str,
-) -> Result<Owner, WireError> {
-    let (org, user) = (caller.org_id, caller.user_id);
-    let found = match relay.pending_thread_owner(user, thread_id) {
-        Some(device) => owner_device(db, org, user, device).await,
-        None => owner_of_thread(db, org, user, thread_id).await,
-    };
-    eligible(caller, found.map_err(lookup_failed)?.ok_or_else(not_found)?)
-}
-
-async fn reread(db: &Db, caller: &LinkHandle, device_id: Uuid) -> Result<Owner, WireError> {
-    owner_device(db, caller.org_id, caller.user_id, device_id)
+    id: &str,
+) -> Result<Target, WireError> {
+    if let Some(found) = checked
+        .native()
+        .map_err(|e| e.wire())?
+        .thread(id)
         .await
         .map_err(lookup_failed)?
-        .ok_or_else(not_found)
+    {
+        return Ok(Target {
+            owner: eligible(caller, found.owner)?,
+            required: target_requirement(found.protocol).map_err(|e| e.wire())?,
+            stored: true,
+        });
+    }
+    if let Some((device, connection, required)) =
+        relay.commands().pending_thread(caller.user_id, id)
+    {
+        let target = checked
+            .native()
+            .map_err(|e| e.wire())?
+            .connection(&connection)
+            .await
+            .map_err(lookup_failed)?
+            .ok_or_else(not_found)?;
+        if target.owner.device_id != device {
+            return Err(not_found());
+        }
+        return Ok(Target {
+            owner: eligible(caller, target.owner)?,
+            required: required.max(target_requirement(target.protocol).map_err(|e| e.wire())?),
+            stored: false,
+        });
+    }
+    Err(not_found())
+}
+
+/// The host's direct watching frame is built under the same fresh admission used to write it.
+/// Stale/moved targets are removed rather than disclosed to their former host.
+pub(super) async fn watching(
+    relay: &Relay,
+    checked: &mut Checked,
+    host: &LinkHandle,
+    ids: Vec<String>,
+) -> Result<(Vec<String>, u32), Failure> {
+    let mut kept = Vec::new();
+    let mut required = 1;
+    for id in ids {
+        match thread_target(relay, checked, host, &id).await {
+            Ok(found) if found.owner.device_id == host.device_id => {
+                required = required.max(found.required);
+                kept.push(id);
+            }
+            Err(error) if error.code == code::INTERNAL_ERROR => return Err(Failure::Unavailable),
+            _ => {}
+        }
+    }
+    checked.proof(required)?;
+    Ok((kept, required))
 }
 
 /// Step 3: only a non-revoked `macos` device of the caller's own user receives its commands.
@@ -644,13 +936,13 @@ async fn hold(relay: &Relay, owner: &Owner) -> Result<(), WireError> {
 /// Step 5 and 6 for an online owner: stamp, forward, wait.
 async fn forward(
     relay: &Relay,
+    db: &Db,
     caller: &LinkHandle,
     claim: &Claim<'_>,
-    id: &str,
-    method: RelayMethod,
-    params: Value,
+    command: (&str, RelayMethod, Value),
     owner: &Owner,
 ) -> Result<Answer, WireError> {
+    let (id, method, params) = command;
     let started_thread = match method {
         RelayMethod::ThreadStart => params
             .get("threadId")
@@ -660,7 +952,12 @@ async fn forward(
     };
     let (reply, answered) = oneshot::channel();
     claim.forwarding(owner.device_id, reply);
-    let command = RelayMessage::Command {
+    let started_connection = if started_thread.is_some() {
+        Some(param(&params, "connectionId")?.to_string())
+    } else {
+        None
+    };
+    let mut command = RelayMessage::Command {
         id: id.to_string(),
         method,
         params,
@@ -670,11 +967,49 @@ async fn forward(
             name: caller.name.clone(),
         }),
     };
-    // A Mac with no link (it dropped since we looked) is offline. One whose queue stays full is
-    // online but not answering in time.
-    relay
-        .send_wait(owner.device_id, command, QUEUE_WAIT)
+    let until = Instant::now() + QUEUE_WAIT;
+    let reserved = relay
+        .reserve(owner.device_id, until)
         .await
+        .map_err(|error| match error {
+            SendError::Offline => device_offline(owner),
+            SendError::Full => relay_timeout(),
+        })?;
+    // The accepted command belongs to this logical device, not its old socket. Reconnection
+    // keeps dedupe/hold semantics, but must present a fresh native session of the same account.
+    let origin = relay
+        .handle(caller.device_id)
+        .filter(|handle| handle.org_id == caller.org_id && handle.user_id == caller.user_id)
+        .ok_or_else(not_found)?;
+    let mut checked = tokio::time::timeout_at(until, Checked::open(db, relay, &origin))
+        .await
+        .map_err(|_| relay_timeout())?
+        .map_err(|e| e.wire())?;
+    let target = tokio::time::timeout_at(
+        until,
+        find_target(
+            relay,
+            &mut checked,
+            &origin,
+            method,
+            &command_params(&command),
+        ),
+    )
+    .await
+    .map_err(|_| relay_timeout())??;
+    if let RelayMessage::Command { from, .. } = &mut command {
+        *from = Some(From {
+            device_id: origin.device_id,
+            name: origin.name.clone(),
+        });
+    }
+    if target.owner.device_id != owner.device_id {
+        return Err(not_found());
+    }
+    let required = target.required;
+    let proof = checked.proof(required).map_err(|e| e.wire())?;
+    reserved
+        .send(command, &proof)
         .map_err(|error| match error {
             SendError::Offline => device_offline(owner),
             SendError::Full => relay_timeout(),
@@ -692,16 +1027,24 @@ async fn forward(
                 Err(WatchError::Gone) => {}
             }
         }
-        relay
-            .commands()
-            .remember_thread(caller.user_id, thread_id.clone(), owner.device_id);
+        relay.commands().remember_thread(
+            caller.user_id,
+            thread_id.clone(),
+            owner.device_id,
+            started_connection.clone().ok_or_else(not_found)?,
+            required,
+        );
     }
+    tokio::time::timeout_at(until, checked.commit())
+        .await
+        .map_err(|_| relay_timeout())?
+        .map_err(|e| e.wire())?;
     let wait = if starts_a_turn(method) {
         REPLY_WAIT_START
     } else {
         REPLY_WAIT_OTHER
     };
-    let answer = match tokio::time::timeout(wait, answered).await {
+    let mut answer = match tokio::time::timeout(wait, answered).await {
         Ok(Ok(answer)) => answer,
         _ => return Err(relay_timeout()),
     };
@@ -717,7 +1060,15 @@ async fn forward(
             relay.unwatch(&link, thread_id);
         }
     }
+    answer.required = answer.required.max(required);
     Ok(answer)
+}
+
+fn command_params(command: &RelayMessage) -> Value {
+    match command {
+        RelayMessage::Command { params, .. } => params.clone(),
+        _ => Value::Null,
+    }
 }
 
 /// `turn.send` and `thread.start`: never held, waited on longest, and limited per user.

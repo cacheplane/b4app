@@ -1,0 +1,143 @@
+name: PR 180 protocol qualification
+
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled]
+
+permissions:
+  contents: read
+
+env:
+  B4APP_PROTOCOL_FULL_MATRIX: "1"
+
+jobs:
+  verify-checkout:
+    name: Verify PR 180 checkout
+    if: >-
+      github.repository == 'cacheplane/b4app' &&
+      github.event.label.name == 'qualify-pr-180' &&
+      github.event.pull_request.number == 180 &&
+      github.event.pull_request.head.repo.full_name == 'cacheplane/b4app' &&
+      github.event.pull_request.head.ref == 'blove/protocol-client-foundation-f9a-20261111'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify merge parents against the labeled pull request
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/pull/180/merge
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mapfile -t parents < <(git cat-file -p HEAD | sed -n '/^$/q; s/^parent //p')
+          test "${#parents[@]}" = 2
+          test "${parents[0]}" = "$BASE_SHA"
+          test "${parents[1]}" = "$HEAD_SHA"
+          printf 'merge=%s base=%s head=%s\n' "$GITHUB_SHA" "$BASE_SHA" "$HEAD_SHA"
+
+  bounded-database-aggregate:
+    name: Bounded database aggregate
+    runs-on: macos-26
+    timeout-minutes: 45
+    needs: verify-checkout
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: File times from content
+        run: python3 Scripts/restore_mtimes.py
+      - name: Restore the SwiftPM build
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-v2-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: spm-v2-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-
+      - name: Cache the pinned PostgreSQL archive
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/postgres-dl
+          key: postgres-dl-${{ hashFiles('Scripts/fetch-postgres.sh') }}
+      - name: Fetch PostgreSQL (the tests boot a private cluster from it)
+        run: ./Scripts/fetch-postgres.sh
+      - name: Build
+        run: swift build
+      - name: Start the tests' PostgreSQL
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
+        run: swift test --filter 'AccountRegistryTests/aLedgerIsCreatedOnlyWhenMissing'
+      - name: Complete storage and coordinator aggregate at width two
+        timeout-minutes: 35
+        shell: bash
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
+        run: swift test --skip-build --experimental-maximum-parallelization-width 2 --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' 2>&1 | tee "$RUNNER_TEMP/bounded-database-aggregate.log"
+      - name: Save diagnostic aggregate output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bounded-database-aggregate
+          path: ${{ runner.temp }}/bounded-database-aggregate.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Verify restricted owner and proof construction
+        run: python3 Scripts/check-owner-carrier-compiler-controls.py
+
+  account-session-aggregate-serial-diagnostic:
+    name: Account session aggregate serial diagnostic
+    runs-on: macos-26
+    timeout-minutes: 45
+    needs: verify-checkout
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: File times from content
+        run: python3 Scripts/restore_mtimes.py
+      - name: Restore the SwiftPM build
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-v2-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: spm-v2-${{ runner.os }}-xcode26.6-${{ hashFiles('Package.resolved') }}-
+      - name: Cache the pinned PostgreSQL archive
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build/postgres-dl
+          key: postgres-dl-${{ hashFiles('Scripts/fetch-postgres.sh') }}
+      - name: Fetch PostgreSQL (the tests boot a private cluster from it)
+        run: ./Scripts/fetch-postgres.sh
+      - name: Build
+        run: swift build
+      - name: Start the tests' PostgreSQL
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
+        run: swift test --filter 'AccountRegistryTests/aLedgerIsCreatedOnlyWhenMissing'
+      - name: Complete storage and coordinator aggregate without cross-test parallelism
+        timeout-minutes: 35
+        shell: bash
+        env:
+          B4APP_TEST_POSTGRES_DIR: ${{ runner.temp }}/pg
+        run: swift test --skip-build --no-parallel --filter '^(WorkspaceStorageTests|CoordinatorTests)\.' 2>&1 | tee "$RUNNER_TEMP/account-session-aggregate-serial-diagnostic.log"
+      - name: Save diagnostic aggregate output
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: account-session-aggregate-serial-diagnostic
+          path: ${{ runner.temp }}/account-session-aggregate-serial-diagnostic.log
+          if-no-files-found: error
+          retention-days: 7

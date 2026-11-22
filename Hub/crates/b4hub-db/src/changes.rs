@@ -29,6 +29,7 @@ use b4hub_core::change::{
 };
 pub use b4hub_core::change::{Page, StoredChange};
 use b4hub_core::hlc::Hlc;
+use b4hub_core::protocol::{ClientProtocol, CONNECTION_COLUMNS};
 use b4hub_core::push::Kind;
 use b4hub_core::writable::{is_clocked, is_never_cleared, is_phone_writable};
 use serde_json::Value;
@@ -181,13 +182,234 @@ pub(crate) async fn horizon(tx: &mut Transaction<'_, Postgres>, org_id: Uuid) ->
     Ok(horizon.unwrap_or(0))
 }
 
+// Private protocol state has no sync representation, even as an unknown forward-compatible table.
+const PRIVATE_PROTOCOL_TABLES: &[&str] = &[
+    "protocolSubscriptions",
+    "protocolRunSegments",
+    "protocolOperations",
+    "protocolGrantSecrets",
+    "protocolGrants",
+    "protocolPromptAnswers",
+    "protocolHistoryAnchors",
+];
+const PRIVATE_CONNECTION_COLUMNS: &[&str] = &["authMode", "authHeaderName"];
+
+async fn validate_protocol_batch(
+    tx: &mut Transaction<'_, Postgres>,
+    auth: &AuthedDevice,
+    batch: &[Change],
+    minimum: u32,
+) -> Result<()> {
+    // Staged legacy traffic normally has no native protocol graph. One scoped existence read
+    // avoids a parent join per legacy change; explicit modern shapes below are always checked.
+    let inspect_parents = if minimum < 2 && !batch.is_empty() {
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM connections WHERE org_id=$1 AND user_id=$2 AND kind='agentProtocol')")
+            .bind(auth.org_id).bind(auth.user_id).fetch_one(&mut **tx).await?
+    } else {
+        false
+    };
+    for change in batch {
+        if change.table == "connections"
+            && change.op == ChangeOp::Update
+            && change.column.as_deref().is_some_and(|column| {
+                !table_spec("connections")
+                    .expect("static table")
+                    .columns
+                    .contains(&column)
+            })
+        {
+            return Err(Error::PrivateProtocolData);
+        }
+        if PRIVATE_PROTOCOL_TABLES.contains(&change.table.as_str())
+            || (change.table == "connections"
+                && (change
+                    .column
+                    .as_deref()
+                    .is_some_and(|column| PRIVATE_CONNECTION_COLUMNS.contains(&column))
+                    || (change.op == ChangeOp::Insert
+                        && change
+                            .value
+                            .as_ref()
+                            .and_then(Value::as_object)
+                            .is_some_and(|value| {
+                                PRIVATE_CONNECTION_COLUMNS
+                                    .iter()
+                                    .any(|key| value.contains_key(*key))
+                            }))))
+        {
+            return Err(Error::PrivateProtocolData);
+        }
+        if minimum >= 2 {
+            continue;
+        }
+        let modern = if change.table == "connections" {
+            match change.op {
+                ChangeOp::Insert => change.value.as_ref().is_some_and(|value| {
+                    value.get("kind").and_then(Value::as_str) == Some("agentProtocol")
+                        || CONNECTION_COLUMNS
+                            .iter()
+                            .any(|key| value.get(*key).is_some_and(|value| !value.is_null()))
+                }),
+                ChangeOp::Update => change.column.as_deref().is_some_and(|column| {
+                    CONNECTION_COLUMNS.contains(&column)
+                        || (column == "kind"
+                            && change.value.as_ref().and_then(Value::as_str)
+                                == Some("agentProtocol"))
+                }),
+                ChangeOp::Delete => false,
+            }
+        } else {
+            false
+        };
+        if modern || (inspect_parents && affects_protocol_connection(tx, auth, change).await?) {
+            return Err(Error::ProtocolNotActivated);
+        }
+    }
+    Ok(())
+}
+
+/// Reads only owned mirrored parents. A child cannot smuggle a protocol-2 graph into staged v1.
+async fn affects_protocol_connection(
+    tx: &mut Transaction<'_, Postgres>,
+    auth: &AuthedDevice,
+    change: &Change,
+) -> Result<bool> {
+    let connection = match change.table.as_str() {
+        "connections" => Some(change.row_id.as_str()),
+        "threads" | "connectionUsage" => {
+            let key = "connectionId";
+            match change.op {
+                ChangeOp::Insert => change
+                    .value
+                    .as_ref()
+                    .and_then(|value| value.get(key))
+                    .and_then(Value::as_str),
+                ChangeOp::Update if change.column.as_deref() == Some(key) => {
+                    change.value.as_ref().and_then(Value::as_str)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    if let Some(id) = connection {
+        let modern: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connections WHERE org_id=$1 AND user_id=$2 AND id=$3 AND kind='agentProtocol')")
+            .bind(auth.org_id).bind(auth.user_id).bind(id).fetch_one(&mut **tx).await?;
+        if modern {
+            return Ok(true);
+        }
+    }
+    let thread = match change.table.as_str() {
+        "threads" => Some(change.row_id.as_str()),
+        "turns" | "displayItems" | "runtimeRequests" | "drafts" => match change.op {
+            ChangeOp::Insert => change
+                .value
+                .as_ref()
+                .and_then(|value| value.get("threadId"))
+                .and_then(Value::as_str),
+            ChangeOp::Update if change.column.as_deref() == Some("threadId") => {
+                change.value.as_ref().and_then(Value::as_str)
+            }
+            _ if change.table == "drafts" => Some(change.row_id.as_str()),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(thread) = thread {
+        let modern: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM threads t JOIN connections c ON c.org_id=t.org_id AND c.user_id=t.user_id AND c.id=t.\"connectionId\" WHERE t.org_id=$1 AND t.user_id=$2 AND t.id=$3 AND c.kind='agentProtocol')")
+            .bind(auth.org_id).bind(auth.user_id).bind(thread).fetch_one(&mut **tx).await?;
+        // A legacy proposed parent does not authorize moving a row out of an existing modern graph.
+        if modern {
+            return Ok(true);
+        }
+    }
+    // Updates/deletes can omit their parent from the delta. Inspect that actual owned row too.
+    let row_table = match change.table.as_str() {
+        "turns" => Some("turns"),
+        "displayItems" => Some("displayItems"),
+        "runtimeRequests" => Some("runtimeRequests"),
+        "connectionUsage" => Some("connectionUsage"),
+        _ => None,
+    };
+    if let Some(table) = row_table {
+        let join = if table == "connectionUsage" {
+            "JOIN connections c ON c.org_id=r.org_id AND c.user_id=r.user_id AND c.id=r.\"connectionId\"".to_string()
+        } else {
+            "JOIN threads t ON t.org_id=r.org_id AND t.user_id=r.user_id AND t.id=r.\"threadId\" JOIN connections c ON c.org_id=t.org_id AND c.user_id=t.user_id AND c.id=t.\"connectionId\"".to_string()
+        };
+        let key = if table == "connectionUsage" {
+            "connectionId"
+        } else {
+            "id"
+        };
+        // All interpolated names come from these fixed branches, never from request text.
+        let sql = format!("SELECT EXISTS(SELECT 1 FROM \"{table}\" r {join} WHERE r.org_id=$1 AND r.user_id=$2 AND r.\"{key}\"=$3 AND c.kind='agentProtocol')");
+        return Ok(sqlx::query_scalar(&sql)
+            .bind(auth.org_id)
+            .bind(auth.user_id)
+            .bind(&change.row_id)
+            .fetch_one(&mut **tx)
+            .await?);
+    }
+    Ok(false)
+}
+
+fn public_change(mut change: Change) -> Change {
+    change.value = public_value(
+        &change.table,
+        change.op,
+        change.column.as_deref(),
+        change.value,
+    );
+    change
+}
+
+fn public_value(
+    table: &str,
+    op: ChangeOp,
+    column: Option<&str>,
+    mut value: Option<Value>,
+) -> Option<Value> {
+    if table == "connections" {
+        if op == ChangeOp::Insert {
+            if let Some(object) = value.as_mut().and_then(Value::as_object_mut) {
+                if let Some(spec) = table_spec(table) {
+                    object.retain(|key, _| spec.columns.contains(&key.as_str()));
+                }
+                for key in ["target", "authReference", "localServerId"] {
+                    if object.contains_key(key) {
+                        object.insert(key.into(), Value::Null);
+                    }
+                }
+            }
+        } else if column.is_some_and(|column| {
+            is_scrubbed(table, column) || PRIVATE_CONNECTION_COLUMNS.contains(&column)
+        }) {
+            value = Some(Value::Null);
+        }
+    }
+    value
+}
+
 /// Records and applies `batch` for `auth`'s device in one transaction and returns
 /// `acceptedThrough`: the highest `device_seq` in the batch (for an empty batch, the highest the
 /// device has had accepted so far, or 0), with the changes the hub refused. Changes the hub
 /// already has, by `(device, device_seq)`, count as accepted and are not applied again, so a
 /// retried batch is harmless.
 pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<PushOutcome> {
-    let mut tx = db.tenant_tx(auth.org_id).await?;
+    push_for_protocol(db, auth, batch, ClientProtocol::LEGACY).await
+}
+
+/// Explicit wire admission; the legacy entrypoint is checked too, never a floor bypass.
+pub async fn push_for_protocol(
+    db: &Db,
+    auth: &AuthedDevice,
+    batch: &[Change],
+    client: ClientProtocol,
+) -> Result<PushOutcome> {
+    let (mut tx, floor) = db.protocol_write_tx(auth.org_id, client).await?;
+    // Whole-request refusal occurs before org/device/hub sequence allocation, even for header 2.
+    validate_protocol_batch(&mut tx, auth, batch, floor.minimum()).await?;
 
     // Pushes to one org run one at a time. `hub_seq` is allocated before commit, so without
     // this a slow transaction could commit sequence 11 after a reader had already seen 12 and
@@ -203,20 +425,23 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
     let mut touched: Vec<(Kind, String)> = Vec::new();
     let mut threads: Vec<String> = Vec::new();
     let mut archive_changed = false;
-    for change in batch {
-        if let Some(code) = refusal(auth, change) {
+    for original in batch {
+        // Payload-size/clock policy still sees the actual upload, before private-field projection.
+        if let Some(code) = refusal(auth, original) {
             tracing::warn!(
                 device = %auth.device_id,
-                device_seq = change.device_seq,
+                device_seq = original.device_seq,
                 code,
                 "refused a change"
             );
             rejected.push(Rejected {
-                device_seq: change.device_seq,
+                device_seq: original.device_seq,
                 code,
             });
             continue;
         }
+        let public = public_change(original.clone());
+        let change = &public;
         let hlc = stamp(auth, change, now);
         let recorded: Option<i64> = sqlx::query_scalar(
             "INSERT INTO changes \
@@ -339,7 +564,17 @@ pub async fn push(db: &Db, auth: &AuthedDevice, batch: &[Change]) -> Result<Push
 /// The horizon and the rows are read in one snapshot, so a prune cannot slip between them and
 /// leave the reader silently missing the rows it deleted.
 pub async fn pull(db: &Db, auth: &AuthedDevice, after: i64, limit: usize) -> Result<Page> {
-    pull_within(db, auth, after, limit, MAX_PAGE_BYTES).await
+    pull_for_protocol(db, auth, after, limit, ClientProtocol::LEGACY).await
+}
+
+pub async fn pull_for_protocol(
+    db: &Db,
+    auth: &AuthedDevice,
+    after: i64,
+    limit: usize,
+    client: ClientProtocol,
+) -> Result<Page> {
+    pull_within_for_protocol(db, auth, after, limit, MAX_PAGE_BYTES, client).await
 }
 
 /// [`pull`] with the page's byte budget given, so tests can reach the cut with small values.
@@ -350,8 +585,19 @@ pub async fn pull_within(
     limit: usize,
     max_bytes: usize,
 ) -> Result<Page> {
+    pull_within_for_protocol(db, auth, after, limit, max_bytes, ClientProtocol::LEGACY).await
+}
+
+pub async fn pull_within_for_protocol(
+    db: &Db,
+    auth: &AuthedDevice,
+    after: i64,
+    limit: usize,
+    max_bytes: usize,
+    client: ClientProtocol,
+) -> Result<Page> {
     let limit = limit.clamp(1, MAX_PULL_LIMIT);
-    let mut tx = db.read_tx(auth.org_id).await?;
+    let (mut tx, _) = db.protocol_read_tx(auth.org_id, client).await?;
     if after < horizon(&mut tx, auth.org_id).await? {
         return Err(Error::ResyncRequired);
     }
@@ -465,8 +711,17 @@ struct Row {
 
 impl Row {
     fn into_stored(self) -> Result<StoredChange> {
+        if PRIVATE_PROTOCOL_TABLES.contains(&self.table_name.as_str()) {
+            return Err(Error::PrivateProtocolData);
+        }
         let op = ChangeOp::parse(&self.op)
             .ok_or_else(|| sqlx::Error::Decode("unknown change op in the feed".into()))?;
+        let value = public_value(
+            &self.table_name,
+            op,
+            self.column_name.as_deref(),
+            self.value,
+        );
         Ok(StoredChange {
             hub_seq: self.hub_seq,
             device_id: self.device_id,
@@ -476,7 +731,7 @@ impl Row {
             row_id: self.row_id,
             op,
             column: self.column_name,
-            value: self.value,
+            value,
             hlc: self.hlc,
         })
     }

@@ -106,7 +106,8 @@ public actor MirrorRelay {
     inbound = stream
     self.clock = clock
     link = RelayLink(
-      url: url, token: token, connection: connection, maxBackoff: maxBackoff, clock: clock, jitter: jitter,
+      url: url, token: token, connection: connection, client: .phoneMirror, maxBackoff: maxBackoff,
+      clock: clock, jitter: jitter,
       onMessage: { continuation.yield(.message($0)) }, onState: { continuation.yield(.state($0)) })
   }
 

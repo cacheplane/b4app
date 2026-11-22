@@ -244,6 +244,16 @@ B4APP_LIVE_B4_URL=http://127.0.0.1:3001 B4APP_LIVE_B4_ROUTE=/chat#agent swift te
 
 The B4 live check needs a server you run yourself: a B4 project with one `agent()` route, started with `b4 dev --port 3001 --env-file .env` where that `.env` holds the model provider key, or the same project registered with `server add` and started by the app. This repo's `.env` is gitignored for exactly that; B4 keeps the provider key, the app never sees it. On the owner's Mac the trusted project is `~/repos/b4app-live-check`.
 
+### Protocol qualification
+
+Everyday CI runs the package tests using the same workflow as main. They cover protocol admission and refusal, archive restore, phone compatibility and ownership changes. PR 180 also qualifies the storage and coordinator suites on the same revision with bounded parallelism and serial execution. To reproduce those two runs on an Apple silicon Mac with the project's Xcode toolchain:
+
+```bash
+./Scripts/fetch-postgres.sh
+B4APP_PROTOCOL_FULL_MATRIX=1 swift test --experimental-maximum-parallelization-width 2 --filter '^(WorkspaceStorageTests|CoordinatorTests)\.'
+B4APP_PROTOCOL_FULL_MATRIX=1 swift test --no-parallel --filter '^(WorkspaceStorageTests|CoordinatorTests)\.'
+```
+
 ## Hub (optional)
 
 The hub (`Hub/`, a Rust service backed by PostgreSQL) mirrors conversations created in the app from a Mac to the iOS app (M8a, decisions D-043 to D-046) and, since M8b, carries the phone's own edits back (decisions D-048 to D-050). The phone shows threads and transcripts in the same attention order as the Mac, and can rename, pin, archive, and mark threads read or unread, rename environments, and edit a thread's shared draft; each edit applies on the phone at once, waits in an outbox while offline, and merges on the Mac and the hub column by column by hybrid logical clock. Only those columns are phone-writable, and the hub and the Mac both refuse anything else from a phone. Environments are created and their folders changed only on the Mac; the phone cannot yet create threads, send turns, or answer approvals (M8c). Only threads created in the app sync: nothing is read from `~/.codex`, `~/.claude`, or a B4 server's history, and connection credentials, executable paths, and local-server records never leave the Mac. The hub's wire reference is `Hub/API.md`.

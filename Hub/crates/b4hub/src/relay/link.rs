@@ -32,15 +32,19 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::time::Instant;
 
+use super::admission::{Checked, Failure};
 use super::limits::IN_FLIGHT_RETRY;
 use super::registry::{Close, Identity, LinkHandle, LiveLink, Outbound, Registration};
-use super::{close_code, invalid_frame, route, PROTOCOL};
+use super::registry::{CloseDisposition, Payload};
+use super::{invalid_frame, route, PROTOCOL};
 use crate::auth::{bearer_token, AuthedDevice};
 use crate::error::ApiError;
 use crate::instances;
 use crate::maintenance;
 use crate::serve::AppState;
 use crate::signals;
+use b4hub_core::protocol::ClientProtocol;
+use b4hub_db::relay::{Admission, ProbeAdmission};
 
 /// The header a device names its link protocol in; a missing header counts as 1.
 const PROTOCOL_HEADER: &str = "b4-protocol";
@@ -130,6 +134,18 @@ pub async fn upgrade(
     }
     let upgrade = upgrade.map_err(|_| ApiError::invalid_request("expected a WebSocket upgrade"))?;
     let protocol = client_protocol(&headers)?;
+    let client = ClientProtocol::new(protocol);
+    let session = bearer_token(&headers)
+        .map(SessionKey::of)
+        .ok_or_else(ApiError::unauthorized)?;
+    let admission = Admission::open(&state.db, &session, client)
+        .await?
+        .ok_or_else(ApiError::unauthorized)?;
+    state
+        .relay
+        .observe_floor(admission.floor())
+        .map_err(|_| ApiError::internal())?;
+    admission.commit().await?;
     state
         .relay
         .check_upgrade(device.device_id)
@@ -166,11 +182,29 @@ pub async fn upgrade(
         session: bearer_token(&headers).map(SessionKey::of),
         probe: false,
     };
-    let live = state.relay.track();
+    // Both Axum outcomes own the same lifecycle guard. A failed handoff has no socket and
+    // never enters serve_link, but its already committed instance claim still needs cleanup.
+    let live = Arc::new(state.relay.track());
+    let failed_live = Arc::clone(&live);
+    let failed_state = state.clone();
+    let failed_user = device.user_id;
     let cookie = state.instances.cookie();
     let mut response = upgrade
         .max_message_size(WIRE_MAX)
         .max_frame_size(WIRE_MAX)
+        .on_failed_upgrade(move |_error| {
+            tokio::spawn(async move {
+                instances::release_if_unlinked(
+                    &failed_state.db,
+                    &failed_state.relay,
+                    &failed_state.instances,
+                    failed_user,
+                )
+                .await;
+                // Normal drain includes the actual cleanup work, not just the rejected socket.
+                drop(failed_live);
+            });
+        })
         .on_upgrade(move |socket| serve_link(state, who, protocol, socket, live))
         .into_response();
     response.headers_mut().insert(SET_COOKIE, cookie);
@@ -192,7 +226,7 @@ pub enum ProbeFailure {
 /// is written.
 pub async fn probe(state: &AppState) -> Result<(), ProbeFailure> {
     let (hub_end, mut device) = MemorySocket::pair();
-    let live = state.relay.track();
+    let live = Arc::new(state.relay.track());
     let mut task = tokio::spawn(serve_link(
         state.clone(),
         Identity::probe(),
@@ -284,12 +318,16 @@ async fn serve_link<S: LinkSocket>(
     who: Identity,
     protocol: u32,
     mut socket: S,
-    _live: LiveLink,
+    _live: Arc<LiveLink>,
 ) {
     let relay = state.relay.clone();
     let min = relay.min_client_protocol();
     let probe = who.probe;
+    let claimed_user = who.user_id;
     if protocol < min {
+        if !probe {
+            instances::release_if_unlinked(&state.db, &relay, &state.instances, claimed_user).await;
+        }
         if probe {
             tracing::warn!(protocol, min, "readiness probe refused: protocol too old");
         } else {
@@ -305,23 +343,74 @@ async fn serve_link<S: LinkSocket>(
         relay.pass_gate().await;
     }
     let role = who.role;
+    let admitted = async {
+        let client = ClientProtocol::new(protocol);
+        if probe {
+            let mut native = ProbeAdmission::open(&state.db, client)
+                .await
+                .map_err(Failure::db)?;
+            let registration = relay.register_probe(&mut native).map_err(|e| match e {
+                super::registry::RegistrationRefusal::TooOld(min) => Failure::TooOld(min),
+                _ => Failure::Unavailable,
+            })?;
+            let mut registered = Registered {
+                state: state.clone(),
+                handle: registration.handle.clone(),
+                probe,
+                done: false,
+            };
+            if let Err(error) = native.commit().await {
+                registered.unregister(false);
+                return Err(Failure::db(error));
+            }
+            Ok((registration, registered))
+        } else {
+            let key = who.session.as_ref().ok_or(Failure::Session)?;
+            let mut native = Admission::open(&state.db, key, client)
+                .await
+                .map_err(Failure::db)?
+                .ok_or(Failure::Session)?;
+            let registration = relay
+                .register_admitted(who, &mut native)
+                .map_err(|e| match e {
+                    super::registry::RegistrationRefusal::TooOld(min) => Failure::TooOld(min),
+                    super::registry::RegistrationRefusal::SessionEnded => Failure::Session,
+                    _ => Failure::Unavailable,
+                })?;
+            // Install exact-generation cleanup before the fallible DB commit and before hello.
+            let registered =
+                commit_device_registration(&state, registration.handle.clone(), native).await?;
+            Ok((registration, registered))
+        }
+    };
+    let (registration, mut registered) = match admitted.await {
+        Ok(value) => value,
+        Err(error) => {
+            // The admission future has completed/dropped its transaction before cleanup takes
+            // another lease. No registration may have been inserted; do not invent presence
+            // or unregister an unrelated generation. Existing live links keep their claim.
+            if !probe {
+                instances::release_if_unlinked(&state.db, &relay, &state.instances, claimed_user)
+                    .await;
+            }
+            if let Some(close) = error.close() {
+                if send_close(&mut socket, &close, DEAD_LINK).await {
+                    await_peer_close(&mut socket).await;
+                }
+            }
+            return;
+        }
+    };
     let Registration {
         handle,
         mut outbound,
         mut closing,
         replaced,
         probe_closer: _probe_closer,
-    } = relay.register(who);
+    } = registration;
     if !probe {
-        tracing::info!(device = %handle.device_id, ?role, replaced, "link open");
+        tracing::info!(device=%handle.device_id,?role,replaced,"link open");
     }
-    let mut registered = Registered {
-        state: state.clone(),
-        handle: handle.clone(),
-        probe,
-        done: false,
-    };
-
     let mut link = Link {
         state,
         handle,
@@ -354,18 +443,20 @@ async fn serve_link<S: LinkSocket>(
         link.run(&mut socket, &mut outbound, &mut closing).await
     };
 
+    if let Some(close) = close
+        .as_ref()
+        .filter(|close| close.disposition != CloseDisposition::Drain)
+    {
+        relay.publish_close(&link.handle, close);
+    }
+    link.handle.discard_pending(&mut outbound);
     // The link is over. The device was last heard from when its last frame arrived, not when the
     // drop was noticed. That goes in the database before the device reads as offline, so anyone who
     // sees it offline (a command judging how recently it was seen) finds the time already there.
     link.write_last_seen(link.last_frame).await;
     // A Mac that went away on its own reads online for a grace, in case it is back at once; one
     // the hub closed for good (revoked, its session ended) is offline now.
-    let linger = role == Role::Host
-        && !relay.offline_grace().is_zero()
-        && close
-            .as_ref()
-            .is_none_or(|close| close.code != close_code::REVOKED);
-    let was_current = registered.unregister(linger);
+    let (close, was_current, linger) = registered.finish_close(close);
     // Once the user has no link left here, their claim goes now, before this link's close is even
     // written, so the instance they reconnect to takes them at once (D-165, D-172): whether this
     // instance is draining, or its links were cut while it lives on.
@@ -402,8 +493,29 @@ async fn serve_link<S: LinkSocket>(
     );
 }
 
+/// The short device register/COMMIT boundary, before any hello. The upgrade's instance claim
+/// was committed already, so a failed admission commit owes the same claim/presence cleanup as
+/// an ordinary link end, not merely removal of its local map entry.
+async fn commit_device_registration(
+    state: &AppState,
+    handle: LinkHandle,
+    native: Admission,
+) -> Result<Registered, Failure> {
+    let mut registered = Registered {
+        state: state.clone(),
+        handle,
+        probe: false,
+        done: false,
+    };
+    if let Err(error) = native.commit().await {
+        registered.abandon().await;
+        return Err(Failure::db(error));
+    }
+    Ok(registered)
+}
+
 /// A link's place in the registry, taken back when the link task ends however it ends. The
-/// ordinary end calls [`Registered::unregister`] in its place in the cleanup (after the last-seen
+/// ordinary end calls [`Registered::finish_close`] in its place in the cleanup (after the last-seen
 /// write, before the claim and presence); a link task that panics, or is dropped before it gets
 /// there, is unregistered on drop instead, and its claim and presence follow on a task of their
 /// own. Without it, the device would stay online with its watches until it linked again.
@@ -415,6 +527,31 @@ struct Registered {
 }
 
 impl Registered {
+    /// Completes an ordinary end after last-seen using one cause/removal cutoff.
+    fn finish_close(&mut self, candidate: Option<Close>) -> (Option<Close>, bool, bool) {
+        self.done = true;
+        self.state.relay.finish_close(&self.handle, candidate)
+    }
+
+    /// Complete an early failed registration without hello, grace or a shutdown flush. If a
+    /// newer generation replaced it, neither that entry nor its still-live claim is touched.
+    async fn abandon(&mut self) {
+        let was_current = self.unregister(false);
+        if self.probe || !was_current {
+            return;
+        }
+        instances::release_if_unlinked(
+            &self.state.db,
+            &self.state.relay,
+            &self.state.instances,
+            self.handle.user_id,
+        )
+        .await;
+        if self.handle.role == Role::Host {
+            host_left(&self.state, &self.handle, false).await;
+        }
+    }
+
     /// Takes the link out of the registry, a Mac's lingering when `linger`. True when it was the
     /// device's current link.
     fn unregister(&mut self, linger: bool) -> bool {
@@ -430,7 +567,7 @@ impl Drop for Registered {
         if self.done {
             return;
         }
-        let linger = self.handle.role == Role::Host && !self.state.relay.offline_grace().is_zero();
+        let linger = false;
         let was_current = self.unregister(linger);
         if self.probe || !was_current {
             return;
@@ -516,55 +653,39 @@ impl Link {
         // can rely on it.
         self.write_last_seen(self.last_frame).await;
 
-        let hello = RelayMessage::Hello {
-            protocol: PROTOCOL,
-            min_client_protocol: self.state.relay.min_client_protocol(),
-            device_id: self.handle.device_id,
-            role: self.handle.role,
-            heartbeat_seconds: HEARTBEAT_SECONDS,
-            hub_time: self.state.relay.hub_time(),
-        };
-        write(socket, &hello).await.ok()?;
-
-        // A phone is told which of its Macs are online, once after `hello`; a Mac coming online
-        // is told to the user's phones.
-        match self.handle.role {
-            Role::Client => {
-                let presence = self
-                    .state
-                    .relay
-                    .presence(&self.state.db, self.handle.org_id, self.handle.user_id)
-                    .await;
-                match presence {
-                    Ok(presence) => write(socket, &presence).await.ok()?,
-                    Err(error) => tracing::warn!(%error, "could not read presence"),
+        macro_rules! admitted {
+            ($work:expr) => {
+                match $work {
+                    Ok(value) => value,
+                    Err(error) => return error.close(),
                 }
-            }
-            Role::Host if !self.replaced => {
-                self.state
-                    .relay
-                    .broadcast_presence(&self.state.db, self.handle.org_id, self.handle.user_id)
-                    .await;
-            }
-            Role::Host => {}
+            };
         }
-
-        // A host is told which of its threads are watched, whole, right after `hello` and again
-        // whenever the set changes or a thread it was told of gains another client (`refresh`,
-        // so that client gets the catch-up too). The receiver is made first, so a change that
-        // lands while the first frame is being written is not missed. It is written by this task,
-        // not queued: it is never dropped and never reordered behind a later change.
         let mut watch_changes = self.state.relay.watch_changes();
         let is_host = self.handle.role == Role::Host;
         let mut told = Vec::new();
+        admitted!(self.initial(socket).await);
         if is_host {
-            // Every thread is new to this link, so nothing needs refreshing.
             (told, _) = self.state.relay.take_watching(self.handle.device_id);
-            let watching = RelayMessage::Watching {
-                thread_ids: told.clone(),
-                refresh: Vec::new(),
-            };
-            write(socket, &watching).await.ok()?;
+            told = admitted!(self.write_watching(socket, told, Vec::new()).await);
+        } else if self.probe {
+            admitted!(
+                self.write_direct(
+                    socket,
+                    &RelayMessage::Presence { hosts: Vec::new() },
+                    1,
+                    DEAD_LINK
+                )
+                .await
+            );
+        } else {
+            admitted!(self.write_presence(socket).await);
+        }
+        if is_host && !self.replaced {
+            self.state
+                .relay
+                .broadcast_presence(&self.state.db, self.handle.org_id, self.handle.user_id)
+                .await;
         }
 
         let mut stopping = self.state.shutdown.subscribe();
@@ -579,7 +700,7 @@ impl Link {
                     // What is already queued (the drain's answers to held commands, a reply)
                     // goes out before the close, to a device that is still reading.
                     while let Ok(frame) = outbound.try_recv() {
-                        self.write_queued(socket, frame, CLOSE_GRACE).await.ok()?;
+                        admitted!(self.write_queued(socket, frame, CLOSE_GRACE).await);
                     }
                     return Some(Close::shutdown());
                 }
@@ -588,7 +709,7 @@ impl Link {
                     // The registry's handle keeps the sender alive as long as this link is
                     // registered, so `None` is not expected; treat it as the end.
                     let frame = queued?;
-                    self.write_queued(socket, frame, DEAD_LINK).await.ok()?;
+                    admitted!(self.write_queued(socket, frame, DEAD_LINK).await);
                     // A frame left the queue: room for what a full queue made this link miss.
                     self.handle.flush_missed();
                 }
@@ -601,8 +722,8 @@ impl Link {
                             thread_ids: now.clone(),
                             refresh,
                         };
-                        write(socket, &watching).await.ok()?;
-                        told = now;
+                        let RelayMessage::Watching{thread_ids,refresh}=watching else {unreachable!()};
+                        told=admitted!(self.write_watching(socket,thread_ids,refresh).await);
                     }
                 }
                 incoming = socket.recv() => {
@@ -615,7 +736,7 @@ impl Link {
                         Message::Text(text) if text.len() > self.frame_max() => {
                             Some(self.too_large())
                         }
-                        Message::Text(text) => self.on_text(text.as_str()).await,
+                        Message::Text(text) => admitted!(self.on_text(text.as_str()).await),
                         Message::Binary(bytes) if bytes.len() > self.frame_max() => {
                             Some(self.too_large())
                         }
@@ -631,7 +752,7 @@ impl Link {
                         Message::Ping(_) | Message::Pong(_) => None,
                     };
                     if let Some(reply) = reply {
-                        write(socket, &reply).await.ok()?;
+                        admitted!(self.write_direct(socket,&reply,1,DEAD_LINK).await);
                     }
                 }
             }
@@ -657,31 +778,34 @@ impl Link {
     }
 
     /// Handles one text frame; the returned frame, if any, is written back at once.
-    async fn on_text(&self, text: &str) -> Option<RelayMessage> {
+    async fn on_text(&self, text: &str) -> Result<Option<RelayMessage>, Failure> {
+        let checked = Checked::open(&self.state.db, &self.state.relay, &self.handle).await?;
+        checked.proof(1)?;
+        checked.commit().await?;
         if self.state.relay.take_frame_panic() {
             panic!("a link task panicked (test seam)");
         }
-        match serde_json::from_str::<RelayMessage>(text) {
+        Ok(match serde_json::from_str::<RelayMessage>(text) {
             Ok(RelayMessage::Ping) => Some(RelayMessage::Pong {
                 hub_time: self.state.relay.hub_time(),
             }),
-            Ok(other) => self.on_frame(other).await,
+            Ok(other) => self.on_frame(other).await?,
             // A command whose method is not one of the five is answered as a command, by id.
             // Anything else is not echoed: it may carry content the hub must not log or repeat.
             Err(_) => Some(
                 route::unknown_command(text)
                     .unwrap_or_else(|| invalid_frame("the frame is not a valid relay message")),
             ),
-        }
+        })
     }
 
     /// A well-formed frame other than `ping`. A command runs on its own task, so a slow Mac never
     /// holds up this link (or the link's other commands); a host's reply and event are matched at
     /// once. A client's `watch` is decided here, in order with its other watches and unwatches (a
     /// `watch` followed by an `unwatch` must end unwatched); it costs one indexed lookup.
-    async fn on_frame(&self, message: RelayMessage) -> Option<RelayMessage> {
+    async fn on_frame(&self, message: RelayMessage) -> Result<Option<RelayMessage>, Failure> {
         let role = self.handle.role;
-        match message {
+        Ok(match message {
             RelayMessage::Command {
                 id, method, params, ..
             } => {
@@ -695,7 +819,7 @@ impl Link {
                             "command"
                         );
                         let refused = maintenance::refused(&paused).0;
-                        return Some(RelayMessage::Reply {
+                        return Ok(Some(RelayMessage::Reply {
                             id,
                             result: None,
                             error: Some(WireError {
@@ -703,7 +827,7 @@ impl Link {
                                 message: refused.message,
                                 details: None,
                             }),
-                        });
+                        }));
                     }
                 }
                 let Ok(running) = Arc::clone(&self.running).try_acquire_owned() else {
@@ -714,7 +838,7 @@ impl Link {
                         .commands()
                         .in_flight(self.handle.device_id, &id)
                     {
-                        return None;
+                        return Ok(None);
                     }
                     tracing::warn!(
                         device = %self.handle.device_id,
@@ -722,11 +846,11 @@ impl Link {
                         outcome = "too_many_in_flight",
                         "command"
                     );
-                    return Some(RelayMessage::Reply {
+                    return Ok(Some(RelayMessage::Reply {
                         id,
                         result: None,
                         error: Some(route::rate_limited(IN_FLIGHT_RETRY)),
-                    });
+                    }));
                 };
                 let relay = self.state.relay.clone();
                 let db = self.state.db.clone();
@@ -738,7 +862,15 @@ impl Link {
                 None
             }
             RelayMessage::Reply { id, result, error } if role == Role::Host => {
-                route::handle_reply(&self.state.relay, &self.handle, &id, result, error);
+                route::handle_reply(
+                    &self.state.relay,
+                    &self.state.db,
+                    &self.handle,
+                    &id,
+                    result,
+                    error,
+                )
+                .await?;
                 None
             }
             RelayMessage::Watch { thread_id } if role == Role::Client => {
@@ -746,34 +878,159 @@ impl Link {
                     .await
             }
             RelayMessage::Unwatch { thread_id } if role == Role::Client => {
+                let checked =
+                    Checked::open(&self.state.db, &self.state.relay, &self.handle).await?;
+                checked.proof(1)?;
                 self.state.relay.unwatch(&self.handle, &thread_id);
+                checked.commit().await?;
                 None
             }
             RelayMessage::Event { event } if role == Role::Host => {
-                route::handle_event(&self.state.relay, &self.handle, event);
+                route::handle_event(&self.state.relay, &self.state.db, &self.handle, event).await?;
                 None
             }
             _ => Some(invalid_frame("this frame is not accepted from a device")),
-        }
+        })
     }
 
     /// Writes a frame from the queue within `patience`. An event arrives encoded (once, for every
     /// watcher) and is written as it is; its bytes are given back to the link's budget.
+    async fn checked_until(&self, until: Instant) -> Result<Checked, Failure> {
+        tokio::time::timeout_at(
+            until,
+            Checked::open(&self.state.db, &self.state.relay, &self.handle),
+        )
+        .await
+        .map_err(|_| Failure::Unavailable)?
+    }
+    async fn write_admitted<S: LinkSocket>(
+        &self,
+        socket: &mut S,
+        checked: &Checked,
+        message: &RelayMessage,
+        required: u32,
+        until: Instant,
+    ) -> Result<(), Failure> {
+        checked.proof(required)?;
+        let text = serde_json::to_string(message).map_err(|_| Failure::Socket)?;
+        tokio::time::timeout_at(until, socket.send(Message::Text(text.into())))
+            .await
+            .map_err(|_| Failure::Socket)?
+            .map_err(|_| Failure::Socket)
+    }
+    async fn write_direct<S: LinkSocket>(
+        &self,
+        socket: &mut S,
+        message: &RelayMessage,
+        required: u32,
+        patience: Duration,
+    ) -> Result<(), Failure> {
+        let until = Instant::now() + patience;
+        let checked = self.checked_until(until).await?;
+        self.write_admitted(socket, &checked, message, required, until)
+            .await?;
+        tokio::time::timeout_at(until, checked.commit())
+            .await
+            .map_err(|_| Failure::Unavailable)?
+    }
+    async fn initial<S: LinkSocket>(&self, socket: &mut S) -> Result<(), Failure> {
+        let until = Instant::now() + DEAD_LINK;
+        let checked = self.checked_until(until).await?;
+        let hello = RelayMessage::Hello {
+            protocol: PROTOCOL,
+            min_client_protocol: self.state.relay.min_client_protocol(),
+            device_id: self.handle.device_id,
+            role: self.handle.role,
+            heartbeat_seconds: HEARTBEAT_SECONDS,
+            hub_time: self.state.relay.hub_time(),
+        };
+        self.write_admitted(socket, &checked, &hello, 1, until)
+            .await?;
+        tokio::time::timeout_at(until, checked.commit())
+            .await
+            .map_err(|_| Failure::Unavailable)?
+    }
+    async fn write_presence<S: LinkSocket>(&self, socket: &mut S) -> Result<(), Failure> {
+        let until = Instant::now() + DEAD_LINK;
+        let mut checked = self.checked_until(until).await?;
+        let hosts = tokio::time::timeout_at(until, checked.native()?.host_devices())
+            .await
+            .map_err(|_| Failure::Unavailable)?
+            .map_err(Failure::db)?;
+        let message = self.state.relay.presence_of(hosts);
+        self.write_admitted(socket, &checked, &message, 1, until)
+            .await?;
+        tokio::time::timeout_at(until, checked.commit())
+            .await
+            .map_err(|_| Failure::Unavailable)?
+    }
+    async fn write_watching<S: LinkSocket>(
+        &self,
+        socket: &mut S,
+        threads: Vec<String>,
+        mut refresh: Vec<String>,
+    ) -> Result<Vec<String>, Failure> {
+        let until = Instant::now() + DEAD_LINK;
+        let mut checked = self.checked_until(until).await?;
+        let (threads, required) = tokio::time::timeout_at(
+            until,
+            route::watching(&self.state.relay, &mut checked, &self.handle, threads),
+        )
+        .await
+        .map_err(|_| Failure::Unavailable)??;
+        refresh.retain(|id| threads.contains(id));
+        self.write_admitted(
+            socket,
+            &checked,
+            &RelayMessage::Watching {
+                thread_ids: threads.clone(),
+                refresh,
+            },
+            required,
+            until,
+        )
+        .await?;
+        tokio::time::timeout_at(until, checked.commit())
+            .await
+            .map_err(|_| Failure::Unavailable)??;
+        Ok(threads)
+    }
     async fn write_queued<S: LinkSocket>(
         &self,
         socket: &mut S,
         frame: Outbound,
         patience: Duration,
-    ) -> Result<(), ()> {
-        match frame {
-            Outbound::Message(message) => write_within(socket, &message, patience).await,
-            Outbound::Event(text) => {
-                let written =
-                    write_message(socket, Message::Text(text.to_string().into()), patience).await;
-                self.handle.event_written(text.len());
-                written
+    ) -> Result<(), Failure> {
+        let Outbound::Protected(envelope) = frame else {
+            return Err(Failure::Unavailable);
+        };
+        let until = Instant::now() + patience;
+        let checked = self.checked_until(until).await?;
+        self.state
+            .relay
+            .pass_queued_write_gate(&self.handle, until)
+            .await;
+        let (stamp, payload) = envelope.parts();
+        // A pre-cut gap/content envelope fences this queue even for a capable peer: reconnect
+        // and replay, rather than crossing a dropped gap. This is retriable 1001, never 4002
+        // unless the native client itself is too old. No queued/missed shutdown flush follows.
+        envelope.check_for_write(self.handle.generation, checked.floor().minimum())?;
+        checked.proof(stamp.required)?;
+        match payload {
+            Payload::Message(message) => {
+                self.write_admitted(socket, &checked, message, stamp.required, until)
+                    .await?
+            }
+            Payload::Event(text) => {
+                tokio::time::timeout_at(until, socket.send(Message::Text(text.to_string().into())))
+                    .await
+                    .map_err(|_| Failure::Socket)?
+                    .map_err(|_| Failure::Socket)?
             }
         }
+        tokio::time::timeout_at(until, checked.commit())
+            .await
+            .map_err(|_| Failure::Unavailable)?
     }
 
     /// Writes `last_seen_at` at most once a minute while the link is up, and looks the link's
@@ -840,11 +1097,6 @@ fn writes(method: RelayMethod) -> bool {
     )
 }
 
-/// Writes one frame, giving up if the device stops reading for as long as a dead link.
-async fn write<S: LinkSocket>(socket: &mut S, message: &RelayMessage) -> Result<(), ()> {
-    write_within(socket, message, DEAD_LINK).await
-}
-
 /// Writes one frame, giving up if the device stops reading for `patience`.
 async fn write_within<S: LinkSocket>(
     socket: &mut S,
@@ -893,4 +1145,220 @@ async fn await_peer_close<S: LinkSocket>(socket: &mut S) {
         }
     })
     .await;
+}
+
+#[cfg(test)]
+mod registration_commit_tests {
+    use super::*;
+    use b4hub_db::instances::{self as native_instances, Claim};
+    use b4hub_db::{devices, orgs, Db};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    /// A native connection-loss control at the actual private COMMIT boundary, not a fake
+    /// commit result or full socket fault test. No production failpoint is installed.
+    #[sqlx::test(migrations = false)]
+    async fn failed_registration_commit_releases_the_live_instance_claim(pool: PgPool) {
+        let mut admin_url = url::Url::parse(&std::env::var("DATABASE_URL").unwrap()).unwrap();
+        let options = pool.connect_options();
+        admin_url.set_path(&format!("/{}", options.get_database().unwrap()));
+        let mut app_url = admin_url.clone();
+        app_url.set_username("b4hub_app").unwrap();
+        app_url.set_password(Some("pw-test")).unwrap();
+        b4hub_db::migrate::run(admin_url.as_str(), app_url.as_str())
+            .await
+            .unwrap();
+        let admin = Db::connect(admin_url.as_str()).await.unwrap();
+        let app = Db::connect(app_url.as_str()).await.unwrap();
+        let state = AppState::new(
+            app.clone(),
+            crate::config::Config {
+                signup: crate::config::Signup::Closed,
+                rp_id: "local.b4.run".into(),
+                public_url: None,
+                secret_key: [7; 32],
+                apple: None,
+                trust_forwarded_for: false,
+            },
+        )
+        .unwrap();
+        let user = orgs::seed(
+            &admin,
+            "commit-cleanup",
+            "Fixture",
+            "owner",
+            "Owner",
+            "owner@example.test",
+        )
+        .await
+        .unwrap();
+        let code = devices::create_enrollment_code(
+            &admin,
+            user.org_id,
+            user.user_id,
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+        let enrolled = devices::redeem(&app, &code, "Mac", "macos").await.unwrap();
+        let key = SessionKey::of(&enrolled.token);
+        let original = state.instances.id();
+        let other = Uuid::new_v4();
+        native_instances::register(&app, original, None)
+            .await
+            .unwrap();
+        native_instances::register(&app, other, None).await.unwrap();
+        let alive = Duration::from_secs(86400); // A live owner, never an expiry-based reclaim.
+        assert_eq!(
+            native_instances::claim_user(&app, user.user_id, original, alive)
+                .await
+                .unwrap(),
+            Claim::Ours
+        );
+        assert_eq!(
+            native_instances::claim_user(&app, user.user_id, other, alive)
+                .await
+                .unwrap(),
+            Claim::Other(original)
+        );
+        let mut native = Admission::open(&app, &key, ClientProtocol::SUPPORTED)
+            .await
+            .unwrap()
+            .unwrap();
+        let identity = Identity {
+            device_id: enrolled.device_id,
+            name: "Mac".into(),
+            role: Role::Host,
+            user_id: user.user_id,
+            org_id: user.org_id,
+            session: Some(key),
+            probe: false,
+        };
+        let mut registration = state
+            .relay
+            .register_admitted(identity, &mut native)
+            .unwrap();
+        assert!(
+            registration.outbound.try_recv().is_err(),
+            "no pre-hello content was queued"
+        );
+        let database = options.get_database().unwrap();
+        // This fixture has one idle application transaction. Capture and recheck its exact
+        // native birth tuple; never terminate a whole role, another database or a replacement.
+        let candidates:Vec<(i32,String)>=sqlx::query_as("SELECT pid,backend_start::text FROM pg_stat_activity WHERE datname=$1 AND usename='b4hub_app' AND state='idle in transaction'")
+            .bind(database).fetch_all(&admin.pool).await.unwrap();
+        assert_eq!(candidates.len(), 1, "exactly the owned admission backend");
+        let (pid, birth) = &candidates[0];
+        let terminated:Option<bool>=sqlx::query_scalar("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=$3 AND usename='b4hub_app' AND state='idle in transaction'")
+            .bind(pid).bind(birth).bind(database).fetch_optional(&admin.pool).await.unwrap();
+        assert_eq!(terminated, Some(true));
+        let gone=tokio::time::timeout(Duration::from_secs(5),async {
+            loop {
+                let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND datname=$3)")
+                    .bind(pid).bind(birth).bind(database).fetch_one(&admin.pool).await.unwrap();
+                if !exists{break;}
+                tokio::task::yield_now().await;
+            }
+        }).await;
+        let outcome = commit_device_registration(&state, registration.handle.clone(), native).await;
+        assert!(
+            gone.is_ok(),
+            "the exact terminated native backend must be absent"
+        );
+        assert!(
+            matches!(outcome, Err(Failure::Unavailable)),
+            "actual native COMMIT must fail"
+        );
+        assert!(!state.relay.online(enrolled.device_id));
+        assert_eq!(
+            native_instances::owner_of(&app, user.user_id)
+                .await
+                .unwrap(),
+            None,
+            "the failed registration must release its committed upgrade claim"
+        );
+        assert_eq!(
+            native_instances::claim_user(&app, user.user_id, other, alive)
+                .await
+                .unwrap(),
+            Claim::Ours
+        );
+        let current: bool = sqlx::query_scalar(
+            "SELECT heartbeat_at>now()-interval '1 day' FROM hub_instances WHERE instance_id=$1",
+        )
+        .bind(original)
+        .fetch_one(&admin.pool)
+        .await
+        .unwrap();
+        assert!(current, "reclaim did not use heartbeat expiry");
+        native_instances::release_user(&app, user.user_id, other)
+            .await
+            .unwrap();
+        // A late cleanup of an older registration must not release a replacement's claim.
+        assert_eq!(
+            native_instances::claim_user(&app, user.user_id, original, alive)
+                .await
+                .unwrap(),
+            Claim::Ours
+        );
+        let who = || Identity {
+            device_id: enrolled.device_id,
+            name: "Mac".into(),
+            role: Role::Host,
+            user_id: user.user_id,
+            org_id: user.org_id,
+            session: Some(key),
+            probe: false,
+        };
+        let mut older_native = Admission::open(&app, &key, ClientProtocol::SUPPORTED)
+            .await
+            .unwrap()
+            .unwrap();
+        let older = state
+            .relay
+            .register_admitted(who(), &mut older_native)
+            .unwrap();
+        let mut older_owner =
+            commit_device_registration(&state, older.handle.clone(), older_native)
+                .await
+                .unwrap();
+        let mut newer_native = Admission::open(&app, &key, ClientProtocol::SUPPORTED)
+            .await
+            .unwrap()
+            .unwrap();
+        let newer = state
+            .relay
+            .register_admitted(who(), &mut newer_native)
+            .unwrap();
+        let mut newer_owner =
+            commit_device_registration(&state, newer.handle.clone(), newer_native)
+                .await
+                .unwrap();
+        older_owner.abandon().await;
+        assert_eq!(
+            state.relay.handle(enrolled.device_id).unwrap().generation,
+            newer.handle.generation
+        );
+        assert_eq!(
+            native_instances::owner_of(&app, user.user_id)
+                .await
+                .unwrap(),
+            Some(original)
+        );
+        newer_owner.abandon().await;
+        assert_eq!(
+            native_instances::owner_of(&app, user.user_id)
+                .await
+                .unwrap(),
+            None
+        );
+        drop(older);
+        drop(newer);
+        drop(older_owner);
+        drop(newer_owner);
+        drop(registration);
+        drop(state);
+        app.pool.close().await;
+        admin.pool.close().await;
+    }
 }

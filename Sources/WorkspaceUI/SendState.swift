@@ -254,24 +254,59 @@ extension WorkspaceModel {
     }
   }
 
-  /// Why Send is not offered for this thread right now, in words; nil when it is. The Mac has none.
+  /// Runtime availability is separate from the phone's network presence. Disabled current
+  /// connections can still stop or answer work that already exists.
+  public func runtimeUnavailableReason(for thread: ConversationThread) -> String? {
+    guard let connection = connection(id: thread.connectionId) else {
+      return "This thread's runtime is unavailable."
+    }
+    switch connection.kind {
+    case .b4: return "This historical conversation is read-only."
+    case .agentProtocol: return "This protocol connection is not active yet."
+    case .codex, .claude: return nil
+    }
+  }
+
+  func actionThread(id: String) -> ConversationThread? {
+    threads.first { $0.id == id } ?? (detail?.thread.id == id ? detail?.thread : nil)
+  }
+
+  public func canAbandon(_ thread: ConversationThread) -> Bool {
+    guard let connection = connection(id: thread.connectionId) else { return false }
+    return connection.kind != .b4
+  }
+
+  /// Why Send is not offered for this thread right now, in words.
   public func sendBlockedReason(for thread: ConversationThread) -> String? {
+    if let reason = runtimeUnavailableReason(for: thread) { return reason }
     if let reason = controlsDisabledReason(for: thread) { return reason }
     guard relaysThroughHub else { return nil }
     if let send = pendingSends[thread.id], send.state.isUnsettled { return sendStatus(for: thread.id) }
     return hubLinkNotice
   }
 
-  /// Stop is offered: the Mac is reachable and no stop is waiting for it.
+  /// Stop is offered: its runtime is available, the Mac is reachable and no stop is waiting.
   public func canStop(_ thread: ConversationThread) -> Bool {
-    controlsDisabledReason(for: thread) == nil && stopStates[thread.id] != .waiting
+    runtimeUnavailableReason(for: thread) == nil
+      && controlsDisabledReason(for: thread) == nil && stopStates[thread.id] != .waiting
   }
 
-  /// An approval's buttons are offered.
+  /// An approval's buttons use the request's own thread, even across selection changes.
   public func canAnswer(_ request: RuntimeRequest) -> Bool {
-    guard !busy, answerStates[request.id] != .waiting else { return false }
-    let thread = threads.first { $0.id == request.threadId } ?? detail?.thread
-    return thread.map { controlsDisabledReason(for: $0) == nil } ?? true
+    guard request.state == .pending, let target = pendingRequestTargets[request.id],
+      target.threadId == request.threadId, target.nativeRequestId == request.nativeRequestId,
+      target.adapterGeneration == request.adapterGeneration
+    else { return false }
+    return canRespond(requestId: request.id)
+  }
+
+  /// Resolve only an identity learned from an authoritative read or request event. No selected
+  /// thread fallback: a captured id may belong to a different, historical conversation.
+  func canRespond(requestId: String) -> Bool {
+    guard !busy, answerStates[requestId] != .waiting,
+      let target = pendingRequestTargets[requestId], let thread = actionThread(id: target.threadId)
+    else { return false }
+    return runtimeUnavailableReason(for: thread) == nil && controlsDisabledReason(for: thread) == nil
   }
 
   private func transcriptShows(turnId: String, threadId: String) -> Bool {
@@ -283,10 +318,11 @@ extension WorkspaceModel {
 
   /// The phone's Send: the message shows as sending, the draft stays until the Mac accepts.
   func relaySend(threadId: String) async {
-    let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !text.isEmpty, let thread = detail?.thread, thread.id == threadId,
+    guard let thread = detail?.thread, thread.id == threadId,
       sendBlockedReason(for: thread) == nil
     else { return }
+    let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return }
     let send = PendingSend(
       id: UUID().uuidString.lowercased(), threadId: threadId, text: text, tappedAt: now())
     pendingSends[threadId] = send
@@ -597,7 +633,7 @@ extension WorkspaceModel {
 
   /// The phone's Stop: "Waiting for your Mac…" up to 90 s, then the reply or "Not confirmed".
   func relayStop(threadId: String) async {
-    guard let thread = threads.first(where: { $0.id == threadId }) ?? detail?.thread, canStop(thread),
+    guard let thread = actionThread(id: threadId), canStop(thread),
       let client
     else { return }
     stopStates[threadId] = .waiting
@@ -618,8 +654,7 @@ extension WorkspaceModel {
   /// already taken the card away.
   func relayRespond(_ params: RequestRespond.Params) async {
     let id = params.requestId
-    guard answerStates[id] != .waiting, let client else { return }
-    if let request = detail?.requests.first(where: { $0.id == id }), !canAnswer(request) { return }
+    guard canRespond(requestId: id), let client else { return }
     answerStates[id] = .waiting
     do {
       _ = try await client.request(

@@ -7,11 +7,15 @@ import WorkspaceProtocol
   @Test(arguments: [false, true], [false, true])
   func unavailableEndpointPreservesCurrentDraft(eventFirst: Bool, newerText: Bool) async throws {
     let transport = ScriptedTransport()
-    let thread = ConversationThread(id: "b4-thread", connectionId: "b4", nativeThreadId: "native-thread")
-    transport.set(threads: [thread])
+    let connection = Connection(
+      id: "codex", kind: .codex, label: "Current Codex", enabled: true,
+      target: "/fixture/codex", status: .ready, authStatus: .authenticated)
+    let thread = ConversationThread(
+      id: "current-thread", connectionId: connection.id, nativeThreadId: "native-thread")
+    transport.set(connections: [connection], threads: [thread])
     transport.setRead(ThreadRead.Result(thread: thread, turns: [], items: [], requests: []))
     transport.script(.turnSend, [.hold])
-    let draft = Draft(threadId: thread.id, text: "keep this B4 draft")
+    let draft = Draft(threadId: thread.id, text: "keep this current runtime draft")
     transport.script(.draftSave, [.result(try JSONValue(encoding: DraftSave.Result(draft: draft)))])
     let model = WorkspaceModel(transportProvider: { transport })
     model.draftSaveDelay = .seconds(30)
@@ -27,7 +31,7 @@ import WorkspaceProtocol
       id: "refused", threadId: thread.id, operationId: "send", status: .terminal,
       submission: .prepared, outcome: .failed)
     let event = AdapterEvent(
-      kind: .turnFinished, connectionId: "b4", threadId: thread.id, turnId: turn.id,
+      kind: .turnFinished, connectionId: connection.id, threadId: thread.id, turnId: turn.id,
       payload: ["turn": try JSONValue(encoding: turn)])
     if eventFirst {
       transport.emit(event)
@@ -36,7 +40,9 @@ import WorkspaceProtocol
     try #require(
       transport.release(
         .turnSend,
-        with: .failure(WorkspaceError(.endpointUnavailable, "B4 is stopped", details: ["turnId": "refused"])))
+        with: .failure(
+          WorkspaceError(
+            .endpointUnavailable, "Current runtime is stopped", details: ["turnId": "refused"])))
     )
     await sending.value
     #expect(model.lastFailure?.code == .endpointUnavailable)

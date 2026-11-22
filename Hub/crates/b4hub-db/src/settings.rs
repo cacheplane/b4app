@@ -1,5 +1,4 @@
-//! Hub-wide settings (`hub_settings`, one jsonb value per key, no tenant), and the one key so far:
-//! the maintenance switch. `serve` reads it as `b4hub_app`; the operator commands write it as the
+//! Hub-wide settings (`hub_settings`, one jsonb value per key, no tenant). `serve` reads it as `b4hub_app`; the operator commands write it as the
 //! owner, which is the only role `migrate` lets write the table.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -109,4 +108,89 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let year = yoe + era * 400 + i64::from(month <= 2);
     (year, month, day)
+}
+
+/// The floor is deliberately mandatory: a missing or malformed row never means legacy mode.
+const PROTOCOL_KEY: &str = "client_protocol";
+
+fn decode_protocol_floor(
+    value: Option<serde_json::Value>,
+) -> Result<b4hub_core::protocol::ProtocolFloor> {
+    let object = value
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .filter(|object| object.len() == 1)
+        .ok_or(crate::Error::InvalidProtocolFloor)?;
+    let minimum = object
+        .get("minClientProtocol")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or(crate::Error::InvalidProtocolFloor)?;
+    b4hub_core::protocol::ProtocolFloor::new(minimum)
+        .filter(|floor| floor.supported())
+        .ok_or(crate::Error::InvalidProtocolFloor)
+}
+
+pub async fn protocol_floor(db: &Db) -> Result<b4hub_core::protocol::ProtocolFloor> {
+    let value = sqlx::query_scalar("SELECT value FROM public.hub_settings WHERE key = $1")
+        .bind(PROTOCOL_KEY)
+        .fetch_optional(&db.pool)
+        .await?;
+    decode_protocol_floor(value)
+}
+
+pub(crate) async fn protocol_floor_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<b4hub_core::protocol::ProtocolFloor> {
+    let value = sqlx::query_scalar("SELECT value FROM public.hub_settings WHERE key = $1")
+        .bind(PROTOCOL_KEY)
+        .fetch_optional(&mut **tx)
+        .await?;
+    decode_protocol_floor(value)
+}
+
+/// Owner-only, monotonic cut. The AX lock conflicts with every admitted sync transaction.
+/// Registration is fenced too, so a concurrent startup cannot slip through the empty-fleet check.
+/// Empty registration is necessary, not proof of the operator's complete fleet drain.
+pub async fn raise_protocol_floor(
+    db: &Db,
+    minimum: u32,
+) -> Result<b4hub_core::protocol::ProtocolFloor> {
+    use b4hub_core::protocol::{ClientProtocol, ProtocolFloor};
+    let requested = ProtocolFloor::new(minimum)
+        .filter(|floor| floor.supported())
+        .ok_or(crate::Error::UnsupportedProtocolFloor)?;
+    let mut tx = db.untenanted_tx().await?;
+    sqlx::query("LOCK TABLE public.hub_settings IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await?;
+    // Both locks precede the first SELECT: an owner configured for REPEATABLE READ must
+    // observe a registration committed while this second lock was waiting, too.
+    sqlx::query("LOCK TABLE public.hub_instances IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await?;
+    let current = protocol_floor_in(&mut tx).await?;
+    if requested.minimum() < current.minimum() {
+        return Err(crate::Error::ProtocolFloorDecrease);
+    }
+    if requested == current {
+        tx.commit().await?;
+        return Ok(current);
+    }
+    // Existing instances must have unregistered normally; same-floor status remains idempotent.
+    let present: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.hub_instances)")
+        .fetch_one(&mut *tx)
+        .await?;
+    if present {
+        return Err(crate::Error::ProtocolInstancesPresent);
+    }
+    debug_assert!(minimum <= ClientProtocol::SUPPORTED.value());
+    sqlx::query("UPDATE public.hub_settings SET value = jsonb_build_object('minClientProtocol', $1::bigint), updated_at = now() WHERE key = $2")
+        .bind(i64::from(minimum)).bind(PROTOCOL_KEY).execute(&mut *tx).await?;
+    sqlx::query("SELECT pg_notify($1, '')")
+        .bind(crate::signals::PROTOCOL)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(requested)
 }

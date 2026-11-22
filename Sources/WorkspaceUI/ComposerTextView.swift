@@ -78,6 +78,7 @@ enum ComposerKey: Equatable {
       let enabled = context.environment.isEnabled
       textView.isEditable = enabled
       textView.isSelectable = enabled
+      textView.setAccessibilityEnabled(enabled)
       textView.setAccessibilityLabel(label)
     }
 

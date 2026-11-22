@@ -17,10 +17,6 @@ use crate::error::ApiError;
 use crate::relay::link;
 use crate::serve::AppState;
 
-/// The oldest client protocol this hub speaks, reported so clients can refuse a hub that is
-/// too new for them.
-pub const MIN_CLIENT_PROTOCOL: u32 = 1;
-
 pub async fn healthz() -> Json<Value> {
     Json(json!({ "ok": true }))
 }
@@ -55,6 +51,9 @@ async fn readiness(state: &AppState) -> Result<Value, ApiError> {
         }
     }
 
+    let floor = b4hub_db::settings::protocol_floor(&state.db)
+        .await
+        .map_err(|_| ApiError::not_ready())?;
     let relay = match link::probe(state).await {
         Ok(()) => "ok",
         Err(failure) => {
@@ -81,7 +80,8 @@ async fn readiness(state: &AppState) -> Result<Value, ApiError> {
     let mut body = json!({
         "ok": true,
         "migrations": "current",
-        "minClientProtocol": MIN_CLIENT_PROTOCOL,
+        "minClientProtocol": floor.minimum(),
+        "supportedClientProtocol": b4hub_core::protocol::ClientProtocol::SUPPORTED.value(),
         "relay": relay,
         "instances": instances,
     });

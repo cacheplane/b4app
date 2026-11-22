@@ -720,20 +720,14 @@ private func sha256Hex(_ text: String) -> String {
     let db = try rig.accounts.scope().database
     _ = try db.insertConnection(
       Connection(id: "local", kind: .claude, label: "Claude", target: "/bin/claude"))
-    _ = try db.insertConnection(
-      Connection(
-        id: "remote", kind: .b4, label: "Remote B4", target: "https://b4.example.com",
-        routeKey: "/chat#agent",
-        b4Mode: .remote))
-    for (thread, connection) in [("mine", "local"), ("theirs", "remote")] {
-      _ = try db.insertThread(
-        ConversationThread(
-          id: thread, connectionId: connection, nativeThreadId: "n-\(thread)", nativeScope: "me",
-          title: thread))
-      _ = try await rig.client.request(
-        TurnSend.self, TurnSend.Params(threadId: thread, text: "go"), options: CommandRig.mutation())
-    }
-    let remoteTurn = try #require(try db.activeTurn(threadId: "theirs"))
+    let remote = try HistoricalCoordinatorFixture.seedEarlierConnection(db, id: "remote", mode: .remote)
+    let history = try HistoricalCoordinatorFixture.seedEarlierConversation(
+      db, connection: remote, id: "theirs", status: .running)
+    _ = try db.insertThread(
+      ConversationThread(
+        id: "mine", connectionId: "local", nativeThreadId: "n-mine", nativeScope: "me", title: "mine"))
+    _ = try await rig.client.request(
+      TurnSend.self, .init(threadId: "mine", text: "go"), options: CommandRig.mutation())
     let database = try rig.accounts.scope().account.database
 
     let refused = await #expect(throws: WorkspaceError.self) { _ = try await rig.logout(stopWork: false) }
@@ -751,7 +745,12 @@ private func sha256Hex(_ text: String) -> String {
     endpoint.database = database
     let reopened = try WorkspaceDatabase(endpoint: endpoint, binDir: endpoint.binDir!)
     defer { try? reopened.close() }
-    #expect(try reopened.turn(id: remoteTurn.id)?.status != .terminal)
+    let unchanged =
+      try HistoricalCoordinatorFixture.snapshot(reopened, threadId: history.thread.id) == history
+    #expect(unchanged)
+    #expect(try reopened.turns(threadId: "mine").map(\.outcome) == [.cancelled])
+    #expect(try reopened.draft(threadId: "mine")?.text == "still here")
+    #expect(throws: WorkspaceError.self) { _ = try rig.accounts.scope() }
   }
 
   /// M6: a server whose start is still in flight is stopped by a log-out, within its bounds.

@@ -13,7 +13,9 @@ import WorkspaceProtocol
   }
 
   private func model(_ transport: ScriptedTransport) async throws -> WorkspaceModel {
-    transport.set(threads: [thread])
+    transport.set(
+      connections: [Connection(id: "c", kind: .codex, label: "Codex", target: "", status: .ready)],
+      threads: [thread])
     transport.setRead(ThreadRead.Result(thread: thread, turns: [], items: [], requests: []))
     let model = WorkspaceModel(transportProvider: { transport })
     model.connect()

@@ -13,6 +13,8 @@ public enum HubLinkError: Error, Equatable, Sendable {
   case failed(String)
   /// A frame arrived that is not a relay message this build knows. The link is still up.
   case undecodable
+  /// A JSON object names the known hello discriminator but violates its required typed shape.
+  case invalidHello
   /// A `command` arrived whose method this build does not know (a newer hub forwarding a newer
   /// phone's command). The link is still up; the frame's `id` and `method` let a Mac answer it.
   case unknownCommand(id: String, method: String)
@@ -22,15 +24,19 @@ public enum HubLinkError: Error, Equatable, Sendable {
 
 /// Reads one relay frame. A frame that does not decode throws `HubLinkError.undecodable`, except a
 /// `command` with a string `id`, which throws `.unknownCommand` so the Mac can say it cannot run it.
+/// A JSON object naming `hello` with malformed required fields throws `.invalidHello`.
 public enum RelayFrame {
   public static func decode(_ data: Data) throws -> RelayMessage {
     do {
       return try JSONDecoder().decode(RelayMessage.self, from: data)
     } catch {
-      guard
-        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-        object["type"] as? String == "command", let id = object["id"] as? String
-      else { throw HubLinkError.undecodable }
+      guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw HubLinkError.undecodable
+      }
+      if object["type"] as? String == "hello" { throw HubLinkError.invalidHello }
+      guard object["type"] as? String == "command", let id = object["id"] as? String else {
+        throw HubLinkError.undecodable
+      }
       throw HubLinkError.unknownCommand(id: id, method: object["method"] as? String ?? "")
     }
   }
@@ -40,7 +46,7 @@ public enum RelayFrame {
 public protocol HubLinkSocket: Sendable {
   func send(_ message: RelayMessage) async throws
   /// The next frame. Throws `HubLinkError.undecodable` for a frame to skip, and `.closed(code:)` or
-  /// `.failed` once the socket is over.
+  /// `.failed` once the socket is over; a malformed known greeting throws `.invalidHello`.
   func receive() async throws -> RelayMessage
   /// Closes the socket; a pending `receive` throws `.closed(code:)`.
   func close(code: Int)
